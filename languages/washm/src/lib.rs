@@ -4,11 +4,17 @@ include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod emitter;
 pub mod walker;
 
-use pest_derive::Parser;
-
-#[derive(Parser)]
-#[grammar = "src/grammar.pest"]
+#[allow(dead_code)]
+mod native_grammar {
+    include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
+}
+pub use native_grammar::Rule;
 pub struct WashmParser;
+impl WashmParser {
+    pub fn parse(rule: Rule, source: &str) -> Result<grameo::compat::Pairs<'_, Rule>, grameo::ParseError> {
+        native_grammar::Parser.parse_pairs(rule, source)
+    }
+}
 
 /// Parse Bash/washm source into the common AST.
 pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
@@ -60,7 +66,7 @@ vybe_runtime::register_plugin!(Plugin);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pest::Parser;
+
 
     #[test]
     fn test_parse_pipeline_subst() {

@@ -328,6 +328,7 @@ fn emit_json_stringify_slots(
 /// (`array_search`, `in_array`, `array_key_exists`, `array_flip`) saw the wrong
 /// type. Convert numeric-looking keys back to numbers and leave the rest alone.
 fn emit_php_key_list_from_slot(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
+    let to_f64 = chunks[current].add_import("wasm:js-number", "toF64");
     let keys_slot = alloc_local(&mut chunks[current]);
     let out_slot = alloc_local(&mut chunks[current]);
     let i_slot = alloc_local(&mut chunks[current]);
@@ -357,8 +358,10 @@ fn emit_php_key_list_from_slot(chunks: &mut [Chunk], current: usize, value_slot:
 
     let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i_slot, line);
+    chunks[current].emit_call(to_f64, 1, line);
     lget(&mut chunks[current], n_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_call(to_f64, 1, line);
+    chunks[current].emit_op(Op::F64_LT, line);
     vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
 
     lget(&mut chunks[current], keys_slot, line);
@@ -918,6 +921,8 @@ pub fn emit_php_offset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     let test_str = chunks[current].add_import("wasm:js-string", "test");
     let str_len = chunks[current].add_import("wasm:js-string", "length");
     let test_num = chunks[current].add_import("wasm:js-number", "test");
+    let to_f64 = chunks[current].add_import("wasm:js-number", "toF64");
+    let from_f64 = chunks[current].add_import("wasm:js-number", "fromF64");
     let (base_slot, key_slot) = {
         let c = &mut chunks[current];
         (alloc_local(c), alloc_local(c))
@@ -928,23 +933,27 @@ pub fn emit_php_offset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 
     lget(c, base_slot, line);
     c.emit_call(test_str, 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    // Wasm type tests already return an i32 condition.
     c.emit_if_value(line);
 
     // ── string base: wrap a negative offset from the end, else leave it ──
     lget(c, key_slot, line);
     c.emit_call(test_num, 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
     c.emit_if_value(line);
     lget(c, key_slot, line);
+    // The enclosing test proves this conversion cannot receive an object,
+    // string, bigint, or null; no dynamic comparison dispatch is needed.
+    c.emit_call(to_f64, 1, line);
     push_const(c, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_op(Op::F64_LT, line);
     c.emit_if_value(line);
     lget(c, base_slot, line);
     c.emit_call(str_len, 1, line);
+    c.emit_op(Op::F64_CONVERT_I32_U, line);
     lget(c, key_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(c, line);
+    c.emit_call(to_f64, 1, line);
+    c.emit_op(Op::F64_ADD, line);
+    c.emit_call(from_f64, 1, line);
     c.emit_else(line);
     lget(c, key_slot, line);
     c.emit_end(line);
@@ -966,6 +975,8 @@ pub fn emit_php_offset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 /// the total with NAN. Keys are irrelevant, so this walks the key list (which
 /// handles both a packed list and a Map) instead of reducing over entries.
 pub fn emit_php_array_sum(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let to_f64 = chunks[current].add_import("wasm:js-number", "toF64");
+    let from_f64 = chunks[current].add_import("wasm:js-number", "fromF64");
     let (arr_slot, keys_slot, i_slot, n_slot, key_slot, sum_slot, cur_slot) = {
         let c = &mut chunks[current];
         (
@@ -998,8 +1009,10 @@ pub fn emit_php_array_sum(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     {
         let c = &mut chunks[current];
         lget(c, i_slot, line);
+        c.emit_call(to_f64, 1, line);
         lget(c, n_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
+        c.emit_call(to_f64, 1, line);
+        c.emit_op(Op::F64_LT, line);
     }
     vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     {
@@ -1017,8 +1030,11 @@ pub fn emit_php_array_sum(chunks: &mut [Chunk], current: usize, _argc: u8, line:
         let c = &mut chunks[current];
         lset(c, cur_slot, line);
         lget(c, sum_slot, line);
+        c.emit_call(to_f64, 1, line);
         lget(c, cur_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_add(c, line);
+        c.emit_call(to_f64, 1, line);
+        c.emit_op(Op::F64_ADD, line);
+        c.emit_call(from_f64, 1, line);
         lset(c, sum_slot, line);
         lget(c, i_slot, line);
         push_const(c, Value::F64(1.0), line);
@@ -2763,7 +2779,46 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 /// PHP reads the value held by an array reference slot. The host lookup
 /// returns the raw slot so other operations can preserve its identity.
 pub fn emit_php_array_read_deref(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let key = alloc_local(&mut chunks[current]);
+    let object = alloc_local(&mut chunks[current]);
+    let method = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], key, line);
+    lset(&mut chunks[current], object, line);
+    super::copy_adapter::emit_php_arrayish_slot(&mut chunks[current], object, line);
+    chunks[current].emit_if_value(line);
+    push_const(&mut chunks[current], Value::Null, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], object, line);
+    vybe_compiler::primitives::instructions::recipes::is_object(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    let slot = vybe_compiler::primitives::class_slots::resolve(
+        &vybe_compiler::primitives::class_slots::ClassSlot::internal("offsetGet"),
+        &vybe_compiler::primitives::class_slots::PlainNames,
+    );
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        &mut chunks[current],
+        vybe_compiler::primitives::class_slots::ObjSource::Local(object),
+        &slot,
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
+    chunks[current].emit_else(line);
+    push_const(&mut chunks[current], Value::Null, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    lset(&mut chunks[current], method, line);
+    lget(&mut chunks[current], method, line);
+    vybe_compiler::primitives::instructions::recipes::is_func(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], method, line);
+    lget(&mut chunks[current], object, line);
+    lget(&mut chunks[current], key, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], object, line);
+    lget(&mut chunks[current], key, line);
     call_import(chunks, current, "php:array", "read", 2, line);
+    chunks[current].emit_end(line);
     vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
 }
 

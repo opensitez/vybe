@@ -85,10 +85,24 @@ pub fn emit_throw_const(
     msg: &str,
     line: u32,
 ) {
+    chunks[current].emit_string_const(msg, line);
+    emit_throw_from_stack(chunks, current, exc_name, line);
+}
+
+/// Consume a message and throw through the shared Wasm exception machinery.
+/// Generated PHP throw expressions use this instead of allocating a closure.
+pub fn emit_throw_from_stack(
+    chunks: &mut [Chunk],
+    current: usize,
+    exc_name: &str,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
+    let message_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, message_slot, line);
     class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
-    chunk.emit_string_const(msg, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, message_slot, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exc_name, line);
     // Park the instance in a local so the shared chain-stamper can push each
     // ancestor name into its `__types` array, then reload and throw.

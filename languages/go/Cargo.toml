@@ -9,12 +9,11 @@ license.workspace = true
 name = "vybe_language_go"
 
 [dependencies]
+grameo = { path = "../../crates/grameo" }
 vybe_compiler = { workspace = true }
 inventory = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
-pest = { workspace = true }
-pest_derive = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
@@ -22,3 +21,6 @@ vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 
+
+[build-dependencies]
+grameo_codegen = { path = "../../crates/grameo/codegen" }

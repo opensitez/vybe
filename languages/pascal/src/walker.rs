@@ -1,6 +1,6 @@
 use super::{PascalParser, Rule};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use vybe_ast::*;
 use vybe_compiler::primitives::generics as common_generics;
 use vybe_compiler::primitives::memory as common_memory;

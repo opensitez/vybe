@@ -1,6 +1,6 @@
 //! PHP language support.
 //!
-//! Pest grammar in `grammar.pest` parses PHP 8 source. The walker in
+//! The grammar in `grammar.pest` parses PHP 8 source. The walker in
 //! `walker.rs` converts the parse tree into the common
 //! `vybe_compiler::ast::Module`. From there everything goes through the
 //! shared compiler — no PHP-specific code in `compiler.rs`.
@@ -32,11 +32,17 @@ mod string_scan;
 pub mod tree_register;
 pub mod walker;
 
-use pest_derive::Parser;
-
-#[derive(Parser)]
-#[grammar = "src/grammar.pest"]
+#[allow(dead_code)]
+mod native_grammar {
+    include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
+}
+pub(crate) use native_grammar::Rule;
 pub(crate) struct PhpParser;
+impl PhpParser {
+    pub(crate) fn parse(rule: Rule, source: &str) -> Result<grameo::compat::Pairs<'_, Rule>, grameo::ParseError> {
+        native_grammar::Parser.parse_pairs(rule, source)
+    }
+}
 
 pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
     walker::parse(source)
@@ -176,7 +182,7 @@ vybe_runtime::register_plugin!(Plugin);
 #[cfg(test)]
 mod grammar_prefix_tests {
     use super::{PhpParser, Rule};
-    use pest::Parser;
+
 
     fn shape(rule: Rule, source: &str) -> Vec<(Rule, String)> {
         let pair = PhpParser::parse(rule, source)

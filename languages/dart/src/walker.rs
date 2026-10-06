@@ -39,8 +39,8 @@
 //!   Appended to `parents` list after the `extends` parent.
 
 use super::{DartParser, Rule};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::datetime::{EpochPrecision, MonthIndexing};
 use vybe_ast::*;

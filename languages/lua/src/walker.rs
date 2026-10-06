@@ -1,10 +1,6 @@
 use super::{LuaParser, Rule};
-#[cfg(not(feature = "native-parser"))]
-use pest::Parser;
-#[cfg(not(feature = "native-parser"))]
-use pest::iterators::Pair;
-#[cfg(feature = "native-parser")]
-use vybe_parser::compat::Pair;
+
+use grameo::compat::Pair;
 use vybe_ast::*;
 
 fn to_span(pair: &Pair<Rule>) -> Span {
@@ -586,14 +582,15 @@ fn walk_if_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     pending_elif_cond = Some(e);
                 }
             }
-            Rule::then_block | Rule::else_block | Rule::block => {
+            Rule::else_block => {
+                else_body = Some(walk_block(p)?);
+            }
+            Rule::then_block | Rule::block => {
                 let stmts = walk_block(p)?;
-                if then_body.is_empty() && pending_elif_cond.is_none() {
-                    then_body = stmts;
-                } else if let Some(elif_cond) = pending_elif_cond.take() {
+                if let Some(elif_cond) = pending_elif_cond.take() {
                     elifs.push((elif_cond, stmts));
                 } else {
-                    else_body = Some(stmts);
+                    then_body = stmts;
                 }
             }
             _ => {}

@@ -1095,20 +1095,17 @@ pub fn register(fw: &mut Framework<'_>) {
                         {
                             return indexed_value(&object, &key);
                         }
-                        let method = object.get("offsetGet");
-                        match &method {
-                            Value::Object(f)
-                                if matches!(
-                                    f.lock().unwrap().kind,
-                                    ObjectKind::Function(_) | ObjectKind::HostFunction(_)
-                                ) =>
-                            {
-                                Some(method)
-                            }
-                            _ => None,
+                        let canonical = object.get("offsetget");
+                        if matches!(canonical, Value::Null | Value::Undefined) {
+                            object.get("offsetGet")
+                        } else {
+                            canonical
                         }
                     };
-                    if let Some(method) = method {
+                    let callable = matches!(&method, Value::Object(function)
+                        if matches!(function.lock().unwrap().kind,
+                            ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
+                    if callable {
                         return ctx.invoke_with_receiver(&method, object, &[key]);
                     }
                     let data = cell.lock().unwrap();

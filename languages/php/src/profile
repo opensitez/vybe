@@ -328,7 +328,11 @@ glob                = { emit = "common:php.glob",           min_args = 1, max_ar
 # preg_replace/preg_split/preg_match_all route through stdlib adapter
 # chunks (`__stdlib_regex_*_pat_first`) that reorder PHP's pat-first
 # args into ECMA's str-first order before calling ecma:regexp.*.
-preg_match          = { emit = "host:ecma:regexp:test",          min_args = 2, max_args = 5 }
+preg_match          = { emit = "host:php:regex:test",            min_args = 2, max_args = 5 }
+preg_last_error     = { emit = "host:php:regex:lastError",       min_args = 0, max_args = 0 }
+preg_last_error_msg = { emit = "host:php:regex:lastErrorMessage", min_args = 0, max_args = 0 }
+__php_throw_type_error = { emit = "common:php.throw_type_error", min_args = 1, max_args = 1 }
+__php_throw_error      = { emit = "common:php.throw_error",      min_args = 1, max_args = 1 }
 __php_preg_match_offsets = { emit = "host:php:regex:matchWithOffsets", min_args = 4, max_args = 4 }
 preg_match_all      = { emit = "common:php.regex_match_all_pat_first", min_args = 2, max_args = 5 }
 preg_replace        = { emit = "common:php.regex_replace_pat_first", min_args = 3, max_args = 4 }
@@ -1229,6 +1233,13 @@ reduce   = "__array_reduce"
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespace_constants]
+"PREG_NO_ERROR"         = 0
+"PREG_INTERNAL_ERROR"   = 1
+"PREG_BACKTRACK_LIMIT_ERROR" = 2
+"PREG_RECURSION_LIMIT_ERROR" = 3
+"PREG_BAD_UTF8_ERROR"    = 4
+"PREG_BAD_UTF8_OFFSET_ERROR" = 5
+"PREG_JIT_STACKLIMIT_ERROR" = 6
 "PHP_VERSION"           = "8.0.0"
 "PHP_VERSION_ID"        = 80000
 "PHP_SESSION_DISABLED"  = 0

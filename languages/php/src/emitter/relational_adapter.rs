@@ -85,22 +85,24 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
     lget(chunk, b_slot, line);
     chunk.emit_call(test_bool, 1, line);
     chunk.emit_op(Op::I32_OR, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_i32(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     let bool_eq = chunk.add_import("php:value", "looseBoolEq");
     chunk.emit_call(bool_eq, 2, line);
+    let bool_cast = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(bool_cast, 1, line);
     chunk.emit_else(line);
 
     lget(chunk, a_slot, line);
     let test_str_a = chunk.add_import("wasm:js-string", "test");
     chunk.emit_call(test_str_a, 1, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_i32(line);
 
     lget(chunk, b_slot, line);
     let test_str_b = chunk.add_import("wasm:js-string", "test");
     chunk.emit_call(test_str_b, 1, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_i32(line);
 
     lget(chunk, a_slot, line);
     chunk.emit_call(parse_float, 1, line);
@@ -116,70 +118,62 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
     lget(chunk, b_num_slot, line);
     chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_i32(line);
     lget(chunk, a_num_slot, line);
     lget(chunk, b_num_slot, line);
     chunk.emit_op(Op::F64_EQ, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     chunk.emit_call(str_eq, 2, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
     lget(chunk, b_slot, line);
     chunk.emit_call(test_num, 1, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_i32(line);
     lget(chunk, a_slot, line);
     chunk.emit_call(parse_float, 1, line);
     lget(chunk, b_slot, line);
     chunk.emit_call(to_f64, 1, line);
     chunk.emit_op(Op::F64_EQ, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
     lget(chunk, b_slot, line);
     chunk.emit_call(test_str_b, 1, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_i32(line);
     lget(chunk, a_slot, line);
     chunk.emit_call(test_num, 1, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_i32(line);
     lget(chunk, a_slot, line);
     chunk.emit_call(to_f64, 1, line);
     lget(chunk, b_slot, line);
     chunk.emit_call(parse_float, 1, line);
     chunk.emit_op(Op::F64_EQ, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 
     chunk.emit_end(line);
 
     if negate {
-        emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
-        vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     }
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 /// Consume the top two stack values (`[a, b]`) and push `a <op> b` using

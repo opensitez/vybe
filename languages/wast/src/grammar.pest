@@ -710,6 +710,7 @@ action = { invoke_cmd | get_cmd }
 
 result_val = {
     "(" ~ "i32.const" ~ integer ~ ")"
+  | "(" ~ "u32.const" ~ integer ~ ")"
   | "(" ~ "i64.const" ~ integer ~ ")"
   | "(" ~ "f32.const" ~ (float | integer) ~ ")"
   | "(" ~ "f64.const" ~ (float | integer) ~ ")"
@@ -860,6 +861,7 @@ component_definition = {
   | comp_export
   | comp_value
   | comp_type
+  | comp_func
 }
 
 // core-prefix(<X>): where <X> parses `(Y …)`, core-prefix parses `(core Y …)`.
@@ -968,6 +970,14 @@ functype_c    = { "(" ~ "func" ~ id? ~ async_kw? ~ func_param_c* ~ func_result_c
 func_param_c  = { "(" ~ "param"  ~ labellit ~ valtype ~ ")" }
 func_result_c = { "(" ~ "result" ~ valtype ~ ")" }
 async_kw      = @{ "async" ~ !name_char }
+
+// The inverted spelling of `canon lift`: the function's signature and export
+// abbreviations precede the canonical callee, but define the same indices.
+comp_func = { "(" ~ "func" ~ id? ~ comp_func_export* ~ comp_func_type ~ (comp_inline_lift | comp_inline_alias) ~ ")" }
+comp_func_export = { "(" ~ "export" ~ externnamelit ~ versionsuffix? ~ ")" }
+comp_func_type = { "(" ~ "type" ~ index ~ ")" | (async_kw? ~ func_param_c* ~ func_result_c?) }
+comp_inline_lift = { "(" ~ "canon" ~ "lift" ~ core_funcidx_ref ~ canonopt* ~ ")" }
+comp_inline_alias = { "(" ~ "alias" ~ "export" ~ index ~ externnamelit ~ ")" }
 
 componenttype = { "(" ~ "component" ~ id? ~ componentdecl* ~ ")" }
 instancetype  = { "(" ~ "instance"  ~ id? ~ instancedecl*  ~ ")" }

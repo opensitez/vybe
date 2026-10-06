@@ -27,8 +27,8 @@
 // ============================================================================
 
 use super::{Rule, WastParser};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use std::collections::HashMap;
 use vybe_ast::*;
 
@@ -3126,6 +3126,7 @@ fn component_definition_kind(rule: Rule) -> &'static str {
         Rule::comp_export => "(export …)",
         Rule::comp_value => "(value …)",
         Rule::comp_type => "(type …)",
+        Rule::comp_func => "(func …)",
         _ => "definition",
     }
 }
@@ -3346,6 +3347,7 @@ fn walk_component_definition<'i>(
         Rule::comp_import => walk_comp_import(__w, pair),
         Rule::comp_alias => walk_comp_alias(__w, pair),
         Rule::comp_type => walk_comp_type(__w, pair),
+        Rule::comp_func => walk_comp_func(__w, pair),
         Rule::core_type_def => walk_core_type(__w, pair),
         Rule::canon => walk_canon(__w, pair),
         other => Err(format!(
@@ -3871,7 +3873,9 @@ fn alias_component_export(
     __w: &mut WastWalker,
     pair: &Pair<Rule>,
     text: &str,
-) -> Result<(), String> {
+    inline: bool,
+    inline_bind: Option<String>,
+) -> Result<u32, String> {
     let mut inner = pair.clone().into_inner();
     let iref = inner.next().ok_or("alias export: no instance index")?;
     let iidx = resolve_idx(&iref, "component instance", &__w.comp_instance_index)?;
@@ -3895,7 +3899,13 @@ fn alias_component_export(
         .into_inner()
         .find(|c| c.as_rule() == Rule::sort_c)
         .map(|c| c.as_str().trim().to_string())
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            if inline {
+                "func".to_string()
+            } else {
+                String::new()
+            }
+        });
     if sort != "func" {
         return Err(format!(
             "alias export: `({sort} …)` — only a component FUNCTION can be aliased so \
@@ -3926,11 +3936,16 @@ fn alias_component_export(
         })?;
     let fidx = __w.comp_func_space.len() as u32;
     __w.comp_func_space.push(entry);
-    if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
-        __w.comp_func_index
-            .insert(id.as_str()[1..].to_string(), fidx);
+    let bind = inline_bind.or_else(|| {
+        pair.clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::id)
+            .map(|id| id.as_str()[1..].to_string())
+    });
+    if let Some(name) = bind {
+        __w.comp_func_index.insert(name, fidx);
     }
-    Ok(())
+    Ok(fidx)
 }
 
 /// `(instance <id>? <instanceexpr>)` — the COMPONENT instance space.
@@ -4145,7 +4160,7 @@ fn walk_comp_alias(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String>
     }
     let rest = trimmed["alias".len()..].trim_start();
     if rest.starts_with("export") {
-        return alias_component_export(__w, &pair, text);
+        return alias_component_export(__w, &pair, text, false, None).map(|_| ());
     }
     if !rest.starts_with("core") {
         return Err(format!(
@@ -4250,39 +4265,89 @@ fn walk_comp_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
     Ok(())
 }
 
+/// Inverted component function declarations. A lift defines a canonical
+/// function; an alias copies an existing one. Inline exports append the same
+/// function-space entries as separate export definitions.
+fn walk_comp_func(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+    let mut bind = None;
+    let mut exports = Vec::new();
+    let mut type_part = None;
+    let mut lift = None;
+    let mut alias = None;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::id => bind = Some(child.as_str()[1..].to_string()),
+            Rule::comp_func_export => {
+                if child
+                    .clone()
+                    .into_inner()
+                    .any(|part| part.as_rule() == Rule::versionsuffix)
+                {
+                    return Err(
+                        "inline function export: versioned names are not supported yet".into(),
+                    );
+                }
+                let name = child
+                    .into_inner()
+                    .find(|part| part.as_rule() == Rule::externnamelit)
+                    .map(|part| unquote(part.as_str()))
+                    .ok_or("inline function export: missing name")?;
+                exports.push(name);
+            }
+            Rule::comp_func_type => type_part = Some(child),
+            Rule::comp_inline_lift => lift = Some(child),
+            Rule::comp_inline_alias => alias = Some(child),
+            _ => {}
+        }
+    }
+    let fidx = if let Some(lift) = lift {
+        let functype = if let Some(part) = type_part {
+            let named = part
+                .clone()
+                .into_inner()
+                .find(|child| child.as_rule() == Rule::index);
+            if let Some(index) = named {
+                resolve_comp_type(__w, &index)?
+            } else {
+                let decl = function_type_decl(__w, part.into_inner())?;
+                append_inline_func_type(__w, decl)
+            }
+        } else {
+            append_inline_func_type(
+                __w,
+                vybe_ast::canon::TypeDecl::Func {
+                    params: Vec::new(),
+                    result: None,
+                },
+            )
+        };
+        let fidx = __w.comp_func_space.len() as u32;
+        let decl = walk_canon_lift(__w, lift, Some((functype, bind)))?;
+        __w.canon_section.push(decl);
+        fidx
+    } else if let Some(alias) = alias {
+        if type_part.is_some_and(|part| !part.as_str().is_empty()) {
+            return Err("inline function alias: type ascription is not checked yet".into());
+        }
+        alias_component_export(__w, &alias, alias.as_str(), true, bind)?
+    } else {
+        return Err("inline function: missing canonical lift or alias".into());
+    };
+    for name in exports {
+        __w.export_names.insert("export", &name)?;
+        let entry = __w.comp_func_space[fidx as usize].clone();
+        let export_idx = __w.comp_func_space.len() as u32;
+        __w.comp_func_space.push(entry);
+        __w.comp_exports.insert(name, export_idx);
+    }
+    Ok(())
+}
+
 /// One `<deftype>` alternative → the AST's record of it.
 fn type_decl(__w: &WastWalker, b: &Pair<Rule>) -> Result<vybe_ast::canon::TypeDecl, String> {
     use vybe_ast::canon::TypeDecl;
     Ok(match b.as_rule() {
-        Rule::functype_c => {
-            let mut params = Vec::new();
-            let mut result = None;
-            for c in b.clone().into_inner() {
-                match c.as_rule() {
-                    Rule::func_param_c => {
-                        let mut it = c.into_inner();
-                        let name = it
-                            .next()
-                            .filter(|x| x.as_rule() == Rule::labellit)
-                            .map(|x| unquote(x.as_str()))
-                            .ok_or("component functype: (param …) has no label")?;
-                        let ty = it
-                            .find(|x| x.as_rule() == Rule::valtype)
-                            .ok_or("component functype: (param …) has no type")?;
-                        params.push((name, val_spec(__w, &ty)?));
-                    }
-                    Rule::func_result_c => {
-                        let ty = c
-                            .into_inner()
-                            .find(|x| x.as_rule() == Rule::valtype)
-                            .ok_or("component functype: (result …) has no type")?;
-                        result = Some(val_spec(__w, &ty)?);
-                    }
-                    _ => {}
-                }
-            }
-            TypeDecl::Func { params, result }
-        }
+        Rule::functype_c => function_type_decl(__w, b.clone().into_inner())?,
         // `resourcetype`, `componenttype`, `instancetype` occupy their index and
         // nothing reads their shape yet. Recorded rather than skipped: skipping
         // one renumbers every later typeidx.
@@ -4294,6 +4359,52 @@ fn type_decl(__w: &WastWalker, b: &Pair<Rule>) -> Result<vybe_ast::canon::TypeDe
         Rule::defvaltype => TypeDecl::Value(val_spec_inner(__w, b)?),
         other => TypeDecl::Opaque(format!("{other:?}")),
     })
+}
+
+fn function_type_decl<'i>(
+    __w: &WastWalker,
+    parts: impl Iterator<Item = Pair<'i, Rule>>,
+) -> Result<vybe_ast::canon::TypeDecl, String> {
+    let mut params = Vec::new();
+    let mut result = None;
+    for c in parts {
+        match c.as_rule() {
+            Rule::async_kw => {
+                return Err(
+                    "component functype: async is not represented in the canonical type payload"
+                        .into(),
+                );
+            }
+            Rule::func_param_c => {
+                let mut it = c.into_inner();
+                let name = it
+                    .next()
+                    .filter(|x| x.as_rule() == Rule::labellit)
+                    .map(|x| unquote(x.as_str()))
+                    .ok_or("component functype: (param …) has no label")?;
+                let ty = it
+                    .find(|x| x.as_rule() == Rule::valtype)
+                    .ok_or("component functype: (param …) has no type")?;
+                params.push((name, val_spec(__w, &ty)?));
+            }
+            Rule::func_result_c => {
+                let ty = c
+                    .into_inner()
+                    .find(|x| x.as_rule() == Rule::valtype)
+                    .ok_or("component functype: (result …) has no type")?;
+                result = Some(val_spec(__w, &ty)?);
+            }
+            _ => {}
+        }
+    }
+    Ok(vybe_ast::canon::TypeDecl::Func { params, result })
+}
+
+fn append_inline_func_type(__w: &mut WastWalker, decl: vybe_ast::canon::TypeDecl) -> u32 {
+    let idx = __w.comp_type_base + __w.comp_type_space;
+    __w.comp_type_space += 1;
+    __w.comp_types.push(decl);
+    idx
 }
 
 /// Resolve a `<typeidx>` in the COMPONENT type space.
@@ -4648,7 +4759,7 @@ fn walk_canon(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
         .ok_or("canon: empty definition")?;
     let row = body.into_inner().next().ok_or("canon: empty body")?;
     let decl = match row.as_rule() {
-        Rule::canon_lift => walk_canon_lift(__w, row)?,
+        Rule::canon_lift => walk_canon_lift(__w, row, None)?,
         Rule::canon_lower => walk_canon_lower(__w, row)?,
         Rule::canon_builtin => walk_canon_builtin(__w, row)?,
         other => return Err(format!("canon: unexpected {other:?}")),
@@ -4685,65 +4796,18 @@ fn walk_canon(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
 fn walk_canon_lift(
     __w: &mut WastWalker,
     row: Pair<Rule>,
+    inline: Option<(u32, Option<String>)>,
 ) -> Result<vybe_ast::canon::CanonDecl, String> {
-    use vybe_ast::canon::{CanonCallee, CanonDecl};
+    use vybe_ast::canon::CanonDecl;
     let mut decl = CanonDecl::new("lift", None);
-    let mut bind: Option<String> = None;
+    let (functype, mut bind) = inline
+        .map(|(ty, name)| (Some(ty), name))
+        .unwrap_or((None, None));
+    decl.functype = functype;
     for child in row.into_inner() {
         match child.as_rule() {
             Rule::core_funcidx_ref => {
-                let i = idx_child(&child).ok_or("canon lift: $callee carries no index")?;
-                let raw = i.as_str().trim().to_string();
-                // A NAMED callee resolves through the component's core function
-                // index space. The canon section records `$callee` as a plain
-                // number, and `call_canon_callee` reads that number as a CHUNK
-                // index — a different space, assigned by the compiler. Writing
-                // this space's position there would call whichever chunk happens
-                // to sit at it: two small integers meaning different things
-                // depending on who reads them, which is the exact defect the
-                // canon section exists to remove.
-                //
-                // So it refuses, and names the dependency rather than the
-                // source. A BARE integer is left alone — under the VM's current
-                // contract that number IS a chunk index, and every canon test
-                // that works today writes one.
-                if raw.starts_with('$') {
-                    let fidx = resolve_idx(&i, "core func", &__w.core_func_index)?;
-                    let item = __w.core_func_space.get(fidx as usize).ok_or_else(|| {
-                        format!(
-                            "canon lift: core func {fidx} is not defined (have {})",
-                            __w.core_func_space.len()
-                        )
-                    })?;
-                    decl.callee = Some(match item {
-                        // Hand over the NAMES. The number the runtime wants is a
-                        // chunk index only the compiler assigns, so writing this
-                        // space's position here would call whichever chunk
-                        // happened to sit at it.
-                        CoreFunc::Module(class, method) => CanonCallee::CoreExport {
-                            class: class.clone(),
-                            method: method.clone(),
-                        },
-                        // Lifting a canonical definition's core function is
-                        // spec-legal (a `canon lower` result can be lifted
-                        // again), but a canon row compiles to no chunk, so
-                        // there is nothing for `$callee` to name.
-                        CoreFunc::Canon(builtin, canonidx) => {
-                            return Err(format!(
-                                "canon lift: `{raw}` names the core function defined by \
-                                 `canon {builtin}` at canonidx {canonidx}. A canonical \
-                                 definition compiles to no chunk, so there is nothing \
-                                 for `$callee` to name"
-                            ));
-                        }
-                    });
-                    continue;
-                }
-                decl.callee = Some(CanonCallee::Core(resolve_idx(
-                    &i,
-                    "core func",
-                    &__w.core_func_index,
-                )?));
+                decl.callee = Some(resolve_lift_callee(__w, &child)?);
             }
             Rule::canonopt => apply_canonopt(__w, &mut decl.opts, child)?,
             Rule::externtype => {
@@ -4756,12 +4820,6 @@ fn walk_canon_lift(
                     .into_inner()
                     .find(|c| c.as_rule() == Rule::id)
                     .map(|c| c.as_str()[1..].to_string());
-                // `(func (type $ft))` names the lifted signature by INDEX,
-                // which is what the canon section records. The inline
-                // `(func (param …) (result …))` form states the type in place
-                // and has no index to record, so it refuses rather than
-                // recording `None` and letting a downstream `require_type`
-                // report a missing immediate the source did in fact supply.
                 let named = child
                     .clone()
                     .into_inner()
@@ -4769,12 +4827,12 @@ fn walk_canon_lift(
                 match named {
                     Some(i) => decl.functype = Some(resolve_comp_type(__w, &i)?),
                     None => {
-                        return Err(format!(
-                            "canon lift: the lifted type is written inline (`{}`); \
-                             name it with `(type $t …)` and lift `(func (type $t))` \
-                             so the canon section can record its index",
-                            child.as_str().trim()
-                        ));
+                        let func = child
+                            .into_inner()
+                            .find(|part| part.as_rule() == Rule::functype_c)
+                            .ok_or("canon lift: expected a component function type")?;
+                        let ty = type_decl(__w, &func)?;
+                        decl.functype = Some(append_inline_func_type(__w, ty));
                     }
                 }
             }
@@ -4799,6 +4857,62 @@ fn walk_canon_lift(
         }
     }
     Ok(decl)
+}
+
+fn resolve_lift_callee(
+    __w: &WastWalker,
+    reference: &Pair<Rule>,
+) -> Result<vybe_ast::canon::CanonCallee, String> {
+    use vybe_ast::canon::CanonCallee;
+    let i = idx_child(reference).ok_or("canon lift: $callee carries no index")?;
+    let path: Vec<_> = reference
+        .clone()
+        .into_inner()
+        .filter(|part| part.as_rule() == Rule::string)
+        .collect();
+    let raw = i.as_str().trim();
+    let item = if path.is_empty() {
+        if !raw.starts_with('$') {
+            // Bare indices retain the existing core-chunk contract.
+            return Ok(CanonCallee::Core(resolve_idx(
+                &i,
+                "core func",
+                &__w.core_func_index,
+            )?));
+        }
+        let fidx = resolve_idx(&i, "core func", &__w.core_func_index)?;
+        __w.core_func_space.get(fidx as usize).ok_or_else(|| {
+            format!(
+                "canon lift: core func {fidx} is not defined (have {})",
+                __w.core_func_space.len()
+            )
+        })?
+    } else {
+        if path.len() != 1 {
+            return Err("canon lift: only one core instance export name is supported".into());
+        }
+        let iidx = resolve_idx(&i, "core instance", &__w.core_instance_index)?;
+        let inst = __w
+            .core_instances
+            .get(iidx as usize)
+            .ok_or_else(|| format!("canon lift: core instance {iidx} is not defined"))?;
+        let name = unquote(path[0].as_str());
+        inst.funcs.get(&name).ok_or_else(|| {
+            format!("canon lift: core instance {iidx} has no function export `{name}`")
+        })?
+    };
+    match item {
+        CoreFunc::Module(class, method) => Ok(CanonCallee::CoreExport {
+            class: class.clone(),
+            method: method.clone(),
+        }),
+        CoreFunc::Canon(builtin, canonidx) => Err(format!(
+            "canon lift: `{raw}` names the core function defined by \
+             `canon {builtin}` at canonidx {canonidx}. A canonical \
+             definition compiles to no chunk, so there is nothing \
+             for `$callee` to name"
+        )),
+    }
 }
 
 fn walk_canon_lower(
@@ -5528,7 +5642,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                                             if let Some(idx) = inner2
                                                 .into_inner()
                                                 .filter(|p| p.as_rule() == Rule::index)
-                                                .next_back()
+                                                .last()
                                             {
                                                 parent_ref = Some(
                                                     idx.as_str()
@@ -12126,7 +12240,7 @@ fn walk_assert_return(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statemen
 /// Everything else still returns None, which means the assertion FAILS rather
 /// than passing quietly. That is the point: an unimplemented check must not
 /// look like a satisfied one.
-fn module_invalid_reason(pairs: pest::iterators::Pairs<Rule>) -> Option<String> {
+fn module_invalid_reason(pairs: grameo::compat::Pairs<Rule>) -> Option<String> {
     use std::collections::HashSet;
     let mut export_names: HashSet<String> = HashSet::new();
     let pairs: Vec<Pair<Rule>> = pairs.collect();
@@ -15714,7 +15828,7 @@ fn mnemonic_lane_count(name: &str) -> Option<u32> {
     None
 }
 
-fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
+fn quoted_module_is_malformed(pairs: grameo::compat::Pairs<Rule>) -> bool {
     // `$id` → (param types, result types) for every `(type $id (func …))` the
     // quoted module declares. A block that gives BOTH a `(type $t)` and an
     // inline signature must repeat `$t`'s shape exactly; the spec calls a
@@ -17760,8 +17874,8 @@ fn walk_const_expr(pair: Pair<Rule>) -> Result<Expression, String> {
                 // (a plain Int literal compiles to f64, losing bits past 2^53
                 // AND the i64 result's BigInt identity); `f32.const` demotes
                 // to single precision (`Value::F32`).
-                if raw_text.contains("i32.const") {
-                    // An `i32.const` literal is a 32-BIT PATTERN, not a number:
+                if raw_text.contains("i32.const") || raw_text.contains("u32.const") {
+                    // An `i32.const` or component `u32.const` is a 32-bit pattern:
                     // `0x80000000` and `0xffffffff` denote i32::MIN and -1. Read
                     // at 64-bit width they stay positive and never equal the
                     // wrapped i32 the VM computes, so truncate to two's

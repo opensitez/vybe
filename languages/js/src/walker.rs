@@ -1,6 +1,6 @@
 use super::{JsParser, Rule};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use std::collections::HashMap;
 use vybe_ast::*;
 use vybe_compiler::primitives::class_slots;

@@ -1,8 +1,8 @@
 //! Fortran walker — pest `Pair<Rule>` → `vybe_compiler::ast::Module`.
 
 use super::{FortranParser, Rule};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
 use vybe_compiler::primitives::complex;

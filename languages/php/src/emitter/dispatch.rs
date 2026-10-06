@@ -1570,6 +1570,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.spl_autoload_call" => {
             crate::emitter::autoload_adapter::emit_spl_autoload_call(chunks, current, argc, line)
         }
+        "php.throw_type_error" => super::type_guard::emit_throw_from_stack(chunks, current, "TypeError", line),
+        "php.throw_error" => super::type_guard::emit_throw_from_stack(chunks, current, "Error", line),
         "php.empty" => crate::emitter::empty_adapter::emit_php_empty(chunks, current, argc, line),
         "php.session_start" => {
             crate::emitter::session_adapter::emit_php_session_start(chunks, current, argc, line)

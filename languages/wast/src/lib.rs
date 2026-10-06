@@ -3,11 +3,17 @@
 include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod walker;
 
-use pest_derive::Parser;
-
-#[derive(Parser)]
-#[grammar = "src/grammar.pest"]
+#[allow(dead_code)]
+mod native_grammar {
+    include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
+}
+pub(crate) use native_grammar::Rule;
 pub(crate) struct WastParser;
+impl WastParser {
+    pub(crate) fn parse(rule: Rule, source: &str) -> Result<grameo::compat::Pairs<'_, Rule>, grameo::ParseError> {
+        native_grammar::Parser.parse_pairs(rule, source)
+    }
+}
 
 /// Parse WAST/WAT source into the common AST.
 /// Both .wast (full script with assertions) and .wat (module only) are handled

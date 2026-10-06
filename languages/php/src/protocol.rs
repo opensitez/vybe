@@ -24,8 +24,10 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "__isset" => ("hasattr".into(), Some(HasAttr)),
         "__unset" => ("delattr".into(), Some(DelAttr)),
         "__clone" => ("clone".into(), Some(Clone)),
-        "__serialize" | "__sleep" => ("serialize".into(), Some(Serialize)),
-        "__unserialize" | "__wakeup" => ("deserialize".into(), Some(Deserialize)),
+        // A protocol role is not a PHP method name. Keep these callable
+        // members distinct from serialize()/deserialize() and each other.
+        "__serialize" | "__sleep" => (name.into(), Some(Serialize)),
+        "__unserialize" | "__wakeup" => (name.into(), Some(Deserialize)),
         // SPL interfaces are PHP's protocol surface: `Countable::count`,
         // `ArrayAccess::offset*`, `IteratorAggregate::getIterator`. They fill
         // the same roles a Python dunder does, so they resolve to the same

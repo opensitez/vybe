@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{CSharpParser, Rule};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use vybe_ast::*;
 use vybe_compiler::primitives::generics as common_generics;
 use vybe_compiler::primitives::memory as common_memory;
@@ -18515,7 +18515,7 @@ fn walk_new_expr(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Strin
                     let name = element
                         .into_inner()
                         .filter(|part| part.as_rule() == Rule::ident_name)
-                        .next_back()
+                        .last()
                         .map(|part| part.as_str().to_string());
                     tuple_field_names.push(name);
                 }
@@ -19747,8 +19747,8 @@ fn extract_switch_tuple_pattern_elements(
         {
             let expr_pair = element
                 .into_inner()
-                .rev()
-                .find(|p| p.as_rule() == Rule::expression)
+                .filter(|p| p.as_rule() == Rule::expression)
+                .last()
                 .ok_or("tuple pattern element missing expression")?;
             if expr_pair.as_str().trim() == "_" {
                 elements.push(None);

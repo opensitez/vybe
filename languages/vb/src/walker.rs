@@ -1,6 +1,6 @@
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use std::collections::{HashMap, HashSet};
 
 use super::{Rule, VbParser};
@@ -322,6 +322,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_interface_dispatch_type_hints(&mut module);
     normalize_vb_custom_property_setter_calls(&mut module);
     normalize_vb_default_struct_locals(&mut module);
+    // Constructor/import resolution has qualified `New T` by this point.
+    // Preserve ambiguous platform class identities before member inference.
+    normalize_vb_type_hint_whitespace(&mut module);
     let mut local_type_symbols = HashMap::new();
     collect_vb_class_field_types(&module.body, None, &mut local_type_symbols);
     record_vb_declared_type_display_symbols(&module.body, &mut local_type_symbols);
@@ -3710,6 +3713,19 @@ fn normalize_vb_type_hint_whitespace_statement(stmt: &mut Statement) {
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
                 trim_vb_declared_type_hint(&mut decl.type_hint);
+                if let (Some(hint), Some(Expression { kind: ExprKind::New { class, .. }, .. })) =
+                    (&mut decl.type_hint, &decl.init)
+                {
+                    if let ExprKind::Ident(resolved) = &class.kind {
+                        if resolved.contains('.')
+                            && resolved.rsplit('.').next().is_some_and(|simple| {
+                                simple.eq_ignore_ascii_case(hint.spelling())
+                            })
+                        {
+                            hint.set_spelling(resolved.clone());
+                        }
+                    }
+                }
             }
         }
         StmtKind::FunctionDecl {
@@ -12117,12 +12133,12 @@ fn rewrite_vb_zero_arg_field_member_call_statement(
         }
         StmtKind::Assign { targets, value, .. } => {
             for target in targets {
-                rewrite_vb_zero_arg_field_member_call_expr(target, members, locals);
+                rewrite_vb_zero_arg_field_assignment_target(target, members, locals);
             }
             rewrite_vb_zero_arg_field_member_call_expr(value, members, locals);
         }
         StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_vb_zero_arg_field_member_call_expr(target, members, locals);
+            rewrite_vb_zero_arg_field_assignment_target(target, members, locals);
             rewrite_vb_zero_arg_field_member_call_expr(value, members, locals);
         }
         StmtKind::If {
@@ -12313,6 +12329,23 @@ fn rewrite_vb_zero_arg_field_member_call_member(
             }
         }
         _ => {}
+    }
+}
+
+fn rewrite_vb_zero_arg_field_assignment_target(
+    target: &mut Expression,
+    members: &HashMap<String, HashMap<String, String>>,
+    locals: &HashMap<String, String>,
+) {
+    match &mut target.kind {
+        ExprKind::Member { object, .. } => {
+            rewrite_vb_zero_arg_field_member_call_expr(object, members, locals);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_vb_zero_arg_field_member_call_expr(object, members, locals);
+            rewrite_vb_zero_arg_field_member_call_expr(index, members, locals);
+        }
+        _ => rewrite_vb_zero_arg_field_member_call_expr(target, members, locals),
     }
 }
 
@@ -47222,6 +47255,33 @@ fn vb_local_type_name(type_hint: &str) -> String {
         };
     }
     let canonical = vb_canonical_type_name(type_hint);
+    static AMBIGUOUS_PLATFORM_CLASSES: std::sync::OnceLock<HashSet<String>> =
+        std::sync::OnceLock::new();
+    let platform_name_is_ambiguous = base_hint.contains('.')
+        && AMBIGUOUS_PLATFORM_CLASSES
+            .get_or_init(|| {
+                let mut seen = HashSet::new();
+                let mut ambiguous = HashSet::new();
+                for export in vybe_platform_dotnet::emitter::dotnet_component_descriptor().exports {
+                    if let vybe_compiler::component_classes::ComponentItemKind::Class(class) =
+                        export.kind
+                    {
+                        let name = class.name.to_ascii_lowercase();
+                        if !seen.insert(name.clone()) {
+                            ambiguous.insert(name);
+                        }
+                    }
+                }
+                ambiguous
+            })
+            .contains(&canonical.to_ascii_lowercase());
+    if platform_name_is_ambiguous {
+        return if let Some(suffix) = array_suffix {
+            format!("{base_hint}{suffix}")
+        } else {
+            base_hint.to_string()
+        };
+    }
     if let Some(suffix) = array_suffix
         && !canonical.trim().ends_with(suffix)
     {
@@ -50154,6 +50214,36 @@ fn vb_expr_static_type_name(expr: &Expression, locals: &HashMap<String, String>)
     }
 }
 
+fn vb_is_grid_collection_index_call(callee: &Expression, locals: &HashMap<String, String>) -> bool {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return false;
+    };
+    let grid = if field.eq_ignore_ascii_case("SelectedRows")
+        || field.eq_ignore_ascii_case("SelectedCells")
+    {
+        &**object
+    } else if field.eq_ignore_ascii_case("Cells") {
+        let ExprKind::Member {
+            object: grid,
+            field: row,
+            ..
+        } = &object.kind
+        else {
+            return false;
+        };
+        if !row.eq_ignore_ascii_case("CurrentRow") {
+            return false;
+        }
+        &**grid
+    } else {
+        return false;
+    };
+    vb_expr_static_type_name(grid, locals).is_some_and(|ty| {
+        let name = ty.rsplit('.').next().unwrap_or(&ty);
+        name.eq_ignore_ascii_case("DataGridView") || name.eq_ignore_ascii_case("DataGrid")
+    })
+}
+
 fn rewrite_vb_default_indexer_expr(
     expr: &mut Expression,
     default_indexer_types: &HashMap<String, bool>,
@@ -50164,6 +50254,13 @@ fn rewrite_vb_default_indexer_expr(
             rewrite_vb_default_indexer_expr(callee, default_indexer_types, locals);
             for arg in &mut *args {
                 rewrite_vb_default_indexer_expr(&mut arg.value, default_indexer_types, locals);
+            }
+            if args.len() == 1 && vb_is_grid_collection_index_call(callee, locals) {
+                *expr = call_expr(
+                    member_expr((**callee).clone(), "Item"),
+                    vec![Argument::positional(args[0].value.clone())],
+                );
+                return;
             }
             if args.len() == 1 {
                 if let ExprKind::Member { object, field, .. } = &mut callee.kind {

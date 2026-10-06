@@ -1,8 +1,37 @@
 //! PHP's ordered pattern/replacement arrays, before scalar regex execution.
 use std::collections::HashMap;
+use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{Framework, Value, heap};
+
+thread_local! {
+    static LAST_ERROR: Cell<i32> = const { Cell::new(0) };
+}
+
+fn record_error(error: &pcre2::Error) {
+    let code = match error.code() {
+        -47 => 2, // PCRE2_ERROR_MATCHLIMIT
+        -53 => 3, // PCRE2_ERROR_DEPTHLIMIT
+        -23..=-3 => 4, // PCRE2_ERROR_UTF8_ERR21..UTF8_ERR1
+        -36 => 5, // PCRE2_ERROR_BADUTFOFFSET
+        -46 => 6, // PCRE2_ERROR_JIT_STACKLIMIT
+        _ => 1,
+    };
+    LAST_ERROR.with(|state| state.set(code));
+}
+
+fn error_message(code: i32) -> &'static str {
+    match code {
+        0 => "No error",
+        2 => "Backtrack limit exhausted",
+        3 => "Recursion limit exhausted",
+        4 => "Malformed UTF-8 characters, possibly incorrectly encoded",
+        5 => "The offset did not correspond to the beginning of a valid UTF-8 code point",
+        6 => "JIT stack limit exhausted",
+        _ => "Internal error",
+    }
+}
 
 struct Pattern {
     regex: pcre2::bytes::Regex,
@@ -138,7 +167,10 @@ fn replace_scalar(pattern: &Pattern, replacement: &str, input: &str) -> Value {
         let found = match regex {
             Some(regex) => match regex.captures_read_at(&mut captures, input.as_bytes(), search) {
                 Ok(found) => found,
-                Err(_) => return Value::Null,
+                Err(error) => {
+                    record_error(&error);
+                    return Value::Null;
+                }
             },
             None => None,
         };
@@ -206,6 +238,7 @@ fn match_with_offsets(pattern: &Pattern, input: &str, flags: i32, offset: i64) -
         offset
     };
     if offset > input.len() as i64 {
+        LAST_ERROR.with(|state| state.set(1));
         return match_result(Value::Bool(false), matches);
     }
     let mut locations = pattern.regex.capture_locations();
@@ -215,7 +248,10 @@ fn match_with_offsets(pattern: &Pattern, input: &str, flags: i32, offset: i64) -
     {
         Ok(Some(found)) if !pattern.anchored || found.start() == offset as usize => {}
         Ok(_) => return match_result(Value::I32(0), matches),
-        Err(_) => return match_result(Value::Bool(false), matches),
+        Err(error) => {
+            record_error(&error);
+            return match_result(Value::Bool(false), matches);
+        }
     }
     let unmatched_null = flags & 512 != 0;
     let count = if unmatched_null {
@@ -279,7 +315,10 @@ fn match_all_groups(
         let found = match regex {
             Some(regex) => match regex.captures_read_at(&mut captures, input.as_bytes(), search) {
                 Ok(found) => found,
-                Err(_) => return Value::Bool(false),
+                Err(error) => {
+                    record_error(&error);
+                    return Value::Bool(false);
+                }
             },
             None => None,
         };
@@ -389,7 +428,10 @@ fn split(pattern: &Pattern, input: &str, limit: i64, flags: i32) -> Value {
         {
             Ok(Some(matched)) => matched,
             Ok(None) => break,
-            Err(_) => return Value::Bool(false),
+            Err(error) => {
+                record_error(&error);
+                return Value::Bool(false);
+            }
         };
         if pattern.anchored && matched.start() != offset {
             break;
@@ -446,11 +488,18 @@ fn split(pattern: &Pattern, input: &str, limit: i64, flags: i32) -> Value {
 type PatternCache = Mutex<HashMap<String, Option<Arc<Pattern>>>>;
 
 fn cached_pattern(cache: &PatternCache, literal: String) -> Option<Arc<Pattern>> {
+    LAST_ERROR.with(|state| state.set(0));
     let mut cache = cache.lock().unwrap();
     if let Some(pattern) = cache.get(&literal) {
+        if pattern.is_none() {
+            LAST_ERROR.with(|state| state.set(1));
+        }
         return pattern.clone();
     }
     let pattern = compile_pattern(&literal).map(Arc::new);
+    if pattern.is_none() {
+        LAST_ERROR.with(|state| state.set(1));
+    }
     if cache.len() >= 256 {
         cache.clear();
     }
@@ -477,7 +526,28 @@ fn array(items: Vec<Value>) -> Value {
 }
 
 pub fn register(fw: &mut Framework<'_>) {
+    fw.register_host_fn("php:regex", "lastError", Box::new(|_, _| {
+        LAST_ERROR.with(|state| Value::I32(state.get()))
+    }));
+    fw.register_host_fn("php:regex", "lastErrorMessage", Box::new(|_, _| {
+        LAST_ERROR.with(|state| Value::String(Arc::from(error_message(state.get()))))
+    }));
     let patterns = Arc::new(PatternCache::default());
+    let test_patterns = patterns.clone();
+    fw.register_host_fn("php:regex", "test", Box::new(move |_, args| {
+        let literal = args.first().map(ToString::to_string).unwrap_or_default();
+        let input = args.get(1).map(ToString::to_string).unwrap_or_default();
+        let Some(pattern) = cached_pattern(&test_patterns, literal) else {
+            return Value::Bool(false);
+        };
+        match pattern.regex.find(input.as_bytes()) {
+            Ok(found) => Value::Bool(found.is_some_and(|found| !pattern.anchored || found.start() == 0)),
+            Err(error) => {
+                record_error(&error);
+                Value::Bool(false)
+            }
+        }
+    }));
     let replace_patterns = patterns.clone();
     fw.register_host_fn(
         "php:regex",

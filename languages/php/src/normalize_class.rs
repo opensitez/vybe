@@ -53,6 +53,21 @@ pub fn normalize_class(
     _modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut out = NormalMembers::default();
+    let (has_serialize, has_unserialize) = members.iter().fold(
+        (false, false),
+        |(serialize, unserialize), member| {
+            let ClassMember::Method(stmt) = member else {
+                return (serialize, unserialize);
+            };
+            let StmtKind::FunctionDecl { name, .. } = &stmt.kind else {
+                return (serialize, unserialize);
+            };
+            (
+                serialize || name.eq_ignore_ascii_case("__serialize"),
+                unserialize || name.eq_ignore_ascii_case("__unserialize"),
+            )
+        },
+    );
 
     for member in members {
         match member {
@@ -99,7 +114,11 @@ pub fn normalize_class(
                     out.destructor = Some(method);
                     continue;
                 }
-                if let Some(kind) = special_kind {
+                // Legacy hooks remain ordinary callable methods, but modern
+                // hooks own the serialization roles when both are declared.
+                let shadowed_legacy = (has_serialize && src_name.eq_ignore_ascii_case("__sleep"))
+                    || (has_unserialize && src_name.eq_ignore_ascii_case("__wakeup"));
+                if let Some(kind) = special_kind.filter(|_| !shadowed_legacy) {
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical,

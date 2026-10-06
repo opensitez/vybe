@@ -7,11 +7,22 @@ mod normalize_type_guards;
 pub mod tree_register;
 pub mod walker;
 
-use pest_derive::Parser;
-
-#[derive(Parser)]
-#[grammar = "src/grammar.pest"]
+#[allow(dead_code)]
+mod native_grammar {
+    include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
+}
+pub(crate) use native_grammar::Rule;
 pub(crate) struct CParser;
+impl CParser {
+    pub(crate) fn parse(rule: Rule, source: &str) -> Result<grameo::compat::Pairs<'_, Rule>, grameo::ParseError> {
+        let mut options = grameo::MatchOptions::default();
+        // Preprocessed translation units can contain millions of source bytes.
+        // Keep a finite linear work budget rather than a fixed small-file ceiling.
+        options.max_steps = options.max_steps.max(source.len().saturating_mul(1024));
+        grameo::engine::parse_program(&native_grammar::Parser, rule.name(), source, options)
+            .map(|tree| tree.into_typed_pairs())
+    }
+}
 
 /// Parse C source into the common AST.
 pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {

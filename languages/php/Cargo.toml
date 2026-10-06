@@ -9,13 +9,12 @@ license.workspace = true
 name = "vybe_language_php"
 
 [dependencies]
+grameo = { path = "../../crates/grameo" }
 vybe_compiler = { workspace = true }
 inventory = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
 uuid = { workspace = true }
-pest = { workspace = true }
-pest_derive = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true }
 pcre2 = "0.2.11"
@@ -28,3 +27,6 @@ vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 uuid = { workspace = true }
+
+[build-dependencies]
+grameo_codegen = { path = "../../crates/grameo/codegen" }

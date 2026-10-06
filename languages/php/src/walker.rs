@@ -39,8 +39,8 @@
 //!   silent). User scripts may or may not have it.
 
 use super::{PhpParser, Rule};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use vybe_ast::*;
 use vybe_compiler::primitives::class_slots;
 use vybe_compiler::primitives::reflection;
@@ -694,6 +694,7 @@ struct ParamReflectionMeta {
     /// dropped when the full AST param was narrowed to three fields, which is
     /// why `getType()` had nothing to return.
     type_name: Option<String>,
+    declaring_class: Option<String>,
     is_nullable: bool,
     pass_by_ref: bool,
     is_variadic: bool,
@@ -804,6 +805,17 @@ fn reflection_param_expr(__php_w: &mut PhpWalker, meta: &ParamReflectionMeta) ->
             value: simple_lambda(Expression::string(&meta.name)),
         },
         ObjectProperty::KeyValue {
+            key: Expression::string("getdeclaringclass"),
+            value: simple_lambda(match &meta.declaring_class {
+                Some(name) => php_mk_call(
+                    "__refl_class",
+                    vec![Expression::string(name)],
+                    &Span::default(),
+                ),
+                None => Expression::null(),
+            }),
+        },
+        ObjectProperty::KeyValue {
             key: Expression::string("__type"),
             value: Expression::string("ReflectionParameter"),
         },
@@ -887,6 +899,22 @@ fn reflection_params_array_expr(
     ))
 }
 
+fn class_reflection_param_metas(
+    walker: &mut PhpWalker,
+    class: &str,
+    params: &[Param],
+    attrs: Vec<Vec<AttributeMeta>>,
+) -> Vec<ParamReflectionMeta> {
+    let mut metas = reflection_param_metas(params, attrs);
+    for meta in &mut metas {
+        meta.declaring_class = Some(class.replace('.', "\\"));
+        if let Some(hint) = &meta.type_name {
+            meta.type_name = Some(php_resolve_property_type_hint(walker, hint).replace('.', "\\"));
+        }
+    }
+    metas
+}
+
 fn reflection_param_metas(
     params: &[Param],
     attrs: Vec<Vec<AttributeMeta>>,
@@ -900,6 +928,7 @@ fn reflection_param_metas(
             is_optional: param.default.is_some() || param.is_optional,
             default: param.default.clone(),
             type_name: param.type_hint.clone().as_deref().map(str::to_string),
+            declaring_class: None,
             is_nullable: param.is_nullable,
             // Both mechanisms are "by reference" as far as reflection is
             // concerned — `ReflectionParameter::isPassedByReference()` reports
@@ -11899,12 +11928,12 @@ fn walk_class_decl(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtKind
     let reflection_methods = meta
         .methods
         .iter()
-        .map(|method| ObjectProperty::KeyValue {
-            key: Expression::string(&method.name.to_ascii_lowercase()),
-            value: reflection_params_array_expr(
-                __php_w,
-                reflection_param_metas(&method.params, Vec::new()),
-            ),
+        .map(|method| {
+            let params = class_reflection_param_metas(__php_w, &name, &method.params, Vec::new());
+            ObjectProperty::KeyValue {
+                key: Expression::string(&method.name.to_ascii_lowercase()),
+                value: reflection_params_array_expr(__php_w, params),
+            }
         })
         .collect();
     members.push(ClassMember::Field {
@@ -14138,6 +14167,18 @@ fn php_throw_error_expr(message: &str, span: &Span) -> ExprKind {
 }
 
 fn php_throw_named_error_expr(class_name: &str, message: &str, span: &Span) -> ExprKind {
+    let adapter = match class_name {
+        "TypeError" => Some("__php_throw_type_error"),
+        "Error" => Some("__php_throw_error"),
+        _ => None,
+    };
+    if let Some(adapter) = adapter {
+        return ExprKind::Call {
+            callee: Box::new(Expression::ident(adapter)),
+            args: vec![Argument::positional(Expression::string(message))],
+            optional: false,
+        };
+    }
     let throw_expr = Expression::with_span(
         ExprKind::New {
             class: Box::new(Expression::ident(class_name)),
@@ -28993,16 +29034,16 @@ fn build_reflection_class_call(
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
-        call_args.push(Argument::positional(reflection_params_array_expr(
+        let ctor_params = class_reflection_param_metas(
             __php_w,
-            reflection_param_metas(
-                meta.methods.iter()
-                    .find(|method| method.name.eq_ignore_ascii_case("__construct"))
-                    .map(|method| method.params.as_slice())
-                    .unwrap_or(&[]),
-                ctor_param_attrs,
-            ),
-        )));
+            &class_name,
+            meta.methods.iter()
+                .find(|method| method.name.eq_ignore_ascii_case("__construct"))
+                .map(|method| method.params.as_slice())
+                .unwrap_or(&[]),
+            ctor_param_attrs,
+        );
+        call_args.push(Argument::positional(reflection_params_array_expr(__php_w, ctor_params)));
         let kind = __php_w.type_kinds.get(class_name.as_str()).copied();
         let constructor_is_public = meta.methods.iter()
             .find(|method| method.name.eq_ignore_ascii_case("__construct"))
@@ -32269,7 +32310,7 @@ fn parse_php_interpolation(__php_w: &mut PhpWalker, body: &str) -> Vec<InterpolP
 
 /// Re-enter the PHP pest grammar on a `{$...}` inner expression.
 fn parse_interpol_expression(__php_w: &mut PhpWalker, src: &str) -> Result<Expression, String> {
-    use pest::Parser;
+
     let mut pairs = super::PhpParser::parse(super::Rule::expression, src)
         .map_err(|e| format!("interpolation expr parse failed: {}", e))?;
     let pair = pairs
@@ -41262,6 +41303,13 @@ fn php_constant_expr(__php_w: &mut PhpWalker, name: &str, span: &Span) -> Option
         "PHP_QUERY_RFC1738" => ExprKind::Lit(Literal::Int(1)),
         "PHP_QUERY_RFC3986" => ExprKind::Lit(Literal::Int(2)),
         // ── preg flags ──
+        "PREG_NO_ERROR" => ExprKind::Lit(Literal::Int(0)),
+        "PREG_INTERNAL_ERROR" => ExprKind::Lit(Literal::Int(1)),
+        "PREG_BACKTRACK_LIMIT_ERROR" => ExprKind::Lit(Literal::Int(2)),
+        "PREG_RECURSION_LIMIT_ERROR" => ExprKind::Lit(Literal::Int(3)),
+        "PREG_BAD_UTF8_ERROR" => ExprKind::Lit(Literal::Int(4)),
+        "PREG_BAD_UTF8_OFFSET_ERROR" => ExprKind::Lit(Literal::Int(5)),
+        "PREG_JIT_STACKLIMIT_ERROR" => ExprKind::Lit(Literal::Int(6)),
         "PREG_GREP_INVERT" => ExprKind::Lit(Literal::Int(1)),
         "PREG_SPLIT_NO_EMPTY" => ExprKind::Lit(Literal::Int(1)),
         "PREG_SPLIT_DELIM_CAPTURE" => ExprKind::Lit(Literal::Int(2)),

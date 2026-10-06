@@ -9,8 +9,7 @@
 //!   - address-of a function `&f` lowers to `FuncRef`, not storage address-of
 //!   - `a->b` is treated as `a.b`
 
-use pest::Parser;
-use pest::iterators::Pair;
+use grameo::compat::Pair;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -873,6 +872,7 @@ struct Walker {
     enum_types: HashSet<String>,
     /// current function name (for static local mangling)
     current_function: String,
+    generated_local_declarations: Vec<VarDeclarator>,
     /// current function parameter names in declaration order.
     current_param_names: Vec<String>,
     /// function-pointer bindings that should be removed when the current function exits.
@@ -982,7 +982,12 @@ fn expand_file_into(
                     }
                     candidates.push(std::path::PathBuf::from(name));
                     candidates.dedup();
-                    if let Some(found) = candidates.iter().find(|c| c.is_file()) {
+                    if let Some(found) = candidates.iter().find(|candidate| {
+                        // Record the search too: a nearer header appearing
+                        // later must invalidate a cached ancestor selection.
+                        vybe_compiler::bundle::note_source_read(candidate);
+                        candidate.is_file()
+                    }) {
                         let target = found.canonicalize().unwrap_or_else(|_| found.to_path_buf());
                         // `#pragma once`, conventional include guards, and
                         // true cycles all SKIP here. Guarded headers would
@@ -3760,6 +3765,27 @@ impl Walker {
         }
     }
 
+    fn register_generated_local(&mut self, name: &str, type_text: &str) {
+        self.var_types.insert(name.to_string(), type_text.to_string());
+        if self.current_function.is_empty() {
+            return;
+        }
+        self.register_local_binding(name);
+        let resolved = self.resolve_typedef_scalar_aliases(type_text);
+        let type_hint = if resolved.contains('*') {
+            None
+        } else {
+            Some(c_emitted_scalar_type_hint(&resolved).into())
+        };
+        self.generated_local_declarations.push(VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint,
+            init: None,
+            array_bounds: None,
+            with_events: false,
+        });
+    }
+
     fn resolve_linear_pointer_return_functions(&mut self) {
         loop {
             let mut changed = false;
@@ -4229,6 +4255,22 @@ impl Walker {
     }
 
     fn inject_header_constants(&mut self, header: &str, out: &mut Vec<Statement>) {
+        for &(name, type_text, initial) in posix_adapter::header_variables(header) {
+            if self.var_types.contains_key(name) {
+                continue;
+            }
+            self.var_types.insert(name.to_string(), type_text.to_string());
+            out.push(stmt(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(name.to_string()),
+                    type_hint: Some(c_emitted_scalar_type_hint(type_text).into()),
+                    init: Some(int_lit(initial)),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Var,
+            }));
+        }
         if header == "malloc.h" {
             let fields = vec![
                 "arena".to_string(),
@@ -5156,6 +5198,12 @@ impl Walker {
                             ))),
                         );
                     }
+                    if !self.generated_local_declarations.is_empty() {
+                        body.insert(0, stmt(StmtKind::VarDecl {
+                            declarations: std::mem::take(&mut self.generated_local_declarations),
+                            kind: VarDeclKind::Let,
+                        }));
+                    }
                     // The function's scope ENDS here — a file-scope `static`
                     // in a LATER file of a multi-source build must not be
                     // mangled as this function's static local (stale
@@ -5958,6 +6006,22 @@ impl Walker {
                     if !bitfields.is_empty() {
                         self.struct_bitfields
                             .insert(name.clone(), bitfields.clone());
+                    }
+                    let is_union = specs.clone().into_inner().any(|specifier| {
+                        matches!(specifier.as_rule(), Rule::type_specifier | Rule::type_specifier_strict)
+                            && specifier.into_inner().any(|aggregate| {
+                                aggregate.as_rule() == Rule::struct_or_union_spec
+                                    && aggregate.as_str().trim_start().starts_with("union")
+                            })
+                    });
+                    if is_union {
+                        self.union_tags.insert(name.clone());
+                        let region = self.build_union_region(
+                            name, 0, fields.len(), &anon_groups, &[],
+                        );
+                        if region.len() > 1 {
+                            self.union_regions.insert(name.clone(), vec![region]);
+                        }
                     }
                     out.push(self.make_struct_decl(name, &fields));
                 }
@@ -8356,9 +8420,39 @@ impl Walker {
             // no `==` on structs at all (comparison is an explicit `memcmp`).
             semantics: ValueSemantics {
                 storage: ValueStorage::Value,
+                byte_layout: self.declared_record_byte_layout(name, fields),
                 ..Default::default()
             },
         })
+    }
+
+    fn declared_record_byte_layout(&self, name: &str, fields: &[String]) -> Option<RecordByteLayout> {
+        // Flattened anonymous aggregates and bitfields require their original
+        // allocation-unit layout, not sequential offsets of the exposed names.
+        if self.struct_bitfields.get(name).is_some_and(|fields| !fields.is_empty())
+            || self.struct_anon_groups.get(name).is_some_and(|groups| !groups.is_empty())
+            || (!self.union_tags.contains(name)
+                && self.union_regions.get(name).is_some_and(|regions| !regions.is_empty()))
+        {
+            return None;
+        }
+        let types = self.struct_field_types.get(name)?;
+        let layout = RecordByteLayout {
+            bytes: u64::try_from(self.sizeof_struct_union(name)).ok()?,
+            align: u64::try_from(self.alignof_struct_union(name)).ok()?,
+            fields: fields
+                .iter()
+                .map(|field| {
+                    Some(RecordByteField {
+                        name: field.clone(),
+                        offset: u64::try_from(self.offsetof_struct_field(name, field)).ok()?,
+                        bytes: u64::try_from(self.sizeof_type_text(types.get(field)?)).ok()?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        };
+        layout.validate().ok()?;
+        Some(layout)
     }
 
     /// Zero value for a struct field given its (array-suffixed) type:
@@ -13881,6 +13975,36 @@ impl Walker {
         value: &Expression,
         record: &str,
     ) -> Option<Expression> {
+        if self.union_tags.contains(record) {
+            let fields = self.structs.get(record)?.clone();
+            let first = fields.first()?.clone();
+            let types = self.struct_field_types.get(record)?;
+            if fields.iter().all(|field| {
+                types.get(field).is_some_and(|ty| {
+                    self.struct_field_is_function_pointer(record, field, ty)
+                        && self.offsetof_struct_field(record, field) == 0
+                        && self.sizeof_type_text(ty) == self.sizeof_type_text(record)
+                })
+            }) && self.c_expr_type_text(value)
+                .and_then(|ty| self.canonical_struct_base_from_type(&ty))
+                .as_deref() == Some(record)
+            {
+                let id = self.tmp_counter;
+                self.tmp_counter += 1;
+                let destination = ident(&format!("__c_union_destination{id}"));
+                let source = ident(&format!("__c_union_source{id}"));
+                let callback = self.typed_struct_pointer_field_read(
+                    source.clone(), record, &first,
+                )?;
+                let stored = self.c_function_pointer_storage_value(callback);
+                return Some(expr(ExprKind::Sequence(vec![
+                    assign_expr(destination.clone(), address),
+                    assign_expr(source.clone(), value.clone()),
+                    self.linear_function_pointer_store_expr(destination, stored),
+                    self.deep_copy_struct(record, source),
+                ])));
+            }
+        }
         let fields = self.scalar_record_fields(record)?;
         let (source, is_pointer) = match &value.kind {
             ExprKind::Unary { op: UnaryOp::Deref, expr: source } => {
@@ -14548,27 +14672,53 @@ impl Walker {
                 .unwrap_or_else(|| *object.clone());
             let name = format!("__c_member_pointer{}", self.tmp_counter);
             self.tmp_counter += 1;
-            self.var_types.insert(name.clone(), pointer_type);
+            self.register_generated_local(&name, &pointer_type);
             let pointer = ident(&name);
             prefix.push(assign_expr(pointer.clone(), source));
             (struct_base, pointer)
         };
         let read = self.typed_struct_pointer_field_read(pointer.clone(), &struct_base, field)?;
+        let field_type = self.struct_field_types.get(&struct_base)?.get(field)?.clone();
         let old_name = format!("__c_member_old{}", self.tmp_counter);
         self.tmp_counter += 1;
+        self.register_generated_local(&old_name, &field_type);
         let old = ident(&old_name);
         let next = binary_expr(
             if delta > 0 { BinOp::Add } else { BinOp::Sub },
             old.clone(),
             int_lit(delta.abs()),
         );
+        let resolved = self.resolve_typedef_scalar_aliases(&field_type);
+        let result_type = if resolved.trim() == "char" {
+            "int8".to_string()
+        } else {
+            c_emitted_scalar_type_hint(&resolved)
+        };
+        let next = if self.is_integral_type_text(&result_type)
+            && !resolved.contains('*') && !resolved.contains('[')
+            && self.sizeof_type_text(&resolved) <= 4
+        {
+            expr(ExprKind::Cast {
+                expr: Box::new(next),
+                type_name: result_type,
+            })
+        } else {
+            next
+        };
+        prefix.push(assign_expr(old.clone(), read));
+        let next = if postfix {
+            next
+        } else {
+            let name = format!("__c_member_next{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            self.register_generated_local(&name, &field_type);
+            let updated = ident(&name);
+            prefix.push(assign_expr(updated.clone(), next));
+            updated
+        };
         let write =
             self.typed_struct_pointer_field_write(pointer, &struct_base, field, next.clone())?;
-        prefix.extend([
-            assign_expr(old.clone(), read),
-            write,
-            if postfix { old } else { next },
-        ]);
+        prefix.extend([write, if postfix { old } else { next }]);
         Some(expr(ExprKind::Sequence(prefix)))
     }
 
@@ -14631,6 +14781,7 @@ impl Walker {
         let pointee = self.c_indexed_pointer_element_type(type_text);
         let struct_pointee = self.c_struct_pointer_pointee_from_type_text(type_text);
         if !c_int_family_type(&pointee)
+            && !self.is_char_pointer_type_var(name)
             && !pointee.contains('*')
             && struct_pointee.is_none()
         {
@@ -14639,11 +14790,21 @@ impl Walker {
         let stride = self.c_pointer_index_stride_from_type(type_text);
         let pointer = ident(name);
         let op = if subtract { BinOp::Sub } else { BinOp::Add };
-        let numeric = binary_expr(
-            op,
-            pointer.clone(),
-            pointers::linear_scaled_offset(offset.clone(), stride),
-        );
+        let numeric = if self.is_char_pointer_type_var(name) {
+            let byte_offset = pointers::linear_scaled_offset(offset.clone(), stride);
+            let byte_offset = if subtract {
+                unary_expr(UnaryOp::Neg, byte_offset)
+            } else {
+                byte_offset
+            };
+            pointers::linear_addr_offset(pointer.clone(), byte_offset)
+        } else {
+            binary_expr(
+                op,
+                pointer.clone(),
+                pointers::linear_scaled_offset(offset.clone(), stride),
+            )
+        };
         let offset = if struct_pointee.is_some() {
             // Managed arrays of records use element indices; byte-backed views
             // use byte indices. The numeric branch above always uses sizeof(T).
@@ -14734,6 +14895,19 @@ impl Walker {
         } else {
             c_type_remove_one_pointer_level(type_text)
         }
+    }
+
+    fn c_subscript_result_type(&self, type_text: &str) -> Option<String> {
+        let resolved = self.resolve_typedef_scalar_aliases(type_text);
+        if resolved.contains('[') && resolved.trim_end().ends_with('*') {
+            return Some(c_type_remove_one_pointer_level(&resolved));
+        }
+        if let Some((base, bounds)) = resolved.split_once('[')
+            && let Some((_, remaining)) = bounds.split_once(']')
+        {
+            return Some(format!("{}{}", base.trim(), remaining));
+        }
+        resolved.contains('*').then(|| c_type_remove_one_pointer_level(&resolved))
     }
 
     fn carray_points_to_object_struct_array(
@@ -15899,11 +16073,20 @@ impl Walker {
                 member(branch.clone(), field)
             }
         };
-        Some(ternary_expr(
+        let read = ternary_expr(
             *cond.clone(),
             read_branch(self, then),
             read_branch(self, else_),
-        ))
+        );
+        let field_type = self.struct_field_types.get(&struct_base)?.get(field)?;
+        Some(if field_type.contains('[') {
+            expr(ExprKind::Cast {
+                expr: Box::new(read),
+                type_name: decayed_array_pointer_type(field_type),
+            })
+        } else {
+            read
+        })
     }
 
     fn compact_struct_pointer_expr_field_read(
@@ -18252,6 +18435,11 @@ impl Walker {
     }
 
     fn c_expr_type_text(&self, value: &Expression) -> Option<String> {
+        if matches!(&value.kind, ExprKind::Binary {
+            op: BinOp::Integer(operation, _), ..
+        } if operation.is_comparison()) {
+            return Some("int".into());
+        }
         if let ExprKind::Cast { type_name, .. } = &value.kind {
             return Some(type_name.clone());
         }
@@ -18263,6 +18451,10 @@ impl Walker {
             ExprKind::Assign { target, .. } => self.c_expr_type_text(target),
             ExprKind::RefLoad(inner) => self.c_expr_type_text(inner),
             ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+            ExprKind::Unary {
+                op: UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec,
+                expr: operand,
+            } => self.c_expr_type_text(operand),
             ExprKind::Unary {
                 op: UnaryOp::Deref,
                 expr: pointer,
@@ -18340,16 +18532,7 @@ impl Walker {
                     }
                 }
                 let object_type = self.c_expr_type_text(object)?;
-                let resolved = self.resolve_typedef_scalar_aliases(&object_type);
-                if let Some((base, bounds)) = resolved.split_once('[') {
-                    if let Some((_, remaining)) = bounds.split_once(']') {
-                        return Some(format!("{}{}", base.trim(), remaining));
-                    }
-                }
-                if resolved.contains('*') {
-                    return Some(c_type_remove_one_pointer_level(&resolved));
-                }
-                None
+                self.c_subscript_result_type(&object_type)
             }
             ExprKind::Member { object, field, .. } => {
                 if field == CARRAY_BASE_KEY {
@@ -18497,6 +18680,11 @@ impl Walker {
     }
 
     fn has_wide_integer_operand(&self, value: &Expression) -> bool {
+        if matches!(&value.kind, ExprKind::Binary {
+            op: BinOp::Integer(operation, _), ..
+        } if operation.is_comparison()) {
+            return false;
+        }
         if is_carray_like_expr(value) {
             return false;
         }
@@ -19758,7 +19946,8 @@ impl Walker {
                 let value = ident(name);
                 let backing = member(value.clone(), C_STRUCT_BACKING_POINTER_KEY);
                 let object_backing = ternary_expr(
-                    pointers::is_carray_ptr_kind(value.clone()),
+                    binary_expr(BinOp::Or, pointers::is_carray_ptr_kind(value.clone()),
+                        pointers::is_cell_ptr_kind(value.clone())),
                     value.clone(),
                     ternary_expr(
                         binary_expr(
@@ -19844,7 +20033,8 @@ impl Walker {
                 let value = ident(name);
                 let backing = member(value.clone(), C_STRUCT_BACKING_POINTER_KEY);
                 let object_backing = ternary_expr(
-                    pointers::is_carray_ptr_kind(value.clone()),
+                    binary_expr(BinOp::Or, pointers::is_carray_ptr_kind(value.clone()),
+                        pointers::is_cell_ptr_kind(value.clone())),
                     value.clone(),
                     ternary_expr(
                         binary_expr(
@@ -22544,6 +22734,11 @@ impl Walker {
 
     /// Unsigned scalar expressions; arrays decay to pointers, not integers.
     fn is_unsigned_expr(&self, e: &Expression) -> bool {
+        if matches!(&e.kind, ExprKind::Binary {
+            op: BinOp::Integer(operation, _), ..
+        } if operation.is_comparison()) {
+            return false;
+        }
         match &e.kind {
             ExprKind::Ident(name) => self
                 .var_types
@@ -22623,7 +22818,7 @@ impl Walker {
                         | BinOp::Shl
                         | BinOp::Shr
                         | BinOp::UShr
-                        | BinOp::Integer(_, vybe_ast::BitLane::W32)
+                        | BinOp::Integer(_, _)
                         | BinOp::Eq
                         | BinOp::NotEq
                         | BinOp::Lt
@@ -22920,15 +23115,32 @@ impl Walker {
         };
         let left = self.rewrite_wide_integer_binary(*left);
         let right = self.rewrite_wide_integer_binary(*right);
-        let wide = self.has_wide_integer_operand(&left)
+        // Pointer arithmetic belongs to the backing-aware pointer pass, even
+        // when its offset has the wider ptrdiff_t/size_t integer type.
+        if [&left, &right].iter().any(|operand| {
+            self.c_expr_type_text(operand).is_some_and(|ty| {
+                let resolved = self.resolve_typedef_scalar_aliases(&ty);
+                resolved.contains('*') || resolved.contains('[')
+            })
+        }) {
+            return binary_expr(op, left, right);
+        }
+        let left_wide = self.has_wide_integer_operand(&left);
+        let right_wide = self.has_wide_integer_operand(&right);
+        let wide = left_wide
             || (!matches!(op, BinOp::Shl | BinOp::Shr | BinOp::UShr)
-                && self.has_wide_integer_operand(&right));
+                && right_wide);
         if !wide {
             return binary_expr(op, left, right);
         }
-        let unsigned = self.is_unsigned_expr(&left)
+        let unsigned = (left_wide && self.is_unsigned_expr(&left))
             || (!matches!(op, BinOp::Shl | BinOp::Shr | BinOp::UShr)
-                && self.is_unsigned_expr(&right));
+                && right_wide && self.is_unsigned_expr(&right));
+        let comparison = matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt
+            | BinOp::LtEq | BinOp::Gt | BinOp::GtEq);
+        if comparison && (!self.is_integral_expr(&left) || !self.is_integral_expr(&right)) {
+            return binary_expr(op, left, right);
+        }
         let integer_op = match op {
             BinOp::Add => Some(vybe_ast::IntOp::Add),
             BinOp::Sub => Some(vybe_ast::IntOp::Sub),
@@ -22953,6 +23165,12 @@ impl Walker {
             BinOp::BitAnd => Some(vybe_ast::IntOp::And),
             BinOp::BitOr => Some(vybe_ast::IntOp::Or),
             BinOp::BitXor => Some(vybe_ast::IntOp::Xor),
+            BinOp::Eq => Some(vybe_ast::IntOp::Eq),
+            BinOp::NotEq => Some(vybe_ast::IntOp::Ne),
+            BinOp::Lt => Some(if unsigned { vybe_ast::IntOp::LtU } else { vybe_ast::IntOp::LtS }),
+            BinOp::LtEq => Some(if unsigned { vybe_ast::IntOp::LeU } else { vybe_ast::IntOp::LeS }),
+            BinOp::Gt => Some(if unsigned { vybe_ast::IntOp::GtU } else { vybe_ast::IntOp::GtS }),
+            BinOp::GtEq => Some(if unsigned { vybe_ast::IntOp::GeU } else { vybe_ast::IntOp::GeS }),
             _ => None,
         };
         binary_expr(
@@ -26652,13 +26870,13 @@ impl Walker {
                             ident(name),
                         ]));
                     }
-                    let is_char = self.char_pointers.contains(name)
-                        && self.name_has_current_pointer_or_array_type(name);
-                    if is_char {
-                        return assign_expr(
+                    if self.is_char_pointer_type_var(name)
+                        && let Some(updated) = self.mixed_pointer_offset_expr(name, int_lit(1), false)
+                    {
+                        return expr(ExprKind::Sequence(vec![
+                            assign_expr(ident(name), updated),
                             ident(name),
-                            call_expr(ident("__libc_char_ptr_add"), vec![ident(name), int_lit(1)]),
-                        );
+                        ]));
                     }
                     if self.var_types.get(name).is_some_and(|ty| {
                         ty.contains('*') && self.c_pointer_index_stride_from_type(ty) > 1
@@ -26711,6 +26929,14 @@ impl Walker {
                                 expr: Box::new(int_lit(stride)),
                             }),
                         );
+                        return expr(ExprKind::Sequence(vec![
+                            assign_expr(ident(name), updated),
+                            ident(name),
+                        ]));
+                    }
+                    if self.is_char_pointer_type_var(name)
+                        && let Some(updated) = self.mixed_pointer_offset_expr(name, int_lit(1), true)
+                    {
                         return expr(ExprKind::Sequence(vec![
                             assign_expr(ident(name), updated),
                             ident(name),
@@ -27627,14 +27853,30 @@ impl Walker {
     fn walk_postfix(&mut self, pair: Pair<Rule>) -> Expression {
         // Resolve the C field type before backing expansion obscures the
         // source member chain. Storage representation cannot change its type.
-        let field_read_type = pair.clone().into_inner().last()
-            .filter(|suffix| matches!(suffix.as_rule(), Rule::member_suffix | Rule::arrow_suffix))
-            .and_then(|_| self.unevaluated_postfix_type(pair.clone()));
+        let field_read_type = pair.clone().into_inner().last().and_then(|suffix| {
+            let ty = self.unevaluated_postfix_type(pair.clone())?;
+            if matches!(suffix.as_rule(), Rule::member_suffix | Rule::arrow_suffix) {
+                return Some(ty);
+            }
+            let resolved = self.resolve_typedef_scalar_aliases(&ty);
+            (suffix.as_rule() == Rule::index_suffix
+                && !resolved.contains('*') && !resolved.contains('[')
+                && (self.is_integral_type_text(&resolved)
+                    || matches!(resolved.trim(), "char" | "signed char" | "unsigned char"))
+                && self.sizeof_type_text(&resolved) <= 4).then_some(ty)
+        });
         let mut it = pair.into_inner().peekable();
-        let mut base = self.walk_primary(it.next().unwrap());
         let updates_place = it.clone().any(|suffix| suffix.as_rule() == Rule::inc_dec_suffix);
+        let previous_lhs = self.in_assignment_lhs;
+        if updates_place {
+            self.in_assignment_lhs = true;
+        }
+        let mut base = self.walk_primary(it.next().unwrap());
+        self.in_assignment_lhs = previous_lhs;
         let mut pending_member_pointer_type: Option<String> = None;
+        let mut indexed_read_type_applied = false;
         while let Some(suffix) = it.next() {
+            indexed_read_type_applied = false;
             let debug_timing = c_debug_timings_path();
             let suffix_rule = suffix.as_rule();
             let followed_by_inc_dec = it
@@ -28080,6 +28322,7 @@ impl Walker {
                         }
                     };
                     if let Some(type_name) = scalar_read_type {
+                        indexed_read_type_applied = true;
                         if type_name == "uint8" {
                             binary_expr(
                                 BinOp::Integer(vybe_ast::IntOp::And, vybe_ast::BitLane::W32),
@@ -28922,6 +29165,7 @@ impl Walker {
             }
         }
         if !self.in_assignment_lhs && !self.in_address_of_operand && !updates_place
+            && !indexed_read_type_applied
             && let Some(field_type) = field_read_type
         {
             return self.typed_field_read_value(base, &field_type);
@@ -35771,12 +36015,15 @@ impl Walker {
                         ])),
                         int_lit(0),
                     )
-                } else if name == "stdin" {
-                    int_lit(0)
-                } else if name == "stdout" {
-                    int_lit(1)
-                } else if name == "stderr" {
-                    int_lit(2)
+                } else if matches!(name, "stdin" | "stdout" | "stderr") {
+                    expr(ExprKind::Cast {
+                        expr: Box::new(int_lit(match name {
+                            "stdin" => 0,
+                            "stdout" => 1,
+                            _ => 2,
+                        })),
+                        type_name: "FILE*".into(),
+                    })
                 } else if self.address_taken.contains(name) {
                     expr(ExprKind::RefLoad(Box::new(ident(name))))
                 } else {
@@ -35935,6 +36182,15 @@ fn fold_binary(mut operands: Vec<Expression>, ops: Vec<String>) -> Expression {
     let apply = |output: &mut Vec<Expression>, op: BinOp| {
         let right = output.pop().unwrap();
         let left = output.pop().unwrap();
+        if matches!(op, BinOp::Eq | BinOp::NotEq)
+            && let (ExprKind::Lit(Literal::Int(l)), ExprKind::Lit(Literal::Int(r))) =
+                (&left.kind, &right.kind)
+            && i32::try_from(*l).is_ok() && i32::try_from(*r).is_ok()
+        {
+            let equal = l == r;
+            output.push(int_lit(i64::from(if op == BinOp::Eq { equal } else { !equal })));
+            return;
+        }
         // A shift of 32+ must fold at compile time: the runtime `<<`/`>>`
         // operates on 32-bit lanes, so `1LL << 40` would wrap to 256.
         if matches!(op, BinOp::Shl | BinOp::Shr) {
@@ -36761,7 +37017,6 @@ impl Walker {
     /// `text` can be "struct Foo", "union Bar", or a bare typedef name.
     /// Returns 0 if not found (caller falls through to sizeof_from_type_text).
     fn sizeof_struct_union(&self, text: &str) -> i64 {
-        let is_union = text.starts_with("union ");
         let (base_text, array_count, has_array) = split_array_type_text(text);
         let tag = if let Some(t) = base_text.strip_prefix("struct ") {
             t.trim()
@@ -36770,6 +37025,7 @@ impl Walker {
         } else {
             base_text.trim()
         };
+        let is_union = text.starts_with("union ") || self.union_tags.contains(tag);
         let fields = match self.structs.get(tag) {
             Some(f) => f,
             None => return 0,
@@ -36822,6 +37078,7 @@ impl Walker {
                     })
                     .max()
                     .unwrap_or(4);
+                let size = align_up(size, self.alignof_struct_union(text).max(1));
                 return if has_array { size * array_count } else { size };
             }
             // Struct: lay out fields with C alignment/padding. A flexible array
@@ -36880,6 +37137,9 @@ impl Walker {
     fn alignof_type_text(&self, text: &str) -> i64 {
         let storage_free = c_type_without_storage(text);
         let (base, _, _) = split_array_type_text(&storage_free);
+        if self.is_function_pointer_type_text(base) {
+            return alignof_from_type_text("void*");
+        }
         if self
             .enum_types
             .contains(base.trim_start_matches("enum ").trim())
@@ -36897,11 +37157,18 @@ impl Walker {
     fn sizeof_type_text(&self, text: &str) -> i64 {
         let storage_free = c_type_without_storage(text);
         let text = storage_free.as_str();
+        if self.is_function_pointer_type_text(text) {
+            return sizeof_from_type_text("void*");
+        }
         let nested = self.sizeof_struct_union(text);
         if nested > 0 {
             return nested;
         }
         let (base, count, is_array) = split_array_type_text(text);
+        if self.is_function_pointer_type_text(base) {
+            let size = sizeof_from_type_text("void*");
+            return if is_array { size * count } else { size };
+        }
         if self
             .enum_types
             .contains(base.trim_start_matches("enum ").trim())
@@ -36927,7 +37194,7 @@ impl Walker {
             Some(types) => types,
             None => return 0,
         };
-        if type_text.trim_start().starts_with("union ") {
+        if type_text.trim_start().starts_with("union ") || self.union_tags.contains(tag) {
             return 0;
         }
         let mut offset = 0i64;
@@ -37100,8 +37367,18 @@ impl Walker {
                 }
                 Some(ty)
             }
+            Rule::binary_expression => {
+                let operands = pair.clone().into_inner().collect::<Vec<_>>();
+                if operands.iter().any(|part| part.as_rule() == Rule::binary_op
+                    && matches!(part.as_str(), "==" | "!=" | "<" | "<="
+                        | ">" | ">=" | "&&" | "||")) {
+                    return Some("int".into());
+                }
+                (operands.len() == 1)
+                    .then(|| self.unevaluated_place_type(&operands[0])).flatten()
+            }
             Rule::primary_expression | Rule::expression | Rule::assignment_expression
-            | Rule::conditional_expression | Rule::binary_expression => {
+            | Rule::conditional_expression => {
                 let mut inner = pair.clone().into_inner();
                 let first = inner.next()?;
                 if inner.next().is_some() { return None; }
@@ -37725,7 +38002,7 @@ impl Walker {
                 for suffix in parts {
                     match suffix.as_rule() {
                         Rule::index_suffix => {
-                            ty = self.c_indexed_pointer_element_type(&ty);
+                            ty = self.c_subscript_result_type(&ty)?;
                         }
                         Rule::member_suffix | Rule::arrow_suffix => {
                             let record = self.canonical_struct_base_from_type(&ty)?;
@@ -41603,6 +41880,34 @@ fn replace_word(text: &str, word: &str, replacement: &str) -> String {
 #[cfg(test)]
 mod field_type_tests {
     use super::*;
+
+    #[test]
+    fn wide_offsets_do_not_change_pointer_operations_into_integer_operations() {
+        let mut walker = Walker::default();
+        walker.var_types.insert("pointer".into(), "unsigned char *".into());
+        let wide_offset = expr(ExprKind::Cast {
+            expr: Box::new(int_lit(4)),
+            type_name: "int64".into(),
+        });
+        for (op, left, right) in [
+            (BinOp::Add, ident("pointer"), wide_offset.clone()),
+            (BinOp::Add, wide_offset.clone(), ident("pointer")),
+            (BinOp::Sub, ident("pointer"), wide_offset.clone()),
+            (BinOp::Add, expr(ExprKind::Cast {
+                expr: Box::new(ident("pointer")),
+                type_name: "uint8_t *".into(),
+            }), wide_offset.clone()),
+        ] {
+            let result = walker.rewrite_wide_integer_binary(binary_expr(op, left, right));
+            assert!(matches!(result.kind, ExprKind::Binary { op: emitted, .. } if emitted == op));
+        }
+        let integer = walker.rewrite_wide_integer_binary(binary_expr(
+            BinOp::Add, int_lit(1), wide_offset,
+        ));
+        assert!(matches!(integer.kind, ExprKind::Binary {
+            op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W64), ..
+        }));
+    }
 
     #[test]
     fn initialized_record_pointer_preserves_nested_field_type() {

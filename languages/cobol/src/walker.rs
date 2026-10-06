@@ -33,8 +33,8 @@
 //!   / `__exec_dli` helper calls.
 
 use super::{CobolParser, Rule};
-use pest::Parser;
-use pest::iterators::{Pair, Pairs};
+
+use grameo::compat::{Pair, Pairs};
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
 

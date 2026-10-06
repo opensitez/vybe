@@ -27,8 +27,8 @@
 //! - **`_` blank identifier**: Ignored in assignments.
 
 use super::{GoParser, Rule};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use regex::{Captures, Regex};
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;

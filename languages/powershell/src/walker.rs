@@ -4,8 +4,8 @@
 //! primitives.
 
 use super::Rule;
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use vybe_ast::*;
 use vybe_compiler::primitives::memory as common_memory;
 

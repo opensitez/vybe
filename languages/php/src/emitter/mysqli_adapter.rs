@@ -959,7 +959,6 @@ pub fn emit_php_mysqli_free_result(chunks: &mut [Chunk], current: usize, _argc: 
     {
         let chunk = &mut chunks[current];
         lget(chunk, result_slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
     collections::emit_array_new(chunks, current, 0, line);
     {
@@ -970,7 +969,6 @@ pub fn emit_php_mysqli_free_result(chunks: &mut [Chunk], current: usize, _argc: 
     {
         let chunk = &mut chunks[current];
         lget(chunk, result_slot, line);
-        chunk.emit_op(Op::DROP, line);
     }
     collections::emit_array_new(chunks, current, 0, line);
     {

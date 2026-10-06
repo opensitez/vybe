@@ -1,6 +1,6 @@
 use super::{PythonParser, Rule};
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use std::collections::{HashMap, HashSet};
 use std::fmt;

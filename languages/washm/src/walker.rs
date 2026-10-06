@@ -33,8 +33,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-use pest::Parser;
-use pest::iterators::Pair;
+use grameo::compat::Pair;
 use vybe_ast::*;
 
 use crate::{Rule, WashmParser};

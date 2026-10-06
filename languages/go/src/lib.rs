@@ -8,11 +8,17 @@ pub mod protocol;
 pub mod tree_register;
 pub mod walker;
 
-use pest_derive::Parser;
-
-#[derive(Parser)]
-#[grammar = "src/grammar.pest"]
+#[allow(dead_code)]
+mod native_grammar {
+    include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
+}
+pub(crate) use native_grammar::Rule;
 pub(crate) struct GoParser;
+impl GoParser {
+    pub(crate) fn parse(rule: Rule, source: &str) -> Result<grameo::compat::Pairs<'_, Rule>, grameo::ParseError> {
+        native_grammar::Parser.parse_pairs(rule, source)
+    }
+}
 
 /// Parse Go source into the common AST.
 pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {

@@ -9,12 +9,11 @@ license.workspace = true
 name = "vybe_language_pascal"
 
 [dependencies]
+grameo = { path = "../../crates/grameo" }
 vybe_compiler = { workspace = true }
 inventory = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
-pest = { workspace = true }
-pest_derive = { workspace = true }
 vybe_platform_plib = { workspace = true }
 
 [dev-dependencies]
@@ -23,3 +22,6 @@ vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 # Tests observe the DOM the guest actually built — a control IS an element now.
 vybe_platform_web = { workspace = true, features = ["engine-webcore"] }
+
+[build-dependencies]
+grameo_codegen = { path = "../../crates/grameo/codegen" }

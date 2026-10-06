@@ -1,5 +1,5 @@
-use pest::Parser;
-use pest::iterators::Pair;
+
+use grameo::compat::Pair;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
 

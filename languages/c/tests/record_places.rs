@@ -1,6 +1,35 @@
 use std::path::Path;
 
 #[test]
+fn record_union_callback_copies_preserve_callable_fields() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/record_union_callback_copy.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn scan_counts_and_stream_comparisons_keep_static_types() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/static_scan_stream_results.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    for name in ["scan_pair", "is_output", "is_error"] {
+        let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "dynamic comparison in {name}: {dump}");
+    }
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
 fn callbacks_survive_record_pointer_tables() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/c/doom_startup/record_callback_table.c");
@@ -467,6 +496,20 @@ fn sdl_peeping_preserves_filters_and_queue_order() {
     let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
     let dump = vybe_runtime::debug::disassemble(main);
     assert!(!dump.contains("dyneq"), "dynamic queue equality: {dump}");
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn sdl_queue_wasm_reload_runs_without_metadata() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/sdl_peep_event_queue.c");
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(
+        &mut vm, &vybe_runtime::capabilities::Capabilities::all(),
+    );
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
     let wasm = vybe_platform_wasm::write_wasm_with_options(
         &chunks,
         vybe_platform_wasm::WasmWriteOptions {
@@ -475,14 +518,8 @@ fn sdl_peeping_preserves_filters_and_queue_order() {
         },
     );
     let reloaded = vybe_platform_wasm::read_wasm(&wasm).unwrap();
-    vm.run(chunks).unwrap();
+    vm.run(reloaded).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
-    let mut reloaded_vm = vybe_runtime::VM::new();
-    vybe_runtime::init_all_registered(
-        &mut reloaded_vm, &vybe_runtime::capabilities::Capabilities::all(),
-    );
-    reloaded_vm.run(reloaded).unwrap();
-    assert_eq!(reloaded_vm.pending_exit_code, 0);
 }
 
 #[test]
@@ -554,7 +591,7 @@ fn doom_melt_uses_linear_source_pixels() {
     for name in ["R_FindPlane", "R_CheckPlane", "T_Glow", "P_UpdateSpecials",
         "G_ReadDemoTiccmd", "wipe_doColorXForm", "M_BaseName", "M_DirName",
         "M_FileCaseExists", "SetVideoMode", "ToggleFullScreenKeyShortcut",
-        "GetTypedChar"] {
+        "GetTypedChar", "M_NormalizeSlashes", "HUlib_addLineToSText", "M_FileExists"] {
         let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(chunk);
         assert!(!dump.contains("dyneq"), "dynamic plane comparison in {name}: {dump}");
@@ -662,11 +699,65 @@ fn character_reads_have_static_comparisons() {
     );
     vybe_language_c::register();
     let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
-    for name in ["valid_name", "slash", "is_option", "byte_marker", "byte_equal", "last_separator"] {
+    for name in ["valid_name", "slash", "is_option", "byte_marker", "byte_equal", "last_separator",
+        "previous_separator", "previous_byte", "next_separator"] {
         let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(chunk);
         assert!(!dump.contains("dyneq"), "{name}: {dump}");
     }
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn indexed_record_integer_reads_keep_declared_element_types() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/indexed_record_integer_reads.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    for name in ["same_score", "negative_score", "high_byte", "next_score"] {
+        let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "{name}: {dump}");
+    }
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn errno_header_has_typed_writable_storage_and_distinct_codes() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/errno_header_values.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    for name in ["error_is_directory", "distinct_errors"] {
+        let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "{name}: {dump}");
+    }
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn record_updates_preserve_the_result_type_and_local_storage() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/record_update_result.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    for name in ["advance_count", "old_count", "wrap_byte", "high_byte", "retreat_flags", "advance_once"] {
+        let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "{name}: {dump}");
+        assert!(!dump.lines().any(|line| line.contains("global.")
+            && line.contains("__c_member_old")), "shared update temporary: {dump}");
+    }
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
     vm.run(chunks).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
 }
