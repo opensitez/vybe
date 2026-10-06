@@ -709,6 +709,16 @@ pub struct NormalConstructor {
 }
 
 impl NormalConstructor {
+    /// Borrow constructors whose parent-call representation is already lowered.
+    /// Only an explicit base call requires a new body with a leading SuperCall.
+    pub fn base_call_lowered(&self) -> std::borrow::Cow<'_, NormalConstructor> {
+        if matches!(&self.base_call, BaseCall::Explicit(_)) {
+            std::borrow::Cow::Owned(self.with_base_call_lowered())
+        } else {
+            std::borrow::Cow::Borrowed(self)
+        }
+    }
+
     /// The constructor as the compiler consumes it: a parent-constructor
     /// call declared as `BaseCall::Explicit(args)` becomes the FIRST
     /// statement of the body, `SuperCall { method: None, args }`, and

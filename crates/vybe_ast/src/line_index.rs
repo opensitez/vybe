@@ -85,11 +85,20 @@ fn ends(start: usize, end: usize) -> Option<((u32, u32), (u32, u32))> {
         if starts.is_empty() {
             return None;
         }
-        let at = |offset: usize| {
-            let idx = starts.partition_point(|&s| s <= offset) - 1;
-            (idx as u32 + 1, (offset - starts[idx]) as u32 + 1)
+        let start_idx = starts.partition_point(|&s| s <= start) - 1;
+        // Expression spans commonly fit on one line. Reuse that lookup;
+        // an endpoint at the next line's start must still select the next line.
+        let end_idx = if end >= starts[start_idx]
+            && starts.get(start_idx + 1).is_none_or(|&next| end < next)
+        {
+            start_idx
+        } else {
+            starts.partition_point(|&s| s <= end) - 1
         };
-        Some((at(start), at(end)))
+        Some((
+            (start_idx as u32 + 1, (start - starts[start_idx]) as u32 + 1),
+            (end_idx as u32 + 1, (end - starts[end_idx]) as u32 + 1),
+        ))
     })
 }
 

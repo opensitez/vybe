@@ -4567,6 +4567,9 @@ pub struct Directives {
     /// non-variadic method call to omit runtime callable-shape probes.
     pub method_bindings_live: Option<bool>,
 
+    /// Declared properties and methods have independent source namespaces.
+    pub separate_property_method_namespace: Option<bool>,
+
     /// Is a parameter with no supplied argument bound to `undefined`, rather
     /// than being an error or a language-specific sentinel? ECMA-262 §10.2.1.1.
     pub missing_arg_is_undefined: Option<bool>,
@@ -5205,6 +5208,9 @@ impl Directives {
         }
         if other.method_bindings_live.is_some() {
             self.method_bindings_live = other.method_bindings_live;
+        }
+        if other.separate_property_method_namespace.is_some() {
+            self.separate_property_method_namespace = other.separate_property_method_namespace;
         }
         // A unit-level fact about the object model, not something a nested
         // region redefines — but it gets a rule all the same, because the note
@@ -6507,7 +6513,7 @@ mod protocol_slot_key_tests {
                 panic!("key {key:?} is shared by {other:?} and {slot:?}");
             }
         }
-        assert_eq!(count, 102, "ProtocolSlot::ALL lost a slot");
+        assert_eq!(count, 103, "ProtocolSlot::ALL lost a slot");
     }
 
     /// An unrecognised key is ignored, not an error: a profile written against
