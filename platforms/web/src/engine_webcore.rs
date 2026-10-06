@@ -81,7 +81,7 @@ const DEFAULT_VIEWPORT_H: f32 = 600.0;
 
 /// One document plus the queue its events land in.
 struct Entry {
-    doc: Document,
+    doc: webcore::browser::BrowserDocument,
     resources_dirty: bool,
     /// Shared with the form-event callback installed on `doc`, which is why
     /// this is an `Arc` and not a plain field: the callback outlives the
@@ -93,8 +93,7 @@ struct Entry {
 
 #[derive(Default)]
 struct Docs {
-    next: DocumentId,
-    entries: HashMap<DocumentId, Mutex<Entry>>,
+    entries: HashMap<DocumentId, Arc<Mutex<Entry>>>,
 }
 
 /// `Document` is `Send` (webcore declares it for its parallel cascade) but not
@@ -106,22 +105,27 @@ fn docs() -> &'static Mutex<Docs> {
 
 /// Borrow a WebCore document for in-process presentation.
 pub fn with_document<T>(id: DocumentId, f: impl FnOnce(&mut Document) -> T) -> Option<T> {
-    let map = docs().lock().ok()?;
-    let entry = map.entries.get(&id)?;
-    let mut entry = entry.lock().ok()?;
-    Some(f(&mut entry.doc))
+    let document = browser_document(id)?;
+    Some(f(&mut document.write()))
+}
+
+/// The browser and the guest bridge address one live DOM, not copied trees.
+pub fn browser_document(id: DocumentId) -> Option<webcore::browser::BrowserDocument> {
+    with_entry(id, |entry| entry.doc.clone())
 }
 
 pub fn with_document_resources<T>(
     id: DocumentId,
     f: impl FnOnce(&mut Document, &mut bool) -> T,
 ) -> Option<T> {
-    with_entry(id, |entry| f(&mut entry.doc, &mut entry.resources_dirty))
+    with_entry(id, |entry| {
+        let document = entry.doc.clone();
+        f(&mut document.write(), &mut entry.resources_dirty)
+    })
 }
 
 fn with_entry<T>(id: DocumentId, f: impl FnOnce(&mut Entry) -> T) -> Option<T> {
-    let map = docs().lock().ok()?;
-    let entry = map.entries.get(&id)?;
+    let entry = docs().lock().ok()?.entries.get(&id)?.clone();
     let mut entry = entry.lock().ok()?;
     Some(f(&mut entry))
 }
@@ -249,7 +253,7 @@ impl WebEngine for WebCore {
         let events: Arc<Mutex<VecDeque<(NodeId, String)>>> = Arc::new(Mutex::new(VecDeque::new()));
 
         let mut entry = Entry {
-            doc,
+            doc: webcore::browser::BrowserDocument::new(doc),
             resources_dirty: true,
             events: Arc::clone(&events),
             targeted_events: Arc::new(Mutex::new(VecDeque::new())),
@@ -259,8 +263,8 @@ impl WebEngine for WebCore {
         // The bridge: webcore calls this synchronously as interactions happen,
         // and `DrainEvents` pulls whatever accumulated since the last drain.
         let sink = Arc::clone(&events);
-        let root_id = entry.doc.root.node_id;
-        entry.doc.on_form_event = Some(Box::new(move |e: &FormEvent| {
+        let root_id = entry.doc.read().root.node_id;
+        entry.doc.write().on_form_event = Some(Box::new(move |e: &FormEvent| {
             if let Ok(mut q) = sink.lock() {
                 let node = if e.element == root_id || e.element == 0 {
                     DOCUMENT
@@ -277,9 +281,8 @@ impl WebEngine for WebCore {
             Ok(m) => m,
             Err(_) => return 0,
         };
-        map.next += 1;
-        let id = map.next;
-        map.entries.insert(id, Mutex::new(entry));
+        let id = webcore::dom::registry::register_document(entry.doc.clone());
+        map.entries.insert(id, Arc::new(Mutex::new(entry)));
         id
     }
 
@@ -321,8 +324,11 @@ impl WebEngine for WebCore {
                     if matches!(name.as_str(), "background" | "background-image" | "mask" | "mask-image")
             ) {
                 entry.resources_dirty = true;
+                entry.doc.resources_changed();
             }
-            let doc = &mut entry.doc;
+            let document = entry.doc.clone();
+            let mut guard = document.write();
+            let doc = &mut *guard;
             match op {
                 // ── Creation ──
                 DomOp::CreateElement { tag, input_type } => {
@@ -398,6 +404,20 @@ impl WebEngine for WebCore {
                 DomOp::QuerySelectorAll(sel) => {
                     let nodes = doc.query_selector_all(&sel);
                     DomValue::Nodes(nodes.iter().map(|n| from_hb(doc, *n)).collect())
+                }
+                DomOp::QuerySelectorWithin { root, selector } => {
+                    match doc.query_selector_within(to_hb(doc, root), &selector) {
+                        Some(node) => DomValue::Node(from_hb(doc, node)),
+                        None => DomValue::Null,
+                    }
+                }
+                DomOp::QuerySelectorAllWithin { root, selector } => {
+                    DomValue::Nodes(
+                        doc.query_selector_all_within(to_hb(doc, root), &selector)
+                            .into_iter()
+                            .map(|node| from_hb(doc, node))
+                            .collect(),
+                    )
                 }
                 DomOp::Title => DomValue::Text(doc.title()),
                 DomOp::SetTitle(t) => {
@@ -809,25 +829,25 @@ impl WebEngine for WebCore {
 
     fn window(&self, op: WindowOp) -> WindowValue {
         match op {
-            // The id-minting ops stay HERE so there is one document table.
-            WindowOp::Open { target, .. } => WindowValue::Window(self.new_document(&target)),
-            // A window and its document are the same handle under this engine:
-            // webcore has no separate window object, and a `Document` IS the
-            // browsing context a tab renders (which is what `browser.rs` does
-            // with one `Document` per tab).
-            WindowOp::Document(w) => WindowValue::Document(w),
-            WindowOp::DefaultView(d) => WindowValue::Window(d),
-            WindowOp::AdoptTopLevel(d) => WindowValue::Window(d),
-            WindowOp::Closed(w) => WindowValue::Bool(
-                docs()
-                    .lock()
-                    .map(|m| !m.entries.contains_key(&w))
-                    .unwrap_or(true),
-            ),
+            WindowOp::Open { target, features } => {
+                let document = self.new_document(&target);
+                let context = webcore::window::adopt(document, &target);
+                webcore::window::configure_features(context, &features);
+                WindowValue::Window(context)
+            }
+            WindowOp::Document(w) => webcore::window::document(w)
+                .map(WindowValue::Document).unwrap_or(WindowValue::Null),
+            WindowOp::DefaultView(d) => webcore::window::default_view(d)
+                .map(WindowValue::Window).unwrap_or(WindowValue::Null),
+            WindowOp::AdoptTopLevel(d) => WindowValue::Window(webcore::window::adopt(d, "")),
+            WindowOp::Closed(w) => WindowValue::Bool(webcore::window::closed(w)),
             WindowOp::Close(w) => {
-                if let Ok(mut m) = docs().lock() {
-                    m.entries.remove(&w);
+                if let Some(document) = webcore::window::document(w) {
+                    if let Ok(mut m) = docs().lock() {
+                        m.entries.remove(&document);
+                    }
                 }
+                webcore::window::close(w);
                 WindowValue::None
             }
             // **The page's own box, when it declares one.** A .NET form sizes
@@ -838,11 +858,13 @@ impl WebEngine for WebCore {
             // A page that declares no size keeps the default: that is a window
             // the user agent chose, and it is what an ordinary HTML page gets.
             WindowOp::InnerSize(w) => {
-                let (width, height) = with_document(w, |doc| (doc.viewport_w, doc.viewport_h))
+                let (width, height) = webcore::window::document(w)
+                    .and_then(|document| with_document(document, |doc| (doc.viewport_w, doc.viewport_h)))
                     .unwrap_or((DEFAULT_VIEWPORT_W, DEFAULT_VIEWPORT_H));
                 WindowValue::Pair(width as f64, height as f64)
             }
-            WindowOp::Focus(_) => {
+            WindowOp::Focus(w) => {
+                webcore::window::focus(w);
                 webcore::embedded_window::focus();
                 WindowValue::None
             }
@@ -856,15 +878,16 @@ impl WebEngine for WebCore {
                     .unwrap_or(WindowValue::Null)
             }
             WindowOp::ResizeTo(w, width, height) => {
-                with_document(w, |doc| doc.set_viewport(width as f32, height as f32));
+                webcore::window::resize_to(w, width, height);
                 webcore::embedded_window::resize_to(width, height);
                 WindowValue::None
             }
             WindowOp::ViewportChanged(w, width, height) => {
-                with_document(w, |doc| doc.set_viewport(width as f32, height as f32));
+                webcore::window::resize_to(w, width, height);
                 WindowValue::None
             }
-            WindowOp::MoveTo(_, x, y) => {
+            WindowOp::MoveTo(w, x, y) => {
+                webcore::window::move_to(w, x, y);
                 webcore::embedded_window::move_to(x, y);
                 WindowValue::None
             }
@@ -872,7 +895,7 @@ impl WebEngine for WebCore {
                 .map(|(x, y)| WindowValue::Pair(x, y))
                 .unwrap_or(WindowValue::Null),
             WindowOp::Name(w) => {
-                WindowValue::Text(with_document(w, |doc| doc.title()).unwrap_or_default())
+                WindowValue::Text(webcore::window::name(w))
             }
             WindowOp::Alert(message) => {
                 webcore::platform::dialogs::alert(&message);
@@ -973,16 +996,71 @@ mod tests {
     }
 
     #[test]
+    fn element_query_is_scoped_to_descendants() {
+        let browser = WebCore;
+        let document = browser.new_document("Scoped query");
+        let make = |tag: &str| match browser.document(
+            document,
+            DomOp::CreateElement { tag: tag.into(), input_type: String::new() },
+        ) {
+            DomValue::Node(node) => node,
+            other => panic!("expected element, got {other:?}"),
+        };
+        let left = make("section");
+        let right = make("section");
+        let inside = make("span");
+        let outside = make("span");
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: left });
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: right });
+        browser.document(document, DomOp::AppendChild { parent: left, child: inside });
+        browser.document(document, DomOp::AppendChild { parent: right, child: outside });
+        assert!(matches!(
+            browser.document(document, DomOp::QuerySelectorWithin {
+                root: left, selector: "span".into(),
+            }),
+            DomValue::Node(node) if node == inside
+        ));
+        assert!(matches!(
+            browser.document(document, DomOp::QuerySelectorAllWithin {
+                root: left, selector: "span".into(),
+            }),
+            DomValue::Nodes(nodes) if nodes == vec![inside]
+        ));
+        assert!(matches!(
+            browser.document(document, DomOp::QuerySelectorWithin {
+                root: left, selector: "section".into(),
+            }),
+            DomValue::Null
+        ));
+
+        let detached = make("section");
+        let detached_child = make("span");
+        browser.document(document, DomOp::AppendChild {
+            parent: detached, child: detached_child,
+        });
+        assert!(matches!(
+            browser.document(document, DomOp::QuerySelectorWithin {
+                root: detached, selector: ":scope > span".into(),
+            }),
+            DomValue::Node(node) if node == detached_child
+        ));
+    }
+
+    #[test]
     fn inner_size_tracks_viewport_not_body_style() {
         let browser = WebCore;
         let document = browser.new_document("Viewport test");
+        let WindowValue::Window(context) = browser.window(WindowOp::AdoptTopLevel(document)) else {
+            panic!("document must acquire a browsing context");
+        };
         browser.document(document, DomOp::SetStyleProperty(DOCUMENT, "width".into(), "320px".into()),);
-        let size = browser.window(WindowOp::InnerSize(document));
+        let size = browser.window(WindowOp::InnerSize(context));
         assert!(matches!(size, WindowValue::Pair(800.0, 600.0)));
 
-        browser.window(WindowOp::ResizeTo(document, 640.0, 880.0));
-        let size = browser.window(WindowOp::InnerSize(document));
+        browser.window(WindowOp::ResizeTo(context, 640.0, 880.0));
+        let size = browser.window(WindowOp::InnerSize(context));
         assert!(matches!(size, WindowValue::Pair(640.0, 880.0)));
+        assert!(matches!(browser.window(WindowOp::Document(context)), WindowValue::Document(id) if id == document));
     }
 
     #[test]
@@ -1160,7 +1238,7 @@ mod tests {
         browser.document(document, DomOp::UnobserveEvent { node: child, kind: "click".into() ,},);
         with_entry(document, |entry| {
             assert!(!entry.observed.contains_key(&(child, "click".into())));
-            assert!(!entry.doc.event_targets.node_ids().any(|id| id == child as u32));
+            assert!(!entry.doc.read().event_targets.node_ids().any(|id| id == child as u32));
         });
         for kind in ["mousedown", "mouseup"] {
             browser.document(document, DomOp::DispatchPointer {

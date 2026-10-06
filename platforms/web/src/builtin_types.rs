@@ -221,8 +221,8 @@ pub fn register_types(fw: &mut Framework<'_>) {
             ("matches", "web:dom", "matches"),
             ("closest", "web:dom", "closest"),
             ("contains", "web:dom", "contains"),
-            ("querySelector", "web:dom", "querySelector"),
-            ("querySelectorAll", "web:dom", "querySelectorAll"),
+            ("querySelector", "web:dom", "querySelectorWithin"),
+            ("querySelectorAll", "web:dom", "querySelectorAllWithin"),
             // `classList` — flat, because a host vtable has nowhere to hang a
             // live `DOMTokenList`. `el.classListAdd("x")` reaches the same
             // store `class` does; the JS spelling `el.classList.add("x")`
@@ -236,8 +236,8 @@ pub fn register_types(fw: &mut Framework<'_>) {
             ("removeEventListener", "web:dom", "removeEventListener"),
             ("innerHtml", "web:dom", "innerHtml"),
             ("setInnerHtml", "web:dom", "setInnerHtml"),
-            ("querySelector", "web:dom", "querySelector"),
-            ("querySelectorAll", "web:dom", "querySelectorAll"),
+            ("querySelector", "web:dom", "querySelectorWithin"),
+            ("querySelectorAll", "web:dom", "querySelectorAllWithin"),
             ("getElementsByTagName", "web:dom", "getElementsByTagName"),
             // Traversal and matching — DOM §4.2.6 / §4.9. Registered on the
             // ELEMENT vtable so a guest reaches them by their IDL spelling,

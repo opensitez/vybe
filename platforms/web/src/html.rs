@@ -54,6 +54,7 @@ type ListenerKey = (DocumentId, NodeId, String);
 #[derive(Default)]
 struct Listeners(HashMap<ListenerKey, Vec<Value>>);
 
+
 impl std::ops::Deref for Listeners {
     type Target = HashMap<ListenerKey, Vec<Value>>;
     fn deref(&self) -> &Self::Target {
@@ -273,6 +274,7 @@ pub fn pending_dispatches(document: DocumentId) -> Vec<(Value, Value)> {
         }
         _ => {}
     }
+
 
     // The native window supplies raw UI events. Deliver them to the document's
     // EventTarget listeners just as a browser delivers input to a page. A page
@@ -1652,6 +1654,48 @@ pub fn register(vm: &mut VM) {
             }
         }),
     );
+    dom_fn(
+        vm,
+        "querySelectorWithin",
+        "query-selector-within",
+        vec![doc(), node(), ValType::String],
+        vec![ValType::Option(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            match apply(
+                document,
+                DomOp::QuerySelectorWithin {
+                    root: node_arg(args, 1),
+                    selector: str_arg(args, 2),
+                },
+            ) {
+                DomValue::Node(n) => element(document, n),
+                _ => Value::Null,
+            }
+        }),
+    );
+    dom_fn(
+        vm,
+        "querySelectorAllWithin",
+        "query-selector-all-within",
+        vec![doc(), node(), ValType::String],
+        vec![ValType::List(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let document = doc_arg(args, 0);
+            match apply(
+                document,
+                DomOp::QuerySelectorAllWithin {
+                    root: node_arg(args, 1),
+                    selector: str_arg(args, 2),
+                },
+            ) {
+                DomValue::Nodes(nodes) => Value::Object(vybe_runtime::heap::alloc(
+                    Object::new_array(nodes.into_iter().map(|n| element(document, n)).collect()),
+                )),
+                _ => Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
+            }
+        }),
+    );
     // An `HTMLCollection` is a LIST of borrowed nodes: the collection does not
     // own what it names, and neither does the guest that reads it. Nothing in
     // `web:dom` calls this today — the XML path goes to `web:dom-parser`'s own
@@ -2450,6 +2494,42 @@ pub fn register(vm: &mut VM) {
             }
             add_event_listener(doc_arg(args, 0), node_arg(args, 1), &str_arg(args, 2), cb);
             Value::Null
+        }),
+    );
+    dom_fn(
+        vm,
+        "dispatchEvent",
+        "dispatch-event",
+        vec![doc(), node(), ValType::Any],
+        vec![ValType::Bool],
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let event = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let Value::Object(object) = &event else { return Value::Bool(false); };
+            let (kind, bubbles) = {
+                let object = object.lock().unwrap();
+                let Some(kind) = object.properties.get("type") else { return Value::Bool(false); };
+                (format!("{kind}"), matches!(object.properties.get("bubbles"), Some(Value::Bool(true))))
+            };
+            let document = doc_arg(args, 0);
+            let target = node_arg(args, 1);
+            let mut current = target;
+            loop {
+                if let Value::Object(object) = &event {
+                    let mut object = object.lock().unwrap();
+                    object.properties.insert("target".into(), Value::F64(target as f64));
+                    object.properties.insert("currentTarget".into(), Value::F64(current as f64));
+                }
+                for callback in listeners_for(document, current, &kind) {
+                    ctx.invoke(&callback, &[event.clone()]);
+                }
+                if !bubbles { break; }
+                current = match apply(document, DomOp::ParentNode(current)) {
+                    DomValue::Node(parent) => parent,
+                    _ => break,
+                };
+            }
+            let cancelled = matches!(object.lock().unwrap().properties.get("defaultPrevented"), Some(Value::Bool(true)));
+            Value::Bool(!cancelled)
         }),
     );
 }

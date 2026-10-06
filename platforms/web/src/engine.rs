@@ -109,6 +109,10 @@ pub enum DomOp {
     /// rather than every element — the spec throws `SyntaxError` and there is
     /// no exception channel here, so it fails in the safe direction.
     QuerySelectorAll(String),
+    /// `element.querySelector(selectors)` searches descendants of this element.
+    QuerySelectorWithin { root: NodeId, selector: String },
+    /// `element.querySelectorAll(selectors)` searches descendants in tree order.
+    QuerySelectorAllWithin { root: NodeId, selector: String },
     /// `document.title`
     Title,
     SetTitle(String),
