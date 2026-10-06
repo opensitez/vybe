@@ -241,6 +241,54 @@ fn transform_json_value(
     unbox_json_wrapper(value)
 }
 
+// Transform before emitting the prefix: omitted members must emit nothing,
+// and callbacks retain the same ordering as the allocating serializer.
+fn serialize_property_into(
+    ctx: &mut HostContext,
+    holder: &Value,
+    key: &str,
+    raw_value: Value,
+    state: &mut StringifyState,
+    in_array: bool,
+    out: &mut String,
+    prefix: impl FnOnce(&mut String),
+) -> bool {
+    let value = transform_json_value(ctx, holder, key, raw_value, state);
+    match &value {
+        Value::Undefined | Value::Symbol(_) if !in_array => return false,
+        Value::Null | Value::TypedNull(_) | Value::Undefined | Value::Symbol(_)
+        | Value::V128(_) | Value::WeakRef(_) => {
+            prefix(out);
+            out.push_str("null");
+        }
+        Value::Bool(value) => {
+            prefix(out);
+            out.push_str(if *value { "true" } else { "false" });
+        }
+        Value::I32(value) => {
+            prefix(out);
+            let _ = write!(out, "{value}");
+        }
+        Value::I64(value) => {
+            prefix(out);
+            let _ = write!(out, "{value}");
+        }
+        Value::String(value) => {
+            prefix(out);
+            out.reserve(value.len().saturating_add(2));
+            write_quoted_string(value, out);
+        }
+        _ => {
+            let Some(serialized) = serialize_json_value(ctx, &value, state, in_array) else {
+                return false;
+            };
+            prefix(out);
+            out.push_str(&serialized);
+        }
+    }
+    true
+}
+
 fn serialize_json_value(
     ctx: &mut HostContext,
     value: &Value,
@@ -343,7 +391,7 @@ fn serialize_array(
 
     let pretty = !state.gap.is_empty();
     let element_prefix = if pretty {
-        state.indent.clone() + &state.gap
+        state.indent.clone()
     } else {
         String::new()
     };
@@ -354,25 +402,29 @@ fn serialize_array(
     }
     let mut count = 0usize;
     for (index, value) in elems.into_iter().enumerate() {
-        let serialized = crate::keys::with_index_key(index, |key| {
-            serialize_property(ctx, &holder, key, value, state, true)
-        })
-        .unwrap_or_else(|| "null".to_string());
-        if count > 0 {
-            if pretty {
-                body.push_str(",\n");
-            } else {
-                body.push(',');
+        let append_prefix = |out: &mut String| {
+            if count > 0 {
+                if pretty {
+                    out.push_str(",\n");
+                } else {
+                    out.push(',');
+                }
             }
+            if pretty {
+                out.push_str(&element_prefix);
+            }
+        };
+        let serialized = crate::keys::with_index_key(index, |key| {
+            serialize_property_into(ctx, &holder, key, value, state, true, &mut body, &append_prefix)
+        });
+        if !serialized {
+            append_prefix(&mut body);
+            body.push_str("null");
         }
-        if pretty {
-            body.push_str(&element_prefix);
-        }
-        body.push_str(&serialized);
         count += 1;
     }
 
-    state.indent = stepback.clone();
+    state.indent.truncate(stepback.len());
     if !pretty {
         body.push(']');
         return Some(body);
@@ -476,7 +528,7 @@ fn serialize_ordinary(
 
     let pretty = !state.gap.is_empty();
     let member_prefix = if pretty {
-        state.indent.clone() + &state.gap
+        state.indent.clone()
     } else {
         String::new()
     };
@@ -494,29 +546,25 @@ fn serialize_ordinary(
         let Some(value) = value else {
             continue;
         };
-        if let Some(serialized) = serialize_property(ctx, &holder, key, value, state, false) {
-            if count > 0 {
-                if pretty {
-                    body.push_str(",\n");
-                } else {
-                    body.push(',');
+        if serialize_property_into(ctx, &holder, key, value, state, false, &mut body, |out| {
+                if count > 0 {
+                    if pretty {
+                        out.push_str(",\n");
+                    } else {
+                        out.push(',');
+                    }
                 }
-            }
-            if pretty {
-                body.push_str(&member_prefix);
-            }
-            write_quoted_string(key, &mut body);
-            if pretty {
-                body.push_str(": ");
-            } else {
-                body.push(':');
-            }
-            body.push_str(&serialized);
+                if pretty {
+                    out.push_str(&member_prefix);
+                }
+                write_quoted_string(key, out);
+                out.push_str(if pretty { ": " } else { ":" });
+            }) {
             count += 1;
         }
     }
 
-    state.indent = stepback.clone();
+    state.indent.truncate(stepback.len());
     if !pretty {
         body.push('}');
         return body;
@@ -1059,7 +1107,10 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             b'{' => self.parse_object(),
             b'[' => self.parse_array(),
-            b'"' => self.parse_string().map(|s| crate::keys::string_value(&s)),
+            b'"' => self.parse_string().map(|text| match text {
+                Cow::Borrowed(text) => crate::keys::string_value(text),
+                Cow::Owned(text) => owned_string_value(text),
+            }),
             b't' | b'f' => self.parse_bool(),
             b'n' => self.parse_null(),
             b'-' | b'0'..=b'9' => self.parse_number(),
@@ -1130,7 +1181,7 @@ impl<'a> Parser<'a> {
         u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
     }
 
-    fn parse_string(&mut self) -> Option<String> {
+    fn parse_string(&mut self) -> Option<Cow<'a, str>> {
         if self.peek()? != b'"' {
             return None;
         }
@@ -1139,11 +1190,9 @@ impl<'a> Parser<'a> {
         while self.pos < self.src.len() {
             match self.src[self.pos] {
                 b'"' => {
-                    let text = std::str::from_utf8(&self.src[start..self.pos])
-                        .ok()?
-                        .to_owned();
+                    let text = std::str::from_utf8(&self.src[start..self.pos]).ok()?;
                     self.pos += 1;
-                    return Some(text);
+                    return Some(Cow::Borrowed(text));
                 }
                 b'\\' => break,
                 byte if byte < 0x20 => return None,
@@ -1168,7 +1217,7 @@ impl<'a> Parser<'a> {
             match c {
                 b'"' => {
                     self.pos += 1;
-                    return Some(out);
+                    return Some(Cow::Owned(out));
                 }
                 b'\\' => {
                     self.pos += 1;
@@ -1280,7 +1329,7 @@ impl<'a> Parser<'a> {
         }
         loop {
             self.skip_whitespace();
-            let key = self.parse_string()?;
+            let key = self.parse_string()?.into_owned();
             self.skip_whitespace();
             if self.peek() != Some(b':') {
                 return None;
@@ -1332,5 +1381,292 @@ fn utf8_char_len(b: u8) -> usize {
         4
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod borrowed_json_strings_tests {
+    use super::*;
+
+    fn decode(input: &str) -> Cow<'_, str> {
+        Parser { src: input.as_bytes(), pos: 0 }.parse_string().unwrap()
+    }
+
+    #[test]
+    fn unescaped_strings_borrow_and_escaped_strings_own() {
+        for (input, expected) in [
+            ("\"\"", ""),
+            ("\"plain ASCII\"", "plain ASCII"),
+            ("\"\u{e9}\u{1f600}\"", "\u{e9}\u{1f600}"),
+        ] {
+            let decoded = decode(input);
+            assert!(matches!(decoded, Cow::Borrowed(_)));
+            assert_eq!(decoded.as_ref(), expected);
+        }
+        for (input, expected) in [
+            (r#""line\nend""#, "line\nend"),
+            (r#""\"\\\/\b\f\r\t""#, "\"\\/\x08\x0c\r\t"),
+            (r#""\u0061\uD83D\uDE00""#, "a\u{1f600}"),
+        ] {
+            let decoded = decode(input);
+            assert!(matches!(decoded, Cow::Owned(_)));
+            assert_eq!(decoded.as_ref(), expected);
+        }
+    }
+
+    #[test]
+    fn runtime_strings_outlive_parser_input() {
+        for (input, expected) in [
+            ("\"plain value\"", "plain value"),
+            (r#""escaped\nvalue""#, "escaped\nvalue"),
+        ] {
+            let value = {
+                let source = input.to_owned();
+                parse_json(&source).unwrap()
+            };
+            let Value::String(text) = value else { panic!("expected runtime string") };
+            assert_eq!(text.as_ref(), expected);
+        }
+    }
+
+    #[test]
+    fn decoded_duplicate_keys_keep_last_value_and_original_order() {
+        let value = parse_json(r#"{"escaped\u006bey":1,"escapedkey":2,"plain":3}"#).unwrap();
+        let Value::Object(object) = value else { panic!("expected object") };
+        let object = object.lock().unwrap();
+        assert_eq!(object.properties.get("escapedkey").unwrap().as_i32(), 2);
+        let Value::Object(keys) = object.properties.get("__keys").unwrap() else {
+            panic!("expected tracked keys")
+        };
+        let keys = keys.lock().unwrap();
+        let ObjectKind::Array(keys) = &keys.kind else { panic!("expected key array") };
+        assert_eq!(keys.len(), 2);
+        assert!(matches!(&keys[0], Value::String(key) if key.as_ref() == "escapedkey"));
+        assert!(matches!(&keys[1], Value::String(key) if key.as_ref() == "plain"));
+    }
+
+    #[test]
+    fn invalid_fast_path_strings_still_fail() {
+        for input in ["\"unterminated", "\"bad\ntext\"", r#""\x20""#, r#""\uZZZZ""#] {
+            assert!(parse_json(input).is_none(), "{input:?}");
+        }
+    }
+
+    fn stringify_for_test(value: Value, space: i32) -> String {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let mut callable = Object::new();
+        callable.kind = ObjectKind::HostFunction(
+            vm.resolve_host_function_index("ecma:json", "stringify").unwrap(),
+        );
+        let result = vm.invoke(
+            &Value::Object(vybe_runtime::heap::alloc(callable)),
+            &[value, Value::Undefined, Value::I32(space)],
+        ).unwrap();
+        let Value::String(text) = result else { panic!("expected serialized string") };
+        text.to_string()
+    }
+
+    #[test]
+    fn streamed_array_preserves_primitive_text_and_null_omission() {
+        let values = vec![
+            Value::Bool(true), Value::Bool(false), Value::Null, Value::Undefined,
+            Value::I32(7), crate::keys::string_value("line\n\"end"),
+        ];
+        assert_eq!(stringify_for_test(
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(values))), 0,
+        ), "[true,false,null,null,7,\"line\\n\\\"end\"]");
+    }
+
+    #[test]
+    fn streamed_object_omission_preserves_separators() {
+        let mut object = Object::new();
+        object.properties.insert("first".into(), Value::Bool(true));
+        object.properties.insert("omitted".into(), Value::Undefined);
+        object.properties.insert("last".into(), crate::keys::string_value("text"));
+        assert_eq!(stringify_for_test(Value::Object(vybe_runtime::heap::alloc(object)), 0),
+            "{\"first\":true,\"last\":\"text\"}");
+    }
+
+    #[test]
+    fn pretty_indentation_uses_one_gap_per_level() {
+        assert_eq!(stringify_for_test(Value::Object(vybe_runtime::heap::alloc(
+            Object::new_array(vec![Value::I32(1), Value::Bool(true)]),
+        )), 2), "[\n  1,\n  true\n]");
+        let mut inner = Object::new();
+        inner.properties.insert("value".into(), Value::I32(7));
+        let mut outer = Object::new();
+        outer.properties.insert("first".into(), Value::Bool(true));
+        outer.properties.insert("omitted".into(), Value::Undefined);
+        outer.properties.insert("last".into(), Value::Object(vybe_runtime::heap::alloc(inner)));
+        assert_eq!(stringify_for_test(Value::Object(vybe_runtime::heap::alloc(outer)), 2),
+            "{\n  \"first\": true,\n  \"last\": {\n    \"value\": 7\n  }\n}");
+    }
+
+    #[test]
+    #[ignore = "matched primitive writer microbenchmark, not complete JSON.stringify timing"]
+    fn native_streamed_primitive_microbenchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let mut vm = VM::new();
+        vm.register_free_fn("json-benchmark", "run", Box::new(|ctx, _| {
+            let values = [Value::Bool(true), Value::Bool(false), Value::Null,
+                Value::I32(7), crate::keys::string_value("line\n\"end")];
+            let holder = make_root_holder(Value::Null);
+            let mut run = |streamed: bool| {
+                let mut state = StringifyState::new(None, None);
+                let mut out = String::with_capacity(128);
+                let start = Instant::now();
+                for _ in 0..20_000 {
+                    out.clear();
+                    out.push('[');
+                    for (index, value) in values.iter().enumerate() {
+                        crate::keys::with_index_key(index, |key| {
+                            if streamed {
+                                assert!(serialize_property_into(ctx, &holder, key,
+                                    value.clone(), &mut state, true, &mut out,
+                                    |out| { if index > 0 { out.push(','); } }));
+                            } else {
+                                let text = serialize_property(ctx, &holder, key,
+                                    value.clone(), &mut state, true).unwrap();
+                                if index > 0 { out.push(','); }
+                                out.push_str(&text);
+                            }
+                        });
+                    }
+                    out.push(']');
+                    black_box(&out);
+                }
+                assert_eq!(out, "[true,false,null,7,\"line\\n\\\"end\"]");
+                start.elapsed()
+            };
+            for pair in 0..4 {
+                let (allocated, streamed) = if pair % 2 == 0 {
+                    let allocated = run(false);
+                    (allocated, run(true))
+                } else {
+                    let streamed = run(true);
+                    (run(false), streamed)
+                };
+                eprintln!("JSON primitive writer pair {pair}: allocated={allocated:?} streamed={streamed:?}");
+            }
+            Value::Null
+        }));
+        let mut callable = Object::new();
+        callable.kind = ObjectKind::HostFunction(
+            vm.resolve_host_function_index("json-benchmark", "run").unwrap(),
+        );
+        vm.invoke(&Value::Object(vybe_runtime::heap::alloc(callable)), &[]).unwrap();
+    }
+
+    #[test]
+    #[ignore = "matched decoder/value-construction microbenchmark, not complete JSON.parse timing"]
+    fn native_borrowed_string_value_microbenchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        fn run(input: &str, copy: bool, iterations: usize) -> std::time::Duration {
+            let start = Instant::now();
+            for _ in 0..iterations {
+                let text = decode(black_box(input));
+                let value = if copy {
+                    crate::keys::string_value(&text.into_owned())
+                } else {
+                    match text {
+                        Cow::Borrowed(text) => crate::keys::string_value(text),
+                        Cow::Owned(text) => owned_string_value(text),
+                    }
+                };
+                black_box(value);
+            }
+            start.elapsed()
+        }
+        let input = format!("\"{}\"", "ascii payload ".repeat(16));
+        for pair in 0..4 {
+            let (copied, borrowed) = if pair % 2 == 0 {
+                let copied = run(&input, true, 100_000);
+                (copied, run(&input, false, 100_000))
+            } else {
+                let borrowed = run(&input, false, 100_000);
+                (run(&input, true, 100_000), borrowed)
+            };
+            eprintln!("JSON string decode/value construction pair {pair}: copied={copied:?} borrowed={borrowed:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod full_operation_performance_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn host_function(vm: &VM, name: &str) -> Value {
+        let idx = *vm.host_registry
+            .get(&("ecma:json".to_owned(), name.to_owned()))
+            .expect("JSON host function registered");
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(idx);
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn run_case(vm: &mut VM, callable: &Value, input: &Value, stringify: bool) -> Value {
+        let args = if stringify {
+            vec![input.clone(), Value::Undefined, Value::Undefined]
+        } else {
+            vec![input.clone(), Value::Undefined]
+        };
+        vm.invoke(callable, &args).expect("JSON operation succeeds")
+    }
+
+    #[test]
+    #[ignore = "full registered-adapter benchmark; run explicitly with --nocapture"]
+    fn registered_json_full_operations() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let stringify = host_function(&vm, "stringify");
+        let parse = host_function(&vm, "parse");
+        let values = (0..1000).map(|i| match i % 3 {
+            0 => crate::keys::string_value("line\n\"value"),
+            1 => Value::Bool(true),
+            _ => Value::I32(i),
+        }).collect();
+        let array = Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)));
+        let mut object = Object::new();
+        for i in 0..500 {
+            object.properties.insert(format!("field{i}"), if i % 2 == 0 {
+                crate::keys::string_value("value")
+            } else {
+                Value::I32(i)
+            });
+        }
+        let object = Value::Object(vybe_runtime::heap::alloc(object));
+        let array_text = run_case(&mut vm, &stringify, &array, true);
+        let object_text = run_case(&mut vm, &stringify, &object, true);
+        let cases = [
+            ("stringify-array", &stringify, &array, true, &array_text),
+            ("stringify-object", &stringify, &object, true, &object_text),
+            ("parse-array", &parse, &array_text, false, &array_text),
+            ("parse-object", &parse, &object_text, false, &object_text),
+        ];
+        for (name, callable, input, is_stringify, expected_text) in cases {
+            for _ in 0..10 {
+                std::hint::black_box(run_case(&mut vm, callable, input, is_stringify));
+            }
+            for sample in 0..4 {
+                let start = Instant::now();
+                let mut last = Value::Undefined;
+                for _ in 0..200 {
+                    last = run_case(&mut vm, callable, input, is_stringify);
+                    std::hint::black_box(&last);
+                }
+                let elapsed = start.elapsed();
+                let text = if is_stringify { last } else {
+                    run_case(&mut vm, &stringify, &last, true)
+                };
+                assert_eq!(&text, expected_text, "{name} result differs");
+                eprintln!("{name} sample={sample} operations=200 elapsed={elapsed:?}");
+            }
+        }
     }
 }

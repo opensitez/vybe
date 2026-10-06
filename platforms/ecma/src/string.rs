@@ -1581,6 +1581,41 @@ fn decode_uri_string(input: &str) -> Result<String, &'static str> {
     String::from_utf8(out).map_err(|_| "URI malformed")
 }
 
+#[inline]
+fn uri_byte_is_unescaped(byte: u8, allow_reserved: bool) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')')
+        || (allow_reserved
+            && matches!(byte, b';' | b',' | b'/' | b'?' | b':' | b'@' | b'&' | b'=' | b'+' | b'$' | b'#'))
+}
+
+fn encode_uri_text(input: &str, allow_reserved: bool) -> Cow<'_, str> {
+    let Some(first_escape) = input.bytes().position(|byte| !uri_byte_is_unescaped(byte, allow_reserved)) else {
+        return Cow::Borrowed(input);
+    };
+    // Before the first escaped byte every byte is ASCII, so this is a UTF-8 boundary.
+    let mut output = String::with_capacity(input.len());
+    output.push_str(&input[..first_escape]);
+    for &byte in &input.as_bytes()[first_escape..] {
+        if uri_byte_is_unescaped(byte, allow_reserved) {
+            output.push(byte as char);
+        } else {
+            push_percent_byte(&mut output, byte);
+        }
+    }
+    Cow::Owned(output)
+}
+
+fn encode_uri_value(args: &[Value], allow_reserved: bool) -> Value {
+    with_s_arg(args, 0, |input| match encode_uri_text(input, allow_reserved) {
+        Cow::Borrowed(text) => match args.first() {
+            Some(Value::String(original)) => Value::String(Arc::clone(original)),
+            _ => s_val(text),
+        },
+        Cow::Owned(text) => s_owned(text),
+    })
+}
+
 fn register_uri(vm: &mut VM) {
     // encodeURIComponent — encodes everything except the unreserved set
     // (ALPHA / DIGIT / `-` / `_` / `.` / `~` / `!` / `*` / `'` / `(` / `)`).
@@ -1590,23 +1625,7 @@ fn register_uri(vm: &mut VM) {
         "encodeURIComponent",
         vec![str_t()],
         vec![str_t()],
-        Box::new(|_ctx, args| {
-            with_s_arg(args, 0, |s| {
-                let mut encoded = String::with_capacity(s.len());
-                for c in s.chars() {
-                    if c.is_ascii_alphanumeric() || "-_.!~*'()".contains(c) {
-                        encoded.push(c);
-                    } else {
-                        let mut buf = [0u8; 4];
-                        let len = c.encode_utf8(&mut buf).len();
-                        for &byte in &buf[..len] {
-                            push_percent_byte(&mut encoded, byte);
-                        }
-                    }
-                }
-                s_owned(encoded)
-            })
-        }),
+        Box::new(|_ctx, args| encode_uri_value(args, false)),
     );
 
     // decodeURIComponent — reverses encodeURIComponent.
@@ -1634,23 +1653,7 @@ fn register_uri(vm: &mut VM) {
         "encodeURI",
         vec![str_t()],
         vec![str_t()],
-        Box::new(|_ctx, args| {
-            with_s_arg(args, 0, |s| {
-                let mut encoded = String::with_capacity(s.len());
-                for c in s.chars() {
-                    if c.is_ascii_alphanumeric() || "-_.!~*'();,/?:@&=+$#".contains(c) {
-                        encoded.push(c);
-                    } else {
-                        let mut buf = [0u8; 4];
-                        let len = c.encode_utf8(&mut buf).len();
-                        for &byte in &buf[..len] {
-                            push_percent_byte(&mut encoded, byte);
-                        }
-                    }
-                }
-                s_owned(encoded)
-            })
-        }),
+        Box::new(|_ctx, args| encode_uri_value(args, true)),
     );
 
     // decodeURI — reverses encodeURI. The spec defines a different
@@ -1903,6 +1906,24 @@ fn throw_type_error(ctx: &mut HostContext, message: &str) {
     ctx.throw_value(crate::error::new_error(ctx, "TypeError", message));
 }
 
+fn match_capture_values(regex: &regex::Regex, input: &str) -> Option<Vec<Value>> {
+    // Preserve the cheap no-match path: captures() allocates capture storage even
+    // when there is no match. Patterns without groups need no capture pass at all.
+    let matched = regex.find(input)?;
+    if regex.captures_len() == 1 {
+        return Some(vec![crate::keys::string_value(matched.as_str())]);
+    }
+    let captures = regex.captures(input)?;
+    let mut values = Vec::with_capacity(captures.len());
+    for index in 0..captures.len() {
+        values.push(match captures.get(index) {
+            Some(capture) => crate::keys::string_value(capture.as_str()),
+            None => Value::Undefined,
+        });
+    }
+    Some(values)
+}
+
 fn register_base64(vm: &mut VM) {
     // btoa — base64-encode the input string's BYTES (treating it as
     // Latin-1 per HTML spec).
@@ -1959,16 +1980,7 @@ fn register_base64(vm: &mut VM) {
         Box::new(|_ctx, args| {
             with_two_s_args(args, 0, 1, |s, pattern| {
                 if let Ok(re) = regex::Regex::new(pattern) {
-                    if let Some(m) = re.find(s) {
-                        let mut arr_vals = vec![crate::keys::string_value(m.as_str())];
-                        if let Some(caps) = re.captures(s) {
-                            for i in 1..caps.len() {
-                                arr_vals.push(match caps.get(i) {
-                                    Some(g) => crate::keys::string_value(g.as_str()),
-                                    None => Value::Undefined,
-                                });
-                            }
-                        }
+                    if let Some(arr_vals) = match_capture_values(&re, s) {
                         return Value::Object(vybe_runtime::heap::alloc(Object::new_array(
                             arr_vals,
                         )));
@@ -2084,3 +2096,152 @@ fn register_iterator(vm: &mut VM) {
 
 #[allow(dead_code)]
 fn _force_object_use(_: ObjectKind) {}
+
+#[cfg(test)]
+mod uri_encoding_performance_tests {
+    use super::*;
+
+    fn old_encode(input: &str, reserved: bool) -> String {
+        let mut output = String::with_capacity(input.len());
+        let allowed = if reserved { "-_.!~*'();,/?:@&=+$#" } else { "-_.!~*'()" };
+        for ch in input.chars() {
+            if ch.is_ascii_alphanumeric() || allowed.contains(ch) {
+                output.push(ch);
+            } else {
+                let mut bytes = [0u8; 4];
+                for &byte in ch.encode_utf8(&mut bytes).as_bytes() {
+                    push_percent_byte(&mut output, byte);
+                }
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn uri_encoder_preserves_ascii_and_unicode_results() {
+        let ascii: String = (0..128).map(char::from).collect();
+        for input in [ascii.as_str(), "", "safe-_.!~*'()", ";,/?:@&=+$#", "https://example.test/a?b=c#d", "\u{e9}\u{4e2d}\u{1f600}", "prefix \u{1f600}/suffix"] {
+            for reserved in [false, true] {
+                assert_eq!(encode_uri_text(input, reserved).as_ref(), old_encode(input, reserved));
+            }
+        }
+        assert_eq!(encode_uri_text("\u{1f600}", false), "%F0%9F%98%80");
+        assert_eq!(encode_uri_text("/", false), "%2F");
+        assert_eq!(encode_uri_text("/", true), "/");
+    }
+
+    #[test]
+    fn unchanged_uri_reuses_runtime_string() {
+        let input = crate::keys::string_value("https://example.test/path?field=value#anchor");
+        let output = encode_uri_value(std::slice::from_ref(&input), true);
+        match (&input, &output) {
+            (Value::String(a), Value::String(b)) => assert!(Arc::ptr_eq(a, b)),
+            _ => panic!("string result expected"),
+        }
+        assert_eq!(encode_uri_value(&[Value::I32(123)], false), crate::keys::string_value("123"));
+    }
+
+    #[test]
+    #[ignore = "matched URI adapter kernel benchmark; run explicitly with --nocapture"]
+    fn uri_encoding_microbenchmark() {
+        use std::time::Instant;
+        let inputs = [
+            "https://example.test/path?field=value#anchor",
+            "component-with-only-unreserved-characters_123",
+            "https://example.test/a path?q=\u{e9}\u{1f600}&x=1",
+        ];
+        for input in inputs {
+            for reserved in [false, true] {
+                let value = crate::keys::string_value(input);
+                assert_eq!(encode_uri_value(std::slice::from_ref(&value), reserved), s_owned(old_encode(input, reserved)));
+                for sample in 0..4 {
+                    let mut old_time = std::time::Duration::ZERO;
+                    let mut new_time = std::time::Duration::ZERO;
+                    for optimized in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                        let start = Instant::now();
+                        for _ in 0..50_000 {
+                            let result = if optimized {
+                                encode_uri_value(std::slice::from_ref(&value), reserved)
+                            } else {
+                                s_owned(old_encode(input, reserved))
+                            };
+                            std::hint::black_box(result);
+                        }
+                        if optimized { new_time = start.elapsed(); } else { old_time = start.elapsed(); }
+                    }
+                    eprintln!("uri input={input:?} reserved={reserved} sample={sample} operations=50000 old={old_time:?} new={new_time:?}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod match_capture_performance_tests {
+    use super::*;
+
+    fn old_match(regex: &regex::Regex, input: &str) -> Option<Vec<Value>> {
+        let matched = regex.find(input)?;
+        let mut values = vec![crate::keys::string_value(matched.as_str())];
+        if let Some(captures) = regex.captures(input) {
+            for index in 1..captures.len() {
+                values.push(match captures.get(index) {
+                    Some(capture) => crate::keys::string_value(capture.as_str()),
+                    None => Value::Undefined,
+                });
+            }
+        }
+        Some(values)
+    }
+
+    #[test]
+    fn single_capture_search_preserves_existing_results() {
+        for (pattern, input) in [
+            ("(a)(b)?", "xa"),
+            ("(a)(b)?", "xab"),
+            ("a*", "bbb"),
+            ("(?P<word>[a-z]+)-([0-9]+)", "item-42"),
+            ("word", "not present"),
+            ("\u{e9}+(\u{1f600})?", "x\u{e9}\u{e9}"),
+            ("", ""),
+        ] {
+            let regex = regex::Regex::new(pattern).unwrap();
+            assert_eq!(match_capture_values(&regex, input), old_match(&regex, input));
+        }
+        let regex = regex::Regex::new("(a)(b)?").unwrap();
+        assert_eq!(match_capture_values(&regex, "a"), Some(vec![
+            crate::keys::string_value("a"),
+            crate::keys::string_value("a"),
+            Value::Undefined,
+        ]));
+        assert!(regex::Regex::new("[").is_err());
+    }
+
+    #[test]
+    #[ignore = "matched capture-search kernel benchmark; excludes regex compilation"]
+    fn single_capture_search_microbenchmark() {
+        use std::time::{Duration, Instant};
+        let regex = regex::Regex::new("([a-z]+)-([0-9]+)$").unwrap();
+        for matched in [false, true] {
+            let mut input = "0123456789 ".repeat(4096);
+            if matched { input.push_str("item-42"); }
+            assert_eq!(match_capture_values(&regex, &input), old_match(&regex, &input));
+            for sample in 0..4 {
+                let mut old_time = Duration::ZERO;
+                let mut new_time = Duration::ZERO;
+                for optimized in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for _ in 0..1000 {
+                        std::hint::black_box(if optimized {
+                            match_capture_values(&regex, &input)
+                        } else {
+                            old_match(&regex, &input)
+                        });
+                    }
+                    if optimized { new_time = start.elapsed(); } else { old_time = start.elapsed(); }
+                }
+                eprintln!("captures matched={matched} sample={sample} operations=1000 old={old_time:?} new={new_time:?}");
+            }
+        }
+    }
+}

@@ -20,7 +20,7 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{HostContext, VM};
@@ -188,18 +188,8 @@ fn register_weakmap(vm: &mut VM) {
                 if let ObjectKind::Array(ref pairs) = s.kind {
                     let pairs = pairs.clone();
                     drop(s);
-                    for pair in pairs {
-                        if let Value::Object(p) = pair {
-                            let pl = p.lock().unwrap();
-                            if let ObjectKind::Array(ref kv) = pl.kind {
-                                if kv.len() >= 2 {
-                                    if !matches!(kv[0], Value::Object(_)) {
-                                        return throw_invalid_weakmap_key(ctx);
-                                    }
-                                    weakmap_set(mapobj, kv[0].clone(), kv[1].clone());
-                                }
-                            }
-                        }
+                    if !weakmap_extend_fresh(mapobj, pairs) {
+                        return throw_invalid_weakmap_key(ctx);
                     }
                 }
             }
@@ -218,18 +208,8 @@ fn register_weakmap(vm: &mut VM) {
                     if let ObjectKind::Array(ref pairs) = s.kind {
                         let pairs = pairs.clone();
                         drop(s);
-                        for pair in pairs {
-                            if let Value::Object(p) = pair {
-                                let pl = p.lock().unwrap();
-                                if let ObjectKind::Array(ref kv) = pl.kind {
-                                    if kv.len() >= 2 {
-                                        if !matches!(kv[0], Value::Object(_)) {
-                                            return throw_invalid_weakmap_key(ctx);
-                                        }
-                                        weakmap_set(mapobj, kv[0].clone(), kv[1].clone());
-                                    }
-                                }
-                            }
+                        if !weakmap_extend_fresh(mapobj, pairs) {
+                            return throw_invalid_weakmap_key(ctx);
                         }
                     }
                 }
@@ -375,6 +355,52 @@ fn register_weakmap(vm: &mut VM) {
         "size",
         Box::new(|_ctx, _args| Value::Undefined),
     );
+}
+
+// Only used while constructing a fresh, not-yet-exposed native WeakMap.
+// The operation-local index cannot become stale through external mutation.
+fn weakmap_extend_fresh(mapobj: &Arc<Mutex<Object>>, pairs: Vec<Value>) -> bool {
+    let mut positions = if pairs.len() > 8 {
+        Some(HashMap::<usize, usize>::with_capacity(pairs.len()))
+    } else {
+        None
+    };
+    for pair in pairs {
+        if let Value::Object(pair) = pair {
+            let pair = pair.lock().unwrap();
+            if let ObjectKind::Array(kv) = &pair.kind {
+                if kv.len() >= 2 {
+                    let Value::Object(key) = &kv[0] else { return false; };
+                    if let Some(positions) = &mut positions {
+                        let id = Arc::as_ptr(key) as usize;
+                        let mut map = mapobj.lock().unwrap();
+                        if let Some(&pos) = positions.get(&id) {
+                            if let ObjectKind::Array(values) = &mut map.kind {
+                                values[pos] = kv[1].clone();
+                            }
+                        } else {
+                            let keys_obj = match map.properties.get(WM_KEYS_PROP) {
+                                Some(Value::Object(keys)) => keys.clone(),
+                                _ => return false,
+                            };
+                            let mut keys = keys_obj.lock().unwrap();
+                            if let (ObjectKind::Array(values), ObjectKind::Array(keys)) =
+                                (&mut map.kind, &mut keys.kind)
+                            {
+                                let pos = values.len();
+                                keys.push(kv[0].clone());
+                                values.push(kv[1].clone());
+                                positions.insert(id, pos);
+                            }
+                        }
+                    } else {
+                        weakmap_set(mapobj, kv[0].clone(), kv[1].clone());
+                    }
+                }
+            }
+        }
+    }
+    true
 }
 
 fn weakmap_set(mapobj: &Arc<Mutex<Object>>, key: Value, val: Value) {
@@ -646,6 +672,124 @@ mod weakset_batch_speedup_tests {
                 }
             }
             eprintln!("native WeakSet array initialization, items={count}, calls={}: linear-scans={old:?}, transient-index={new:?}", repeats * 10);
+        }
+    }
+}
+
+#[cfg(test)]
+mod weakmap_batch_speedup_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn object() -> Value {
+        Value::Object(vybe_runtime::heap::alloc(Object::new()))
+    }
+
+    fn pair(key: Value, value: Value) -> Value {
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![key, value])))
+    }
+
+    fn map() -> Arc<Mutex<Object>> {
+        let Value::Object(map) = new_weakmap() else { panic!("expected map") };
+        map
+    }
+
+    fn original_extend(map: &Arc<Mutex<Object>>, pairs: Vec<Value>) -> bool {
+        for pair in pairs {
+            if let Value::Object(pair) = pair {
+                let pair = pair.lock().unwrap();
+                if let ObjectKind::Array(kv) = &pair.kind {
+                    if kv.len() >= 2 {
+                        if !matches!(&kv[0], Value::Object(_)) { return false; }
+                        weakmap_set(map, kv[0].clone(), kv[1].clone());
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn snapshot(map: &Arc<Mutex<Object>>) -> (Vec<Value>, Vec<i32>) {
+        let map = map.lock().unwrap();
+        let Some(Value::Object(keys)) = map.properties.get(WM_KEYS_PROP)
+            else { panic!("expected keys") };
+        let keys = keys.lock().unwrap();
+        let (ObjectKind::Array(keys), ObjectKind::Array(values)) = (&keys.kind, &map.kind)
+            else { panic!("expected parallel arrays") };
+        (keys.clone(), values.iter().map(Value::as_i32).collect())
+    }
+
+    fn assert_same(a: &Arc<Mutex<Object>>, b: &Arc<Mutex<Object>>) {
+        let (ak, av) = snapshot(a);
+        let (bk, bv) = snapshot(b);
+        assert_eq!(av, bv);
+        assert_eq!(ak.len(), bk.len());
+        for (a, b) in ak.iter().zip(&bk) {
+            let (Value::Object(a), Value::Object(b)) = (a, b)
+                else { panic!("expected object keys") };
+            assert!(Arc::ptr_eq(a, b));
+        }
+    }
+
+    #[test]
+    fn identity_order_and_last_value_win_at_batch_boundaries() {
+        for count in [0, 1, 6, 7, 8, 9, 32, 256] {
+            let key = object();
+            let mut pairs: Vec<Value> = (0..count)
+                .map(|n| pair(object(), Value::I32(n))).collect();
+            pairs.push(pair(key.clone(), Value::I32(1)));
+            pairs.push(pair(key, Value::I32(99)));
+            let a = map();
+            let b = map();
+            assert!(original_extend(&a, pairs.clone()));
+            assert!(weakmap_extend_fresh(&b, pairs));
+            assert_same(&a, &b);
+            assert_eq!(snapshot(&b).1.last(), Some(&99));
+        }
+    }
+
+    #[test]
+    fn invalid_keys_and_ignored_entries_preserve_prefix() {
+        for at in [0, 4, 9] {
+            let mut pairs: Vec<Value> = (0..16)
+                .map(|n| pair(object(), Value::I32(n))).collect();
+            pairs.insert(1, Value::I32(7));
+            pairs.insert(2, object());
+            pairs.insert(3, Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![]))));
+            pairs[at] = pair(Value::Null, Value::I32(0));
+            let a = map();
+            let b = map();
+            assert!(!original_extend(&a, pairs.clone()));
+            assert!(!weakmap_extend_fresh(&b, pairs));
+            assert!(b.try_lock().is_ok());
+            assert_same(&a, &b);
+        }
+    }
+
+    #[test]
+    #[ignore = "native initializer microbenchmark, not complete constructor timing"]
+    fn native_identity_batch_microbenchmark() {
+        for count in [8, 2048] {
+            let pairs: Vec<Value> = (0..count)
+                .map(|n| pair(object(), Value::I32(n))).collect();
+            let repeats = if count == 8 { 100 } else { 2 };
+            let mut old = Duration::ZERO;
+            let mut new = Duration::ZERO;
+            for batch in 0..10 {
+                for old_path in if batch % 2 == 0 { [true, false] } else { [false, true] } {
+                    let start = Instant::now();
+                    for _ in 0..repeats {
+                        let map = map();
+                        let values = black_box(&pairs).clone();
+                        assert!(if old_path { original_extend(&map, values) }
+                            else { weakmap_extend_fresh(&map, values) });
+                        black_box(map);
+                    }
+                    if old_path { old += start.elapsed(); } else { new += start.elapsed(); }
+                }
+            }
+            eprintln!("native WeakMap array initialization, pairs={count}, calls={}: linear-scans={old:?}, transient-index={new:?}", repeats * 10);
         }
     }
 }

@@ -45,12 +45,46 @@ pub fn resolve(name: &str) -> Option<Tz> {
     if let Ok(tz) = Tz::from_str(trimmed) {
         return Some(tz);
     }
-    // Case-insensitive fallback so `america/new_york` still resolves; the name
-    // returned to callers is the tzdb spelling, not the caller's.
-    TZ_VARIANTS
-        .iter()
-        .find(|tz| tz.name().eq_ignore_ascii_case(trimmed))
-        .copied()
+    resolve_case_folded(trimmed)
+}
+
+// Keep index initialization and temporary folding storage out of the common
+// exact-name path. This helper reads only immutable compiled tzdb data.
+#[cold]
+#[inline(never)]
+fn resolve_case_folded(trimmed: &str) -> Option<Tz> {
+    struct ZoneIndex {
+        zones: std::collections::HashMap<String, Tz>,
+        max_name_length: usize,
+    }
+    static INDEX: std::sync::OnceLock<ZoneIndex> = std::sync::OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let mut zones = std::collections::HashMap::with_capacity(TZ_VARIANTS.len());
+        let mut max_name_length = 0;
+        for &zone in TZ_VARIANTS.iter() {
+            let name = zone.name();
+            max_name_length = max_name_length.max(name.len());
+            // Preserve the old scan's first match if tzdb ever contains
+            // case-differing identifiers. Only immutable tzdb data is indexed.
+            zones.entry(name.to_ascii_lowercase()).or_insert(zone);
+        }
+        ZoneIndex { zones, max_name_length }
+    });
+    if trimmed.len() > index.max_name_length {
+        return None;
+    }
+    let mut folded = [0u8; 64];
+    if trimmed.len() <= folded.len() {
+        for (out, input) in folded.iter_mut().zip(trimmed.bytes()) {
+            *out = input.to_ascii_lowercase();
+        }
+        // ASCII folding leaves non-ASCII UTF-8 bytes unchanged.
+        let key = std::str::from_utf8(&folded[..trimmed.len()]).ok()?;
+        index.zones.get(key).copied()
+    } else {
+        // Future tzdb releases may introduce longer identifiers.
+        index.zones.get(&trimmed.to_ascii_lowercase()).copied()
+    }
 }
 
 /// ECMA-402 `IsValidTimeZoneName`.

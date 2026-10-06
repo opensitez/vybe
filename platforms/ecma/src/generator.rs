@@ -38,9 +38,16 @@ fn is_generator(v: &Value) -> Option<Arc<Mutex<Object>>> {
 }
 
 fn gen_next(genobj: &Arc<Mutex<Object>>) -> Value {
+    let (value, done) = gen_step(genobj);
+    iter_result(value, done)
+}
+
+// Internal consumers need the step, not a newly allocated guest result object.
+// The externally observable next() wrapper above still constructs that object.
+fn gen_step(genobj: &Arc<Mutex<Object>>) -> (Value, bool) {
     let mut o = genobj.lock().unwrap();
     if let Some(Value::Bool(true)) = o.properties.get(GEN_DONE) {
-        return iter_result(Value::Undefined, true);
+        return (Value::Undefined, true);
     }
     let pos = match o.properties.get(GEN_POS) {
         Some(Value::I32(n)) => *n as usize,
@@ -48,22 +55,21 @@ fn gen_next(genobj: &Arc<Mutex<Object>>) -> Value {
     };
     let items_obj = match o.properties.get(GEN_ITEMS).cloned() {
         Some(Value::Object(a)) => a,
-        _ => return iter_result(Value::Undefined, true),
+        _ => return (Value::Undefined, true),
     };
     let items = items_obj.lock().unwrap();
-    let arr = match &items.kind {
-        ObjectKind::Array(v) => v.clone(),
-        _ => return iter_result(Value::Undefined, true),
+    let value = match &items.kind {
+        ObjectKind::Array(v) => v.get(pos).cloned(),
+        _ => return (Value::Undefined, true),
     };
     drop(items);
-    if pos >= arr.len() {
+    let Some(value) = value else {
         o.properties.insert(GEN_DONE.into(), Value::Bool(true));
-        return iter_result(Value::Undefined, true);
-    }
-    let value = arr[pos].clone();
+        return (Value::Undefined, true);
+    };
     o.properties
         .insert(GEN_POS.into(), Value::I32((pos + 1) as i32));
-    iter_result(value, false)
+    (value, false)
 }
 
 fn invoke_magic_callback(callback: &Value, args: &[Value]) -> Option<Value> {
@@ -177,20 +183,7 @@ pub fn register(vm: &mut VM) {
             let cb = args.get(1).cloned().unwrap_or(Value::Undefined);
             let mut out = Vec::new();
             loop {
-                let step = gen_next(&src);
-                let (val, done) = match &step {
-                    Value::Object(o) => {
-                        let o = o.lock().unwrap();
-                        let v = o
-                            .properties
-                            .get("value")
-                            .cloned()
-                            .unwrap_or(Value::Undefined);
-                        let d = matches!(o.properties.get("done"), Some(Value::Bool(true)));
-                        (v, d)
-                    }
-                    _ => (Value::Undefined, true),
-                };
+                let (val, done) = gen_step(&src);
                 if done {
                     break;
                 }
@@ -212,20 +205,7 @@ pub fn register(vm: &mut VM) {
             let cb = args.get(1).cloned().unwrap_or(Value::Undefined);
             let mut out = Vec::new();
             loop {
-                let step = gen_next(&src);
-                let (val, done) = match &step {
-                    Value::Object(o) => {
-                        let o = o.lock().unwrap();
-                        let v = o
-                            .properties
-                            .get("value")
-                            .cloned()
-                            .unwrap_or(Value::Undefined);
-                        let d = matches!(o.properties.get("done"), Some(Value::Bool(true)));
-                        (v, d)
-                    }
-                    _ => (Value::Undefined, true),
-                };
+                let (val, done) = gen_step(&src);
                 if done {
                     break;
                 }

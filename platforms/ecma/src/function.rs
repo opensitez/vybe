@@ -300,18 +300,11 @@ pub fn register(vm: &mut VM) {
             let Some((initializer, arity)) = metadata else {
                 return receiver;
             };
-            let mut inline_args: [Value; APPLY_INLINE_ARG_LIMIT] =
+            let mut inline: [Value; APPLY_INLINE_ARG_LIMIT + 1] =
                 std::array::from_fn(|_| Value::Undefined);
-            if let Some(inline_len) = collect_apply_args_inline(args.get(2), &mut inline_args) {
-                if arity <= APPLY_INLINE_ARG_LIMIT {
-                    let mut inline: [Value; APPLY_INLINE_ARG_LIMIT + 1] =
-                        std::array::from_fn(|_| Value::Undefined);
-                    for index in 0..inline_len.min(arity) {
-                        inline[index] = inline_args[index].clone();
-                    }
-                    inline[arity] = receiver;
-                    return ctx.invoke(&initializer, &inline[..arity + 1]);
-                }
+            if let Some(length) = collect_initializer_inline(args.get(2), arity, &mut inline) {
+                inline[arity] = receiver;
+                return ctx.invoke(&initializer, &inline[..length]);
             }
             let mut packed = args.get(2).map(collect_apply_args).unwrap_or_default();
             packed.resize(arity, Value::Undefined);
@@ -349,8 +342,8 @@ pub fn register(vm: &mut VM) {
             let undefined = Value::Undefined;
             let target = args.first().unwrap_or(&undefined);
             let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let host_callee = is_host_callee(target);
-            if !host_callee && !is_callable(target) {
+            let (callable, host_callee) = apply_target_kind(target);
+            if !callable {
                 ctx.throw_value(crate::error::new_error(
                     ctx,
                     "TypeError",
@@ -479,6 +472,20 @@ pub fn register(vm: &mut VM) {
     }
 }
 
+// Initialize the caller's buffer with Undefined before calling. The final
+// slot is reserved for the receiver, replacing any excess collected argument.
+fn collect_initializer_inline(
+    value: Option<&Value>,
+    arity: usize,
+    inline: &mut [Value; APPLY_INLINE_ARG_LIMIT + 1],
+) -> Option<usize> {
+    if arity > APPLY_INLINE_ARG_LIMIT {
+        return None;
+    }
+    collect_apply_args_inline(value, inline)?;
+    Some(arity + 1)
+}
+
 /// §20.2.3.5 — synthesized function string. Bound and native functions use
 /// the NativeFunction form; compiled functions add the kind tokens the
 /// compiler stamped (`__fn_kind`, `__fn_arrow`).
@@ -540,6 +547,116 @@ pub struct PreparedBoundCallback {
     partials: Vec<Value>,
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+enum BoundPartials {
+    Inline { values: [Value; APPLY_INLINE_ARG_LIMIT], len: usize },
+    Heap(Vec<Value>),
+}
+
+#[cfg(test)]
+impl BoundPartials {
+    fn snapshot(values: &[Value]) -> Self {
+        if values.len() <= APPLY_INLINE_ARG_LIMIT {
+            let mut inline = std::array::from_fn(|_| Value::Undefined);
+            inline[..values.len()].clone_from_slice(values);
+            Self::Inline { values: inline, len: values.len() }
+        } else {
+            Self::Heap(values.to_vec())
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for BoundPartials {
+    type Target = [Value];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Inline { values, len } => &values[..*len],
+            Self::Heap(values) => values,
+        }
+    }
+}
+
+#[cfg(test)]
+mod bound_capture_storage_tests {
+    use super::*;
+
+    #[test]
+    fn captures_preserve_order_identity_and_snapshot_at_storage_boundary() {
+        for len in [0, 1, 3, 8, 9, 32] {
+            let identity = vybe_runtime::heap::alloc(Object::new());
+            let mut values: Vec<Value> = (0..len).map(|n| Value::I32(n as i32)).collect();
+            if len != 0 { values[0] = Value::Object(identity.clone()); }
+            let snapshot = BoundPartials::snapshot(&values);
+            let copy = snapshot.clone();
+            assert_eq!(snapshot.len(), len);
+            assert_eq!(matches!(snapshot, BoundPartials::Inline { .. }), len <= APPLY_INLINE_ARG_LIMIT);
+            values.clear();
+            for captured in [&*snapshot, &*copy] {
+                assert_eq!(captured.len(), len);
+                for (index, value) in captured.iter().enumerate() {
+                    if index == 0 {
+                        let Value::Object(actual) = value else { panic!("identity missing") };
+                        assert!(Arc::ptr_eq(actual, &identity));
+                    } else {
+                        assert!(matches!(value, Value::I32(n) if *n == index as i32));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decoding_releases_locks_and_does_not_retain_mutable_capture_storage() {
+        for len in [0, 1, 8, 9, 32] {
+            let mut captures = vec![Value::I32(101), Value::I32(102), Value::I32(103)];
+            captures.extend((0..len).map(|n| Value::I32(n as i32)));
+            let backing = vybe_runtime::heap::alloc(Object::new_array(captures));
+            let mut wrapper = Object::new();
+            wrapper.properties.insert("name".into(), crate::keys::string_value("bound capture"));
+            wrapper.properties.insert("__bound_args".into(), Value::Object(backing.clone()));
+            let wrapper = vybe_runtime::heap::alloc(wrapper);
+            let decoded = decode_bound_callback(&Value::Object(wrapper.clone())).unwrap();
+            assert!(wrapper.try_lock().is_ok());
+            backing.lock().unwrap().kind = ObjectKind::Array(Vec::new());
+            assert!(matches!(decoded.target, Value::I32(101)));
+            assert!(matches!(decoded.bound_this, Value::I32(102)));
+            assert!(matches!(decoded.target_proto, Value::I32(103)));
+            assert_eq!(decoded.partials.len(), len);
+            for (index, value) in decoded.partials.iter().enumerate() {
+                assert!(matches!(value, Value::I32(n) if *n == index as i32));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "paired bound capture snapshot kernel, not complete bind or guest timing"]
+    fn paired_capture_snapshot_benchmark() {
+        use std::{hint::black_box, time::{Duration, Instant}};
+        for len in [0, 1, 3, 8, 9, 32] {
+            let values: Vec<Value> = (0..len).map(|_| crate::keys::string_value("captured")).collect();
+            let mut previous = Duration::ZERO;
+            let mut current = Duration::ZERO;
+            for round in 0..8 {
+                for optimized in if round % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for _ in 0..20_000 {
+                        if optimized {
+                            black_box(BoundPartials::snapshot(black_box(&values)));
+                        } else {
+                            black_box(black_box(&values).iter().cloned().collect::<Vec<Value>>());
+                        }
+                    }
+                    if optimized { current += start.elapsed(); } else { previous += start.elapsed(); }
+                }
+            }
+            eprintln!("bound captures len={len}: previous={previous:?}, current={current:?}");
+        }
+    }
+}
+
 fn decode_bound_callback(callback: &Value) -> Option<PreparedBoundCallback> {
     let Value::Object(obj) = callback else {
         return None;
@@ -593,7 +710,7 @@ pub fn invoke_prepared_bound_callback(
     if total_len <= APPLY_INLINE_ARG_LIMIT {
         let mut inline: [Value; APPLY_INLINE_ARG_LIMIT] = std::array::from_fn(|_| Value::Undefined);
         let mut index = 0;
-        for value in &prepared.partials {
+        for value in prepared.partials.iter() {
             inline[index] = value.clone();
             index += 1;
         }
@@ -640,7 +757,7 @@ pub fn try_invoke_bound_callback_if_needed(
     if total_len <= APPLY_INLINE_ARG_LIMIT {
         let mut inline: [Value; APPLY_INLINE_ARG_LIMIT] = std::array::from_fn(|_| Value::Undefined);
         let mut index = 0;
-        for value in &prepared.partials {
+        for value in prepared.partials.iter() {
             inline[index] = value.clone();
             index += 1;
         }
@@ -697,13 +814,13 @@ pub fn invoke_with_explicit_this(
             ctx.set_js_this(previous_this);
             result
         }
-        ExplicitThisCallKind::Compiled => {
+        ExplicitThisCallKind::Compiled(fixed_count) => {
             // Arrows need no special case here: they capture lexical
             // `this` at creation (compiler-emitted upvalue) and never read
             // the ambient binding this sets (§10.2.11).
             let previous_this = ctx.current_js_this();
             ctx.set_js_this(this_arg);
-            let result = invoke_compiled_function(ctx, target, args);
+            let result = invoke_compiled_function_with_arity(ctx, target, args, fixed_count);
             ctx.set_js_this(previous_this);
             result
         }
@@ -776,10 +893,10 @@ pub fn try_invoke_with_explicit_this(
             ctx.set_js_this(previous_this);
             result
         }
-        ExplicitThisCallKind::Compiled => {
+        ExplicitThisCallKind::Compiled(fixed_count) => {
             let previous_this = ctx.current_js_this();
             ctx.set_js_this(this_arg);
-            let result = try_invoke_compiled_function(ctx, target, args);
+            let result = try_invoke_compiled_function_with_arity(ctx, target, args, fixed_count);
             ctx.set_js_this(previous_this);
             result
         }
@@ -949,7 +1066,16 @@ fn try_invoke_with_prepended_receiver(
 }
 
 fn invoke_compiled_function(ctx: &mut HostContext, target: &Value, args: &[Value]) -> Value {
-    let Some(fixed_count) = compiled_rest_fixed_arity(target) else {
+    invoke_compiled_function_with_arity(ctx, target, args, compiled_rest_fixed_arity(target))
+}
+
+fn invoke_compiled_function_with_arity(
+    ctx: &mut HostContext,
+    target: &Value,
+    args: &[Value],
+    fixed_count: Option<usize>,
+) -> Value {
+    let Some(fixed_count) = fixed_count else {
         return ctx.invoke(target, args);
     };
 
@@ -977,7 +1103,16 @@ fn try_invoke_compiled_function(
     target: &Value,
     args: &[Value],
 ) -> Result<Value, Value> {
-    let Some(fixed_count) = compiled_rest_fixed_arity(target) else {
+    try_invoke_compiled_function_with_arity(ctx, target, args, compiled_rest_fixed_arity(target))
+}
+
+fn try_invoke_compiled_function_with_arity(
+    ctx: &mut HostContext,
+    target: &Value,
+    args: &[Value],
+    fixed_count: Option<usize>,
+) -> Result<Value, Value> {
+    let Some(fixed_count) = fixed_count else {
         return ctx.try_invoke(target, args);
     };
 
@@ -1017,6 +1152,10 @@ fn compiled_rest_fixed_arity(target: &Value) -> Option<usize> {
     if !matches!(object.kind, ObjectKind::Function(_)) {
         return None;
     }
+    rest_fixed_arity_from_object(&object)
+}
+
+fn rest_fixed_arity_from_object(object: &Object) -> Option<usize> {
     match object.properties.get("__vybe_rest_fixed_arity") {
         Some(Value::I32(value)) if *value >= 0 => Some(*value as usize),
         Some(Value::I64(value)) if *value >= 0 => Some(*value as usize),
@@ -1040,7 +1179,7 @@ fn host_function_uses_explicit_receiver(target: &Value) -> bool {
 enum ExplicitThisCallKind {
     Proxy(Value, Value),
     BoundHost,
-    Compiled,
+    Compiled(Option<usize>),
     Constant(Value),
     Host(bool),
     Other,
@@ -1063,7 +1202,7 @@ fn explicit_this_call_kind(target: &Value) -> ExplicitThisCallKind {
         ObjectKind::HostFunction(_) if object.properties.contains_key("__bound_args") => {
             ExplicitThisCallKind::BoundHost
         }
-        ObjectKind::Function(_) => ExplicitThisCallKind::Compiled,
+        ObjectKind::Function(_) => ExplicitThisCallKind::Compiled(rest_fixed_arity_from_object(&object)),
         _ if object.properties.contains_key("__fn_return") => {
             ExplicitThisCallKind::Constant(object.properties.get("__fn_return").unwrap().clone())
         }
@@ -1073,6 +1212,20 @@ fn explicit_this_call_kind(target: &Value) -> ExplicitThisCallKind {
         )),
         _ => ExplicitThisCallKind::Other,
     }
+}
+
+// Classify only the initial callability check. Argument getters may mutate
+// callable metadata, so final dispatch must still inspect the target afresh.
+fn apply_target_kind(target: &Value) -> (bool, bool) {
+    let Value::Object(object) = target else {
+        return (false, false);
+    };
+    let object = object.lock().unwrap();
+    let callable = matches!(object.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_));
+    let plain_host = matches!(object.kind, ObjectKind::HostFunction(_))
+        && !(object.properties.contains_key("__vybe_proxy_target")
+            && object.properties.contains_key("__vybe_proxy_handler"));
+    (callable, plain_host)
 }
 
 fn is_host_callee(target: &Value) -> bool {
@@ -1320,6 +1473,97 @@ pub(crate) fn collect_apply_args(value: &Value) -> Vec<Value> {
 
 /// Like `bind_function` but reads `__fn_arity` as a length fallback for
 /// magic fn_obj mocks (tests pass `{__fn_arity: n}` instead of `length`).
+#[cfg(test)]
+mod bound_name_allocation_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn previous_name(object: &Object) -> Arc<str> {
+        let name = match object.properties.get("name").or_else(|| object.properties.get("__fn_name")) {
+            Some(Value::String(text)) => text.to_string(),
+            Some(other) => crate::keys::value_display_string(other),
+            None => String::new(),
+        };
+        crate::keys::concat2_arc("bound ", &name)
+    }
+
+    #[test]
+    fn names_preserve_fallbacks_and_current_values() {
+        let mut object = Object::new();
+        assert_eq!(bound_function_name(&object), previous_name(&object));
+        for value in [crate::keys::string_value("named"), crate::keys::string_value(""),
+            crate::keys::string_value("bound prior"), crate::keys::string_value("\u{e9}\u{1f680}\0"),
+            Value::I32(42), Value::Null, Value::Undefined] {
+            object.properties.insert("name".into(), value);
+            assert_eq!(bound_function_name(&object), previous_name(&object));
+        }
+        object.properties.shift_remove("name");
+        object.properties.insert("__fn_name".into(), crate::keys::string_value("fallback"));
+        assert_eq!(bound_function_name(&object).as_ref(), "bound fallback");
+        object.properties.insert("name".into(), crate::keys::string_value("current"));
+        assert_eq!(bound_function_name(&object).as_ref(), "bound current");
+    }
+
+    #[test]
+    fn both_constructors_keep_names_lengths_and_captures() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_free_fn("ecma:bind-name-test", "target", Box::new(|_, _| Value::Undefined));
+        let index = vm.resolve_host_function_index("ecma:bind-name-test", "target").unwrap();
+        let bound_index = vm.resolve_host_function_index("ecma:function", "invokeBound").unwrap();
+        let mut target = Object::new();
+        target.kind = ObjectKind::HostFunction(index);
+        target.properties.insert("name".into(), crate::keys::string_value("target"));
+        target.properties.insert("length".into(), Value::I32(3));
+        let target = Value::Object(vybe_runtime::heap::alloc(target));
+        for constructor in [bind_function, bind_function_with_arity] {
+            let result = constructor(&target, &[Value::Null, Value::I32(7)], bound_index);
+            let Value::Object(result) = result else { panic!("bound function"); };
+            let result = result.lock().unwrap();
+            assert!(matches!(result.properties.get("name"), Some(Value::String(name)) if name.as_ref() == "bound target"));
+            assert!(matches!(result.properties.get("length"), Some(Value::F64(length)) if *length == 2.0));
+            let Some(Value::Object(captures)) = result.properties.get("__bound_args") else { panic!("captures"); };
+            let captures = captures.lock().unwrap();
+            let ObjectKind::Array(values) = &captures.kind else { panic!("capture array"); };
+            assert_eq!(values.len(), 4);
+            assert_eq!(values[1], Value::Null);
+            assert_eq!(values[3], Value::I32(7));
+        }
+    }
+
+    #[test]
+    #[ignore = "paired bound-name allocation benchmark, not whole binding or guest timing"]
+    fn paired_bound_name_benchmark() {
+        for length in [0, 8, 64, 512, 4096] {
+            let mut object = Object::new();
+            object.properties.insert("name".into(), Value::String(Arc::from("x".repeat(length))));
+            let timed = |current: bool| {
+                let start = Instant::now();
+                for _ in 0..10_000 {
+                    black_box(if current { bound_function_name(black_box(&object)) } else { previous_name(black_box(&object)) });
+                }
+                start.elapsed()
+            };
+            let mut previous = Duration::ZERO;
+            let mut current = Duration::ZERO;
+            for round in 0..8 {
+                if round % 2 == 0 { previous += timed(false); current += timed(true); }
+                else { current += timed(true); previous += timed(false); }
+            }
+            eprintln!("bound name bytes={length}: previous={previous:?}, current={current:?}");
+        }
+    }
+}
+
+fn bound_function_name(object: &Object) -> Arc<str> {
+    match object.properties.get("name").or_else(|| object.properties.get("__fn_name")) {
+        Some(Value::String(text)) => crate::keys::concat2_arc("bound ", text),
+        Some(other) => crate::keys::concat2_arc("bound ", &crate::keys::value_display_string(other)),
+        None => crate::keys::string_arc("bound "),
+    }
+}
+
 fn bind_function_with_arity(target: &Value, bound: &[Value], invoke_bound_idx: usize) -> Value {
     let Value::Object(obj) = target else {
         return target.clone();
@@ -1347,15 +1591,7 @@ fn bind_function_with_arity(target: &Value, bound: &[Value], invoke_bound_idx: u
             }
             _ => Vec::new(),
         };
-        let name = match o
-            .properties
-            .get("name")
-            .or_else(|| o.properties.get("__fn_name"))
-        {
-            Some(Value::String(text)) => text.to_string(),
-            Some(other) => crate::keys::value_display_string(other),
-            None => String::new(),
-        };
+        let name = bound_function_name(&o);
         let length = match o.properties.get("length") {
             Some(Value::I32(value)) if *value > 0 => *value as usize,
             Some(Value::I64(value)) if *value > 0 => *value as usize,
@@ -1422,7 +1658,7 @@ fn bind_function_with_arity(target: &Value, bound: &[Value], invoke_bound_idx: u
         );
         wrapper.properties.insert(
             "name".into(),
-            Value::String(crate::keys::concat2_arc("bound ", &target_name)),
+            Value::String(target_name),
         );
         wrapper.properties.insert(
             "length".into(),
@@ -1484,7 +1720,7 @@ fn bind_function_with_arity(target: &Value, bound: &[Value], invoke_bound_idx: u
     }
     wrapper.properties.insert(
         "name".into(),
-        Value::String(crate::keys::concat2_arc("bound ", &target_name)),
+        Value::String(target_name),
     );
     wrapper.properties.insert(
         "length".into(),
@@ -1526,15 +1762,7 @@ fn bind_function(target: &Value, bound: &[Value], invoke_bound_idx: usize) -> Va
             }
             _ => Vec::new(),
         };
-        let name = match o
-            .properties
-            .get("name")
-            .or_else(|| o.properties.get("__fn_name"))
-        {
-            Some(Value::String(text)) => text.to_string(),
-            Some(other) => crate::keys::value_display_string(other),
-            None => String::new(),
-        };
+        let name = bound_function_name(&o);
         let length = match o.properties.get("length") {
             Some(Value::I32(value)) if *value > 0 => *value as usize,
             Some(Value::I64(value)) if *value > 0 => *value as usize,
@@ -1601,7 +1829,7 @@ fn bind_function(target: &Value, bound: &[Value], invoke_bound_idx: usize) -> Va
         );
         wrapper.properties.insert(
             "name".into(),
-            Value::String(crate::keys::concat2_arc("bound ", &target_name)),
+            Value::String(target_name),
         );
         wrapper.properties.insert(
             "length".into(),
@@ -1663,7 +1891,7 @@ fn bind_function(target: &Value, bound: &[Value], invoke_bound_idx: usize) -> Va
     }
     wrapper.properties.insert(
         "name".into(),
-        Value::String(crate::keys::concat2_arc("bound ", &target_name)),
+        Value::String(target_name),
     );
     wrapper.properties.insert(
         "length".into(),
@@ -1673,4 +1901,382 @@ fn bind_function(target: &Value, bound: &[Value], invoke_bound_idx: usize) -> Va
         wrapper.properties.insert("prototype".into(), target_proto);
     }
     Value::Object(vybe_runtime::heap::alloc(wrapper))
+}
+
+#[cfg(test)]
+mod initializer_buffer_speedup_tests {
+    use super::*;
+
+    fn original_prepare(list: Option<&Value>, arity: usize, receiver: &Value) -> Vec<Value> {
+        let mut first: [Value; APPLY_INLINE_ARG_LIMIT] = std::array::from_fn(|_| Value::Undefined);
+        if let Some(length) = collect_apply_args_inline(list, &mut first) {
+            if arity <= APPLY_INLINE_ARG_LIMIT {
+                let mut second: [Value; APPLY_INLINE_ARG_LIMIT + 1] = std::array::from_fn(|_| Value::Undefined);
+                for index in 0..length.min(arity) { second[index] = first[index].clone(); }
+                second[arity] = receiver.clone();
+                return second[..arity + 1].to_vec();
+            }
+        }
+        let mut packed = list.map(collect_apply_args).unwrap_or_default();
+        packed.resize(arity, Value::Undefined);
+        packed.push(receiver.clone());
+        packed
+    }
+
+    fn array(length: usize) -> Value {
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array((0..length).map(|i| Value::I32(i as i32)).collect())))
+    }
+
+    fn target(vm: &VM, module: &str, name: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    fn single_buffer_preserves_arity_padding_truncation_and_receiver_identity() {
+        let receiver = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        for arity in [0, 1, 4, 8, 9, 16] {
+            for count in [0, 1, 4, 8, 9, 10, 16] {
+                let list = array(count);
+                let expected = original_prepare(Some(&list), arity, &receiver);
+                let mut inline: [Value; APPLY_INLINE_ARG_LIMIT + 1] = std::array::from_fn(|_| Value::Undefined);
+                let actual = if let Some(length) = collect_initializer_inline(Some(&list), arity, &mut inline) {
+                    inline[arity] = receiver.clone();
+                    inline[..length].to_vec()
+                } else {
+                    let mut packed = collect_apply_args(&list);
+                    packed.resize(arity, Value::Undefined);
+                    packed.push(receiver.clone());
+                    packed
+                };
+                assert_eq!(actual.len(), expected.len());
+                for (actual, expected) in actual.iter().zip(&expected) {
+                    match (actual, expected) {
+                        (Value::I32(a), Value::I32(b)) => assert_eq!(a, b),
+                        (Value::Undefined, Value::Undefined) => {},
+                        (Value::Object(a), Value::Object(b)) => assert!(Arc::ptr_eq(a, b)),
+                        _ => panic!("initializer argument mismatch"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn registered_initialization_reads_current_metadata_and_releases_class_lock() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let class = vybe_runtime::heap::alloc(Object::new());
+        let class_for_callback = class.clone();
+        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let recorded = seen.clone();
+        vm.register_free_fn("test:initializer", "capture", Box::new(move |_, args| {
+            assert!(class_for_callback.try_lock().is_ok());
+            *recorded.lock().unwrap() = args.to_vec();
+            Value::I32(321)
+        }));
+        let initializer = target(&vm, "test:initializer", "capture");
+        class.lock().unwrap().properties.insert("__vybe_constructor_initializer".into(), initializer);
+        let initialize = target(&vm, "ecma:function", "initialize");
+        let receiver = vybe_runtime::heap::alloc(Object::new());
+        let args = [Value::Object(class.clone()), Value::Object(receiver.clone()), array(9)];
+        for arity in [8, 0, 16] {
+            class.lock().unwrap().properties.insert("__vybe_constructor_arity".into(), Value::I32(arity));
+            assert!(matches!(vm.invoke(&initialize, &args).unwrap(), Value::I32(321)));
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), arity as usize + 1);
+            for index in 0..arity as usize {
+                if index < 9 { assert!(matches!(seen[index], Value::I32(value) if value == index as i32)); }
+                else { assert!(matches!(seen[index], Value::Undefined)); }
+            }
+            let Value::Object(actual) = &seen[arity as usize] else { panic!("receiver missing") };
+            assert!(Arc::ptr_eq(actual, &receiver));
+        }
+    }
+
+    #[test]
+    fn sparse_and_generic_lists_match_original_at_inline_boundary() {
+        let receiver = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        let check = |list: &Value| {
+            for arity in [0, 1, 4, 8, 9, 16] {
+                let expected = original_prepare(Some(list), arity, &receiver);
+                let mut inline: [Value; APPLY_INLINE_ARG_LIMIT + 1] = std::array::from_fn(|_| Value::Undefined);
+                let actual = if let Some(length) = collect_initializer_inline(Some(list), arity, &mut inline) {
+                    inline[arity] = receiver.clone();
+                    inline[..length].to_vec()
+                } else {
+                    let mut packed = collect_apply_args(list);
+                    packed.resize(arity, Value::Undefined);
+                    packed.push(receiver.clone());
+                    packed
+                };
+                assert_eq!(actual.len(), expected.len());
+                for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+                    match (actual, expected) {
+                        (Value::I32(a), Value::I32(b)) => assert_eq!(a, b, "arity={arity}, index={index}"),
+                        (Value::Undefined, Value::Undefined) => {},
+                        (Value::Object(a), Value::Object(b)) => assert!(Arc::ptr_eq(a, b)),
+                        _ => panic!("array-like initializer mismatch at arity={arity}, index={index}"),
+                    }
+                }
+            }
+        };
+        for length in [0, 1, 8, 9, 10, 16] {
+            let mut object = Object::new();
+            object.properties.insert("length".into(), Value::F64(length as f64));
+            object.properties.insert("unrelated".into(), Value::I32(999));
+            // Reverse insertion order and holes must not change argument order.
+            for index in (0..length).rev() {
+                if index % 3 != 1 { object.properties.insert(index.to_string(), Value::I32(index as i32)); }
+            }
+            check(&Value::Object(vybe_runtime::heap::alloc(object)));
+            let values = (0..length).map(|index| if index % 3 == 1 {
+                Value::Undefined
+            } else { Value::I32(index as i32) }).collect();
+            check(&Value::Object(vybe_runtime::heap::alloc(Object::new_array(values))));
+        }
+        for length in [Value::I32(-1), Value::F64(9.5), Value::Null, Value::Undefined] {
+            let mut object = Object::new();
+            object.properties.insert("length".into(), length);
+            object.properties.insert("0".into(), Value::I32(42));
+            object.properties.insert("8".into(), Value::I32(84));
+            check(&Value::Object(vybe_runtime::heap::alloc(object)));
+        }
+        for list in [Value::Null, Value::Undefined, Value::I32(7)] { check(&list); }
+    }
+
+    #[test]
+    #[ignore = "native initializer packing benchmark, not constructor/guest execution timing"]
+    fn initializer_packing_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        let list = array(4);
+        let receiver = Value::Undefined;
+        let start = Instant::now();
+        for _ in 0..10000 {
+            let mut first: [Value; APPLY_INLINE_ARG_LIMIT] = std::array::from_fn(|_| Value::Undefined);
+            let length = collect_apply_args_inline(Some(black_box(&list)), &mut first).unwrap();
+            let mut second: [Value; APPLY_INLINE_ARG_LIMIT + 1] = std::array::from_fn(|_| Value::Undefined);
+            for index in 0..length.min(4) { second[index] = first[index].clone(); }
+            second[4] = receiver.clone();
+            black_box(&second[..5]);
+        }
+        let original = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..10000 {
+            let mut inline: [Value; APPLY_INLINE_ARG_LIMIT + 1] = std::array::from_fn(|_| Value::Undefined);
+            let length = collect_initializer_inline(Some(black_box(&list)), 4, &mut inline).unwrap();
+            inline[4] = receiver.clone();
+            black_box(&inline[..length]);
+        }
+        eprintln!("initializer 10000 packs: two-buffer={original:?}, single-buffer={:?}", start.elapsed());
+    }
+
+    #[test]
+    #[ignore = "registered initializer benchmark with native stub, not guest constructor timing"]
+    fn registered_initializer_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_free_fn("test:initializer", "stub", Box::new(|_, _| Value::I32(123)));
+        vm.register_host_fn("test:initializer", "original", Box::new(|ctx, args| {
+            let receiver = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let Some(Value::Object(class)) = args.first() else { return receiver };
+            let metadata = {
+                let class = class.lock().unwrap();
+                class.properties.get("__vybe_constructor_initializer").cloned().zip(
+                    class.properties.get("__vybe_constructor_arity").map(|value| value.as_f64() as usize)
+                )
+            };
+            let Some((initializer, arity)) = metadata else { return receiver };
+            let mut first: [Value; APPLY_INLINE_ARG_LIMIT] = std::array::from_fn(|_| Value::Undefined);
+            if let Some(length) = collect_apply_args_inline(args.get(2), &mut first) {
+                if arity <= APPLY_INLINE_ARG_LIMIT {
+                    let mut second: [Value; APPLY_INLINE_ARG_LIMIT + 1] = std::array::from_fn(|_| Value::Undefined);
+                    for index in 0..length.min(arity) { second[index] = first[index].clone(); }
+                    second[arity] = receiver;
+                    return ctx.invoke(&initializer, &second[..arity + 1]);
+                }
+            }
+            let mut packed = args.get(2).map(collect_apply_args).unwrap_or_default();
+            packed.resize(arity, Value::Undefined);
+            packed.push(receiver);
+            ctx.invoke(&initializer, &packed)
+        }));
+        let mut class = Object::new();
+        class.properties.insert("__vybe_constructor_initializer".into(), target(&vm, "test:initializer", "stub"));
+        class.properties.insert("__vybe_constructor_arity".into(), Value::I32(4));
+        let args = [Value::Object(vybe_runtime::heap::alloc(class)),
+            Value::Object(vybe_runtime::heap::alloc(Object::new())), array(4)];
+        let original = target(&vm, "test:initializer", "original");
+        let optimized = target(&vm, "ecma:function", "initialize");
+        assert!(matches!(vm.invoke(&original, &args).unwrap(), Value::I32(123)));
+        assert!(matches!(vm.invoke(&optimized, &args).unwrap(), Value::I32(123)));
+        // Alternate paired batch order to reduce first/second scheduling bias.
+        let mut original_time = std::time::Duration::ZERO;
+        let mut optimized_time = std::time::Duration::ZERO;
+        for round in 0..6 {
+            let order = if round % 2 == 0 { [(&original, false), (&optimized, true)] }
+                else { [(&optimized, true), (&original, false)] };
+            for (function, is_optimized) in order {
+                let start = Instant::now();
+                for _ in 0..2000 { black_box(vm.invoke(function, black_box(&args)).unwrap()); }
+                if is_optimized { optimized_time += start.elapsed(); }
+                else { original_time += start.elapsed(); }
+            }
+        }
+        eprintln!("initializer 12000 registered calls: original={original_time:?}, optimized={optimized_time:?}");
+    }
+}
+
+#[cfg(test)]
+mod apply_target_classification_tests {
+    use super::*;
+
+    fn guest() -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::Function(vybe_runtime::value::Function {
+            name: Some("apply-classification".into()),
+            arity: 1,
+            chunk_index: 0,
+            upvalues: Vec::new(),
+        });
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn legacy(target: &Value) -> (bool, bool) {
+        let host = is_host_callee(target);
+        (host || is_callable(target), host)
+    }
+
+    #[test]
+    fn classification_matches_existing_callable_and_proxy_rules() {
+        let guest = guest();
+        let mut host = Object::new();
+        host.kind = ObjectKind::HostFunction(0);
+        let host = Value::Object(vybe_runtime::heap::alloc(host));
+        let mut proxy = Object::new();
+        proxy.kind = ObjectKind::HostFunction(0);
+        proxy.properties.insert("__vybe_proxy_target".into(), guest.clone());
+        proxy.properties.insert("__vybe_proxy_handler".into(), Value::Null);
+        let proxy = Value::Object(vybe_runtime::heap::alloc(proxy));
+        let ordinary = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        for (target, expected) in [
+            (guest, (true, false)),
+            (host, (true, true)),
+            (proxy, (true, false)),
+            (ordinary, (false, false)),
+            (Value::Null, (false, false)),
+            (Value::Undefined, (false, false)),
+            (Value::I32(1), (false, false)),
+        ] {
+            assert_eq!(legacy(&target), expected);
+            assert_eq!(apply_target_kind(&target), expected);
+        }
+    }
+
+    #[test]
+    #[ignore = "paired target classification microbenchmark, not guest execution timing"]
+    fn paired_classification_benchmark() {
+        use std::{hint::black_box, time::{Duration, Instant}};
+        let guest = guest();
+        let mut host = Object::new();
+        host.kind = ObjectKind::HostFunction(0);
+        let host = Value::Object(vybe_runtime::heap::alloc(host));
+        for (name, target) in [("guest", guest), ("host", host)] {
+            let mut old = Duration::ZERO;
+            let mut new = Duration::ZERO;
+            for round in 0..8 {
+                for optimized in if round % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for _ in 0..100_000 {
+                        let target = black_box(&target);
+                        black_box(if optimized { apply_target_kind(target) } else { legacy(target) });
+                    }
+                    if optimized { new += start.elapsed(); } else { old += start.elapsed(); }
+                }
+            }
+            eprintln!("apply {name} classification 800000 calls: previous={old:?}, fused={new:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod rest_array_bulk_clone_candidate_tests {
+    use super::*;
+
+    fn candidate(args: &[Value], fixed_count: usize) -> Value {
+        let rest = args[fixed_count.min(args.len())..].to_vec();
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(rest)))
+    }
+
+    fn contents(value: &Value) -> Vec<Value> {
+        let Value::Object(object) = value else { panic!("expected rest array") };
+        let object = object.lock().unwrap();
+        let ObjectKind::Array(values) = &object.kind else { panic!("expected array backing") };
+        values.clone()
+    }
+
+    #[test]
+    fn bulk_clone_keeps_fresh_backing_and_shared_element_identity() {
+        let shared = vybe_runtime::heap::alloc(Object::new());
+        let text: Arc<str> = Arc::from("rest");
+        let args = [Value::I32(7), Value::Object(shared.clone()), Value::String(text.clone())];
+        for fixed in [0, 1, 2, 3, 8, usize::MAX] {
+            let old = make_rest_array(&args, fixed);
+            let new = candidate(&args, fixed);
+            assert!(matches!((&old, &new), (Value::Object(a), Value::Object(b)) if !Arc::ptr_eq(a, b)));
+            let old_values = contents(&old);
+            let new_values = contents(&new);
+            assert_eq!(new_values.len(), args.len().saturating_sub(fixed));
+            assert_eq!(old_values.len(), new_values.len());
+            for (old, new) in old_values.iter().zip(&new_values) {
+                match (old, new) {
+                    (Value::I32(a), Value::I32(b)) => assert_eq!(a, b),
+                    (Value::Object(a), Value::Object(b)) => assert!(Arc::ptr_eq(a, b)),
+                    (Value::String(a), Value::String(b)) => assert!(Arc::ptr_eq(a, b)),
+                    _ => panic!("rest element shape changed"),
+                }
+            }
+        }
+        let first = candidate(&args, 0);
+        let second = candidate(&args, 0);
+        let Value::Object(first) = first else { unreachable!() };
+        if let ObjectKind::Array(values) = &mut first.lock().unwrap().kind {
+            values[0] = Value::I32(99);
+        }
+        assert!(matches!(contents(&second)[0], Value::I32(7)));
+        assert!(matches!(args[0], Value::I32(7)));
+    }
+
+    #[test]
+    #[ignore = "paired rest-array allocation benchmark, not whole callback timing"]
+    fn paired_rest_array_allocation_benchmark() {
+        use std::{hint::black_box, time::{Duration, Instant}};
+        let shared = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        let text = crate::keys::string_value("rest-benchmark");
+        for length in [0, 1, 8, 64, 512] {
+            let mut args = vec![Value::I32(0); length + 2];
+            for (index, value) in args.iter_mut().enumerate() {
+                *value = match index % 3 {
+                    0 => Value::I32(index as i32),
+                    1 => shared.clone(),
+                    _ => text.clone(),
+                };
+            }
+            let mut previous = Duration::ZERO;
+            let mut bulk = Duration::ZERO;
+            for round in 0..8 {
+                for optimized in if round % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for _ in 0..1000 {
+                        black_box(if optimized { candidate(black_box(&args), 2) }
+                            else { make_rest_array(black_box(&args), 2) });
+                    }
+                    if optimized { bulk += start.elapsed(); } else { previous += start.elapsed(); }
+                }
+            }
+            eprintln!("rest array len={length} 8000 allocations: previous={previous:?}, bulk={bulk:?}");
+        }
+    }
 }

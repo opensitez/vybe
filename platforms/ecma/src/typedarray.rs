@@ -267,15 +267,60 @@ pub fn numbers_from_value(v: &Value) -> Vec<f64> {
             let o = obj.lock().unwrap();
             match &o.kind {
                 ObjectKind::TypedArray(ta) => {
-                    let len = ta_live_length(ta);
                     let bpe = ta.elem.bytes_per_element();
                     let buf = ta.buffer.lock().unwrap();
+                    let len = ta_live_length_for_buffer(ta, buf.len());
                     let mut numbers = Vec::with_capacity(len);
-                    for i in 0..len {
-                        let abs = ta.byte_offset + i * bpe;
-                        numbers.push(
-                            read_element_from_locked_buffer(ta.elem, &buf, abs, bpe).as_f64(),
-                        );
+                    let start = ta.byte_offset.min(buf.len());
+                    let bytes = &buf[start..start + len * bpe];
+                    match ta.elem {
+                        TypedElemKind::U8 | TypedElemKind::U8Clamped => {
+                            numbers.extend(bytes.iter().map(|&byte| byte as f64));
+                        }
+                        TypedElemKind::I8 => {
+                            numbers.extend(bytes.iter().map(|&byte| byte as i8 as f64));
+                        }
+                        TypedElemKind::I16 => {
+                            numbers.extend(bytes.chunks_exact(2).map(|chunk| {
+                                i16::from_le_bytes([chunk[0], chunk[1]]) as f64
+                            }));
+                        }
+                        TypedElemKind::U16 => {
+                            numbers.extend(bytes.chunks_exact(2).map(|chunk| {
+                                u16::from_le_bytes([chunk[0], chunk[1]]) as f64
+                            }));
+                        }
+                        TypedElemKind::I32 => {
+                            numbers.extend(bytes.chunks_exact(4).map(|chunk| {
+                                i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64
+                            }));
+                        }
+                        TypedElemKind::U32 => {
+                            numbers.extend(bytes.chunks_exact(4).map(|chunk| {
+                                u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64
+                            }));
+                        }
+                        TypedElemKind::F32 => {
+                            numbers.extend(bytes.chunks_exact(4).map(|chunk| {
+                                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64
+                            }));
+                        }
+                        TypedElemKind::F64 => {
+                            numbers.extend(bytes.chunks_exact(8).map(|chunk| {
+                                f64::from_le_bytes([
+                                    chunk[0], chunk[1], chunk[2], chunk[3],
+                                    chunk[4], chunk[5], chunk[6], chunk[7],
+                                ])
+                            }));
+                        }
+                        _ => {
+                            for i in 0..len {
+                                let abs = ta.byte_offset + i * bpe;
+                                numbers.push(
+                                    read_element_from_locked_buffer(ta.elem, &buf, abs, bpe).as_f64(),
+                                );
+                            }
+                        }
                     }
                     numbers
                 }
@@ -2544,29 +2589,25 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
-                    let live = ta_live_length(ta) as i32;
+                    let buf = ta.buffer.lock().unwrap();
+                    let live = ta_live_length_for_buffer(ta, buf.len()) as i32;
                     let idx = if i < 0 { live + i } else { i };
                     if idx < 0 || idx >= live {
                         return args.first().cloned().unwrap_or(Value::Null);
                     }
-                    let mut values = Vec::with_capacity(live as usize);
                     let bpe = ta.elem.bytes_per_element();
-                    let buf = ta.buffer.lock().unwrap();
-                    for k in 0..live as usize {
-                        if k as i32 == idx {
-                            values.push(val.clone());
-                        } else {
-                            let abs = ta.byte_offset + k * bpe;
-                            values.push(read_element_from_locked_buffer(ta.elem, &buf, abs, bpe));
-                        }
-                    }
+                    let bytes = buf[ta.byte_offset..ta.byte_offset + live as usize * bpe].to_vec();
                     drop(buf);
                     drop(o);
-                    let ta_val = new_typed_array(elem, values.len());
+                    let ta_val = new_typed_array(elem, live as usize);
                     if let Value::Object(ref out) = ta_val {
                         let ol = out.lock().unwrap();
                         if let ObjectKind::TypedArray(ref t) = ol.kind {
-                            let _ = write_array_values_to_typed_array_bytes(t, 0, &values);
+                            {
+                                let mut output = t.buffer.lock().unwrap();
+                                output[..bytes.len()].copy_from_slice(&bytes);
+                            }
+                            write_element(t, idx as usize, &val);
                         }
                     }
                     return ta_val;
@@ -2898,4 +2939,194 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
             Value::I32(-1)
         }),
     );
+}
+
+#[cfg(test)]
+mod with_byte_copy_performance_tests {
+    use super::*;
+
+    fn state(value: &Value) -> TypedArrayState {
+        let Value::Object(object) = value else { panic!("typed array expected"); };
+        let guard = object.lock().unwrap();
+        let ObjectKind::TypedArray(state) = &guard.kind else { panic!("typed storage expected"); };
+        state.clone()
+    }
+
+    fn callable(vm: &VM, module: &str, name: &str) -> Value {
+        let index = *vm.host_registry.get(&(module.to_owned(), name.to_owned())).unwrap();
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(index);
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    fn with_copy_preserves_variants_offsets_and_source() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        for &(elem, module) in VARIANTS {
+            let input = new_typed_array(elem, 8);
+            let original = state(&input);
+            for index in 0..8 {
+                write_element(&original, index, &Value::I32(index as i32 + 1));
+            }
+            // Exercise a view offset using the existing shared storage state.
+            if let Value::Object(object) = &input {
+                let mut guard = object.lock().unwrap();
+                if let ObjectKind::TypedArray(view) = &mut guard.kind {
+                    view.byte_offset = 2 * elem.bytes_per_element();
+                    view.length = 4;
+                }
+            }
+            let source = state(&input);
+            let before = source.buffer.lock().unwrap().clone();
+            let replacement = match elem {
+                TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::bigint_i64(42),
+                _ => Value::F64(42.5),
+            };
+            let result = vm.invoke(&callable(&vm, module, "with"), &[
+                input.clone(), Value::I32(-2), replacement.clone(),
+            ]).unwrap();
+            let output = state(&result);
+            assert_eq!(output.length, 4);
+            assert!(!Arc::ptr_eq(&source.buffer, &output.buffer));
+            let expected = new_typed_array(elem, 4);
+            let expected_state = state(&expected);
+            for index in 0..4 {
+                write_element(&expected_state, index, &read_element(&source, index));
+            }
+            write_element(&expected_state, 2, &replacement);
+            assert_eq!(*output.buffer.lock().unwrap(), *expected_state.buffer.lock().unwrap());
+            assert_eq!(*source.buffer.lock().unwrap(), before);
+        }
+    }
+
+    #[test]
+    #[ignore = "registered TypedArray.with benchmark against prior materialization path"]
+    fn typed_array_with_microbenchmark() {
+        use std::time::{Duration, Instant};
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:typedarray-benchmark", "legacyWith", Box::new(|_ctx, args| {
+            let input = args.first().unwrap();
+            let source = state(input);
+            let len = ta_live_length(&source);
+            let replacement = &args[2];
+            let mut values = Vec::with_capacity(len);
+            {
+                let bytes = source.buffer.lock().unwrap();
+                let width = source.elem.bytes_per_element();
+                for index in 0..len {
+                    values.push(if index == len / 2 { replacement.clone() } else {
+                        read_element_from_locked_buffer(source.elem, &bytes, source.byte_offset + index * width, width)
+                    });
+                }
+            }
+            let result = new_typed_array(source.elem, len);
+            let destination = state(&result);
+            let _ = write_array_values_to_typed_array_bytes(&destination, 0, &values);
+            result
+        }));
+        let legacy = callable(&vm, "ecma:typedarray-benchmark", "legacyWith");
+        for (elem, module) in [(TypedElemKind::I32, "ecma:int32array"), (TypedElemKind::BigI64, "ecma:bigint64array")] {
+            let input = new_typed_array(elem, 16_384);
+            let replacement = if elem == TypedElemKind::BigI64 { Value::bigint_i64(42) } else { Value::I32(42) };
+            let args = [input, Value::I32(8192), replacement];
+            let optimized = callable(&vm, module, "with");
+            let old_result = vm.invoke(&legacy, &args).unwrap();
+            let new_result = vm.invoke(&optimized, &args).unwrap();
+            assert_eq!(*state(&old_result).buffer.lock().unwrap(), *state(&new_result).buffer.lock().unwrap());
+            for sample in 0..4 {
+                let mut old_time = Duration::ZERO;
+                let mut new_time = Duration::ZERO;
+                for new in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for _ in 0..100 {
+                        std::hint::black_box(vm.invoke(if new { &optimized } else { &legacy }, &args).unwrap());
+                    }
+                    if new { new_time = start.elapsed(); } else { old_time = start.elapsed(); }
+                }
+                eprintln!("typed-with elem={elem:?} sample={sample} operations=100 length=16384 old={old_time:?} new={new_time:?}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod numeric_view_copy_performance_tests {
+    use super::*;
+
+    fn legacy(value: &Value) -> Vec<f64> {
+        let Value::Object(object) = value else { return Vec::new(); };
+        let guard = object.lock().unwrap();
+        let ObjectKind::TypedArray(state) = &guard.kind else { return Vec::new(); };
+        let length = ta_live_length(state);
+        let width = state.elem.bytes_per_element();
+        let bytes = state.buffer.lock().unwrap();
+        let mut output = Vec::with_capacity(length);
+        for index in 0..length {
+            output.push(read_element_from_locked_buffer(state.elem, &bytes, state.byte_offset + index * width, width).as_f64());
+        }
+        output
+    }
+
+    #[test]
+    fn numeric_view_snapshots_preserve_values_and_offsets() {
+        for &(elem, _) in VARIANTS {
+            let input = new_typed_array(elem, 8);
+            let Value::Object(object) = &input else { panic!("typed array expected"); };
+            {
+                let mut guard = object.lock().unwrap();
+                let ObjectKind::TypedArray(state) = &mut guard.kind else { panic!("typed storage expected"); };
+                for (index, value) in [0.0, -0.0, 1.25, -2.5, 255.0, 42.0, f64::INFINITY, f64::NAN].into_iter().enumerate() {
+                    write_element(state, index, &Value::F64(value));
+                }
+                state.byte_offset = 2 * elem.bytes_per_element();
+                state.length = 4;
+            }
+            let expected = legacy(&input);
+            let actual = numbers_from_value(&input);
+            assert_eq!(actual.iter().map(|n| n.to_bits()).collect::<Vec<_>>(), expected.iter().map(|n| n.to_bits()).collect::<Vec<_>>());
+            // Include infinities/NaN and verify exact float output bits.
+            {
+                let mut guard = object.lock().unwrap();
+                let ObjectKind::TypedArray(state) = &mut guard.kind else { unreachable!(); };
+                state.byte_offset = 0;
+                state.length = 8;
+            }
+            assert_eq!(numbers_from_value(&input).iter().map(|n| n.to_bits()).collect::<Vec<_>>(), legacy(&input).iter().map(|n| n.to_bits()).collect::<Vec<_>>());
+            {
+                let mut guard = object.lock().unwrap();
+                let ObjectKind::TypedArray(state) = &mut guard.kind else { unreachable!(); };
+                state.byte_offset = state.buffer.lock().unwrap().len() + 8;
+            }
+            assert!(numbers_from_value(&input).is_empty());
+        }
+    }
+
+    #[test]
+    #[ignore = "matched numeric view materialization benchmark; no guest/compiler time"]
+    fn numeric_view_copy_microbenchmark() {
+        use std::time::{Duration, Instant};
+        for elem in [
+            TypedElemKind::U8, TypedElemKind::I8,
+            TypedElemKind::I16, TypedElemKind::U16,
+            TypedElemKind::I32, TypedElemKind::U32,
+            TypedElemKind::F32, TypedElemKind::F64,
+        ] {
+            let input = new_typed_array(elem, 16_384);
+            assert_eq!(numbers_from_value(&input), legacy(&input));
+            for sample in 0..4 {
+                let mut old_time = Duration::ZERO;
+                let mut new_time = Duration::ZERO;
+                for new in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for _ in 0..200 {
+                        std::hint::black_box(if new { numbers_from_value(&input) } else { legacy(&input) });
+                    }
+                    if new { new_time = start.elapsed(); } else { old_time = start.elapsed(); }
+                }
+                eprintln!("numeric-view elem={elem:?} sample={sample} operations=200 length=16384 old={old_time:?} new={new_time:?}");
+            }
+        }
+    }
 }

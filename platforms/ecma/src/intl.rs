@@ -755,8 +755,43 @@ fn register_number_format(vm: &mut VM) {
 /// Format a number using `icu::decimal::DecimalFormatter` for the
 /// locale-aware grouping/decimal separators, then wrap with currency
 /// symbol or percent suffix per the configured style.
+// ICU compiled-data formatters contain no guest state. Keep a small per-thread
+// cache, keyed by every input to construction (currently locale and default
+// options). NumberFormat option reads and formatted values are never cached.
+const DECIMAL_FORMATTER_CACHE_LIMIT: usize = 8;
+thread_local! {
+    static DECIMAL_FORMATTERS: std::cell::RefCell<
+        Vec<(String, std::rc::Rc<icu::decimal::DecimalFormatter>)>
+    > = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn decimal_formatter(locale: &str) -> Option<std::rc::Rc<icu::decimal::DecimalFormatter>> {
+    DECIMAL_FORMATTERS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(position) = cache.iter().rposition(|(key, _)| key == locale) {
+            if position + 1 == cache.len() {
+                return Some(cache[position].1.clone());
+            }
+            let entry = cache.remove(position);
+            let formatter = entry.1.clone();
+            cache.push(entry);
+            return Some(formatter);
+        }
+        let icu_locale = parse_icu_locale(locale);
+        let formatter = std::rc::Rc::new(
+            icu::decimal::DecimalFormatter::try_new(
+                (&icu_locale).into(), Default::default(),
+            ).ok()?,
+        );
+        if cache.len() == DECIMAL_FORMATTER_CACHE_LIMIT {
+            cache.remove(0);
+        }
+        cache.push((locale.to_owned(), formatter.clone()));
+        Some(formatter)
+    })
+}
+
 fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
-    use icu::decimal::DecimalFormatter;
     use icu::decimal::input::Decimal;
 
     let style = obj_string_prop(nf, "style").unwrap_or_else(|| "decimal".into());
@@ -836,10 +871,9 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
         None
     };
 
-    let icu_loc = parse_icu_locale(&locale);
-    let formatter = match DecimalFormatter::try_new((&icu_loc).into(), Default::default()) {
-        Ok(f) => f,
-        Err(_) => return value.to_string(),
+    let formatter = match decimal_formatter(&locale) {
+        Some(f) => f,
+        None => return value.to_string(),
     };
 
     // Build a Decimal from the f64 honoring style + max_frac. Scale
@@ -3680,3 +3714,70 @@ fn register_static(vm: &mut VM) {
 
 #[allow(dead_code)]
 fn _force_host_context_use(_: &mut HostContext) {}
+
+#[cfg(test)]
+mod decimal_formatter_speedup_tests {
+    use super::*;
+    use icu::decimal::{DecimalFormatter, input::Decimal};
+
+    fn uncached(locale: &str, number: i64) -> String {
+        let locale = parse_icu_locale(locale);
+        DecimalFormatter::try_new((&locale).into(), Default::default())
+            .unwrap().format(&Decimal::from(number)).to_string()
+    }
+
+    #[test]
+    fn cached_formatters_match_icu_and_remain_bounded() {
+        DECIMAL_FORMATTERS.with(|cache| cache.borrow_mut().clear());
+        for locale in ["en-US", "fr-FR", "de-DE", "ar", "hi-IN", "ja", "zh", "es", "it", "nl"] {
+            let formatter = decimal_formatter(locale).unwrap();
+            for number in [0, -1, 1234567, i64::MIN, i64::MAX] {
+                assert_eq!(formatter.format(&Decimal::from(number)).to_string(), uncached(locale, number));
+            }
+        }
+        DECIMAL_FORMATTERS.with(|cache| {
+            let cache = cache.borrow();
+            assert_eq!(cache.len(), DECIMAL_FORMATTER_CACHE_LIMIT);
+            assert!(!cache.iter().any(|(locale, _)| locale == "en-US"));
+        });
+        let first = decimal_formatter("en-US").unwrap();
+        let repeated = decimal_formatter("en-US").unwrap();
+        assert!(std::rc::Rc::ptr_eq(&first, &repeated));
+        decimal_formatter("fr-FR").unwrap();
+        assert!(std::rc::Rc::ptr_eq(&first, &decimal_formatter("en-US").unwrap()));
+    }
+
+    #[test]
+    fn formatting_still_reads_current_options() {
+        let nf = Arc::new(Mutex::new(Object::new()));
+        nf.lock().unwrap().properties.insert("locale".into(), s_val("en-US"));
+        assert_eq!(format_number_real(&nf, 1234.5), "1,234.5");
+        nf.lock().unwrap().properties.insert("useGrouping".into(), Value::Bool(false));
+        assert_eq!(format_number_real(&nf, 1234.5), "1234.5");
+        nf.lock().unwrap().properties.insert("locale".into(), s_val("de-DE"));
+        assert_eq!(format_number_real(&nf, 1234.5), "1.2345");
+        nf.lock().unwrap().properties.insert("useGrouping".into(), Value::Bool(true));
+        assert_eq!(format_number_real(&nf, 1234.5), "1.234,5");
+    }
+
+    #[test]
+    #[ignore = "native ICU setup benchmark, not VM or application timing"]
+    fn formatter_setup_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        let decimal = Decimal::from(1234567_i64);
+        decimal_formatter("en-US").unwrap();
+        let start = Instant::now();
+        for _ in 0..10000 {
+            let locale = parse_icu_locale(black_box("en-US"));
+            let formatter = DecimalFormatter::try_new((&locale).into(), Default::default()).unwrap();
+            black_box(formatter.format(black_box(&decimal)).to_string());
+        }
+        let uncached = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..10000 {
+            let formatter = decimal_formatter(black_box("en-US")).unwrap();
+            black_box(formatter.format(black_box(&decimal)).to_string());
+        }
+        eprintln!("ICU decimal 10000 calls: uncached={uncached:?}, cached={:?}", start.elapsed());
+    }
+}

@@ -207,12 +207,14 @@ fn link_error_prototype(ctx: &HostContext, obj: &mut Object, kind: &str) {
 
 fn stamp_error_object(obj: &mut Object, kind: &str, message: &str, cause: Option<Value>) {
     obj.properties.reserve(if cause.is_some() { 7 } else { 6 });
+    // Values share immutable string storage, not guest-mutable error state.
+    let kind_value = crate::keys::string_value(kind);
     obj.properties
-        .insert("__type".into(), crate::keys::string_value(kind));
+        .insert("__type".into(), kind_value.clone());
     obj.properties
-        .insert("__exception_type".into(), crate::keys::string_value(kind));
+        .insert("__exception_type".into(), kind_value.clone());
     obj.properties
-        .insert("name".into(), crate::keys::string_value(kind));
+        .insert("name".into(), kind_value.clone());
     obj.properties
         .insert("message".into(), crate::keys::string_value(message));
     obj.properties.insert(
@@ -224,7 +226,13 @@ fn stamp_error_object(obj: &mut Object, kind: &str, message: &str, cause: Option
     }
     let chain: Vec<Value> = error_ancestors(kind)
         .iter()
-        .map(|n| crate::keys::string_value(n))
+        .map(|n| {
+            if *n == kind {
+                kind_value.clone()
+            } else {
+                crate::keys::string_value(n)
+            }
+        })
         .collect();
     let chain_arr = vybe_runtime::value::Object::new_array(chain);
     obj.properties.insert(
@@ -305,4 +313,85 @@ fn options_cause(options: Option<&Value>) -> Option<Value> {
     };
     let o = obj.lock().unwrap();
     o.properties.get("cause").cloned()
+}
+
+#[cfg(test)]
+mod error_stamp_speedup_tests {
+    use super::*;
+
+    fn original_stamp(obj: &mut Object, kind: &str, message: &str, cause: Option<Value>) {
+        obj.properties.reserve(if cause.is_some() { 7 } else { 6 });
+        for key in ["__type", "__exception_type", "name"] {
+            obj.properties.insert(key.into(), crate::keys::string_value(kind));
+        }
+        obj.properties.insert("message".into(), crate::keys::string_value(message));
+        obj.properties.insert("stack".into(), Value::String(crate::keys::concat3_arc(kind, ": ", message)));
+        if let Some(cause) = cause {
+            obj.properties.insert("cause".into(), cause);
+        }
+        let chain = error_ancestors(kind).iter().map(|name| crate::keys::string_value(name)).collect();
+        obj.properties.insert("__types".into(), Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object::new_array(chain)))));
+    }
+
+    #[test]
+    fn immutable_string_reuse_preserves_stamps_and_independent_arrays() {
+        for kind in ["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "URIError", "EvalError", "AggregateError", "SuppressedError", "CustomError"] {
+            for cause in [None, Some(Value::Undefined), Some(Value::I32(17))] {
+                let mut original = Object::new();
+                let mut optimized = Object::new();
+                original_stamp(&mut original, kind, "message", cause.clone());
+                stamp_error_object(&mut optimized, kind, "message", cause);
+                assert_eq!(original.properties.keys().collect::<Vec<_>>(), optimized.properties.keys().collect::<Vec<_>>());
+                for key in ["__type", "__exception_type", "name", "message", "stack"] {
+                    let Value::String(before) = &original.properties[key] else { panic!("missing original string"); };
+                    let Value::String(after) = &optimized.properties[key] else { panic!("missing optimized string"); };
+                    assert_eq!(before, after);
+                }
+                let Value::String(name) = &optimized.properties["name"] else { unreachable!() };
+                for key in ["__type", "__exception_type"] {
+                    let Value::String(stamp) = &optimized.properties[key] else { unreachable!() };
+                    assert!(std::sync::Arc::ptr_eq(name, stamp));
+                }
+                let Value::Object(before) = &original.properties["__types"] else { unreachable!() };
+                let Value::Object(after) = &optimized.properties["__types"] else { unreachable!() };
+                let before = before.lock().unwrap();
+                let mut after = after.lock().unwrap();
+                let ObjectKind::Array(before) = &before.kind else { unreachable!() };
+                let ObjectKind::Array(after) = &mut after.kind else { unreachable!() };
+                assert_eq!(before.len(), after.len());
+                for (before, after) in before.iter().zip(after.iter()) {
+                    let (Value::String(before), Value::String(after)) = (before, after) else { unreachable!() };
+                    assert_eq!(before, after);
+                }
+                after.clear();
+                assert_eq!(before.len(), error_ancestors(kind).len());
+                let mut other = Object::new();
+                stamp_error_object(&mut other, kind, "other", None);
+                let Value::Object(other) = &other.properties["__types"] else { unreachable!() };
+                let other = other.lock().unwrap();
+                let ObjectKind::Array(other) = &other.kind else { unreachable!() };
+                assert_eq!(other.len(), error_ancestors(kind).len());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "native error-stamping microbenchmark, not application timing"]
+    fn error_stamp_benchmark() {
+        for round in 0..6 {
+            for optimized in if round % 2 == 0 { [false, true] } else { [true, false] } {
+                let start = std::time::Instant::now();
+                for _ in 0..10_000 {
+                    let mut obj = Object::new();
+                    if optimized {
+                        stamp_error_object(&mut obj, "TypeError", "invalid receiver", Some(Value::Undefined));
+                    } else {
+                        original_stamp(&mut obj, "TypeError", "invalid receiver", Some(Value::Undefined));
+                    }
+                    std::hint::black_box(obj);
+                }
+                eprintln!("round={round} optimized={optimized} elapsed={:?}", start.elapsed());
+            }
+        }
+    }
 }

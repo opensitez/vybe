@@ -62,10 +62,42 @@ fn format_utc_string(ms: f64) -> Option<String> {
 }
 
 fn format_iso_datetime(dt: &DateTime<Utc>) -> String {
+    // Keep calendar arithmetic in Chrono. The overwhelmingly common four-digit
+    // ISO representation has fixed width, so it needs neither format-item
+    // dispatch nor incremental String growth. Retain Chrono for extended years
+    // and its special leap-second representation.
+    let year = dt.year();
+    let milliseconds = dt.timestamp_subsec_millis();
+    if (0..=9999).contains(&year) && milliseconds < 1000 {
+        let mut bytes = [b'0'; 24];
+        bytes[4] = b'-';
+        bytes[7] = b'-';
+        bytes[10] = b'T';
+        bytes[13] = b':';
+        bytes[16] = b':';
+        bytes[19] = b'.';
+        bytes[23] = b'Z';
+        write_iso_digits(&mut bytes[0..4], year as u32);
+        write_iso_digits(&mut bytes[5..7], dt.month());
+        write_iso_digits(&mut bytes[8..10], dt.day());
+        write_iso_digits(&mut bytes[11..13], dt.hour());
+        write_iso_digits(&mut bytes[14..16], dt.minute());
+        write_iso_digits(&mut bytes[17..19], dt.second());
+        write_iso_digits(&mut bytes[20..23], milliseconds);
+        return std::str::from_utf8(&bytes).expect("ISO digits are ASCII").to_owned();
+    }
     let items = ISO_FORMAT_ITEMS.get_or_init(|| {
         StrftimeItems::new("%Y-%m-%dT%H:%M:%S%.3fZ").collect()
     });
     dt.format_with_items(items.iter()).to_string()
+}
+
+#[inline]
+fn write_iso_digits(bytes: &mut [u8], mut value: u32) {
+    for digit in bytes.iter_mut().rev() {
+        *digit = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
 }
 
 #[inline]
@@ -879,6 +911,52 @@ mod date_format_speedup_tests {
                 }
             }
             eprintln!("native Date formatting, n=1000, iso={iso}: reparsed={reparsed:?}, compiled={compiled:?}");
+        }
+    }
+
+    #[test]
+    fn fixed_iso_buffer_preserves_calendar_boundaries() {
+        use chrono::{TimeZone, Utc};
+        for year in [-10000, -1, 0, 1, 99, 999, 2000, 2024, 9999, 10000] {
+            for (month, day) in [(1, 1), (2, 28), (3, 1), (12, 31)] {
+                for millisecond in [0, 1, 9, 10, 99, 100, 999] {
+                    let dt = Utc.with_ymd_and_hms(year, month, day, 23, 59, 59)
+                        .single().unwrap();
+                    let ms = dt.timestamp_millis() as f64 + millisecond as f64;
+                    assert_eq!(format_iso_from_ms(ms), original_iso(ms), "{year}/{month}/{day} +{millisecond}");
+                }
+            }
+        }
+        for step in 0..1000 {
+            let ms = -2_208_988_800_000.0 + step as f64 * 123_456_789.0;
+            assert_eq!(format_iso_from_ms(ms), original_iso(ms), "sweep {step}");
+        }
+    }
+
+    #[test]
+    #[ignore = "native fixed-buffer ISO performance measurement"]
+    fn fixed_iso_buffer_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        use chrono::format::StrftimeItems;
+        let items: Vec<_> = StrftimeItems::new("%Y-%m-%dT%H:%M:%S%.3fZ").collect();
+        for ms in [0.0, -1.0, 1700000000123.0, 253402300799999.0] {
+            let dt = dt_from_ms(ms).unwrap();
+            assert_eq!(super::format_iso_datetime(&dt), dt.format_with_items(items.iter()).to_string());
+            for sample in 0..4 {
+                for optimized in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for _ in 0..10_000 {
+                        let result = if optimized {
+                            super::format_iso_datetime(black_box(&dt))
+                        } else {
+                            black_box(&dt).format_with_items(items.iter()).to_string()
+                        };
+                        black_box(result);
+                    }
+                    println!("ISO ms={ms} sample={sample} optimized={optimized} elapsed={:?}", start.elapsed());
+                }
+            }
         }
     }
 }

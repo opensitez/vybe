@@ -361,60 +361,57 @@ pub fn register(vm: &mut VM) {
         "ecma:math",
         "minOf",
         Box::new(|_ctx, args| {
-            let nums = collect_nums(args);
             // ECMA-262 §21.3.2.25: if any value is NaN, return NaN.
-            if nums.iter().any(|x| x.is_nan()) {
-                return Value::F64(f64::NAN);
-            }
-            Value::F64(nums.iter().cloned().fold(f64::INFINITY, f64::min))
+            Value::F64(extreme_numbers(args, f64::INFINITY, f64::min))
         }),
     );
     vm.register_host_fn(
         "ecma:math",
         "maxOf",
         Box::new(|_ctx, args| {
-            let nums = collect_nums(args);
             // ECMA-262 §21.3.2.24: if any value is NaN, return NaN.
-            if nums.iter().any(|x| x.is_nan()) {
-                return Value::F64(f64::NAN);
-            }
-            Value::F64(nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+            Value::F64(extreme_numbers(args, f64::NEG_INFINITY, f64::max))
         }),
     );
     vm.register_host_fn(
         "ecma:math",
         "sumPrecise",
         Box::new(|_ctx, args| {
-            let nums = collect_nums(args);
             // Neumaier compensated summation.
-            let mut sum = 0.0_f64;
-            let mut c = 0.0_f64;
-            for x in nums {
+            let (sum, c) = fold_numbers(args, (0.0_f64, 0.0_f64), |(sum, mut c), x| {
                 let t = sum + x;
                 if sum.abs() >= x.abs() {
                     c += (sum - t) + x;
                 } else {
                     c += (x - t) + sum;
                 }
-                sum = t;
-            }
+                (t, c)
+            });
             Value::F64(sum + c)
         }),
     );
 }
 
-// Coerce host-fn args into a flat Vec<f64>: accepts a single Array
-// argument (the Iterable case from the proposal) or N scalar args.
-fn collect_nums(args: &[Value]) -> Vec<f64> {
+// Accept the same single-Array or scalar argument forms without allocating
+// an intermediate numeric vector. Coercion remains left-to-right and visits
+// every value, including values following NaN.
+fn fold_numbers<R>(args: &[Value], initial: R, mut reduce: impl FnMut(R, f64) -> R) -> R {
     if args.len() == 1 {
         if let Some(Value::Object(arr)) = args.first() {
             let o = arr.lock().unwrap();
             if let vybe_runtime::value::ObjectKind::Array(ref v) = o.kind {
-                return v.iter().map(|e| e.as_f64()).collect();
+                return v.iter().fold(initial, |state, value| reduce(state, value.as_f64()));
             }
         }
     }
-    args.iter().map(|v| v.as_f64()).collect()
+    args.iter().fold(initial, |state, value| reduce(state, value.as_f64()))
+}
+
+fn extreme_numbers(args: &[Value], initial: f64, reduce: fn(f64, f64) -> f64) -> f64 {
+    let (result, saw_nan) = fold_numbers(args, (initial, false), |(result, saw_nan), value| {
+        (reduce(result, value), saw_nan || value.is_nan())
+    });
+    if saw_nan { f64::NAN } else { result }
 }
 
 fn f(args: &[Value], idx: usize) -> f64 {
@@ -463,4 +460,87 @@ fn to_uint32(n: f64) -> u32 {
         return 0;
     }
     n.trunc().rem_euclid(4_294_967_296.0) as u64 as u32
+}
+
+#[cfg(test)]
+mod numeric_accumulator_tests {
+    use super::*;
+    use vybe_runtime::value::Object;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    fn legacy_extreme(args: &[Value], initial: f64, reduce: fn(f64, f64) -> f64) -> f64 {
+        let nums: Vec<f64> = if let [Value::Object(object)] = args {
+            let object = object.lock().unwrap();
+            if let vybe_runtime::value::ObjectKind::Array(values) = &object.kind {
+                values.iter().map(Value::as_f64).collect()
+            } else {
+                args.iter().map(Value::as_f64).collect()
+            }
+        } else {
+            args.iter().map(Value::as_f64).collect()
+        };
+        if nums.iter().any(|value| value.is_nan()) {
+            f64::NAN
+        } else {
+            nums.into_iter().fold(initial, reduce)
+        }
+    }
+
+    fn same_number(actual: f64, expected: f64) {
+        if expected.is_nan() {
+            assert!(actual.is_nan());
+        } else {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
+    #[test]
+    fn numeric_accumulator_equivalence() {
+        for values in [
+            vec![],
+            vec![Value::F64(-0.0), Value::F64(0.0)],
+            vec![Value::I32(5), Value::I32(20), Value::I32(15)],
+            vec![Value::F64(f64::INFINITY), Value::F64(f64::NEG_INFINITY)],
+            vec![Value::I32(1), Value::F64(f64::NAN), Value::I32(3)],
+            vec![Value::Undefined, Value::Null, Value::Bool(true)],
+        ] {
+            let array = Value::Object(vybe_runtime::heap::alloc(Object::new_array(values.clone())));
+            for args in [&values[..], std::slice::from_ref(&array)] {
+                for (initial, reduce) in [
+                    (f64::INFINITY, f64::min as fn(f64, f64) -> f64),
+                    (f64::NEG_INFINITY, f64::max as fn(f64, f64) -> f64),
+                ] {
+                    same_number(extreme_numbers(args, initial, reduce), legacy_extreme(args, initial, reduce));
+                }
+                let expected = values.iter().map(Value::as_f64).fold(0.0, |sum, x| sum + x);
+                same_number(fold_numbers(args, 0.0, |sum, x| sum + x), expected);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "native accumulator performance measurement"]
+    fn numeric_accumulator_benchmark() {
+        for length in [16, 128, 1024] {
+            let values: Vec<_> = (0..length).map(Value::I32).collect();
+            let array = Value::Object(vybe_runtime::heap::alloc(Object::new_array(values.clone())));
+            for (label, args) in [("scalars", values.as_slice()), ("array", std::slice::from_ref(&array))] {
+                for sample in 0..4 {
+                    for optimized in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                        let start = Instant::now();
+                        for _ in 0..10_000 {
+                            let result = if optimized {
+                                extreme_numbers(black_box(args), f64::NEG_INFINITY, f64::max)
+                            } else {
+                                legacy_extreme(black_box(args), f64::NEG_INFINITY, f64::max)
+                            };
+                            black_box(result);
+                        }
+                        println!("{label} length={length} sample={sample} optimized={optimized} elapsed={:?}", start.elapsed());
+                    }
+                }
+            }
+        }
+    }
 }

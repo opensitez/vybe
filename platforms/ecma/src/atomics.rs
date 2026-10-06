@@ -90,8 +90,31 @@ fn magic_store_i32(obj: &Arc<Mutex<Object>>, idx: usize, val: i32) {
     });
 }
 
+fn magic_update_i32(
+    obj: &Arc<Mutex<Object>>,
+    idx: usize,
+    update: impl FnOnce(i32) -> Option<i32>,
+) -> i32 {
+    let mut object = obj.lock().unwrap();
+    crate::keys::with_index_key(idx, |key| {
+        let previous = match object.properties.get(key) {
+            Some(Value::I32(value)) => *value,
+            Some(Value::F64(value)) => *value as i32,
+            _ => 0,
+        };
+        if let Some(value) = update(previous) {
+            object.properties.insert(key.to_string(), Value::I32(value));
+        }
+        previous
+    })
+}
+
 fn atomic_load(buf: &Arc<Mutex<Vec<u8>>>, byte_offset: usize, idx: usize, bpe: usize) -> i64 {
     let data = buf.lock().unwrap();
+    load_lane(&data, byte_offset, idx, bpe)
+}
+
+fn load_lane(data: &[u8], byte_offset: usize, idx: usize, bpe: usize) -> i64 {
     let off = byte_offset + idx * bpe;
     if off + bpe > data.len() {
         return 0;
@@ -122,6 +145,10 @@ fn atomic_store_bytes(
     val: i64,
 ) {
     let mut data = buf.lock().unwrap();
+    store_lane(&mut data, byte_offset, idx, bpe, val);
+}
+
+fn store_lane(data: &mut [u8], byte_offset: usize, idx: usize, bpe: usize, val: i64) {
     let off = byte_offset + idx * bpe;
     if off + bpe > data.len() {
         return;
@@ -133,6 +160,23 @@ fn atomic_store_bytes(
         8 => data[off..off + 8].copy_from_slice(&val.to_le_bytes()),
         _ => {}
     }
+}
+
+/// Keep the backing lock across the entire read-modify-write operation.
+/// The update is an internal arithmetic closure, never a guest callback.
+fn atomic_update(
+    buf: &Arc<Mutex<Vec<u8>>>,
+    byte_offset: usize,
+    idx: usize,
+    bpe: usize,
+    update: impl FnOnce(i64) -> Option<i64>,
+) -> i64 {
+    let mut data = buf.lock().unwrap();
+    let previous = load_lane(&data, byte_offset, idx, bpe);
+    if let Some(value) = update(previous) {
+        store_lane(&mut data, byte_offset, idx, bpe, value);
+    }
+    previous
 }
 
 /// §25.4: BigInt64/BigUint64 lanes (bpe 8) traffic in BigInt values;
@@ -169,18 +213,18 @@ pub fn register(vm: &mut VM) {
                     }
                     if is_magic_int32(args, 0) {
                         if let Some(Value::Object(obj)) = args.first() {
-                            let prev = magic_load_i32(obj, idx);
-                            let new_val: i32 = $op(prev as i64, val) as i32;
-                            magic_store_i32(obj, idx, new_val);
+                            let prev = magic_update_i32(obj, idx, |previous| {
+                                Some($op(previous as i64, val) as i32)
+                            });
                             return Value::I32(prev);
                         }
                     }
                     if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
-                        let prev = atomic_load(&buf, off, idx, bpe);
                         // Sub-64 lanes wrap at lane width via the store's
                         // truncating cast; the op itself runs in i64.
-                        let new_val: i64 = $op(prev, val);
-                        atomic_store_bytes(&buf, off, idx, bpe, new_val);
+                        let prev = atomic_update(&buf, off, idx, bpe, |previous| {
+                            Some($op(previous, val))
+                        });
                         return lane_value(bpe, prev);
                     }
                     Value::I32(0)
@@ -206,14 +250,12 @@ pub fn register(vm: &mut VM) {
             }
             if is_magic_int32(args, 0) {
                 if let Some(Value::Object(obj)) = args.first() {
-                    let prev = magic_load_i32(obj, idx);
-                    magic_store_i32(obj, idx, val as i32);
+                    let prev = magic_update_i32(obj, idx, |_| Some(val as i32));
                     return Value::I32(prev);
                 }
             }
             if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
-                let prev = atomic_load(&buf, off, idx, bpe);
-                atomic_store_bytes(&buf, off, idx, bpe, val);
+                let prev = atomic_update(&buf, off, idx, bpe, |_| Some(val));
                 return lane_value(bpe, prev);
             }
             Value::I32(0)
@@ -232,18 +274,16 @@ pub fn register(vm: &mut VM) {
             }
             if is_magic_int32(args, 0) {
                 if let Some(Value::Object(obj)) = args.first() {
-                    let prev = magic_load_i32(obj, idx);
-                    if prev as i64 == expected {
-                        magic_store_i32(obj, idx, replacement as i32);
-                    }
+                    let prev = magic_update_i32(obj, idx, |previous| {
+                        (previous as i64 == expected).then_some(replacement as i32)
+                    });
                     return Value::I32(prev);
                 }
             }
             if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
-                let prev = atomic_load(&buf, off, idx, bpe);
-                if prev == expected {
-                    atomic_store_bytes(&buf, off, idx, bpe, replacement);
-                }
+                let prev = atomic_update(&buf, off, idx, bpe, |previous| {
+                    (previous == expected).then_some(replacement)
+                });
                 return lane_value(bpe, prev);
             }
             Value::I32(0)
@@ -399,4 +439,80 @@ pub fn register(vm: &mut VM) {
         "notify",
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::I32(0)),
     );
+}
+
+#[cfg(test)]
+mod atomic_rmw_speedup_tests {
+    use super::*;
+
+    #[test]
+    fn updates_keep_offsets_lane_wrapping_and_compare_exchange_results() {
+        for width in [1usize, 2, 4, 8] {
+            let buffer = Arc::new(Mutex::new(vec![0xa5; 3 + width * 3]));
+            atomic_store_bytes(&buffer, 3, 1, width, 17);
+            assert_eq!(atomic_update(&buffer, 3, 1, width, |value| Some(value + 5)), 17);
+            assert_eq!(atomic_load(&buffer, 3, 1, width), 22);
+            assert_eq!(atomic_update(&buffer, 3, 1, width, |value| (value == 17).then_some(91)), 22);
+            assert_eq!(atomic_load(&buffer, 3, 1, width), 22);
+            assert_eq!(atomic_update(&buffer, 3, 1, width, |value| (value == 22).then_some(-1)), 22);
+            assert_eq!(atomic_load(&buffer, 3, 1, width), if width == 1 { 255 } else { -1 });
+            let data = buffer.lock().unwrap();
+            assert!(data[..3 + width].iter().all(|byte| *byte == 0xa5));
+            assert!(data[3 + width * 2..].iter().all(|byte| *byte == 0xa5));
+        }
+        let buffer = Arc::new(Mutex::new(vec![7; 4]));
+        assert_eq!(atomic_update(&buffer, 0, 2, 4, |_| Some(9)), 0);
+        assert_eq!(*buffer.lock().unwrap(), vec![7; 4]);
+    }
+
+    #[test]
+    fn concurrent_increments_return_each_previous_value_exactly_once() {
+        let buffer = Arc::new(Mutex::new(vec![0; 4]));
+        let workers: Vec<_> = (0..6).map(|_| {
+            let buffer = buffer.clone();
+            std::thread::spawn(move || {
+                (0..1000).map(|_| atomic_update(&buffer, 0, 0, 4, |value| Some(value + 1))).collect::<Vec<_>>()
+            })
+        }).collect();
+        let mut previous: Vec<_> = workers.into_iter().flat_map(|worker| worker.join().unwrap()).collect();
+        previous.sort_unstable();
+        assert_eq!(previous, (0i64..6000).collect::<Vec<_>>());
+        assert_eq!(atomic_load(&buffer, 0, 0, 4), 6000);
+    }
+
+    #[test]
+    fn property_backing_keeps_numeric_conversion_and_conditional_write() {
+        let mut object = Object::new();
+        object.properties.insert("2".into(), Value::F64(17.75));
+        let object = Arc::new(Mutex::new(object));
+        assert_eq!(magic_update_i32(&object, 2, |_| None), 17);
+        assert!(matches!(object.lock().unwrap().properties.get("2"), Some(Value::F64(_))));
+        assert_eq!(magic_update_i32(&object, 2, |value| Some(value + 1)), 17);
+        assert_eq!(magic_load_i32(&object, 2), 18);
+        assert_eq!(magic_update_i32(&object, 3, |value| Some(value + 1)), 0);
+        assert_eq!(magic_load_i32(&object, 3), 1);
+    }
+
+    #[test]
+    #[ignore = "native backing-lock benchmark, not complete Atomics dispatch timing"]
+    fn single_lock_rmw_benchmark() {
+        for round in 0..6 {
+            for optimized in if round % 2 == 0 { [false, true] } else { [true, false] } {
+                let buffer = Arc::new(Mutex::new(vec![0; 4]));
+                let start = std::time::Instant::now();
+                for _ in 0..100_000 {
+                    let previous = if optimized {
+                        atomic_update(&buffer, 0, 0, 4, |value| Some(value + 1))
+                    } else {
+                        let previous = atomic_load(&buffer, 0, 0, 4);
+                        atomic_store_bytes(&buffer, 0, 0, 4, previous + 1);
+                        previous
+                    };
+                    std::hint::black_box(previous);
+                }
+                eprintln!("round={round} optimized={optimized} elapsed={:?}", start.elapsed());
+                assert_eq!(atomic_load(&buffer, 0, 0, 4), 100_000);
+            }
+        }
+    }
 }

@@ -77,6 +77,37 @@ fn utf16_to_string(units: &[u16]) -> String {
     String::from_utf16_lossy(units)
 }
 
+// ASCII byte offsets are exactly UTF-16 code-unit offsets. Keep that common
+// case borrowed; only non-ASCII inputs need an encoded intermediate buffer.
+enum Utf16SliceSource<'a> {
+    Ascii(&'a str),
+    Encoded(Vec<u16>),
+}
+
+impl<'a> Utf16SliceSource<'a> {
+    fn new(text: &'a str) -> Self {
+        if text.is_ascii() {
+            Self::Ascii(text)
+        } else {
+            Self::Encoded(text.encode_utf16().collect())
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Ascii(text) => text.len(),
+            Self::Encoded(units) => units.len(),
+        }
+    }
+
+    fn range_string(&self, range: std::ops::Range<usize>) -> String {
+        match self {
+            Self::Ascii(text) => text[range].to_owned(),
+            Self::Encoded(units) => utf16_to_string(&units[range]),
+        }
+    }
+}
+
 #[inline]
 fn char_value(ch: char) -> Value {
     crate::keys::char_value(ch)
@@ -825,7 +856,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // §22.1.3.21/§22.1.3.24: indices are UTF-16 code units (same
             // unit space as `length` and `charCodeAt`), not code points —
             // "x😀y".slice(1,3) is the emoji's surrogate pair.
-            let units = utf16_units(s.as_ref());
+            let units = Utf16SliceSource::new(s.as_ref());
             let len = units.len() as i32;
             let start = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let end = args
@@ -853,14 +884,14 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 std::mem::swap(&mut s_idx, &mut e_idx);
             }
             let out = if s_idx < e_idx {
-                utf16_to_string(&units[s_idx..e_idx])
+                units.range_string(s_idx..e_idx)
             } else {
                 String::new()
             };
             owned_string_value(out)
         }
         "substr" => {
-            let units = utf16_units(s.as_ref());
+            let units = Utf16SliceSource::new(s.as_ref());
             let len = units.len() as i32;
             let start_raw = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let start = if start_raw < 0 {
@@ -874,7 +905,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                     .saturating_add(value.as_i32().max(0) as usize)
                     .min(units.len()),
             };
-            owned_string_value(utf16_to_string(&units[start..end]))
+            owned_string_value(units.range_string(start..end))
         }
         "includes" => {
             if regex_pattern(args.first()).is_some() {
@@ -4400,6 +4431,164 @@ mod utf16_allocation_speedup_tests {
             }
             eprintln!("native UTF-16 allocation, n={iterations}, bytes={}, ascii={}: collect={collect:?}, candidate={candidate:?}, capacities={}/{}",
                 text.len(), text.is_ascii(), original.capacity(), reserved.capacity());
+        }
+    }
+}
+
+#[cfg(test)]
+mod ascii_slice_dispatch_speedup_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn legacy_slice(text: &str, method: &str, args: &[Value]) -> String {
+        let units = utf16_units(text);
+        let len = units.len() as i32;
+        let start_raw = args.first().map(|v| v.as_i32()).unwrap_or(0);
+        if method == "substr" {
+            let start = if start_raw < 0 {
+                (len + start_raw).max(0)
+            } else {
+                start_raw.min(len)
+            } as usize;
+            let end = match args.get(1) {
+                Some(Value::Undefined) | Some(Value::Null) | None => units.len(),
+                Some(value) => start.saturating_add(value.as_i32().max(0) as usize).min(units.len()),
+            };
+            return utf16_to_string(&units[start..end]);
+        }
+        let end_raw = args.get(1).and_then(|v| match v {
+            Value::Null | Value::Undefined => None,
+            _ => Some(v.as_i32()),
+        }).unwrap_or(len);
+        let mut start = if method == "substring" {
+            start_raw.max(0).min(len) as usize
+        } else if start_raw < 0 {
+            (len + start_raw).max(0) as usize
+        } else {
+            (start_raw as usize).min(units.len())
+        };
+        let mut end = if method == "substring" {
+            end_raw.max(0).min(len) as usize
+        } else if end_raw < 0 {
+            (len + end_raw).max(0) as usize
+        } else {
+            (end_raw as usize).min(units.len())
+        };
+        if method == "substring" && start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        if start < end { utf16_to_string(&units[start..end]) } else { String::new() }
+    }
+
+    fn host_function(vm: &VM, module: &str, name: &str) -> Value {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(function))
+    }
+
+    #[test]
+    fn source_view_preserves_all_utf16_ranges_and_borrows_ascii() {
+        for text in ["", "a\0b", "abcdefghijklmnopqrstuvwxyz", "caf\u{e9}", "\u{1f600}x", "a\u{65e5}\u{672c}\0"] {
+            let source = Utf16SliceSource::new(text);
+            assert_eq!(matches!(source, Utf16SliceSource::Ascii(_)), text.is_ascii());
+            let encoded: Vec<u16> = text.encode_utf16().collect();
+            assert_eq!(source.len(), encoded.len());
+            for start in 0..=encoded.len() {
+                for end in start..=encoded.len() {
+                    assert_eq!(source.range_string(start..end), String::from_utf16_lossy(&encoded[start..end]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn registered_slicing_matches_previous_bounds_and_unicode_fallback() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let function = host_function(&vm, "ecma:value", "invokeMethod");
+        let arguments = [
+            vec![], vec![Value::I32(1)], vec![Value::I32(-3)],
+            vec![Value::I32(1), Value::I32(3)], vec![Value::I32(5), Value::I32(2)],
+            vec![Value::I32(-5), Value::I32(-1)], vec![Value::I32(100), Value::I32(200)],
+            vec![Value::I32(0), Value::Null], vec![Value::I32(1), Value::Undefined],
+            vec![Value::F64(f64::NAN), Value::F64(3.9)],
+        ];
+        for text in ["", "a\0b", "abcdefghij", "caf\u{e9}", "x\u{1f600}y", "\u{65e5}\u{672c}text"] {
+            let receiver = crate::keys::string_value(text);
+            for method in ["slice", "substring", "substr"] {
+                for args in &arguments {
+                    let list = make_array(args.clone());
+                    let result = vm.invoke(&function, &[receiver.clone(), crate::keys::string_value(method), list]).unwrap();
+                    let Value::String(result) = result else { panic!("expected string result") };
+                    assert_eq!(result.as_ref(), legacy_slice(text, method, args), "{method} {text:?} {args:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "registered dynamic-dispatch benchmark; run explicitly"]
+    fn registered_string_slice_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:value-speedup-gate", "legacySlice", Box::new(|_, args| {
+            let receiver = args.first().unwrap_or(&Value::Undefined);
+            let method = match args.get(1) {
+                Some(Value::String(name)) => Cow::Borrowed(name.as_ref()),
+                Some(other) => crate::keys::value_display_cow(other),
+                None => return Value::Undefined,
+            };
+            let mut inline: [Value; 8] = std::array::from_fn(|_| Value::Undefined);
+            let len = {
+                let Some(Value::Object(list)) = args.get(2) else { return Value::Undefined };
+                let list = list.lock().unwrap();
+                let ObjectKind::Array(values) = &list.kind else { return Value::Undefined };
+                assert!(values.len() <= inline.len());
+                for (index, value) in values.iter().enumerate() { inline[index] = value.clone(); }
+                values.len()
+            };
+            match receiver {
+                Value::String(text) => {
+                    // Match dispatch_string's receiver-reference ownership cost
+                    // as well as invokeMethod's name and argument-list handling.
+                    let text = text.clone();
+                    owned_string_value(legacy_slice(&text, method.as_ref(), &inline[..len]))
+                }
+                _ => Value::Undefined,
+            }
+        }));
+        let optimized = host_function(&vm, "ecma:value", "invokeMethod");
+        let legacy = host_function(&vm, "ecma:value-speedup-gate", "legacySlice");
+        for (case, text) in [
+            ("ascii32", "x".repeat(32)),
+            ("ascii1024", "x".repeat(1024)),
+            ("ascii16384", "x".repeat(16384)),
+            ("latin32", "\u{e9}".repeat(32)),
+            ("latin1024", "\u{e9}".repeat(1024)),
+            ("latin16384", "\u{e9}".repeat(16384)),
+            ("astral32", "\u{1f600}".repeat(32)),
+            ("astral1024", "\u{1f600}".repeat(1024)),
+            ("unicode-tail1024", format!("{}\u{e9}", "x".repeat(1024))),
+        ] {
+            let size = text.len();
+            let expected = legacy_slice(&text, "slice", &[Value::I32(2), Value::I32(18)]);
+            let parameters = [crate::keys::string_value(&text), crate::keys::string_value("slice"), make_array(vec![Value::I32(2), Value::I32(18)])];
+            for function in [&legacy, &optimized] {
+                for _ in 0..20 { vm.invoke(function, &parameters).unwrap(); }
+            }
+            for sample in 0..4 {
+                for use_optimized in [sample % 2 == 0, sample % 2 != 0] {
+                    let function = if use_optimized { &optimized } else { &legacy };
+                    let started = Instant::now();
+                    for _ in 0..2048 {
+                        std::hint::black_box(vm.invoke(function, &parameters).unwrap());
+                    }
+                    let elapsed = started.elapsed();
+                    let Value::String(result) = vm.invoke(function, &parameters).unwrap() else { panic!("expected string") };
+                    assert_eq!(result.as_ref(), expected.as_str());
+                    eprintln!("registered string slice case={case} size={size} sample={sample} optimized={use_optimized} elapsed={elapsed:?}");
+                }
+            }
         }
     }
 }

@@ -174,6 +174,146 @@ pub fn prime_shared_prototypes() {
 pub fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Value {
     let mut obj = Object::new();
     obj.properties.reserve(6);
+    let name_value = crate::keys::string_value(name);
+    obj.properties
+        .insert("__host_module".into(), crate::keys::string_value(module));
+    obj.properties
+        .insert("__host_name".into(), name_value.clone());
+    obj.properties
+        .insert("__host_idx".into(), Value::F64(idx as f64));
+    obj.properties
+        .insert("__vybe_method_receiver".into(), Value::Bool(true));
+    obj.properties
+        .insert("__proto__".into(), function::shared_function_prototype());
+    obj.properties
+        .insert("name".into(), name_value);
+    obj.kind = ObjectKind::HostFunction(idx);
+    Value::Object(vybe_runtime::heap::alloc(obj))
+}
+
+/// Create a HostFunction Value with bound args (Function.prototype.bind shape).
+/// When the resulting ref is called, `bound_args` are prepended to the runtime
+/// args before the host fn runs. Standard ECMA-262 §20.2.3.2 semantics. The
+/// VM-side dispatch lives in `vybe_runtime/src/calls.rs` HostFunction arm.
+#[allow(dead_code)]
+pub fn bound_host_fn_ref(vm: &VM, module: &str, name: &str, bound_args: Vec<Value>) -> Value {
+    if let Some(&idx) = vm
+        .host_registry
+        .get(&(module.to_string(), name.to_string()))
+    {
+        let mut obj = Object::new();
+        obj.properties.reserve(6);
+        let name_value = crate::keys::string_value(name);
+        obj.properties
+            .insert("__host_module".into(), crate::keys::string_value(module));
+        obj.properties
+            .insert("__host_name".into(), name_value.clone());
+        obj.properties
+            .insert("__host_idx".into(), Value::F64(idx as f64));
+        obj.properties
+            .insert("__proto__".into(), function::shared_function_prototype());
+        obj.properties
+            .insert("name".into(), name_value);
+        obj.properties.insert(
+            "__bound_args".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(bound_args))),
+        );
+        obj.kind = ObjectKind::HostFunction(idx);
+        Value::Object(vybe_runtime::heap::alloc(obj))
+    } else {
+        Value::Null
+    }
+}
+
+#[cfg(test)]
+mod host_reference_allocation_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn assert_shared_name(value: &Value, expected: &str) {
+        let Value::Object(object) = value else { panic!("host reference"); };
+        let mut object = object.lock().unwrap();
+        let Some(Value::String(public_name)) = object.properties.get("name") else { panic!("public name"); };
+        let Some(Value::String(host_name)) = object.properties.get("__host_name") else { panic!("host name"); };
+        assert_eq!(public_name.as_ref(), expected);
+        assert!(std::sync::Arc::ptr_eq(public_name, host_name));
+        object.properties.insert("name".into(), crate::keys::string_value("renamed"));
+        assert!(matches!(object.properties.get("__host_name"), Some(Value::String(name)) if name.as_ref() == expected));
+    }
+
+    #[test]
+    fn name_backing_is_shared_but_function_identity_and_metadata_are_independent() {
+        let first = receiver_host_fn_ref("ecma:test-reference", "method", 17);
+        let second = receiver_host_fn_ref("ecma:test-reference", "method", 17);
+        let (Value::Object(first_object), Value::Object(second_object)) = (&first, &second) else { panic!("function objects"); };
+        assert!(!std::sync::Arc::ptr_eq(first_object, second_object));
+        assert_shared_name(&first, "method");
+        assert!(matches!(second_object.lock().unwrap().properties.get("name"), Some(Value::String(name)) if name.as_ref() == "method"));
+        let first_object = first_object.lock().unwrap();
+        assert!(matches!(first_object.kind, ObjectKind::HostFunction(17)));
+        assert!(matches!(first_object.properties.get("__vybe_method_receiver"), Some(Value::Bool(true))));
+    }
+
+    #[test]
+    fn bound_references_preserve_current_vm_index_and_argument_identity() {
+        for prefix in [0, 13] {
+            let mut vm = VM::new();
+            for index in 0..prefix {
+                vm.register_host_fn("ecma:test-prefix", &format!("dummy_{index}"), Box::new(|_ctx, _args| Value::Undefined));
+            }
+            vm.register_host_fn("ecma:test-reference", "bound", Box::new(|_ctx, _args| Value::Undefined));
+            let index = vm.resolve_host_function_index("ecma:test-reference", "bound").unwrap();
+            let argument = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+            let reference = bound_host_fn_ref(&vm, "ecma:test-reference", "bound", vec![argument.clone()]);
+            assert_shared_name(&reference, "bound");
+            let Value::Object(reference) = reference else { panic!("bound reference"); };
+            let reference = reference.lock().unwrap();
+            assert!(matches!(reference.kind, ObjectKind::HostFunction(actual) if actual == index));
+            let Some(Value::Object(arguments)) = reference.properties.get("__bound_args") else { panic!("bound arguments"); };
+            let arguments = arguments.lock().unwrap();
+            let ObjectKind::Array(values) = &arguments.kind else { panic!("argument array"); };
+            let (Some(Value::Object(actual)), Value::Object(expected)) = (values.first(), &argument) else { panic!("argument identity"); };
+            assert!(std::sync::Arc::ptr_eq(actual, expected));
+            assert!(matches!(bound_host_fn_ref(&vm, "ecma:test-reference", "missing", Vec::new()), Value::Null));
+        }
+    }
+
+    #[test]
+    #[ignore = "paired native host-reference allocation benchmark, not call throughput"]
+    fn host_reference_allocation_benchmark() {
+        let mut vm = VM::new();
+        for name in ["method", "long_method_name_for_native_receiver_and_bound_references"] {
+            vm.register_host_fn("ecma:test-reference", name, Box::new(|_ctx, _args| Value::Undefined));
+            let index = vm.resolve_host_function_index("ecma:test-reference", name).unwrap();
+            for bound in [false, true] {
+                let mut old = Duration::ZERO;
+                let mut new = Duration::ZERO;
+                for sample in 0..8 {
+                    for old_path in [sample % 2 == 0, sample % 2 != 0] {
+                        let start = Instant::now();
+                        for _ in 0..5000 {
+                            let reference = if bound {
+                                if old_path { legacy_bound_host_fn_ref(&vm, "ecma:test-reference", name, Vec::new()) }
+                                else { bound_host_fn_ref(&vm, "ecma:test-reference", name, Vec::new()) }
+                            } else if old_path {
+                                legacy_receiver_host_fn_ref("ecma:test-reference", name, index)
+                            } else {
+                                receiver_host_fn_ref("ecma:test-reference", name, index)
+                            };
+                            std::hint::black_box(reference);
+                        }
+                        if old_path { old += start.elapsed(); } else { new += start.elapsed(); }
+                    }
+                }
+                eprintln!("host reference bound={bound} name_len={}: old={old:?} new={new:?} ratio={:.3}x",
+                    name.len(), old.as_secs_f64() / new.as_secs_f64());
+            }
+        }
+    }
+
+fn legacy_receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Value {
+    let mut obj = Object::new();
+    obj.properties.reserve(6);
     obj.properties
         .insert("__host_module".into(), crate::keys::string_value(module));
     obj.properties
@@ -190,12 +330,7 @@ pub fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Value {
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
-/// Create a HostFunction Value with bound args (Function.prototype.bind shape).
-/// When the resulting ref is called, `bound_args` are prepended to the runtime
-/// args before the host fn runs. Standard ECMA-262 §20.2.3.2 semantics. The
-/// VM-side dispatch lives in `vybe_runtime/src/calls.rs` HostFunction arm.
-#[allow(dead_code)]
-pub fn bound_host_fn_ref(vm: &VM, module: &str, name: &str, bound_args: Vec<Value>) -> Value {
+fn legacy_bound_host_fn_ref(vm: &VM, module: &str, name: &str, bound_args: Vec<Value>) -> Value {
     if let Some(&idx) = vm
         .host_registry
         .get(&(module.to_string(), name.to_string()))
@@ -221,4 +356,5 @@ pub fn bound_host_fn_ref(vm: &VM, module: &str, name: &str, bound_args: Vec<Valu
     } else {
         Value::Null
     }
+}
 }

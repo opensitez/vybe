@@ -796,14 +796,27 @@ pub fn prefixed_property_key(prefix: &str, key: &str) -> String {
 }
 
 #[inline]
+fn metadata_key_len(prefix: usize, key: usize, suffix: usize) -> usize {
+    prefix
+        .checked_add(key)
+        .and_then(|len| len.checked_add(suffix))
+        .expect("property key length overflow")
+}
+
+#[inline]
 pub fn with_prefixed_property_key<R>(prefix: &str, key: &str, f: impl FnOnce(&str) -> R) -> R {
     const INLINE_KEY_BYTES: usize = 128;
-    let len = prefix.len() + key.len();
+    let len = metadata_key_len(prefix.len(), key.len(), 0);
     if len <= INLINE_KEY_BYTES {
-        let mut buf = [0u8; INLINE_KEY_BYTES];
-        buf[..prefix.len()].copy_from_slice(prefix.as_bytes());
-        buf[prefix.len()..len].copy_from_slice(key.as_bytes());
-        let text = std::str::from_utf8(&buf[..len]).unwrap_or("");
+        let mut buf = std::mem::MaybeUninit::<[u8; INLINE_KEY_BYTES]>::uninit();
+        // The capacity check covers both copies. Only the initialized prefix is
+        // exposed, and concatenating valid str inputs preserves UTF-8 validity.
+        let text = unsafe {
+            let ptr = buf.as_mut_ptr().cast::<u8>();
+            std::ptr::copy_nonoverlapping(prefix.as_ptr(), ptr, prefix.len());
+            std::ptr::copy_nonoverlapping(key.as_ptr(), ptr.add(prefix.len()), key.len());
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
+        };
         f(text)
     } else {
         let owned = prefixed_property_key(prefix, key);
@@ -819,13 +832,20 @@ pub fn with_wrapped_property_key<R>(
     f: impl FnOnce(&str) -> R,
 ) -> R {
     const INLINE_KEY_BYTES: usize = 128;
-    let len = prefix.len() + key.len() + suffix.len();
+    let len = metadata_key_len(prefix.len(), key.len(), suffix.len());
     if len <= INLINE_KEY_BYTES {
-        let mut buf = [0u8; INLINE_KEY_BYTES];
-        buf[..prefix.len()].copy_from_slice(prefix.as_bytes());
-        buf[prefix.len()..prefix.len() + key.len()].copy_from_slice(key.as_bytes());
-        buf[prefix.len() + key.len()..len].copy_from_slice(suffix.as_bytes());
-        let text = std::str::from_utf8(&buf[..len]).unwrap_or("");
+        let mut buf = std::mem::MaybeUninit::<[u8; INLINE_KEY_BYTES]>::uninit();
+        // All three ranges fit, are disjoint, and initialize every byte read.
+        // Their inputs are valid UTF-8, including at concatenation boundaries.
+        let text = unsafe {
+            let ptr = buf.as_mut_ptr().cast::<u8>();
+            std::ptr::copy_nonoverlapping(prefix.as_ptr(), ptr, prefix.len());
+            std::ptr::copy_nonoverlapping(key.as_ptr(), ptr.add(prefix.len()), key.len());
+            std::ptr::copy_nonoverlapping(
+                suffix.as_ptr(), ptr.add(prefix.len() + key.len()), suffix.len(),
+            );
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
+        };
         f(text)
     } else {
         let mut owned = String::with_capacity(len);
@@ -927,20 +947,158 @@ pub fn value_display_cow<'a>(value: &'a Value) -> Cow<'a, str> {
 }
 
 #[inline]
+fn concat_parts_arc(parts: &[&str], len: usize) -> Arc<str> {
+    let allocation = Arc::<[u8]>::new_uninit_slice(len);
+    let raw = Arc::into_raw(allocation);
+    let mut offset = 0;
+    // Each source is valid UTF-8. The checked total length covers all copies,
+    // and the new allocation cannot overlap any borrowed source. Every byte
+    // is initialized exactly once, including the zero-length case.
+    unsafe {
+        // This freshly allocated Arc has never been cloned or published. Its
+        // sole ownership is held by raw until the final from_raw below, so no
+        // strong/weak-count uniqueness check is needed before initialization.
+        let destination = raw as *mut u8;
+        for part in parts {
+            std::ptr::copy_nonoverlapping(part.as_ptr(), destination.add(offset), part.len());
+            offset += part.len();
+        }
+        // [MaybeUninit<u8>] and str have identical allocation layout and length
+        // metadata. The copies have initialized all bytes before publishing.
+        // Concatenation of complete valid UTF-8 inputs is valid UTF-8. Transfer
+        // the single Arc ownership without changing its allocation/refcount.
+        Arc::from_raw(raw as *const str)
+    }
+}
+
+#[inline]
 pub fn concat2_arc(left: &str, right: &str) -> Arc<str> {
-    let mut out = String::with_capacity(left.len() + right.len());
-    out.push_str(left);
-    out.push_str(right);
-    Arc::<str>::from(out)
+    if left.is_empty() {
+        return Arc::from(right);
+    }
+    if right.is_empty() {
+        return Arc::from(left);
+    }
+    let len = left.len().checked_add(right.len()).expect("string length overflow");
+    concat_parts_arc(&[left, right], len)
 }
 
 #[inline]
 pub fn concat3_arc(left: &str, middle: &str, right: &str) -> Arc<str> {
-    let mut out = String::with_capacity(left.len() + middle.len() + right.len());
-    out.push_str(left);
-    out.push_str(middle);
-    out.push_str(right);
-    Arc::<str>::from(out)
+    if left.is_empty() {
+        return concat2_arc(middle, right);
+    }
+    if middle.is_empty() {
+        return concat2_arc(left, right);
+    }
+    if right.is_empty() {
+        return concat2_arc(left, middle);
+    }
+    let len = left.len().checked_add(middle.len())
+        .and_then(|len| len.checked_add(right.len()))
+        .expect("string length overflow");
+    concat_parts_arc(&[left, middle, right], len)
+}
+
+#[cfg(test)]
+mod direct_arc_concat_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn previous_concat2(left: &str, right: &str) -> Arc<str> {
+        let mut out = String::with_capacity(left.len() + right.len());
+        out.push_str(left);
+        out.push_str(right);
+        Arc::<str>::from(out)
+    }
+
+    fn previous_concat3(left: &str, middle: &str, right: &str) -> Arc<str> {
+        let mut out = String::with_capacity(left.len() + middle.len() + right.len());
+        out.push_str(left);
+        out.push_str(middle);
+        out.push_str(right);
+        Arc::<str>::from(out)
+    }
+
+    #[test]
+    fn direct_concatenation_preserves_utf8_empty_nul_and_boundaries() {
+        for (left, middle, right) in [
+            ("", "", ""),
+            ("", "value", ""),
+            ("prefix", "", "suffix"),
+            ("[object ", "Custom", "]"),
+            ("\u{e9}", "\u{1f680}", "\u{4e2d}"),
+            ("a\0", "\0b", "\0"),
+        ] {
+            assert_eq!(concat2_arc(left, right), previous_concat2(left, right));
+            assert_eq!(concat3_arc(left, middle, right), previous_concat3(left, middle, right));
+        }
+        for len in [1, 7, 15, 31, 63, 127, 128, 129, 255, 1024, 4096] {
+            let input = "x".repeat(len);
+            assert_eq!(concat2_arc(&input, &input), previous_concat2(&input, &input));
+            assert_eq!(concat3_arc(&input, &input, &input), previous_concat3(&input, &input, &input));
+        }
+    }
+
+    #[test]
+    fn concatenation_keeps_sources_and_shared_results_independent() {
+        let source: Arc<str> = Arc::from("shared\u{1f680}");
+        let result = concat3_arc(&source, &source, &source);
+        assert_eq!(Arc::strong_count(&source), 1);
+        assert_eq!(result.as_ref(), "shared\u{1f680}shared\u{1f680}shared\u{1f680}");
+        let alias = result.clone();
+        assert!(Arc::ptr_eq(&result, &alias));
+        drop(result);
+        assert_eq!(alias.as_ref(), "shared\u{1f680}shared\u{1f680}shared\u{1f680}");
+        assert_eq!(source.as_ref(), "shared\u{1f680}");
+    }
+
+    #[test]
+    fn every_empty_part_combination_matches_previous_concatenation() {
+        for mask in 0..8 {
+            let left = if mask & 1 == 0 { "" } else { "\u{e9}" };
+            let middle = if mask & 2 == 0 { "" } else { "\u{1f680}" };
+            let right = if mask & 4 == 0 { "" } else { "x\0y" };
+            assert_eq!(concat2_arc(left, right), previous_concat2(left, right));
+            assert_eq!(concat3_arc(left, middle, right), previous_concat3(left, middle, right));
+        }
+    }
+
+    #[test]
+    #[ignore = "paired complete native concatenation benchmark, not application timing"]
+    fn paired_direct_arc_concat_benchmark() {
+        for len in [0, 8, 64, 512, 4096] {
+            let input = "x".repeat(len);
+            for parts in [2, 3] {
+                let timed = |direct: bool| {
+                    let start = Instant::now();
+                    for _ in 0..10_000 {
+                        let result = match (direct, parts) {
+                            (false, 2) => previous_concat2(black_box(&input), black_box("suffix")),
+                            (true, 2) => concat2_arc(black_box(&input), black_box("suffix")),
+                            (false, _) => previous_concat3(black_box("[object "), black_box(&input), black_box("]")),
+                            (true, _) => concat3_arc(black_box("[object "), black_box(&input), black_box("]")),
+                        };
+                        black_box(result);
+                    }
+                    start.elapsed()
+                };
+                let mut previous = Duration::ZERO;
+                let mut direct = Duration::ZERO;
+                for round in 0..8 {
+                    if round % 2 == 0 {
+                        previous += timed(false);
+                        direct += timed(true);
+                    } else {
+                        direct += timed(true);
+                        previous += timed(false);
+                    }
+                }
+                eprintln!("arc concat input={len} parts={parts}: previous={previous:?}, direct={direct:?}");
+            }
+        }
+    }
 }
 
 #[inline]
@@ -1082,27 +1240,27 @@ pub fn non_negative_i32_key(key: &str) -> Option<i32> {
 
 #[inline]
 pub fn canonical_array_index_key(key: &str) -> Option<u32> {
-    if key.is_empty() {
-        None
-    } else if key == "0" {
-        Some(0)
-    } else if key.as_bytes().first() == Some(&b'0') {
-        None
-    } else {
-        let mut value: u64 = 0;
-        for byte in key.bytes() {
-            if !byte.is_ascii_digit() {
-                return None;
-            }
-            value = value
-                .saturating_mul(10)
-                .saturating_add((byte - b'0') as u64);
-            if value >= u32::MAX as u64 {
-                return None;
-            }
-        }
-        Some(value as u32)
+    let bytes = key.as_bytes();
+    if bytes.is_empty() || bytes.len() > 10 {
+        return None;
     }
+    let first = bytes[0];
+    if first == b'0' {
+        return (bytes.len() == 1).then_some(0);
+    }
+    if !first.is_ascii_digit() {
+        return None;
+    }
+    // At most ten decimal digits fit below 10^10, so accumulation cannot
+    // overflow u64. Canonical indexes exclude 2^32 - 1 itself.
+    let mut value = (first - b'0') as u64;
+    for &byte in &bytes[1..] {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value * 10 + (byte - b'0') as u64;
+    }
+    (value < u32::MAX as u64).then_some(value as u32)
 }
 
 #[inline]
@@ -1154,5 +1312,210 @@ pub fn canonical_numeric_index_value(value: &Value) -> Option<f64> {
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod bounded_array_index_parser_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn previous_array_index_key(key: &str) -> Option<u32> {
+        if key.is_empty() {
+            None
+        } else if key == "0" {
+            Some(0)
+        } else if key.as_bytes().first() == Some(&b'0') {
+            None
+        } else {
+            let mut value: u64 = 0;
+            for byte in key.bytes() {
+                if !byte.is_ascii_digit() {
+                    return None;
+                }
+                value = value
+                    .saturating_mul(10)
+                    .saturating_add((byte - b'0') as u64);
+                if value >= u32::MAX as u64 {
+                    return None;
+                }
+            }
+            Some(value as u32)
+        }
+    }
+    
+
+    #[test]
+    fn canonical_boundaries_and_invalid_forms_are_preserved() {
+        for (text, expected) in [
+            ("", None), ("0", Some(0)), ("1", Some(1)), ("255", Some(255)),
+            ("4294967294", Some(u32::MAX - 1)), ("4294967295", None),
+            ("4294967296", None), ("9999999999", None), ("10000000000", None),
+            ("00", None), ("01", None), ("00000000001", None),
+            ("-0", None), ("-1", None), ("+1", None), (" 1", None), ("1 ", None),
+            ("1.0", None), ("1e0", None), ("1_0", None), ("1\0", None),
+            ("field", None), ("\u{ff11}", None), ("\u{1f680}", None),
+        ] {
+            assert_eq!(canonical_array_index_key(text), expected, "{text:?}");
+            assert_eq!(canonical_array_index_key(text), previous_array_index_key(text), "{text:?}");
+        }
+        let huge = "9".repeat(4096);
+        assert_eq!(canonical_array_index_key(&huge), None);
+        assert_eq!(canonical_array_index_key(&huge), previous_array_index_key(&huge));
+    }
+
+    #[test]
+    fn broad_decimal_and_malformed_corpus_matches_previous() {
+        for number in 0..100_000u32 {
+            let text = number.to_string();
+            assert_eq!(canonical_array_index_key(&text), Some(number));
+            assert_eq!(canonical_array_index_key(&text), previous_array_index_key(&text));
+        }
+        let mut state = 0x9e37_79b9u32;
+        let alphabet = b"0123456789+-e. x";
+        for _ in 0..20_000 {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let length = (state % 32) as usize;
+            let mut text = String::with_capacity(length);
+            for _ in 0..length {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                text.push(alphabet[(state as usize) % alphabet.len()] as char);
+            }
+            assert_eq!(canonical_array_index_key(&text), previous_array_index_key(&text), "{text:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "paired shared index classification benchmark, not lookup or guest timing"]
+    fn paired_bounded_parser_benchmark() {
+        for (name, keys) in [
+            ("small", vec!["0", "1", "7", "17", "255", "1024"]),
+            ("boundary", vec!["4294967294", "4294967295", "9999999999", "10000000000"]),
+            ("ordinary", vec!["a", "field", "length", "__descriptor", "applicationField"]),
+            ("invalid", vec!["01", "-0", "1e0", "1\0", "999999999999999999999999"]),
+        ] {
+            let timed = |current: bool| {
+                let start = Instant::now();
+                for _ in 0..20_000 {
+                    for key in &keys {
+                        black_box(if current { canonical_array_index_key(black_box(key)) } else { previous_array_index_key(black_box(key)) });
+                    }
+                }
+                start.elapsed()
+            };
+            let mut previous = Duration::ZERO;
+            let mut current = Duration::ZERO;
+            for round in 0..8 {
+                if round % 2 == 0 { previous += timed(false); current += timed(true); }
+                else { current += timed(true); previous += timed(false); }
+            }
+            eprintln!("bounded index corpus={name}: previous={previous:?}, current={current:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod metadata_key_buffer_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_length_boundaries() {
+        assert_eq!(metadata_key_len(0, 0, 0), 0);
+        assert_eq!(metadata_key_len(6, 122, 0), 128);
+        assert_eq!(metadata_key_len(6, 120, 2), 128);
+        assert_eq!(metadata_key_len(6, 121, 2), 129);
+        assert_eq!(metadata_key_len(usize::MAX, 0, 0), usize::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "property key length overflow")]
+    fn prefix_key_length_overflow_is_rejected() {
+        metadata_key_len(usize::MAX, 1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "property key length overflow")]
+    fn suffix_length_overflow_is_rejected() {
+        metadata_key_len(usize::MAX - 1, 1, 1);
+    }
+
+    #[test]
+    fn initialized_key_ranges_match_concatenation() {
+        let cases = [
+            ("", "", ""),
+            ("__get_", "field0", ""),
+            ("__set_", "length", ""),
+            ("\u{e9}", "\u{1f680}", "\u{4e2d}"),
+            ("prefix", "embedded\0key", "suffix"),
+        ];
+        for (prefix, key, suffix) in cases {
+            with_prefixed_property_key(prefix, key, |text| {
+                assert_eq!(text, format!("{prefix}{key}"));
+            });
+            with_wrapped_property_key(prefix, key, suffix, |text| {
+                assert_eq!(text, format!("{prefix}{key}{suffix}"));
+            });
+        }
+        for total in [127, 128, 129, 256] {
+            let key = "x".repeat(total - 8);
+            with_prefixed_property_key("__get_", &key, |text| {
+                assert_eq!(text, format!("__get_{key}"));
+            });
+            with_wrapped_property_key("__get_", &key, "[]", |text| {
+                assert_eq!(text.len(), total);
+                assert_eq!(text, format!("__get_{key}[]"));
+            });
+        }
+        for len in [127, 128, 129] {
+            let key = "x".repeat(len - 6);
+            with_prefixed_property_key("__get_", &key, |text| {
+                assert_eq!(text.len(), len);
+                assert_eq!(text, format!("__get_{key}"));
+            });
+        }
+    }
+
+    #[test]
+    #[ignore = "matched metadata-key microbenchmark"]
+    fn benchmark_prefixed_key_buffer() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let samples = ["field0", "length", "someLongerApplicationPropertyName"];
+        for round in 0..4 {
+            let old = || {
+                let start = Instant::now();
+                for _ in 0..100_000 {
+                    for key in samples {
+                        let prefix = black_box("__get_");
+                        let key = black_box(key);
+                        let len = prefix.len() + key.len();
+                        let mut buf = [0u8; 128];
+                        buf[..prefix.len()].copy_from_slice(prefix.as_bytes());
+                        buf[prefix.len()..len].copy_from_slice(key.as_bytes());
+                        black_box(std::str::from_utf8(&buf[..len]).unwrap_or(""));
+                    }
+                }
+                start.elapsed()
+            };
+            let new = || {
+                let start = Instant::now();
+                for _ in 0..100_000 {
+                    for key in samples {
+                        with_prefixed_property_key(black_box("__get_"), black_box(key), |text| {
+                            black_box(text);
+                        });
+                    }
+                }
+                start.elapsed()
+            };
+            let (before, after) = if round % 2 == 0 {
+                (old(), new())
+            } else {
+                let after = new();
+                (old(), after)
+            };
+            eprintln!("metadata keys round={round} original={before:?} optimized={after:?}");
+        }
     }
 }

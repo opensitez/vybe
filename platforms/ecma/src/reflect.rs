@@ -92,6 +92,408 @@ pub(crate) fn try_reflect_get(
         }
         return try_reflect_get(ctx, &proxy_target, key, receiver);
     }
+        let o = obj.lock().unwrap();
+        if let ObjectKind::Array(ref values) = o.kind {
+            if key == "length" {
+                return Ok(Value::I32(values.len() as i32));
+            }
+            if let Some(i) = numeric_index(key) {
+                let accessor = crate::keys::with_getter_property_key(key, |getter_key| {
+                    o.properties.contains_key(getter_key)
+                });
+                if !accessor && !crate::array::is_array_hole(&o, i) {
+                    if let Some(value) = values.get(i) {
+                        return Ok(value.clone());
+                    }
+                }
+            }
+        }
+        if let ObjectKind::TypedArray(ref ta) = o.kind {
+            if let Some(i) = numeric_index(key) {
+                if i < ta.length {
+                    return Ok(crate::typedarray::read_element(ta, i));
+                }
+                return Ok(Value::Undefined);
+            }
+        }
+    try_reflect_get_ordinary(ctx, obj, key, receiver, o)
+}
+
+// Keep the ordinary-walk state out of the exotic early-return path.
+// The initial guard is transferred, not released and reacquired.
+fn try_reflect_get_ordinary(
+    ctx: &mut HostContext,
+    obj: &Arc<std::sync::Mutex<Object>>,
+    key: &str,
+    receiver: Value,
+    o: std::sync::MutexGuard<'_, Object>,
+) -> Result<Value, Value> {
+    crate::keys::with_getter_property_key(key, |getter_key| {
+        let snapshot = |node: &Arc<std::sync::Mutex<Object>>, o: &Object| {
+            let getter = o.properties.get(getter_key).cloned();
+            let data = o.properties.get(key).cloned();
+            let next = if matches!(&getter, Some(Value::Object(_))) || data.is_some() {
+                None
+            } else {
+                Some(o.properties.get("__proto__").cloned().unwrap_or_else(|| {
+                    crate::object::implicit_object_prototype(node, o)
+                }))
+            };
+            (getter, data, next)
+        };
+        let mut step = snapshot(obj, &o);
+        drop(o);
+        loop {
+            let (getter, data, next) = step;
+            if let Some(g @ Value::Object(_)) = getter {
+                let arity = match &g {
+                    Value::Object(go) => match &go.lock().unwrap().kind {
+                        ObjectKind::Function(f) => f.arity,
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                if arity == 0 {
+                    return crate::function::try_invoke_with_explicit_this(ctx, &g, receiver, &[]);
+                }
+                return crate::function::try_invoke_with_explicit_this(
+                    ctx, &g, receiver.clone(), &[receiver],
+                );
+            }
+            if let Some(value) = data {
+                return Ok(value);
+            }
+            let Some(Value::Object(node)) = next else {
+                return Ok(Value::Undefined);
+            };
+            step = {
+                let o = node.lock().unwrap();
+                snapshot(&node, &o)
+            };
+        }
+    })
+}
+
+/// §28.1.12 Reflect.set — proxy trap, typed-array elements, setter
+/// dispatch with `receiver`, non-writable/non-extensible gates.
+pub(crate) fn reflect_set(
+    ctx: &mut HostContext,
+    target: &Value,
+    key: &str,
+    val: Value,
+    receiver: Value,
+) -> Value {
+    let Value::Object(obj) = target else {
+        return throw_type_error(ctx, "Reflect.set called on non-object");
+    };
+    if let Some((proxy_target, handler)) = proxy_target_and_handler(obj) {
+        if crate::proxy::proxy_is_revoked(obj) {
+            return throw_type_error(ctx, "Cannot perform 'set' on a revoked proxy");
+        }
+        if let Some(trap) = proxy_trap(&handler, "set") {
+            let result = crate::function::try_invoke_with_explicit_this(
+                ctx,
+                &trap,
+                handler,
+                &[proxy_target, crate::keys::string_value(key), val, receiver],
+            );
+            return match result {
+                Ok(result) => Value::Bool(crate::boolean::to_boolean(&result)),
+                Err(thrown) => { ctx.throw_value(thrown); Value::Undefined }
+            };
+        }
+        // Default receiver is the proxy itself — rebind it to the target
+        // so the eventual data write lands on the target (the observable
+        // §10.5.9 outcome for trap-less proxies).
+        let follow_receiver = match (&receiver, target) {
+            (Value::Object(r), Value::Object(t)) if Arc::ptr_eq(r, t) => proxy_target.clone(),
+            _ => receiver,
+        };
+        return reflect_set(ctx, &proxy_target, key, val, follow_receiver);
+    }
+    {
+        let o = obj.lock().unwrap();
+        if let ObjectKind::TypedArray(ref ta) = o.kind {
+            if let Some(i) = numeric_index(key) {
+                if i < ta.length {
+                    crate::typedarray::write_element(ta, i, &val);
+                    return Value::Bool(true);
+                }
+                return Value::Bool(false);
+            }
+        }
+    }
+    {
+        let mut o = obj.lock().unwrap();
+        if matches!(o.kind, ObjectKind::Array(_)) {
+            if key == "length" {
+                crate::array::apply_js_array_length(ctx, &mut o, &val);
+                return Value::Bool(true);
+            }
+            if let Some(i) = numeric_index(key) {
+                if o.properties.get("__array_length_readonly").is_some() {
+                    return Value::Bool(false);
+                }
+                if let ObjectKind::Array(ref mut values) = o.kind {
+                    if i >= values.len() {
+                        values.resize(i + 1, Value::Undefined);
+                    }
+                    values[i] = val;
+                }
+                drop(o);
+                track_key(obj, key);
+                return Value::Bool(true);
+            }
+        }
+    }
+    // Walk for an accessor: a REAL setter (compiled Function) runs with
+    // `this = receiver` (§10.1.9.2); the noop setter installed for
+    // non-writable data properties (a HostFunction) means reject. A
+    // getter with no setter at the same level also rejects.
+    let accessor_result = crate::keys::with_setter_property_key(key, |setter_key| {
+        crate::keys::with_getter_property_key(key, |getter_key| {
+            let mut current = Some(obj.clone());
+            while let Some(node) = current {
+                let (setter, has_getter, has_data, next) = {
+                    let o = node.lock().unwrap();
+                    let setter = o.properties.get(setter_key).cloned();
+                    let has_getter = o.properties.contains_key(getter_key);
+                    let has_data = o.properties.contains_key(key);
+                    let next = if matches!(&setter, Some(Value::Object(_))) || has_getter || has_data {
+                        None
+                    } else {
+                        Some(o.properties.get("__proto__").cloned()
+                            .unwrap_or_else(|| crate::object::implicit_object_prototype(&node, &o)))
+                    };
+                    (setter, has_getter, has_data, next)
+                };
+                if let Some(Value::Object(s_obj)) = setter {
+                    let st = Value::Object(s_obj);
+                    if !crate::object::is_noop_setter_value(&st) {
+                        // Accessor convention: arity-1 setters take (value) with
+                        // ambient `this`; arity-2 setters take (receiver, value).
+                        // ⛔ ONE RECEIVER, PASSED ONCE. The arity guess below was
+                        // reading a receiver-first setter as `(receiver, value)` and
+                        // passing both — but under `ReceiverAbi::Parameter` the invoke
+                        // ALSO supplies the receiver, so the setter got it twice:
+                        // `this` took the supplied one and the value parameter took the
+                        // receiver. Measured: `Reflect.set(t,"v",5)` wrote `[object]`.
+                        // `invoke_with_receiver` is correct under BOTH bindings, so the
+                        // arity question disappears rather than being answered.
+                        if let Err(thrown) = ctx.try_invoke_with_receiver(&st, receiver.clone(), &[val.clone()]) {
+                            ctx.throw_value(thrown);
+                            return Some(Value::Undefined);
+                        }
+                        return Some(Value::Bool(true));
+                    }
+                    // noop setter (HostFunction) = non-writable data property
+                    return Some(Value::Bool(false));
+                }
+                if has_getter {
+                    // §10.1.9.2 step 6.c: accessor without a [[Set]] → false
+                    return Some(Value::Bool(false));
+                }
+                if has_data {
+                    break; // data property found — assign below
+                }
+                current = match next {
+                    Some(Value::Object(p)) => Some(p),
+                    _ => None,
+                };
+            }
+            None
+        })
+    });
+    if let Some(value) = accessor_result {
+        return value;
+    }
+    // Ordinary data assignment onto the receiver (defaults to target).
+    let dest = match &receiver {
+        Value::Object(recv) => recv.clone(),
+        _ => obj.clone(),
+    };
+    {
+        let mut o = dest.lock().unwrap();
+        if is_not_extensible(&o) && !o.properties.contains_key(key) {
+            return Value::Bool(false);
+        }
+        o.properties.insert(key.to_string(), val);
+    }
+    track_key(&dest, key);
+    Value::Bool(true)
+}
+
+#[cfg(test)]
+mod get_lock_speedup_tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    fn object(object: Object) -> Value {
+        Value::Object(Arc::new(Mutex::new(object)))
+    }
+
+    fn host_function(vm: &VM, namespace: &str, name: &str) -> Value {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(
+            vm.resolve_host_function_index(namespace, name).unwrap(),
+        );
+        object(function)
+    }
+
+    fn read(vm: &mut VM, get: &Value, target: &Value, key: &str) -> Value {
+        vm.invoke(get, &[target.clone(), crate::keys::string_value(key)]).unwrap()
+    }
+
+    #[test]
+    fn registered_get_preserves_own_precedence_and_inherited_values() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let get = host_function(&vm, "ecma:reflect", "get");
+        let mut parent = Object::new();
+        parent.properties.insert("field".into(), Value::I32(17));
+        parent.properties.insert("inherited".into(), Value::I32(23));
+        parent.properties.insert("__proto__".into(), Value::Null);
+        let parent = object(parent);
+        let mut child = Object::new();
+        child.properties.insert("field".into(), Value::Undefined);
+        child.properties.insert("__proto__".into(), parent);
+        let child = object(child);
+        assert!(matches!(read(&mut vm, &get, &child, "field"), Value::Undefined));
+        assert!(matches!(read(&mut vm, &get, &child, "inherited"), Value::I32(23)));
+        assert!(matches!(read(&mut vm, &get, &child, "missing"), Value::Undefined));
+    }
+
+    #[test]
+    fn registered_get_preserves_array_holes_and_initial_exotic_lookup() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let get = host_function(&vm, "ecma:reflect", "get");
+        let mut parent = Object::new();
+        parent.properties.insert("1".into(), Value::I32(29));
+        parent.properties.insert("__proto__".into(), Value::Null);
+        let mut array = Object::new_array(vec![Value::I32(11), Value::Undefined]);
+        array.properties.insert("__proto__".into(), object(parent));
+        array.properties.insert("__holes".into(), object(Object::new_array(vec![Value::I32(1)])));
+        let array = object(array);
+        assert!(matches!(read(&mut vm, &get, &array, "0"), Value::I32(11)));
+        assert!(matches!(read(&mut vm, &get, &array, "1"), Value::I32(29)));
+        assert!(matches!(read(&mut vm, &get, &array, "length"), Value::I32(2)));
+    }
+
+    #[test]
+    fn registered_get_releases_object_lock_before_accessor_calls() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let target = Arc::new(Mutex::new(Object::new()));
+        let callback_target = target.clone();
+        crate::perf::register_free_fn(
+            &mut vm, "ecma:test-reflect", "getter",
+            Box::new(move |_ctx, _args| {
+                let mut target = callback_target.try_lock().expect("getter must run outside object lock");
+                target.properties.insert("visited".into(), Value::Bool(true));
+                Value::I32(41)
+            }),
+        );
+        let getter = host_function(&vm, "ecma:test-reflect", "getter");
+        {
+            let mut target = target.lock().unwrap();
+            target.properties.insert("__get_field".into(), getter);
+            target.properties.insert("field".into(), Value::I32(0));
+            target.properties.insert("__proto__".into(), Value::Null);
+        }
+        let get = host_function(&vm, "ecma:reflect", "get");
+        assert!(matches!(read(&mut vm, &get, &Value::Object(target.clone()), "field"), Value::I32(41)));
+        assert!(matches!(target.lock().unwrap().properties.get("visited"), Some(Value::Bool(true))));
+    }
+
+    #[test]
+    #[ignore = "paired registered Reflect.get benchmark; not a conformance gate"]
+    fn registered_get_lock_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        crate::perf::register_free_fn(
+            &mut vm, "ecma:test-reflect", "legacyGet",
+            Box::new(|ctx, args| {
+                let args = ctx.user_args(args, 0);
+                let target = args.first().cloned().unwrap_or(Value::Undefined);
+                let receiver = args.get(2).cloned().unwrap_or_else(|| target.clone());
+                with_property_key(args.get(1), |key| {
+                    match legacy_try_reflect_get(ctx, &target, key, receiver) {
+                        Ok(value) => value,
+                        Err(error) => { ctx.throw_value(error); Value::Undefined }
+                    }
+                })
+            }),
+        );
+        let old = host_function(&vm, "ecma:test-reflect", "legacyGet");
+        let new = host_function(&vm, "ecma:reflect", "get");
+        let mut data = Object::new();
+        data.properties.insert("field".into(), Value::I32(7));
+        data.properties.insert("__proto__".into(), Value::Null);
+        let data = object(data);
+        let mut inherited = Object::new();
+        inherited.properties.insert("__proto__".into(), data.clone());
+        let inherited = object(inherited);
+        let array = object(Object::new_array(vec![Value::I32(7); 32]));
+        for (label, target, key, expected) in [
+            ("own-data", data, "field", 7),
+            ("inherited-data", inherited, "field", 7),
+            ("array-index", array.clone(), "7", 7),
+            ("array-length", array, "length", 32),
+        ] {
+            let args = [target, crate::keys::string_value(key)];
+            for function in [&old, &new] {
+                assert!(matches!(vm.invoke(function, &args).unwrap(), Value::I32(value) if value == expected));
+            }
+            let mut old_time = std::time::Duration::ZERO;
+            let mut new_time = std::time::Duration::ZERO;
+            let iterations = if label.starts_with("array-") { 200_000 } else { 20_000 };
+            for function in [&old, &new] {
+                for _ in 0..10_000 {
+                    std::hint::black_box(vm.invoke(function, &args).unwrap());
+                }
+            }
+            for sample in 0..6 {
+                for old_first in [sample % 2 == 0, sample % 2 != 0] {
+                    let function = if old_first { &old } else { &new };
+                    let start = Instant::now();
+                    for _ in 0..iterations {
+                        std::hint::black_box(vm.invoke(function, &args).unwrap());
+                    }
+                    let elapsed = start.elapsed();
+                    if old_first { old_time += elapsed; } else { new_time += elapsed; }
+                }
+            }
+            eprintln!("{label}: old={old_time:?} new={new_time:?} ratio={:.3}x",
+                old_time.as_secs_f64() / new_time.as_secs_f64());
+        }
+    }
+
+fn legacy_try_reflect_get(
+    ctx: &mut HostContext,
+    target: &Value,
+    key: &str,
+    receiver: Value,
+) -> Result<Value, Value> {
+    let Value::Object(obj) = target else {
+        return Err(crate::error::new_error(
+            ctx,
+            "TypeError",
+            "Reflect.get called on non-object",
+        ));
+    };
+    if let Some((proxy_target, handler)) = proxy_target_and_handler(obj) {
+        if let Some(trap) = proxy_trap(&handler, "get") {
+            return crate::function::try_invoke_with_explicit_this(
+                ctx,
+                &trap,
+                handler,
+                &[proxy_target, crate::keys::string_value(key), receiver],
+            );
+        }
+        return legacy_try_reflect_get(ctx, &proxy_target, key, receiver);
+    }
     {
         let o = obj.lock().unwrap();
         if let ObjectKind::Array(ref values) = o.kind {
@@ -167,145 +569,7 @@ pub(crate) fn try_reflect_get(
     })
 }
 
-/// §28.1.12 Reflect.set — proxy trap, typed-array elements, setter
-/// dispatch with `receiver`, non-writable/non-extensible gates.
-fn reflect_set(
-    ctx: &mut HostContext,
-    target: &Value,
-    key: &str,
-    val: Value,
-    receiver: Value,
-) -> Value {
-    let Value::Object(obj) = target else {
-        return throw_type_error(ctx, "Reflect.set called on non-object");
-    };
-    if let Some((proxy_target, handler)) = proxy_target_and_handler(obj) {
-        if let Some(trap) = proxy_trap(&handler, "set") {
-            let result = invoke_with_explicit_this(
-                ctx,
-                &trap,
-                handler,
-                &[proxy_target, crate::keys::string_value(key), val, receiver],
-            );
-            return Value::Bool(result.as_bool());
-        }
-        // Default receiver is the proxy itself — rebind it to the target
-        // so the eventual data write lands on the target (the observable
-        // §10.5.9 outcome for trap-less proxies).
-        let follow_receiver = match (&receiver, target) {
-            (Value::Object(r), Value::Object(t)) if Arc::ptr_eq(r, t) => proxy_target.clone(),
-            _ => receiver,
-        };
-        return reflect_set(ctx, &proxy_target, key, val, follow_receiver);
-    }
-    {
-        let o = obj.lock().unwrap();
-        if let ObjectKind::TypedArray(ref ta) = o.kind {
-            if let Some(i) = numeric_index(key) {
-                if i < ta.length {
-                    crate::typedarray::write_element(ta, i, &val);
-                    return Value::Bool(true);
-                }
-                return Value::Bool(false);
-            }
-        }
-    }
-    {
-        let mut o = obj.lock().unwrap();
-        if matches!(o.kind, ObjectKind::Array(_)) {
-            if key == "length" {
-                crate::array::apply_js_array_length(ctx, &mut o, &val);
-                return Value::Bool(true);
-            }
-            if let Some(i) = numeric_index(key) {
-                if o.properties.get("__array_length_readonly").is_some() {
-                    return Value::Bool(false);
-                }
-                if let ObjectKind::Array(ref mut values) = o.kind {
-                    if i >= values.len() {
-                        values.resize(i + 1, Value::Undefined);
-                    }
-                    values[i] = val;
-                }
-                drop(o);
-                track_key(obj, key);
-                return Value::Bool(true);
-            }
-        }
-    }
-    // Walk for an accessor: a REAL setter (compiled Function) runs with
-    // `this = receiver` (§10.1.9.2); the noop setter installed for
-    // non-writable data properties (a HostFunction) means reject. A
-    // getter with no setter at the same level also rejects.
-    let accessor_result = crate::keys::with_setter_property_key(key, |setter_key| {
-        crate::keys::with_getter_property_key(key, |getter_key| {
-            let mut current = Some(obj.clone());
-            while let Some(node) = current {
-                let (setter, has_getter, has_data, next) = {
-                    let o = node.lock().unwrap();
-                    (
-                        o.properties.get(setter_key).cloned(),
-                        o.properties.contains_key(getter_key),
-                        o.properties.contains_key(key),
-                        o.properties.get("__proto__").cloned(),
-                    )
-                };
-                if let Some(Value::Object(s_obj)) = setter {
-                    let arity = match &s_obj.lock().unwrap().kind {
-                        ObjectKind::Function(f) => Some(f.arity),
-                        _ => None,
-                    };
-                    if let Some(arity) = arity {
-                        // Accessor convention: arity-1 setters take (value) with
-                        // ambient `this`; arity-2 setters take (receiver, value).
-                        let st = Value::Object(s_obj);
-                        // ⛔ ONE RECEIVER, PASSED ONCE. The arity guess below was
-                        // reading a receiver-first setter as `(receiver, value)` and
-                        // passing both — but under `ReceiverAbi::Parameter` the invoke
-                        // ALSO supplies the receiver, so the setter got it twice:
-                        // `this` took the supplied one and the value parameter took the
-                        // receiver. Measured: `Reflect.set(t,"v",5)` wrote `[object]`.
-                        // `invoke_with_receiver` is correct under BOTH bindings, so the
-                        // arity question disappears rather than being answered.
-                        let _ = arity;
-                        ctx.invoke_with_receiver(&st, receiver.clone(), &[val.clone()]);
-                        return Some(Value::Bool(true));
-                    }
-                    // noop setter (HostFunction) = non-writable data property
-                    return Some(Value::Bool(false));
-                }
-                if has_getter {
-                    // §10.1.9.2 step 6.c: accessor without a [[Set]] → false
-                    return Some(Value::Bool(false));
-                }
-                if has_data {
-                    break; // data property found — assign below
-                }
-                current = match next {
-                    Some(Value::Object(p)) => Some(p),
-                    _ => None,
-                };
-            }
-            None
-        })
-    });
-    if let Some(value) = accessor_result {
-        return value;
-    }
-    // Ordinary data assignment onto the receiver (defaults to target).
-    let dest = match &receiver {
-        Value::Object(recv) => recv.clone(),
-        _ => obj.clone(),
-    };
-    {
-        let mut o = dest.lock().unwrap();
-        if is_not_extensible(&o) && !o.properties.contains_key(key) {
-            return Value::Bool(false);
-        }
-        o.properties.insert(key.to_string(), val);
-    }
-    track_key(&dest, key);
-    Value::Bool(true)
+
 }
 
 pub fn register(vm: &mut VM) {
@@ -452,9 +716,9 @@ pub fn register(vm: &mut VM) {
             // `Reflect.set(t,"v",5)` pass the Reflect object as the
             // target and the target as the value.
             let args = ctx.user_args(args, 0);
-            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let target = args.first().unwrap_or(&Value::Undefined);
             let receiver = args.get(2).cloned().unwrap_or_else(|| target.clone());
-            with_property_key(args.get(1), |key| reflect_get(ctx, &target, key, receiver))
+            with_property_key(args.get(1), |key| reflect_get(ctx, target, key, receiver))
         }),
     );
 

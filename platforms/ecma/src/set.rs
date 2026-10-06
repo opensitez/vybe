@@ -591,22 +591,11 @@ pub fn register(vm: &mut VM) {
                 if Arc::ptr_eq(a, b) {
                     return Value::Undefined;
                 }
-                let to_add: Vec<Value> = {
-                    let block = b.lock().unwrap();
-                    if let ObjectKind::Set(ref bvs) = block.kind {
-                        let mut values = Vec::with_capacity(bvs.len());
-                        values.extend(bvs.iter().cloned());
-                        values
-                    } else {
-                        Vec::new()
+                with_distinct_sets_mut(a, b, |avs, bvs| {
+                    for v in bvs {
+                        avs.insert(v.clone());
                     }
-                };
-                let mut alock = a.lock().unwrap();
-                if let ObjectKind::Set(ref mut avs) = alock.kind {
-                    for v in to_add {
-                        avs.insert(v);
-                    }
-                }
+                });
             }
             Value::Undefined
         }),
@@ -621,18 +610,9 @@ pub fn register(vm: &mut VM) {
                 if Arc::ptr_eq(a, b) {
                     return Value::Undefined;
                 }
-                let b_snapshot: indexmap::IndexSet<Value> = {
-                    let block = b.lock().unwrap();
-                    if let ObjectKind::Set(ref bvs) = block.kind {
-                        bvs.clone()
-                    } else {
-                        indexmap::IndexSet::new()
-                    }
-                };
-                let mut alock = a.lock().unwrap();
-                if let ObjectKind::Set(ref mut avs) = alock.kind {
-                    avs.retain(|v| b_snapshot.contains(v));
-                }
+                with_distinct_sets_mut(a, b, |avs, bvs| {
+                    avs.retain(|v| bvs.contains(v));
+                });
             }
             Value::Undefined
         }),
@@ -651,18 +631,9 @@ pub fn register(vm: &mut VM) {
                     }
                     return Value::Undefined;
                 }
-                let b_snapshot: indexmap::IndexSet<Value> = {
-                    let block = b.lock().unwrap();
-                    if let ObjectKind::Set(ref bvs) = block.kind {
-                        bvs.clone()
-                    } else {
-                        indexmap::IndexSet::new()
-                    }
-                };
-                let mut alock = a.lock().unwrap();
-                if let ObjectKind::Set(ref mut avs) = alock.kind {
-                    avs.retain(|v| !b_snapshot.contains(v));
-                }
+                with_distinct_sets_mut(a, b, |avs, bvs| {
+                    avs.retain(|v| !bvs.contains(v));
+                });
             }
             Value::Undefined
         }),
@@ -681,28 +652,19 @@ pub fn register(vm: &mut VM) {
                     }
                     return Value::Undefined;
                 }
-                let b_snapshot: indexmap::IndexSet<Value> = {
-                    let block = b.lock().unwrap();
-                    if let ObjectKind::Set(ref bvs) = block.kind {
-                        bvs.clone()
-                    } else {
-                        indexmap::IndexSet::new()
-                    }
-                };
-                let mut alock = a.lock().unwrap();
-                if let ObjectKind::Set(ref mut avs) = alock.kind {
+                with_distinct_sets_mut(a, b, |avs, bvs| {
                     let existing: indexmap::IndexSet<Value> = avs
                         .iter()
-                        .filter(|v| b_snapshot.contains(*v))
+                        .filter(|v| bvs.contains(*v))
                         .cloned()
                         .collect();
-                    avs.retain(|v| !b_snapshot.contains(v));
-                    for v in b_snapshot {
-                        if !existing.contains(&v) {
-                            avs.insert(v);
+                    avs.retain(|v| !bvs.contains(v));
+                    for v in bvs {
+                        if !existing.contains(v) {
+                            avs.insert(v.clone());
                         }
                     }
-                }
+                });
             }
             Value::Undefined
         }),
@@ -728,4 +690,143 @@ pub fn register(vm: &mut VM) {
             Value::Bool(false)
         }),
     );
+}
+
+// Mutating collection operations do not invoke user code. Borrow both backing
+// sets instead of cloning the right-hand collection, and order locks by object
+// identity so concurrent A/B and B/A operations cannot invert the lock order.
+fn with_distinct_sets_mut<R>(
+    a: &Arc<std::sync::Mutex<vybe_runtime::value::Object>>,
+    b: &Arc<std::sync::Mutex<vybe_runtime::value::Object>>,
+    f: impl FnOnce(&mut indexmap::IndexSet<Value>, &indexmap::IndexSet<Value>) -> R,
+) -> Option<R> {
+    if Arc::ptr_eq(a, b) {
+        return None;
+    }
+    let (mut a_lock, b_lock) = if (Arc::as_ptr(a) as usize) < (Arc::as_ptr(b) as usize) {
+        (a.lock().unwrap(), b.lock().unwrap())
+    } else {
+        let b_lock = b.lock().unwrap();
+        (a.lock().unwrap(), b_lock)
+    };
+    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs)) = (&mut a_lock.kind, &b_lock.kind) {
+        return Some(f(avs, bvs));
+    }
+    // Preserve the existing handlers' empty-right-hand fallback for non-Sets.
+    if let ObjectKind::Set(avs) = &mut a_lock.kind {
+        return Some(f(avs, &indexmap::IndexSet::new()));
+    }
+    None
+}
+
+#[cfg(test)]
+mod borrowed_mutating_set_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn values(set: &Value) -> Vec<Value> {
+        let Value::Object(object) = set else { panic!("expected Set") };
+        let object = object.lock().unwrap();
+        let ObjectKind::Set(values) = &object.kind else { panic!("expected Set backing") };
+        values.iter().cloned().collect()
+    }
+
+    fn function(vm: &VM, name: &str) -> Value {
+        let mut object = vybe_runtime::value::Object::new();
+        object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index("ecma:set", name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    fn registered_mutators_preserve_identity_order_source_and_aliases() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        for (name, expected) in [
+            ("unionWith", vec![3, 1, 2, 4]),
+            ("intersectWith", vec![1, 2]),
+            ("exceptWith", vec![3]),
+            ("symmetricExceptWith", vec![3, 4]),
+        ] {
+            let a = make_set([3, 1, 2].map(Value::I32).into_iter().collect());
+            let b = make_set([2, 4, 1].map(Value::I32).into_iter().collect());
+            let source = values(&b);
+            let original_arc = match &a { Value::Object(arc) => arc.clone(), _ => unreachable!() };
+            let method = function(&vm, name);
+            let result = vm.invoke(&method, &[a.clone(), b.clone()]).unwrap();
+            assert!(matches!(result, Value::Undefined));
+            assert_eq!(values(&a), expected.into_iter().map(Value::I32).collect::<Vec<_>>(), "{name}");
+            assert_eq!(values(&b), source, "{name} changed source");
+            assert!(matches!(&a, Value::Object(arc) if Arc::ptr_eq(arc, &original_arc)));
+
+            let alias = make_set([3, 1, 2].map(Value::I32).into_iter().collect());
+            vm.invoke(&method, &[alias.clone(), alias.clone()]).unwrap();
+            let expected_alias = if name == "exceptWith" || name == "symmetricExceptWith" {
+                Vec::new()
+            } else {
+                vec![Value::I32(3), Value::I32(1), Value::I32(2)]
+            };
+            assert_eq!(values(&alias), expected_alias, "{name} alias");
+
+            let invalid = Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new()));
+            let receiver = make_set([Value::I32(7)].into_iter().collect());
+            vm.invoke(&method, &[receiver.clone(), invalid]).unwrap();
+            assert_eq!(values(&receiver), if name == "intersectWith" { Vec::new() } else { vec![Value::I32(7)] });
+        }
+    }
+
+    #[test]
+    fn borrowed_helper_preserves_object_identity_and_both_address_orders() {
+        let shared = Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new()));
+        let distinct = Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new()));
+        let a = make_set([shared.clone(), Value::I32(1)].into_iter().collect());
+        let b = make_set([shared.clone(), distinct.clone()].into_iter().collect());
+        let (Value::Object(a_arc), Value::Object(b_arc)) = (&a, &b) else { unreachable!() };
+        with_distinct_sets_mut(a_arc, b_arc, |left, right| left.retain(|v| right.contains(v))).unwrap();
+        assert_eq!(values(&a), vec![shared.clone()]);
+        with_distinct_sets_mut(b_arc, a_arc, |left, right| left.retain(|v| !right.contains(v))).unwrap();
+        assert_eq!(values(&b), vec![distinct]);
+        assert!(with_distinct_sets_mut(a_arc, a_arc, |_, _| ()).is_none());
+    }
+
+    #[test]
+    #[ignore = "native registered-call benchmark; run explicitly"]
+    fn registered_intersection_snapshot_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:set-speedup-gate", "legacyIntersection", Box::new(|_, args| {
+            let (Value::Object(a), Value::Object(b)) = (&args[0], &args[1]) else { unreachable!() };
+            let snapshot = {
+                let b = b.lock().unwrap();
+                let ObjectKind::Set(values) = &b.kind else { unreachable!() };
+                values.clone()
+            };
+            let mut a = a.lock().unwrap();
+            let ObjectKind::Set(values) = &mut a.kind else { unreachable!() };
+            values.retain(|value| snapshot.contains(value));
+            Value::Undefined
+        }));
+        let optimized = function(&vm, "intersectWith");
+        let mut legacy_object = vybe_runtime::value::Object::new();
+        legacy_object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index("ecma:set-speedup-gate", "legacyIntersection").unwrap());
+        let legacy = Value::Object(vybe_runtime::heap::alloc(legacy_object));
+        for size in [1024, 16384] {
+            let source = make_set((0..size).map(Value::I32).collect());
+            for sample in 0..4 {
+                for optimized_first in [sample % 2 == 0, sample % 2 != 0] {
+                    // Construct independent receivers outside the timed section.
+                    let fixtures: Vec<Value> = (0..32).map(|_| make_set((size / 2..size + size / 2).map(Value::I32).collect())).collect();
+                    let method = if optimized_first { &optimized } else { &legacy };
+                    let started = Instant::now();
+                    for receiver in &fixtures {
+                        vm.invoke(method, &[receiver.clone(), source.clone()]).unwrap();
+                    }
+                    let elapsed = started.elapsed();
+                    for receiver in fixtures {
+                        assert_eq!(values(&receiver), (size / 2..size).map(Value::I32).collect::<Vec<_>>());
+                    }
+                    eprintln!("registered Set intersectWith size={size} sample={sample} optimized={optimized_first} elapsed={elapsed:?}");
+                }
+            }
+        }
+    }
 }

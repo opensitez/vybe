@@ -648,3 +648,117 @@ pub fn register(vm: &mut VM) {
         }),
     );
 }
+
+#[cfg(test)]
+mod borrowed_update_candidate_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn previous_set(map: &mut IndexMap<Value, Value>, key: &Value, value: &Value) {
+        map.insert(key.clone(), value.clone());
+    }
+
+    fn borrowed_set(map: &mut IndexMap<Value, Value>, key: &Value, value: &Value) {
+        if let Some(existing) = map.get_mut(key) {
+            *existing = value.clone();
+        } else {
+            map.insert(key.clone(), value.clone());
+        }
+    }
+
+    fn assert_same_entries(previous: &IndexMap<Value, Value>, candidate: &IndexMap<Value, Value>) {
+        assert_eq!(previous.len(), candidate.len());
+        for ((old_key, old_value), (new_key, new_value)) in previous.iter().zip(candidate.iter()) {
+            assert_eq!(old_key, new_key);
+            assert_eq!(old_value, new_value);
+            if let (Value::Object(old), Value::Object(new)) = (old_value, new_value) {
+                assert!(Arc::ptr_eq(old, new));
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_updates_preserve_key_equivalence_order_and_value_identity() {
+        let object_key = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        let shared_value = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        let mut previous = IndexMap::new();
+        let mut candidate = IndexMap::new();
+        let updates = [
+            (Value::F64(f64::NAN), Value::I32(1)),
+            (Value::F64(-0.0), Value::I32(2)),
+            (Value::I32(7), Value::I32(3)),
+            (crate::keys::string_value("key"), Value::I32(4)),
+            (object_key.clone(), Value::I32(5)),
+            (Value::F64(f64::NAN), shared_value.clone()),
+            (Value::F64(0.0), shared_value.clone()),
+            (Value::I64(7), shared_value.clone()),
+            (Value::F64(7.0), Value::Undefined),
+            (crate::keys::string_value("key"), shared_value.clone()),
+            (object_key.clone(), shared_value.clone()),
+            (Value::Undefined, Value::Null),
+        ];
+        for (key, value) in updates {
+            previous_set(&mut previous, &key, &value);
+            borrowed_set(&mut candidate, &key, &value);
+            assert_same_entries(&previous, &candidate);
+        }
+        previous.shift_remove(&object_key);
+        candidate.shift_remove(&object_key);
+        previous_set(&mut previous, &object_key, &shared_value);
+        borrowed_set(&mut candidate, &object_key, &shared_value);
+        assert_same_entries(&previous, &candidate);
+        assert_eq!(candidate.last().unwrap().0, &object_key);
+    }
+
+    fn timed_workload(
+        candidate: bool,
+        keys: &[Value],
+        initial: usize,
+        rounds: usize,
+    ) -> Duration {
+        let value = Value::I32(23);
+        let started = Instant::now();
+        for _ in 0..rounds {
+            let mut map = IndexMap::with_capacity(keys.len());
+            for key in &keys[..initial] {
+                map.insert(key.clone(), Value::I32(0));
+            }
+            for key in keys {
+                if candidate {
+                    borrowed_set(black_box(&mut map), black_box(key), black_box(&value));
+                } else {
+                    previous_set(black_box(&mut map), black_box(key), black_box(&value));
+                }
+            }
+            black_box(map);
+        }
+        started.elapsed()
+    }
+
+    #[test]
+    #[ignore = "paired native Map mutation candidate benchmark, not guest execution timing"]
+    fn paired_borrowed_update_benchmark() {
+        for key_kind in ["integer", "string", "object"] {
+            let keys: Vec<_> = (0..256).map(|index| match key_kind {
+                "integer" => Value::I32(index),
+                "string" => crate::keys::string_value(&format!("map-key-{index:04}")),
+                _ => Value::Object(vybe_runtime::heap::alloc(Object::new())),
+            }).collect();
+            for initial in [0, 64, 256] {
+                let mut previous = Duration::ZERO;
+                let mut candidate = Duration::ZERO;
+                for round in 0..8 {
+                    if round % 2 == 0 {
+                        previous += timed_workload(false, &keys, initial, 1000);
+                        candidate += timed_workload(true, &keys, initial, 1000);
+                    } else {
+                        candidate += timed_workload(true, &keys, initial, 1000);
+                        previous += timed_workload(false, &keys, initial, 1000);
+                    }
+                }
+                eprintln!("map borrowed update keys={key_kind} existing={initial}/256: previous={previous:?}, candidate={candidate:?}");
+            }
+        }
+    }
+}

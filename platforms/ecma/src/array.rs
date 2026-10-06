@@ -310,7 +310,7 @@ fn property_length_as_usize(object: &Object) -> Option<usize> {
     }
 }
 
-fn hole_indices(object: &Object) -> BTreeSet<usize> {
+pub(crate) fn hole_indices(object: &Object) -> BTreeSet<usize> {
     let Some(Value::Object(holes)) = object.properties.get("__holes") else {
         return BTreeSet::new();
     };
@@ -1181,6 +1181,282 @@ fn register_adapters(vm: &mut VM) {
 
 // ── Constructors ──────────────────────────────────────────────────────
 
+#[cfg(test)]
+mod result_buffer_speedup_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "local batched Array.push diagnostic"]
+    fn registered_batch_push_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let push = function(&vm, "ecma:array", "push");
+        let array = make_array(Vec::new());
+        let mut args = Vec::with_capacity(65);
+        args.push(array.clone());
+        args.extend((0..64).map(Value::I32));
+
+        for _ in 0..3 {
+            let array = make_array(Vec::new());
+            args[0] = array.clone();
+            let started = std::time::Instant::now();
+            for _ in 0..4096 {
+                vm.invoke(&push, &args).expect("batched push");
+            }
+            let elapsed = started.elapsed();
+            let Value::Object(object) = array else { panic!("array result"); };
+            let object = object.lock().unwrap();
+            let ObjectKind::Array(values) = &object.kind else { panic!("array storage"); };
+            assert_eq!(values.len(), 256 * 1024);
+            println!("batched push 256 KiB: {elapsed:?}");
+        }
+    }
+
+    #[test]
+    fn batch_push_preserves_existing_holes_and_clears_written_indices() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let push = function(&vm, "ecma:array", "push");
+        let mut source = Object::new_array(vec![Value::I32(10)]);
+        mark_array_hole(&mut source, 0);
+        mark_array_hole(&mut source, 1);
+        let array = Value::Object(vybe_runtime::heap::alloc(source));
+
+        let result = vm
+            .invoke(&push, &[array.clone(), Value::I32(20), Value::I32(30)])
+            .expect("batched push");
+        assert_eq!(result, Value::I32(3));
+        let Value::Object(object) = array else { panic!("array result"); };
+        let object = object.lock().unwrap();
+        assert!(is_array_hole(&object, 0));
+        assert!(!is_array_hole(&object, 1));
+        assert!(!is_array_hole(&object, 2));
+        let ObjectKind::Array(values) = &object.kind else { panic!("array storage"); };
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[1], Value::I32(20));
+        assert_eq!(values[2], Value::I32(30));
+    }
+
+    #[test]
+    fn registered_empty_filter_releases_reserved_storage() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:array-result-test", "reject", Box::new(|_ctx, _args| Value::Bool(false)));
+        let method = function(&vm, "ecma:array", "filter");
+        let callback = function(&vm, "ecma:array-result-test", "reject");
+        for array_like in [false, true] {
+            let source = if array_like {
+                let mut source = Object::new();
+                source.properties.insert("length".into(), Value::F64(128.0));
+                for index in 0..128 {
+                    source.properties.insert(index.to_string(), Value::I32(index));
+                }
+                source
+            } else {
+                Object::new_array((0..128).map(Value::I32).collect())
+            };
+            let result = vm.invoke(&method, &[
+                Value::Object(vybe_runtime::heap::alloc(source)), callback.clone(),
+            ]).unwrap();
+            let Value::Object(result) = result else { panic!("empty filter result"); };
+            let result = result.lock().unwrap();
+            let ObjectKind::Array(values) = &result.kind else { panic!("empty filter array"); };
+            assert!(values.is_empty());
+            assert_eq!(values.capacity(), 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "matched registered native-array filter benchmark, not application timing"]
+    fn registered_filter_clone_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:array-filter-perf", "keep", Box::new(|_ctx, args| {
+            Value::Bool(args[1].as_i32() % 4 == 0)
+        }));
+        vm.register_host_fn("ecma:array-filter-perf", "legacy", Box::new(|ctx, args| {
+            let null = Value::Null;
+            let callback = args.get(1).unwrap_or(&null);
+            if !require_callable(ctx, callback, "Array.prototype.filter callback is not callable") {
+                return Value::Undefined;
+            }
+            let undefined = Value::Undefined;
+            let this_arg = args.get(2).unwrap_or(&undefined);
+            let dispatch = classify_callback(callback);
+            let _receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let array = array_of(args, 0).expect("native-array comparison fixture");
+            let length = array_length(&array);
+            let mut filtered = Vec::with_capacity(length);
+            let mut invoke_args = [Value::Undefined, Value::I32(0), Value::Object(array.clone())];
+            for index in 0..length {
+                let Some(element) = array_present_value_at(&array, index) else { continue; };
+                invoke_args[0] = element.clone();
+                invoke_args[1] = Value::I32(index as i32);
+                if is_truthy(&invoke_classified_callback_this_ref(
+                    ctx, callback, &dispatch, this_arg, &invoke_args,
+                )) {
+                    filtered.push(element);
+                }
+            }
+            make_array(filtered)
+        }));
+        let current = function(&vm, "ecma:array", "filter");
+        let legacy = function(&vm, "ecma:array-filter-perf", "legacy");
+        let callback = function(&vm, "ecma:array-filter-perf", "keep");
+        for count in [32usize, 256, 4096] {
+            let payload = vybe_runtime::heap::alloc(Object::new());
+            let source = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                vec![Value::Object(payload.clone()); count],
+            )));
+            let args = [source, callback.clone()];
+            for method in [&legacy, &current] {
+                let result = vm.invoke(method, &args).unwrap();
+                let Value::Object(result) = result else { panic!("filter benchmark result"); };
+                let result = result.lock().unwrap();
+                let ObjectKind::Array(values) = &result.kind else { panic!("filter benchmark array"); };
+                assert_eq!(values.len(), count / 4);
+                for value in values {
+                    let Value::Object(value) = value else { panic!("filter benchmark object"); };
+                    assert!(Arc::ptr_eq(value, &payload));
+                }
+            }
+            let iterations = (131072 / count).max(32);
+            let mut totals = [0u128; 2];
+            for sample in 0..6 {
+                let order = if sample % 2 == 0 { [true, false] } else { [false, true] };
+                for old in order {
+                    let method = if old { &legacy } else { &current };
+                    let start = std::time::Instant::now();
+                    for _ in 0..iterations {
+                        std::hint::black_box(vm.invoke(method, std::hint::black_box(&args)).unwrap());
+                    }
+                    let elapsed = start.elapsed().as_nanos();
+                    totals[usize::from(!old)] += elapsed;
+                    println!("filter count={count} sample={sample} legacy={old} ns={elapsed}");
+                }
+            }
+            println!("filter count={count} legacy_over_current={:.3}",
+                totals[0] as f64 / totals[1] as f64);
+        }
+    }
+
+    fn function(vm: &VM, module: &str, name: &str) -> Value {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(function))
+    }
+
+    #[test]
+    fn registered_map_keeps_holes_initial_length_and_live_values() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let mut source = Object::new_array(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
+        source.properties.insert("__holes".into(), Value::Object(
+            vybe_runtime::heap::alloc(Object::new_array(vec![Value::I32(2)]))));
+        let source = vybe_runtime::heap::alloc(source);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let callback_source = source.clone();
+        let callback_seen = seen.clone();
+        vm.register_host_fn("ecma:array-result-test", "map", Box::new(move |_ctx, args| {
+            assert_eq!(args.len(), 3);
+            let value = args[0].as_i32();
+            let index = args[1].as_i32();
+            callback_seen.lock().unwrap().push((index, value));
+            if index == 0 {
+                let mut source = callback_source.lock().unwrap();
+                if let ObjectKind::Array(values) = &mut source.kind {
+                    values[1] = Value::I32(20);
+                    values.push(Value::I32(4));
+                }
+                source.properties.insert("length".into(), Value::F64(4.0));
+            }
+            Value::I32(value * 10)
+        }));
+        let method = function(&vm, "ecma:array", "map");
+        let callback = function(&vm, "ecma:array-result-test", "map");
+        let result = vm.invoke(&method, &[Value::Object(source), callback]).unwrap();
+        let Value::Object(result) = result else { panic!("map result"); };
+        let result = result.lock().unwrap();
+        let ObjectKind::Array(values) = &result.kind else { panic!("map array result"); };
+        assert_eq!(values.len(), 3);
+        assert!(matches!(values[0], Value::I32(10)));
+        assert!(matches!(values[1], Value::I32(200)));
+        assert!(matches!(values[2], Value::Undefined));
+        let Some(Value::Object(holes)) = result.properties.get("__holes") else { panic!("map holes"); };
+        let holes = holes.lock().unwrap();
+        let ObjectKind::Array(holes) = &holes.kind else { panic!("hole metadata"); };
+        assert_eq!(holes.len(), 1);
+        assert!(matches!(holes[0], Value::I32(2)));
+        assert_eq!(*seen.lock().unwrap(), vec![(0, 1), (1, 20)]);
+    }
+
+    #[test]
+    fn registered_filter_preserves_selected_reference_identity() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:array-result-test", "filter", Box::new(|_ctx, args| {
+            assert_eq!(args.len(), 3);
+            Value::Bool(args[1].as_i32() == 1)
+        }));
+        let method = function(&vm, "ecma:array", "filter");
+        let callback = function(&vm, "ecma:array-result-test", "filter");
+        for array_like in [false, true] {
+            let first = vybe_runtime::heap::alloc(Object::new());
+            let selected = vybe_runtime::heap::alloc(Object::new());
+            let source = if array_like {
+                let mut source = Object::new();
+                source.properties.insert("0".into(), Value::Object(first));
+                source.properties.insert("1".into(), Value::Object(selected.clone()));
+                source.properties.insert("length".into(), Value::F64(2.0));
+                source
+            } else {
+                Object::new_array(vec![Value::Object(first), Value::Object(selected.clone())])
+            };
+            let source = Value::Object(vybe_runtime::heap::alloc(source));
+            let result = vm.invoke(&method, &[source, callback.clone()]).unwrap();
+            let Value::Object(result) = result else { panic!("filter result"); };
+            let result = result.lock().unwrap();
+            let ObjectKind::Array(values) = &result.kind else { panic!("filter array result"); };
+            assert_eq!(values.len(), 1);
+            let Value::Object(actual) = &values[0] else { panic!("selected object"); };
+            assert!(Arc::ptr_eq(actual, &selected));
+        }
+    }
+
+    #[test]
+    #[ignore = "matched native map result-buffer benchmark, not complete callback timing"]
+    fn native_map_result_buffer_benchmark() {
+        for count in [32usize, 1024, 16384] {
+            let iterations = (1048576 / count).max(64);
+            let mut totals = [0u128; 2];
+            for sample in 0..6 {
+                let order = if sample % 2 == 0 { [true, false] } else { [false, true] };
+                for legacy in order {
+                    let start = std::time::Instant::now();
+                    for _ in 0..iterations {
+                        let count = std::hint::black_box(count);
+                        let values = if legacy {
+                            let mut values = vec![Value::Undefined; count];
+                            for index in 0..count { values[index] = Value::I32(index as i32); }
+                            values
+                        } else {
+                            let mut values = Vec::with_capacity(count);
+                            for index in 0..count { values.push(Value::I32(index as i32)); }
+                            values
+                        };
+                        std::hint::black_box(values);
+                    }
+                    let elapsed = start.elapsed().as_nanos();
+                    totals[usize::from(!legacy)] += elapsed;
+                    println!("map_buffer count={count} sample={sample} legacy={legacy} ns={elapsed}");
+                }
+            }
+            println!("map_buffer count={count} legacy_over_current={:.3}",
+                totals[0] as f64 / totals[1] as f64);
+        }
+    }
+}
+
 fn register_constructors(vm: &mut VM) {
     // new() -> Array
     // ECMA-262 §23.1.1.1 Array constructor:
@@ -1849,8 +2125,10 @@ fn register_mutators(vm: &mut VM) {
                 } else {
                     0
                 };
-                for index in old_len..(len as usize) {
-                    clear_array_hole(&mut o, index);
+                if o.properties.contains_key("__holes") {
+                    for index in old_len..(len as usize) {
+                        clear_array_hole(&mut o, index);
+                    }
                 }
                 sync_length(&mut o);
                 return Value::I32(len);
@@ -3134,24 +3412,25 @@ fn register_iteration(vm: &mut VM) {
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             if let Some(arr) = array_of(args, 0) {
                 let length = array_length(&arr);
-                let mut mapped_values = vec![Value::Undefined; length];
+                let mut mapped_values = Vec::with_capacity(length);
                 let mut holes = Vec::new();
                 let array_receiver = Value::Object(arr.clone());
                 let mut invoke_args = [Value::Undefined, Value::I32(0), array_receiver];
                 for index in 0..length {
                     let Some(elem) = array_present_value_at(&arr, index) else {
                         holes.push(Value::I32(index as i32));
+                        mapped_values.push(Value::Undefined);
                         continue;
                     };
                     invoke_args[0] = elem;
                     invoke_args[1] = Value::I32(index as i32);
-                    mapped_values[index] = invoke_classified_callback_this_ref(
+                    mapped_values.push(invoke_classified_callback_this_ref(
                         ctx,
                         &callback,
                         &dispatch,
                         this_arg,
                         &invoke_args,
-                    );
+                    ));
                 }
                 let mut mapped = Object::new_array(mapped_values);
                 mapped
@@ -3213,7 +3492,7 @@ fn register_iteration(vm: &mut VM) {
                     let Some(elem) = array_present_value_at(&arr, index) else {
                         continue;
                     };
-                    invoke_args[0] = elem.clone();
+                    invoke_args[0] = elem;
                     invoke_args[1] = Value::I32(index as i32);
                     if is_truthy(&invoke_classified_callback_this_ref(
                         ctx,
@@ -3222,8 +3501,12 @@ fn register_iteration(vm: &mut VM) {
                         this_arg,
                         &invoke_args,
                     )) {
-                        filtered.push(elem);
+                        filtered.push(std::mem::replace(&mut invoke_args[0], Value::Undefined));
                     }
+                }
+                // Empty results need no retained source-sized allocation.
+                if filtered.is_empty() {
+                    filtered = Vec::new();
                 }
                 return make_array(filtered);
             }
@@ -3233,7 +3516,7 @@ fn register_iteration(vm: &mut VM) {
                 let mut invoke_args = [Value::Undefined, Value::I32(0), receiver.clone()];
                 for i in 0..length {
                     let elem = array_like_value_at(&receiver, i);
-                    invoke_args[0] = elem.clone();
+                    invoke_args[0] = elem;
                     invoke_args[1] = Value::I32(i as i32);
                     if is_truthy(&invoke_classified_callback_this_ref(
                         ctx,
@@ -3242,8 +3525,11 @@ fn register_iteration(vm: &mut VM) {
                         this_arg,
                         &invoke_args,
                     )) {
-                        filtered.push(elem);
+                        filtered.push(std::mem::replace(&mut invoke_args[0], Value::Undefined));
                     }
+                }
+                if filtered.is_empty() {
+                    filtered = Vec::new();
                 }
                 return make_array(filtered);
             }

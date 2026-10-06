@@ -303,8 +303,54 @@ fn sort_array_indices_first(keys: &mut Vec<String>) {
 }
 
 fn enumerable_assign_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Value>)> {
+    assign_source_keys(source, true)
+}
+
+fn assign_source_keys(source: &Arc<Mutex<Object>>, enumerable_only: bool) -> Vec<(String, Option<Value>)> {
     let src = source.lock().unwrap();
     let mut out: Vec<(String, Option<Value>)> = Vec::with_capacity(src.properties.len());
+    // With only public, non-index string keys, IndexMap order is exactly
+    // OrdinaryOwnPropertyKeys order. No symbol/accessor/descriptor metadata
+    // can exist in this shape, so avoid a temporary key vector and filters.
+    if matches!(src.kind, ObjectKind::Ordinary)
+        && src.properties.keys().all(|key| {
+            !key.starts_with("__") && array_index_key(key).is_none()
+        })
+    {
+        out.extend(src.properties.keys().cloned().map(|key| (key, None)));
+        return out;
+    }
+    // No user code runs during ordinary own-key collection. Read the existing
+    // descriptor metadata once instead of hashing/locking it for every key.
+    let nonenum: Vec<Arc<str>> = if enumerable_only {
+        match src.properties.get("__nonenum") {
+            Some(Value::Object(array)) if Arc::ptr_eq(array, source) => {
+                match &src.kind {
+                    ObjectKind::Array(values) => values
+                        .iter()
+                        .filter_map(|value| match value {
+                            Value::String(name) => Some(name.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            }
+            Some(Value::Object(array)) => {
+                let array = array.lock().unwrap();
+                match &array.kind {
+                    ObjectKind::Array(values) => values.iter().filter_map(|value| {
+                        match value { Value::String(name) => Some(name.clone()), _ => None }
+                    }).collect(),
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    let enumerable = |key: &str| !enumerable_only || !nonenum.iter().any(|name| name.as_ref() == key);
     let symbol_storage_keys: Option<std::collections::HashSet<String>> =
         src.properties.get("__sym_keys").and_then(|v| {
             if let Value::Object(a) = v {
@@ -327,7 +373,9 @@ fn enumerable_assign_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Va
             out.reserve(values.len());
             let holes = array_hole_set(&src);
             for index in 0..values.len() {
-                if !cached_array_hole_contains(&holes, index) {
+                if !cached_array_hole_contains(&holes, index)
+                    && (!enumerable_only || nonenum.is_empty()
+                        || crate::keys::with_index_key(index, |key| enumerable(key))) {
                     out.push((
                         crate::keys::with_index_key(index, |key| key.to_owned()),
                         None,
@@ -336,12 +384,12 @@ fn enumerable_assign_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Va
             }
             for key in descriptor_own_keys(&src)
                 .into_iter()
-                .filter(|key| !is_nonenum(&src, key))
+                .filter(|key| enumerable(key))
                 .filter(
                     |key| !matches!(symbol_storage_keys.as_ref(), Some(keys) if keys.contains(key)),
                 )
             {
-                if array_index_key(&key).is_none() {
+                if array_index_key(&key).is_none() && !(enumerable_only && key == "length") {
                     out.push((key, None));
                 }
             }
@@ -357,7 +405,7 @@ fn enumerable_assign_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Va
             }
             for key in descriptor_own_keys(&src)
                 .into_iter()
-                .filter(|key| !is_nonenum(&src, key))
+                .filter(|key| enumerable(key))
                 .filter(
                     |key| !matches!(symbol_storage_keys.as_ref(), Some(keys) if keys.contains(key)),
                 )
@@ -370,7 +418,7 @@ fn enumerable_assign_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Va
         ObjectKind::Map(_) | ObjectKind::Set(_) => {
             for key in descriptor_own_keys(&src)
                 .into_iter()
-                .filter(|key| !is_nonenum(&src, key))
+                .filter(|key| enumerable(key))
                 .filter(
                     |key| !matches!(symbol_storage_keys.as_ref(), Some(keys) if keys.contains(key)),
                 )
@@ -381,7 +429,7 @@ fn enumerable_assign_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Va
         _ => {
             for key in descriptor_own_keys(&src)
                 .into_iter()
-                .filter(|key| !is_nonenum(&src, key))
+                .filter(|key| enumerable(key))
                 .filter(
                     |key| !matches!(symbol_storage_keys.as_ref(), Some(keys) if keys.contains(key)),
                 )
@@ -395,7 +443,7 @@ fn enumerable_assign_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Va
         if let ObjectKind::Array(ref elems) = syms.kind {
             for key in elems {
                 let storage_key = key_string(key);
-                if !is_nonenum(&src, &storage_key) && src.properties.contains_key(&storage_key) {
+                if enumerable(&storage_key) && src.properties.contains_key(&storage_key) {
                     out.push((storage_key, Some(key.clone())));
                 }
             }
@@ -404,14 +452,1058 @@ fn enumerable_assign_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Va
     out
 }
 
-fn assign_source_get(ctx: &mut HostContext, source: &Arc<Mutex<Object>>, key: &str) -> Value {
+// OrdinarySet only consults the prototype when there is no own descriptor.
+// Accessor/read-only metadata and exotic objects must retain the full path.
+fn is_existing_writable_data_property(target: &Object, key: &str) -> bool {
+    is_plain_data_destination(target) && has_writable_own_data_key(target, key, false)
+}
+
+fn is_plain_data_destination(target: &Object) -> bool {
+    matches!(target.kind, ObjectKind::Ordinary)
+        && !target.properties.contains_key(FROZEN_MARK)
+        && !target.properties.contains_key(PROXY_TARGET_KEY)
+}
+
+fn assignment_overwrite_capacity(target: &Object) -> Option<usize> {
+    if is_plain_data_destination(target)
+        && target.properties.keys().any(|key| !key.starts_with("__"))
+    {
+        Some(target.properties.len())
+    } else {
+        None
+    }
+}
+
+fn has_writable_own_data_key(target: &Object, key: &str, accessor_free: bool) -> bool {
+    !key.starts_with("__")
+        && target.properties.contains_key(key)
+        && (accessor_free
+            || (!has_getter_key(target, key)
+                && !crate::keys::with_setter_property_key(key, |setter_key| {
+                    target.properties.contains_key(setter_key)
+                })))
+}
+
+// The caller has already established ordinary, accessor-free destination
+// storage under its write lock. Matching the ordered prefix proves own-key
+// membership without hashing every copied key. Internal and symbol keys retain
+// their existing paths.
+fn aligned_data_prefix_start(
+    target: &Object,
+    keys: &[(String, Option<Value>)],
+    accessor_free: bool,
+) -> Option<usize> {
+    aligned_data_prefix_from_keys(
+        target,
+        keys.iter().map(|(key, symbol)| (key.as_str(), symbol.is_none())),
+        accessor_free,
+    )
+}
+
+fn aligned_data_prefix_from_keys<'a>(
+    target: &Object,
+    keys: impl ExactSizeIterator<Item = (&'a str, bool)>,
+    accessor_free: bool,
+) -> Option<usize> {
+    if !accessor_free {
+        return None;
+    }
+    // Private bookkeeping can precede the public contiguous block. It is
+    // neither copied nor modified by the indexed writes below.
+    let start = target.properties.keys().take_while(|key| key.starts_with("__")).count();
+    if target.properties.len().saturating_sub(start) < keys.len() {
+        return None;
+    }
+    keys.zip(target.properties.keys().skip(start)).all(|((key, string_key), stored)| {
+        string_key && !key.starts_with("__") && key == stored.as_str()
+    }).then_some(start)
+}
+
+// Pure existing-data writes cannot invoke script callbacks. Borrow source
+// entries only for this shape; never block while acquiring a second lock.
+// Only a single aligned insertion-order tracker may extend the borrowed
+// ordinary-data shape. Secondary locks are always nonblocking here.
+fn borrowed_assign_source_start(source: &Object) -> Option<usize> {
+    if !matches!(source.kind, ObjectKind::Ordinary) {
+        return None;
+    }
+    if matches!(source.properties.get_index(0), Some((key, _)) if key == "__keys") {
+        if source.type_id != 0 || !source.fields.is_empty()
+            || source.properties.keys().skip(1).any(|key| key.starts_with("__"))
+        {
+            return None;
+        }
+        let Some(Value::Object(tracker)) = source.properties.get("__keys") else { return None };
+        let tracker = tracker.try_lock().ok()?;
+        let ObjectKind::Array(values) = &tracker.kind else { return None };
+        return has_aligned_tracked_keys(source, values).then_some(1);
+    }
+    source.properties.keys().all(|key| {
+        !key.starts_with("__") && array_index_key(key).is_none()
+    }).then_some(0)
+}
+
+// A base ordinary target with no public data and no other metadata cannot
+// invoke setters or prototype code. Preserve an existing tracker object's
+// identity, and clone immutable source key strings rather than rebuilding them.
+fn try_assign_fresh_tracked_data(destination: &mut Object, source: &Object) -> bool {
+    if !matches!(destination.kind, ObjectKind::Ordinary)
+        || destination.type_id != 0 || !destination.fields.is_empty()
+        || destination.properties.len() > 1
+        || (destination.properties.len() == 1 && !destination.properties.contains_key("__keys"))
+    {
+        return false;
+    }
+    let Some(Value::Object(source_tracker)) = source.properties.get("__keys") else { return false };
+    let Ok(source_tracker) = source_tracker.try_lock() else { return false };
+    let ObjectKind::Array(keys) = &source_tracker.kind else { return false };
+    // Revalidate after reacquiring the tracker: no stale alignment assumption.
+    if !has_aligned_tracked_keys(source, keys) {
+        return false;
+    }
+    if source.properties.len() == 1 {
+        return true;
+    }
+    let existing_tracker = match destination.properties.get("__keys") {
+        Some(Value::Object(tracker)) => Some(tracker.clone()),
+        None => None,
+        _ => return false,
+    };
+    if let Some(tracker) = existing_tracker {
+        let Ok(mut tracker) = tracker.try_lock() else { return false };
+        let ObjectKind::Array(values) = &mut tracker.kind else { return false };
+        if !values.is_empty() {
+            return false;
+        }
+        destination.properties.reserve(keys.len());
+        values.reserve(keys.len());
+        for (key, value) in source.properties.iter().skip(1) {
+            destination.properties.insert(key.clone(), value.clone());
+        }
+        values.extend_from_slice(keys);
+    } else {
+        destination.properties.reserve(source.properties.len());
+        destination.properties.insert("__keys".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(keys.clone()))));
+        for (key, value) in source.properties.iter().skip(1) {
+            destination.properties.insert(key.clone(), value.clone());
+        }
+    }
+    true
+}
+fn try_assign_borrowed_plain_data(
+    target: &Arc<Mutex<Object>>,
+    source: &Arc<Mutex<Object>>,
+) -> bool {
+    let source_object = source.lock().unwrap();
+    let Some(source_start) = borrowed_assign_source_start(&source_object) else {
+        return false;
+    };
+    if Arc::ptr_eq(target, source) {
+        return is_plain_data_destination(&source_object);
+    }
+    let Ok(mut destination) = target.try_lock() else {
+        return false;
+    };
+    if source_start == 1 {
+        if destination.type_id != 0 || !destination.fields.is_empty() {
+            return false;
+        }
+        if try_assign_fresh_tracked_data(&mut destination, &source_object) {
+            return true;
+        }
+    }
+    if !is_plain_data_destination(&destination) {
+        return false;
+    }
+    let accessor_free = destination.properties.len()
+        <= source_object.properties.len().saturating_sub(source_start).saturating_mul(2)
+        && !destination.properties.keys().any(|key| {
+            key.starts_with("__get_") || key.starts_with("__set_")
+        });
+    let aligned_start = aligned_data_prefix_from_keys(
+        &destination,
+        source_object.properties.keys().skip(source_start).map(|key| (key.as_str(), true)),
+        accessor_free,
+    );
+    if aligned_start.is_none()
+        && !source_object.properties.keys().skip(source_start).all(|key| {
+            has_writable_own_data_key(&destination, key, accessor_free)
+        })
+    {
+        return false;
+    }
+    for (index, (key, value)) in source_object.properties.iter().skip(source_start).enumerate() {
+        if let Some(start) = aligned_start {
+            let (_, slot) = destination.properties.get_index_mut(start + index)
+                .expect("validated borrowed assignment prefix");
+            *slot = value.clone();
+        } else {
+            *destination.properties.get_mut(key)
+                .expect("validated borrowed assignment data property") = value.clone();
+        }
+    }
+    true
+}
+
+// Some means updated; the inner option is the existing key-tracking work
+
+#[cfg(test)]
+mod tracked_borrowed_assignment_tests {
+    use super::*;
+
+    fn previous_borrowed_plain_data(
+    target: &Arc<Mutex<Object>>,
+    source: &Arc<Mutex<Object>>,
+) -> bool {
+    let source_object = source.lock().unwrap();
+    if !matches!(source_object.kind, ObjectKind::Ordinary)
+        || !source_object.properties.keys().all(|key| {
+            !key.starts_with("__") && array_index_key(key).is_none()
+        })
+    {
+        return false;
+    }
+    if Arc::ptr_eq(target, source) {
+        return is_plain_data_destination(&source_object);
+    }
+    let Ok(mut destination) = target.try_lock() else {
+        return false;
+    };
+    if !is_plain_data_destination(&destination) {
+        return false;
+    }
+    let accessor_free = destination.properties.len()
+        <= source_object.properties.len().saturating_mul(2)
+        && !destination.properties.keys().any(|key| {
+            key.starts_with("__get_") || key.starts_with("__set_")
+        });
+    let aligned_start = aligned_data_prefix_from_keys(
+        &destination,
+        source_object.properties.keys().map(|key| (key.as_str(), true)),
+        accessor_free,
+    );
+    if aligned_start.is_none()
+        && !source_object.properties.keys().all(|key| {
+            has_writable_own_data_key(&destination, key, accessor_free)
+        })
+    {
+        return false;
+    }
+    for (index, (key, value)) in source_object.properties.iter().enumerate() {
+        if let Some(start) = aligned_start {
+            let (_, slot) = destination.properties.get_index_mut(start + index)
+                .expect("validated borrowed assignment prefix");
+            *slot = value.clone();
+        } else {
+            *destination.properties.get_mut(key)
+                .expect("validated borrowed assignment data property") = value.clone();
+        }
+    }
+    true
+}
+
+    fn previous_assign(ctx: &mut HostContext, args: &[Value]) -> Value {
+
+            let Some(raw_target) = args.first() else {
+                return throw_type_error(ctx, "Cannot convert undefined or null to object");
+            };
+            let Some(target) = to_object_for_object_static(
+                ctx,
+                raw_target,
+                "Cannot convert undefined or null to object",
+            ) else {
+                return Value::Undefined;
+            };
+            let Value::Object(target_obj) = &target else {
+                return target;
+            };
+
+            for source in args.iter().skip(1) {
+                if matches!(source, Value::Null | Value::Undefined) {
+                    continue;
+                }
+                let Some(source_value) =
+                    to_object_for_object_static(ctx, source, "Cannot convert source to object")
+                else {
+                    return Value::Undefined;
+                };
+                if let Some(proxy_keys) = crate::proxy::own_keys_dispatch(ctx, &source_value) {
+                    for key_value in array_elements(&proxy_keys) {
+                        if !matches!(key_value, Value::String(_)) {
+                            continue;
+                        }
+                        let desc = crate::proxy::get_own_property_descriptor_dispatch(
+                            ctx,
+                            &source_value,
+                            &key_value,
+                        )
+                        .unwrap_or(Value::Undefined);
+                        if !matches!(desc, Value::Object(_))
+                            || !descriptor_bool(&desc, "enumerable", false)
+                        {
+                            continue;
+                        }
+                        let key = key_string(&key_value);
+                        let value = crate::proxy::get_dispatch(ctx, &source_value, &key_value);
+                        if !assign_strict_set(ctx, target_obj, &key, value, None) {
+                            return Value::Undefined;
+                        }
+                    }
+                    continue;
+                }
+                let Value::Object(source_obj) = source_value else {
+                    continue;
+                };
+                if previous_borrowed_plain_data(target_obj, &source_obj) {
+                    continue;
+                }
+                let overwrite_capacity = {
+                    let destination = target_obj.lock().unwrap();
+                    assignment_overwrite_capacity(&destination)
+                };
+                let assign_keys = if overwrite_capacity.is_some() {
+                    enumerable_assign_keys(&source_obj)
+                } else {
+                    Vec::new()
+                };
+                let may_overwrite = overwrite_capacity.is_some_and(|capacity| capacity >= assign_keys.len());
+                let direct_values = if may_overwrite {
+                    let src = source_obj.lock().unwrap();
+                    let no_getters = !has_any_getter(&src);
+                    let source_start = aligned_data_prefix_start(
+                        &src,
+                        &assign_keys,
+                        no_getters && matches!(src.kind, ObjectKind::Ordinary),
+                    );
+                    if let Some(start) = source_start {
+                        // Snapshot exactly the enumerated data values under
+                        // the original source lock, without hash lookups or
+                        // callbacks. No values survive this invocation.
+                        Some(src.properties.values().skip(start).take(assign_keys.len()).cloned().collect::<Vec<Value>>())
+                    } else {
+                        let mut values = Vec::with_capacity(assign_keys.len());
+                        let mut direct = true;
+                        for (key, _) in &assign_keys {
+                            if !no_getters {
+                                direct = false;
+                                break;
+                            }
+                            let value = match &src.kind {
+                                ObjectKind::Array(values) => {
+                                    if let Some(index) = array_index_key(key) {
+                                        values.get(index as usize).cloned()
+                                    } else {
+                                        src.properties.get(key).cloned()
+                                    }
+                                }
+                                ObjectKind::TypedArray(ta) => {
+                                    if let Some(index) = array_index_key(key) {
+                                        Some(crate::typedarray::read_element(ta, index as usize))
+                                    } else {
+                                        src.properties.get(key).cloned()
+                                    }
+                                }
+                                _ => src.properties.get(key).cloned(),
+                            };
+                            let Some(value) = value else {
+                                direct = false;
+                                break;
+                            };
+                            values.push(value);
+                        }
+                        if direct { Some(values) } else { None }
+                    }
+                } else {
+                    None
+                };
+                if let Some(values) = direct_values {
+                    if values.len() == assign_keys.len() {
+                        let mut destination = target_obj.lock().unwrap();
+                        let plain = is_plain_data_destination(&destination);
+                        // Bound the scan by the copied key count. A small copy
+                        // into a large target keeps per-key accessor checks.
+                        let accessor_free = plain
+                            && destination.properties.len()
+                                <= assign_keys.len().saturating_mul(2)
+                            && !destination.properties.keys().any(|key| {
+                                key.starts_with("__get_") || key.starts_with("__set_")
+                            });
+                        // Recheck under the write lock. No getters or setters
+                        // can run here, so data writes can share this lock.
+                        let aligned_start = aligned_data_prefix_start(&destination, &assign_keys, accessor_free);
+                        let aligned = aligned_start.is_some();
+                        if aligned || (plain && assign_keys.iter().all(|(key, symbol)| {
+                            symbol.is_none()
+                                && has_writable_own_data_key(&destination, key, accessor_free)
+                        })) {
+                            for (index, ((key, _), value)) in assign_keys.iter().zip(values.iter()).enumerate() {
+                                // Every key was proven own under this lock.
+                                // prepare_track_key_in would return None, so
+                                // overwrites need no tracking lookup or mutation.
+                                let slot = if let Some(start) = aligned_start {
+                                    destination.properties.get_index_mut(start + index)
+                                        .filter(|(stored, _)| stored.as_str() == key.as_str())
+                                } else {
+                                    None
+                                };
+                                if let Some((_, slot)) = slot {
+                                    *slot = value.clone();
+                                } else {
+                                    *destination.properties.get_mut(key)
+                                        .expect("validated assignment data property") = value.clone();
+                                }
+                            }
+                            drop(destination);
+                            continue;
+                        }
+                    }
+                }
+                // Ineligible targets may invoke setters that mutate later source
+                // properties. The speculative data-value snapshot is dropped
+                // above before any ordered fallback callback can run.
+                {
+                    // No callbacks have run in the speculative paths above.
+                    // Capture all own keys before the first ordered Get/Set;
+                    // a preceding callback may reveal an initially hidden key.
+                    for (key, symbol_key) in assign_source_keys(&source_obj, false) {
+                        let enumerable = {
+                            let source = source_obj.lock().unwrap();
+                            own_property_enumerability(&source, &key)
+                        };
+                        if enumerable != Some(true) {
+                            continue;
+                        }
+                        let value = match assign_source_get(ctx, &source_obj, &key) {
+                            Ok(value) => value,
+                            Err(thrown) => {
+                                ctx.throw_value(thrown);
+                                return Value::Undefined;
+                            }
+                        };
+                        if !assign_strict_set(ctx, target_obj, &key, value, symbol_key) {
+                            return Value::Undefined;
+                        }
+                    }
+                }
+            }
+            target
+    }
+
+    fn fixture(count: usize, tracked: bool, populated: bool) -> Arc<Mutex<Object>> {
+        let mut object = Object::new();
+        if tracked {
+            let names = if populated {
+                (0..count).map(|n| crate::keys::string_value(&format!("field{n}"))).collect()
+            } else { Vec::new() };
+            object.properties.insert("__keys".into(),
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(names))));
+        }
+        if populated {
+            for n in 0..count {
+                object.properties.insert(format!("field{n}"), Value::I32(n as i32));
+            }
+        }
+        vybe_runtime::heap::alloc(object)
+    }
+
+    fn function(vm: &VM, module: &str, name: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    fn tracked_copy_preserves_keys_values_tracker_identity_and_source() {
+        for count in [0, 1, 3, 16] {
+            for (tracked, populated) in [(false, false), (true, false), (true, true)] {
+                let source = fixture(count, true, true);
+                let target = fixture(count, tracked, populated);
+                let original_tracker = target.lock().unwrap().properties.get("__keys").cloned();
+                assert!(try_assign_borrowed_plain_data(&target, &source));
+                let destination = target.lock().unwrap();
+                assert_eq!(ordered_own_string_keys(&destination),
+                    (0..count).map(|n| format!("field{n}")).collect::<Vec<_>>());
+                for n in 0..count {
+                    assert!(matches!(destination.properties.get(&format!("field{n}")),
+                        Some(Value::I32(value)) if *value == n as i32));
+                }
+                if let Some(Value::Object(old)) = original_tracker {
+                    let Some(Value::Object(current)) = destination.properties.get("__keys") else {
+                        panic!("tracker lost");
+                    };
+                    assert!(Arc::ptr_eq(&old, current));
+                }
+                if count == 0 && !tracked {
+                    assert!(!destination.properties.contains_key("__keys"));
+                }
+                drop(destination);
+                assert_eq!(source.lock().unwrap().properties.len(), count + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_guard_declines_metadata_stale_order_slots_and_busy_trackers() {
+        for marker in ["__proto__", "__nonenum", "__get_field0", "__sym_keys"] {
+            let source = fixture(3, true, true);
+            source.lock().unwrap().properties.insert(marker.into(), Value::Undefined);
+            let target = fixture(3, true, false);
+            assert!(!try_assign_borrowed_plain_data(&target, &source));
+            assert_eq!(target.lock().unwrap().properties.len(), 1);
+        }
+        let source = fixture(3, true, true);
+        let tracker = match source.lock().unwrap().properties.get("__keys").unwrap() {
+            Value::Object(tracker) => tracker.clone(), _ => unreachable!(),
+        };
+        let target = fixture(3, true, false);
+        {
+            let mut guard = tracker.lock().unwrap();
+            assert!(!try_assign_borrowed_plain_data(&target, &source));
+            let ObjectKind::Array(keys) = &mut guard.kind else { unreachable!() };
+            keys.reverse();
+        }
+        assert!(!try_assign_borrowed_plain_data(&target, &source));
+        let source = fixture(3, true, true);
+        source.lock().unwrap().fields.push(Value::I32(1));
+        assert!(!try_assign_borrowed_plain_data(&target, &source));
+        let source = fixture(3, true, true);
+        let tracker = match target.lock().unwrap().properties.get("__keys").unwrap() {
+            Value::Object(tracker) => tracker.clone(), _ => unreachable!(),
+        };
+        let _guard = tracker.lock().unwrap();
+        assert!(!try_assign_borrowed_plain_data(&target, &source));
+    }
+
+    #[test]
+    fn registered_assignment_matches_previous_for_fresh_and_overwrite_targets() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_free_fn("ecma:tracked-copy-test", "previous", Box::new(previous_assign));
+        let current = function(&vm, "ecma:object", "assign");
+        let previous = function(&vm, "ecma:tracked-copy-test", "previous");
+        for count in [0, 1, 3, 16] {
+            for populated in [false, true] {
+                let source = fixture(count, true, true);
+                let mut results = Vec::new();
+                for callback in [&previous, &current] {
+                    let target = fixture(count, true, populated);
+                    let result = vm.invoke(callback, &[Value::Object(target.clone()), Value::Object(source.clone())]).unwrap();
+                    let Value::Object(result) = result else { panic!("assignment result") };
+                    assert!(Arc::ptr_eq(&result, &target));
+                    let target = target.lock().unwrap();
+                    results.push((ordered_own_string_keys(&target), (0..count).map(|n| {
+                        match target.properties.get(&format!("field{n}")) {
+                            Some(Value::I32(value)) => *value, _ => panic!("data missing"),
+                        }
+                    }).collect::<Vec<_>>()));
+                }
+                assert_eq!(results[0], results[1]);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "paired complete native assignment calls, not guest/application timing"]
+    fn paired_tracked_assignment_benchmark() {
+        use std::{hint::black_box, time::{Duration, Instant}};
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_free_fn("ecma:tracked-copy-test", "previous", Box::new(previous_assign));
+        let current = function(&vm, "ecma:object", "assign");
+        let previous = function(&vm, "ecma:tracked-copy-test", "previous");
+        for count in [0, 1, 3, 16, 64] {
+            for populated in [false, true] {
+                let source = Value::Object(fixture(count, true, true));
+                let mut totals = [Duration::ZERO; 2];
+                for round in 0..8 {
+                    for optimized in if round % 2 == 0 { [false, true] } else { [true, false] } {
+                        let callback = if optimized { &current } else { &previous };
+                        let start = Instant::now();
+                        for _ in 0..if count <= 3 { 500 } else { 100 } {
+                            let target = Value::Object(fixture(count, true, populated));
+                            black_box(vm.invoke(black_box(callback), &[target, source.clone()]).unwrap());
+                        }
+                        totals[usize::from(optimized)] += start.elapsed();
+                    }
+                }
+                eprintln!("tracked assign count={count} overwrite={populated}: previous={:?}, current={:?}, ratio={:.3}",
+                    totals[0], totals[1], totals[0].as_secs_f64() / totals[1].as_secs_f64());
+            }
+        }
+    }
+}
+// that the caller must finish after releasing the object lock.
+fn try_update_existing_data_property(
+    target: &mut Object,
+    key: &str,
+    value: &Value,
+) -> Option<Option<Arc<Mutex<Object>>>> {
+    if !is_existing_writable_data_property(target, key) {
+        return None;
+    }
+    let tracking = prepare_track_key_in(target, key);
+    if let Some(existing) = target.properties.get_mut(key) {
+        *existing = value.clone();
+        Some(tracking)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod existing_data_write_speedup_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "matched native prefix validation benchmark, not whole assignment timing"]
+    fn matched_assign_prefix_benchmark() {
+        fn indexed_prefix<'a>(
+            target: &Object,
+            keys: impl ExactSizeIterator<Item = (&'a str, bool)>,
+            accessor_free: bool,
+        ) -> Option<usize> {
+            if !accessor_free { return None; }
+            let start = target.properties.keys()
+                .take_while(|key| key.starts_with("__")).count();
+            if target.properties.len().saturating_sub(start) < keys.len() { return None; }
+            for (index, (key, string_key)) in keys.enumerate() {
+                if !string_key || key.starts_with("__") { return None; }
+                let (stored, _) = target.properties.get_index(start + index)?;
+                if key != stored.as_str() { return None; }
+            }
+            Some(start)
+        }
+        fn legacy_prefix<'a>(
+            target: &Object,
+            keys: impl ExactSizeIterator<Item = (&'a str, bool)>,
+            accessor_free: bool,
+        ) -> Option<usize> {
+            if !accessor_free { return None; }
+            let start = target.properties.keys()
+                .take_while(|key| key.starts_with("__")).count();
+            if target.properties.len().saturating_sub(start) < keys.len() { return None; }
+            keys.zip(target.properties.keys().skip(start)).all(|((key, string_key), stored)| {
+                string_key && !key.starts_with("__") && key == stored.as_str()
+            }).then_some(start)
+        }
+        for count in [16usize, 64, 256, 1024] {
+            let keys: Vec<String> = (0..count).map(|index| format!("field{index}")).collect();
+            for reversed in [false, true] {
+                let mut target = Object::new();
+                target.properties.insert("__keys".into(), Value::Undefined);
+                for index in 0..count {
+                    let index = if reversed { count - 1 - index } else { index };
+                    target.properties.insert(keys[index].clone(), Value::I32(0));
+                }
+                let old = legacy_prefix(&target, keys.iter().map(|key| (key.as_str(), true)), true);
+                let current = indexed_prefix(&target,
+                    keys.iter().map(|key| (key.as_str(), true)), true);
+                assert_eq!(old, current);
+                assert_eq!(old, aligned_data_prefix_from_keys(&target,
+                    keys.iter().map(|key| (key.as_str(), true)), true));
+                assert_eq!(current, if reversed { None } else { Some(1) });
+                let iterations = if reversed { 524288 } else { (2097152 / count).max(2048) };
+                let mut totals = [0u128; 2];
+                for sample in 0..6 {
+                    let order = if sample % 2 == 0 { [true, false] } else { [false, true] };
+                    for legacy in order {
+                        let start = std::time::Instant::now();
+                        for _ in 0..iterations {
+                            let target = std::hint::black_box(&target);
+                            let keys = std::hint::black_box(&keys);
+                            std::hint::black_box(if legacy {
+                                legacy_prefix(target, keys.iter().map(|key| (key.as_str(), true)), true)
+                            } else {
+                                indexed_prefix(target,
+                                    keys.iter().map(|key| (key.as_str(), true)), true)
+                            });
+                        }
+                        let elapsed = start.elapsed().as_nanos();
+                        totals[usize::from(!legacy)] += elapsed;
+                        println!("prefix properties={count} reversed={reversed} sample={sample} legacy={legacy} ns={elapsed}");
+                    }
+                }
+                println!("prefix properties={count} reversed={reversed} legacy_over_current={:.3}",
+                    totals[0] as f64 / totals[1] as f64);
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_assignment_declines_busy_and_guarded_destinations() {
+        let mut source = Object::new();
+        source.properties.insert("field".into(), Value::I32(7));
+        let source = vybe_runtime::heap::alloc(source);
+        let mut target = Object::new();
+        target.properties.insert("field".into(), Value::I32(0));
+        let target = vybe_runtime::heap::alloc(target);
+        {
+            let locked = target.lock().unwrap();
+            assert!(!try_assign_borrowed_plain_data(&target, &source));
+            assert!(matches!(locked.properties.get("field"), Some(Value::I32(0))));
+        }
+        for marker in [FROZEN_MARK, PROXY_TARGET_KEY, "__get_field", "__set_field"] {
+            target.lock().unwrap().properties.insert(marker.into(), Value::Undefined);
+            assert!(!try_assign_borrowed_plain_data(&target, &source));
+            let mut target = target.lock().unwrap();
+            assert!(matches!(target.properties.get("field"), Some(Value::I32(0))));
+            target.properties.shift_remove(marker);
+        }
+        assert!(try_assign_borrowed_plain_data(&source, &source));
+        assert!(matches!(source.lock().unwrap().properties.get("field"), Some(Value::I32(7))));
+    }
+
+    #[test]
+    fn borrowed_assignment_preserves_value_identity_and_rejects_index_sources() {
+        let referent = vybe_runtime::heap::alloc(Object::new());
+        let mut source = Object::new();
+        source.properties.insert("field".into(), Value::Object(referent.clone()));
+        let source = vybe_runtime::heap::alloc(source);
+        let mut target = Object::new();
+        target.properties.insert("field".into(), Value::Undefined);
+        let target = vybe_runtime::heap::alloc(target);
+        assert!(try_assign_borrowed_plain_data(&target, &source));
+        {
+            let target = target.lock().unwrap();
+            let Some(Value::Object(actual)) = target.properties.get("field") else {
+                panic!("borrowed assignment object value");
+            };
+            assert!(Arc::ptr_eq(actual, &referent));
+        }
+        source.lock().unwrap().properties.insert("2".into(), Value::I32(2));
+        assert!(!try_assign_borrowed_plain_data(&target, &source));
+        assert!(!target.lock().unwrap().properties.contains_key("2"));
+    }
+
+    #[test]
+    #[ignore = "matched native source-key snapshot benchmark, not whole assignment timing"]
+    fn matched_assign_key_snapshot_benchmark() {
+        fn legacy_plain_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Value>)> {
+            let source = source.lock().unwrap();
+            let mut out = Vec::with_capacity(source.properties.len());
+            for key in descriptor_own_keys(&source).into_iter()
+                .filter(|key| !is_nonenum(&source, key))
+            {
+                out.push((key, None));
+            }
+            out
+        }
+        for count in [16usize, 64, 256, 1024] {
+            let mut source = Object::new();
+            for index in 0..count {
+                source.properties.insert(format!("field{index}"), Value::I32(index as i32));
+            }
+            let source = vybe_runtime::heap::alloc(source);
+            let old = legacy_plain_keys(&source);
+            let current = enumerable_assign_keys(&source);
+            assert_eq!(old.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+                current.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>());
+            assert!(current.iter().all(|(_, symbol)| symbol.is_none()));
+            for _ in 0..32 {
+                std::hint::black_box(legacy_plain_keys(&source));
+                std::hint::black_box(enumerable_assign_keys(&source));
+            }
+            let iterations = (65536 / count).max(64);
+            let mut totals = [0u128; 2];
+            for sample in 0..6 {
+                let order = if sample % 2 == 0 { [true, false] } else { [false, true] };
+                for legacy in order {
+                    let start = std::time::Instant::now();
+                    for _ in 0..iterations {
+                        let source = std::hint::black_box(&source);
+                        std::hint::black_box(if legacy {
+                            legacy_plain_keys(source)
+                        } else {
+                            enumerable_assign_keys(source)
+                        });
+                    }
+                    let elapsed = start.elapsed().as_nanos();
+                    totals[usize::from(!legacy)] += elapsed;
+                    println!("snapshot properties={count} sample={sample} legacy={legacy} ns={elapsed}");
+                }
+            }
+            println!("snapshot properties={count} iterations_per_sample={iterations} legacy_over_current={:.3}",
+                totals[0] as f64 / totals[1] as f64);
+        }
+    }
+
+    #[test]
+    fn assign_key_snapshot_preserves_string_order_and_index_fallback() {
+        let mut source = Object::new();
+        for key in ["second", "01", "first", "4294967295"] {
+            source.properties.insert(key.into(), Value::I32(1));
+        }
+        let source = vybe_runtime::heap::alloc(source);
+        let keys = enumerable_assign_keys(&source);
+        assert_eq!(keys.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            vec!["second", "01", "first", "4294967295"]);
+        assert!(keys.iter().all(|(_, symbol)| symbol.is_none()));
+        {
+            let mut source = source.lock().unwrap();
+            source.properties.insert("10".into(), Value::I32(10));
+            source.properties.insert("2".into(), Value::I32(2));
+        }
+        let keys = enumerable_assign_keys(&source);
+        assert_eq!(keys.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            vec!["2", "10", "second", "01", "first", "4294967295"]);
+    }
+
+    #[test]
+    fn eligible_updates_preserve_identity_and_existing_key_order() {
+        let mut target = Object::new();
+        target.properties.insert("before".into(), Value::I32(1));
+        target.properties.insert("field".into(), Value::Undefined);
+        target.properties.insert("after".into(), Value::I32(3));
+        let value = Value::Object(Arc::new(Mutex::new(Object::new())));
+        let tracking = try_update_existing_data_property(&mut target, "field", &value)
+            .expect("eligible existing property");
+        if let Some(keys) = tracking { append_tracked_key(keys, "field"); }
+        let (Value::Object(actual), Value::Object(expected)) = (&target.properties["field"], &value) else { unreachable!() };
+        assert!(Arc::ptr_eq(actual, expected));
+        let visible: Vec<_> = target.properties.keys().filter(|key| !key.starts_with("__")).map(|key| key.as_str()).collect();
+        assert_eq!(visible, vec!["before", "field", "after"]);
+    }
+
+    #[test]
+    fn guarded_shapes_and_accessors_are_not_modified() {
+        for marker in [FROZEN_MARK, PROXY_TARGET_KEY, "__get_field", "__set_field"] {
+            let mut target = Object::new();
+            target.properties.insert("field".into(), Value::I32(1));
+            target.properties.insert(marker.into(), Value::Undefined);
+            assert!(try_update_existing_data_property(&mut target, "field", &Value::I32(2)).is_none());
+            assert!(matches!(target.properties.get("field"), Some(Value::I32(1))));
+        }
+        let mut target = Object::new_array(Vec::new());
+        target.properties.insert("field".into(), Value::I32(1));
+        assert!(try_update_existing_data_property(&mut target, "field", &Value::I32(2)).is_none());
+        let mut target = Object::new();
+        target.properties.insert("__internal".into(), Value::I32(1));
+        assert!(try_update_existing_data_property(&mut target, "__internal", &Value::I32(2)).is_none());
+        assert!(try_update_existing_data_property(&mut target, "missing", &Value::I32(2)).is_none());
+        assert!(!target.properties.contains_key("missing"));
+    }
+
+    #[test]
+    fn aligned_prefix_requires_exact_order_and_caller_guards() {
+        let mut target = Object::new();
+        target.properties.insert("first".into(), Value::I32(1));
+        target.properties.insert("second".into(), Value::I32(2));
+        target.properties.insert("tail".into(), Value::I32(3));
+        let keys = vec![("first".into(), None), ("second".into(), None)];
+        assert_eq!(aligned_data_prefix_start(&target, &keys, true), Some(0));
+        assert_eq!(aligned_data_prefix_start(&target, &keys, false), None);
+        let reversed = vec![("second".into(), None), ("first".into(), None)];
+        assert_eq!(aligned_data_prefix_start(&target, &reversed, true), None);
+        let missing = vec![("first".into(), None), ("missing".into(), None)];
+        assert_eq!(aligned_data_prefix_start(&target, &missing, true), None);
+        let symbol = vec![("first".into(), Some(Value::Symbol(Arc::from("first"))))];
+        assert_eq!(aligned_data_prefix_start(&target, &symbol, true), None);
+        let mut internal = Object::new();
+        internal.properties.insert("__internal".into(), Value::I32(1));
+        assert_eq!(aligned_data_prefix_start(&internal, &[("__internal".into(), None)], true), None);
+        let mut prefixed = Object::new();
+        prefixed.properties.insert("__keys".into(), Value::Undefined);
+        prefixed.properties.insert("first".into(), Value::I32(1));
+        prefixed.properties.insert("second".into(), Value::I32(2));
+        prefixed.properties.insert("__tail".into(), Value::Undefined);
+        assert_eq!(aligned_data_prefix_start(&prefixed, &keys, true), Some(1));
+        let mut interleaved = Object::new();
+        interleaved.properties.insert("first".into(), Value::I32(1));
+        interleaved.properties.insert("__internal".into(), Value::Undefined);
+        interleaved.properties.insert("second".into(), Value::I32(2));
+        assert_eq!(aligned_data_prefix_start(&interleaved, &keys, true), None);
+    }
+
+    #[test]
+    fn registered_aligned_assign_preserves_tracking_and_live_values() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let index = vm.resolve_host_function_index("ecma:object", "assign").unwrap();
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(index);
+        let function = Value::Object(Arc::new(Mutex::new(function)));
+        for reversed in [false, true] {
+            let names = if reversed { ["second", "first"] } else { ["first", "second"] };
+            let tracker = Arc::new(Mutex::new(Object::new_array(names.iter().map(|name| {
+                Value::String(Arc::from(*name))
+            }).collect())));
+            let mut target = Object::new();
+            target.properties.insert("__keys".into(), Value::Object(tracker.clone()));
+            for name in names {
+                target.properties.insert(name.into(), Value::I32(0));
+            }
+            let target = Arc::new(Mutex::new(target));
+            let mut source = Object::new();
+            source.properties.insert("first".into(), Value::I32(7));
+            source.properties.insert("second".into(), Value::I32(42));
+            let source = Arc::new(Mutex::new(source));
+            for second in [42, 99] {
+                source.lock().unwrap().properties.insert("second".into(), Value::I32(second));
+                let result = vm.invoke(&function, &[Value::Object(target.clone()), Value::Object(source.clone())]).unwrap();
+                let Value::Object(result) = result else { panic!("assignment target identity") };
+                assert!(Arc::ptr_eq(&result, &target));
+                let destination = target.lock().unwrap();
+                assert!(matches!(destination.properties.get("first"), Some(Value::I32(7))));
+                assert!(matches!(destination.properties.get("second"), Some(Value::I32(value)) if *value == second));
+                let visible: Vec<_> = destination.properties.keys().filter(|key| !key.starts_with("__")).map(String::as_str).collect();
+                assert_eq!(visible, names);
+                let Some(Value::Object(actual_tracker)) = destination.properties.get("__keys") else { panic!("tracking metadata") };
+                assert!(Arc::ptr_eq(actual_tracker, &tracker));
+                drop(destination);
+                let tracking = tracker.lock().unwrap();
+                let ObjectKind::Array(values) = &tracking.kind else { panic!("key tracker array") };
+                assert_eq!(values.len(), 2);
+                for (value, name) in values.iter().zip(names) {
+                    assert!(matches!(value, Value::String(text) if text.as_ref() == name));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod assignment_source_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn registered_snapshot_preserves_reordered_and_hidden_source_fields() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let index = vm.resolve_host_function_index("ecma:object", "assign").unwrap();
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(index);
+        let function = Value::Object(Arc::new(Mutex::new(function)));
+        for (tracked_reverse, interleaved) in [(false, false), (false, true), (true, false), (true, true)] {
+            let names = if tracked_reverse { ["second", "first"] } else { ["first", "second"] };
+            let mut source = Object::new();
+            source.properties.insert("__keys".into(), Value::Object(Arc::new(Mutex::new(Object::new_array(names.iter().map(|name| Value::String(Arc::from(*name))).collect())))));
+            source.properties.insert("first".into(), Value::I32(7));
+            if interleaved {
+                source.properties.insert("hidden".into(), Value::I32(123));
+            }
+            source.properties.insert("second".into(), Value::I32(42));
+            source.properties.insert("__nonenum".into(), Value::Object(Arc::new(Mutex::new(Object::new_array(vec![Value::String(Arc::from("hidden"))])))));
+            let source = Arc::new(Mutex::new(source));
+            let mut target = Object::new();
+            for name in names {
+                target.properties.insert(name.into(), Value::I32(0));
+            }
+            target.properties.insert("hidden".into(), Value::I32(-1));
+            let target = Arc::new(Mutex::new(target));
+            for second in [42, 99] {
+                source.lock().unwrap().properties.insert("second".into(), Value::I32(second));
+                vm.invoke(&function, &[Value::Object(target.clone()), Value::Object(source.clone())]).unwrap();
+                let destination = target.lock().unwrap();
+                assert!(matches!(destination.properties.get("first"), Some(Value::I32(7))));
+                assert!(matches!(destination.properties.get("second"), Some(Value::I32(value)) if *value == second));
+                assert!(matches!(destination.properties.get("hidden"), Some(Value::I32(-1))));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod assignment_fast_path_semantic_gates {
+    use super::*;
+
+    fn function(vm: &VM, name: &str) -> Value {
+        let index = vm.resolve_host_function_index("ecma:object", name).unwrap();
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(index);
+        Value::Object(Arc::new(Mutex::new(object)))
+    }
+
+    #[test]
+    fn locking_modes_preserve_existing_writes_and_failure_order() {
+        for mode in ["preventExtensions", "seal", "freeze"] {
+            // Expected exceptions are terminal for this VM's case. Never
+            // reuse its pending exception as another operation's result.
+            let mut vm = VM::new();
+            register(&mut vm);
+            let assign = function(&vm, "assign");
+            let locking = function(&vm, mode);
+            let mut target = Object::new();
+            target.properties.insert("first".into(), Value::I32(1));
+            target.properties.insert("second".into(), Value::I32(2));
+            let target = Arc::new(Mutex::new(target));
+            vm.invoke(&locking, &[Value::Object(target.clone())]).unwrap();
+            let mut source = Object::new();
+            source.properties.insert("first".into(), Value::I32(7));
+            source.properties.insert("second".into(), Value::I32(42));
+            let source = Arc::new(Mutex::new(source));
+            let result = vm.invoke(&assign, &[Value::Object(target.clone()), Value::Object(source.clone())]);
+            if mode == "freeze" {
+                assert!(result.is_err());
+                let destination = target.lock().unwrap();
+                assert!(matches!(destination.properties.get("first"), Some(Value::I32(1))));
+                assert!(matches!(destination.properties.get("second"), Some(Value::I32(2))));
+                continue;
+            }
+            assert!(result.is_ok());
+            {
+                let destination = target.lock().unwrap();
+                assert!(matches!(destination.properties.get("first"), Some(Value::I32(7))));
+                assert!(matches!(destination.properties.get("second"), Some(Value::I32(42))));
+            }
+            {
+                let mut source = source.lock().unwrap();
+                source.properties.insert("first".into(), Value::I32(11));
+                source.properties.insert("third".into(), Value::I32(33));
+            }
+            assert!(vm.invoke(&assign, &[Value::Object(target.clone()), Value::Object(source)]).is_err());
+            let destination = target.lock().unwrap();
+            assert!(matches!(destination.properties.get("first"), Some(Value::I32(11))));
+            assert!(!destination.properties.contains_key("third"));
+        }
+    }
+
+    #[test]
+    fn target_setter_discards_speculative_source_snapshot() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let assign = function(&vm, "assign");
+        let define = function(&vm, "defineProperty");
+        let mut source = Object::new();
+        source.properties.insert("first".into(), Value::I32(7));
+        source.properties.insert("second".into(), Value::I32(42));
+        let source = Arc::new(Mutex::new(source));
+        let captured_source = source.clone();
+        let calls = Arc::new(Mutex::new(0usize));
+        let captured_calls = calls.clone();
+        vm.register_host_fn("ecma:assign-gate", "mutate_source", Box::new(move |_, _| {
+            *captured_calls.lock().unwrap() += 1;
+            captured_source.lock().unwrap().properties.insert("second".into(), Value::I32(99));
+            Value::Undefined
+        }));
+        let index = vm.resolve_host_function_index("ecma:assign-gate", "mutate_source").unwrap();
+        let mut setter = Object::new();
+        setter.kind = ObjectKind::HostFunction(index);
+        let mut descriptor = Object::new();
+        descriptor.properties.insert("set".into(), Value::Object(Arc::new(Mutex::new(setter))));
+        descriptor.properties.insert("enumerable".into(), Value::Bool(true));
+        descriptor.properties.insert("configurable".into(), Value::Bool(true));
+        let target = Arc::new(Mutex::new(Object::new()));
+        vm.invoke(&define, &[Value::Object(target.clone()), Value::String(Arc::from("first")), Value::Object(Arc::new(Mutex::new(descriptor)))]).unwrap();
+        target.lock().unwrap().properties.insert("second".into(), Value::I32(0));
+        vm.invoke(&assign, &[Value::Object(target.clone()), Value::Object(source)]).unwrap();
+        assert_eq!(*calls.lock().unwrap(), 1);
+        assert!(matches!(target.lock().unwrap().properties.get("second"), Some(Value::I32(99))));
+    }
+}
+
+fn assign_source_get(
+    ctx: &mut HostContext,
+    source: &Arc<Mutex<Object>>,
+    key: &str,
+) -> Result<Value, Value> {
     {
         let src = source.lock().unwrap();
         if let ObjectKind::Array(values) = &src.kind {
             if let Some(index) = array_index_key(key) {
                 if !is_array_hole(&src, index as i32) {
                     if let Some(value) = values.get(index as usize) {
-                        return value.clone();
+                        return Ok(value.clone());
                     }
                 }
             }
@@ -419,17 +1511,66 @@ fn assign_source_get(ctx: &mut HostContext, source: &Arc<Mutex<Object>>, key: &s
         if let ObjectKind::TypedArray(ta) = &src.kind {
             if let Some(index) = array_index_key(key) {
                 if (index as usize) < crate::typedarray::ta_live_length(ta) {
-                    return crate::typedarray::read_element(ta, index as usize);
+                    return Ok(crate::typedarray::read_element(ta, index as usize));
                 }
             }
         }
         if let Some(value) = src.properties.get(key) {
             if !has_getter_key(&src, key) {
-                return value.clone();
+                return Ok(value.clone());
             }
         }
     }
-    proto_walk_invoke_getter(ctx, source, key).unwrap_or(Value::Undefined)
+    let getter = crate::keys::with_getter_property_key(key, |getter_key| {
+        proto_walk_get(source, getter_key)
+    });
+    match getter {
+        Some(getter) => try_invoke_getter_value(ctx, source, getter),
+        None => Ok(Value::Undefined),
+    }
+}
+
+enum AssignmentAccess {
+    Setter(Value),
+    GetterOnly,
+    ReadonlyData,
+    Proxy(Value),
+    DataOrMissing,
+}
+
+fn assignment_access(target: &Arc<Mutex<Object>>, key: &str) -> AssignmentAccess {
+    crate::keys::with_setter_property_key(key, |setter_key| {
+        crate::keys::with_getter_property_key(key, |getter_key| {
+            let mut current = target.clone();
+            loop {
+                let value = Value::Object(current.clone());
+                if crate::proxy::is_proxy(&value).is_some() {
+                    return AssignmentAccess::Proxy(value);
+                }
+                let node = current.lock().unwrap();
+                if let Some(setter) = node.properties.get(setter_key) {
+                    return AssignmentAccess::Setter(setter.clone());
+                }
+                if node.properties.contains_key(getter_key) {
+                    return AssignmentAccess::GetterOnly;
+                }
+                if node.properties.contains_key(key) {
+                    return if is_data_property_writable(&node, key) {
+                        AssignmentAccess::DataOrMissing
+                    } else {
+                        AssignmentAccess::ReadonlyData
+                    };
+                }
+                let prototype = node.properties.get(PROTO_KEY).cloned()
+                    .unwrap_or_else(|| implicit_object_prototype(&current, &node));
+                drop(node);
+                match prototype {
+                    Value::Object(next) if !Arc::ptr_eq(&next, &current) => current = next,
+                    _ => return AssignmentAccess::DataOrMissing,
+                }
+            }
+        })
+    })
 }
 
 fn assign_strict_set(
@@ -440,25 +1581,12 @@ fn assign_strict_set(
     symbol_key: Option<Value>,
 ) -> bool {
     {
-        let tgt = target.lock().unwrap();
-        if is_not_extensible(&tgt) {
-            let exists = if tgt.properties.contains_key(key) {
-                true
-            } else {
-                crate::keys::with_getter_property_key(key, |getter_key| {
-                    tgt.properties.contains_key(getter_key)
-                }) || crate::keys::with_setter_property_key(key, |setter_key| {
-                    tgt.properties.contains_key(setter_key)
-                })
-            };
-            if !exists {
+        let mut tgt = target.lock().unwrap();
+        if symbol_key.is_none() {
+            if let Some(tracking) = try_update_existing_data_property(&mut tgt, key, &value) {
                 drop(tgt);
-                ctx.throw_value(crate::error::new_error(
-                    ctx,
-                    "TypeError",
-                    "Cannot add property, object is not extensible",
-                ));
-                return false;
+                if let Some(keys) = tracking { append_tracked_key(keys, key); }
+                return true;
             }
         }
     }
@@ -471,25 +1599,24 @@ fn assign_strict_set(
         }
     }
 
-    let setter = crate::keys::with_setter_property_key(key, |setter_key| {
-        {
-            let tgt = target.lock().unwrap();
-            tgt.properties.get(setter_key).cloned()
+    match assignment_access(target, key) {
+        AssignmentAccess::Proxy(proxy) => {
+            let raw_key = symbol_key.clone()
+                .unwrap_or_else(|| crate::keys::string_value(key));
+            let result = crate::proxy::set_dispatch(ctx, &[
+                proxy, raw_key, value, Value::Object(target.clone()),
+            ]);
+            if matches!(result, Value::Undefined) {
+                return false;
+            }
+            if crate::boolean::to_boolean(&result) {
+                return true;
+            }
+            ctx.throw_value(crate::error::new_error(ctx, "TypeError", "Proxy rejected property assignment"));
+            return false;
         }
-        .or_else(|| proto_walk_get(target, setter_key))
-    });
-
-    if let Some(setter_val) = setter {
-        if let Value::Object(setter_obj) = &setter_val {
-            let is_noop_setter = {
-                let so = setter_obj.lock().unwrap();
-                matches!(
-                    so.kind,
-                    ObjectKind::HostFunction(idx)
-                        if idx == NOOP_SETTER_IDX.load(std::sync::atomic::Ordering::Relaxed)
-                )
-            };
-            if is_noop_setter {
+        AssignmentAccess::Setter(setter_val) => {
+            if is_noop_setter_value(&setter_val) {
                 ctx.throw_value(crate::error::new_error(
                     ctx,
                     "TypeError",
@@ -504,25 +1631,34 @@ fn assign_strict_set(
             // the target. Measured: `Object.assign(t, {a: 5})` left `t._got`
             // undefined. `invoke_with_receiver` is correct under BOTH bindings,
             // so the arity question disappears rather than being answered.
-            ctx.invoke_with_receiver(&setter_val, Value::Object(target.clone()), &[value]);
+            if let Err(thrown) = ctx.try_invoke_with_receiver(
+                &setter_val,
+                Value::Object(target.clone()),
+                &[value],
+            ) {
+                ctx.throw_value(thrown);
+                return false;
+            }
             return true;
         }
-    }
 
-    let has_getter_without_setter = crate::keys::with_getter_property_key(key, |getter_key| {
-        let own_getter = {
-            let tgt = target.lock().unwrap();
-            tgt.properties.contains_key(getter_key)
-        };
-        own_getter || proto_walk_has(target, getter_key)
-    });
-    if has_getter_without_setter {
-        ctx.throw_value(crate::error::new_error(
-            ctx,
-            "TypeError",
-            "Cannot set property which has only a getter",
-        ));
-        return false;
+        AssignmentAccess::GetterOnly | AssignmentAccess::ReadonlyData => {
+            ctx.throw_value(crate::error::new_error(
+                ctx, "TypeError", "Cannot set getter-only or read only property",
+            ));
+            return false;
+        }
+        AssignmentAccess::DataOrMissing => {}
+    }
+    {
+        let receiver = target.lock().unwrap();
+        if is_not_extensible(&receiver) && !receiver.properties.contains_key(key) {
+            drop(receiver);
+            ctx.throw_value(crate::error::new_error(
+                ctx, "TypeError", "Cannot add property, object is not extensible",
+            ));
+            return false;
+        }
     }
 
     if let Some(sym) = symbol_key {
@@ -733,6 +1869,25 @@ pub fn track_nonenum(obj: &Arc<Mutex<Object>>, key: &str) {
             .any(|e| matches!(e, Value::String(s) if s.as_ref() == key))
         {
             elems.push(crate::keys::string_value(key));
+        }
+    }
+}
+
+fn set_property_enumerability(obj: &Arc<Mutex<Object>>, key: &str, enumerable: bool) {
+    if !enumerable {
+        track_nonenum(obj, key);
+        return;
+    }
+    let array = {
+        let object = obj.lock().unwrap();
+        match object.properties.get("__nonenum") {
+            Some(Value::Object(array)) => Some(array.clone()),
+            _ => None,
+        }
+    };
+    if let Some(array) = array {
+        if let ObjectKind::Array(values) = &mut array.lock().unwrap().kind {
+            values.retain(|value| !matches!(value, Value::String(name) if name.as_ref() == key));
         }
     }
 }
@@ -1098,27 +2253,66 @@ pub fn is_nonconfig(o: &Object, key: &str) -> bool {
     false
 }
 
+#[inline]
+fn has_aligned_tracked_keys(object: &Object, values: &[Value]) -> bool {
+    let mut live = object.properties.keys().filter(|key| !key.starts_with("__"));
+    values.iter().all(|value| {
+        let Some(key) = live.next() else { return false; };
+        matches!(value, Value::String(text)
+            if text.as_ref() == key.as_str() && array_index_key(key).is_none())
+    }) && live.next().is_none() && !object.properties.contains_key("__sym_keys")
+}
+
+fn aligned_tracked_key_values(object: &Object) -> Option<Vec<Value>> {
+    if !matches!(object.kind, ObjectKind::Ordinary)
+        || object.properties.contains_key("__nonenum")
+        || object.properties.contains_key(PROXY_TARGET_KEY)
+        || object.properties.keys().any(|key| {
+            key.starts_with("__get_") || key.starts_with("__set_")
+        })
+    {
+        return None;
+    }
+    let Some(Value::Object(tracker)) = object.properties.get("__keys") else {
+        return None;
+    };
+    let tracker = tracker.lock().unwrap();
+    let ObjectKind::Array(values) = &tracker.kind else { return None; };
+    has_aligned_tracked_keys(object, values).then(|| values.clone())
+}
+
 pub fn ordered_own_string_keys(o: &Object) -> Vec<String> {
     if let Some(keys) = plain_own_string_keys(o) {
         return keys;
     }
-    let tracked: Option<Vec<String>> = o.properties.get("__keys").and_then(|v| {
-        if let Value::Object(arr) = v {
+    let tracked: Option<Vec<String>> = match o.properties.get("__keys") {
+        Some(Value::Object(arr)) => {
             let ka = arr.lock().unwrap();
-            if let ObjectKind::Array(ref elems) = ka.kind {
+            if let ObjectKind::Array(elems) = &ka.kind {
+                if has_aligned_tracked_keys(o, elems) {
+                        // The tracker is an exact, non-index, symbol-free own
+                        // key sequence under both locks. No extra-key merge,
+                        // deduplication, or index sorting is needed.
+                        return elems.iter().filter_map(|value| match value {
+                            Value::String(text) => Some(text.to_string()),
+                            _ => None,
+                        }).collect();
+                }
                 let mut keys = Vec::with_capacity(elems.len());
-                for e in elems {
-                    if let Value::String(s) = e {
-                        if o.properties.contains_key(s.as_ref()) {
-                            keys.push(s.to_string());
+                for value in elems {
+                    if let Value::String(text) = value {
+                        if o.properties.contains_key(text.as_ref()) {
+                            keys.push(text.to_string());
                         }
                     }
                 }
-                return Some(keys);
+                Some(keys)
+            } else {
+                None
             }
         }
-        None
-    });
+        _ => None,
+    };
     let sym_keys: Option<std::collections::HashSet<String>> =
         o.properties.get("__sym_keys").and_then(|v| {
             if let Value::Object(a) = v {
@@ -1173,6 +2367,620 @@ pub fn ordered_own_string_keys(o: &Object) -> Vec<String> {
             let mut keys = live;
             sort_array_indices_first(&mut keys);
             keys
+        }
+    }
+}
+
+#[cfg(test)]
+mod aligned_key_tracker_speedup_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn previous_ordered_own_string_keys(o: &Object) -> Vec<String> {
+        if let Some(keys) = plain_own_string_keys(o) {
+            return keys;
+        }
+        let tracked: Option<Vec<String>> = o.properties.get("__keys").and_then(|v| {
+            if let Value::Object(arr) = v {
+                let ka = arr.lock().unwrap();
+                if let ObjectKind::Array(ref elems) = ka.kind {
+                    let mut keys = Vec::with_capacity(elems.len());
+                    for e in elems {
+                        if let Value::String(s) = e {
+                            if o.properties.contains_key(s.as_ref()) {
+                                keys.push(s.to_string());
+                            }
+                        }
+                    }
+                    return Some(keys);
+                }
+            }
+            None
+        });
+        let sym_keys: Option<std::collections::HashSet<String>> =
+            o.properties.get("__sym_keys").and_then(|v| {
+                if let Value::Object(a) = v {
+                    let lock = a.lock().unwrap();
+                    if let ObjectKind::Array(ref el) = lock.kind {
+                        let mut keys = std::collections::HashSet::with_capacity(el.len());
+                        for e in el {
+                            match e {
+                                Value::String(s) => {
+                                    keys.insert(s.to_string());
+                                }
+                                Value::Symbol(sym) => {
+                                    keys.insert(crate::symbol::canonical_property_key(sym));
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(keys)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+        let mut live = Vec::with_capacity(o.properties.len());
+        for key in o.properties.keys() {
+            let is_symbol_key = matches!(sym_keys.as_ref(), Some(keys) if keys.contains(key));
+            if !key.starts_with("__") && !is_symbol_key {
+                live.push(key.clone());
+            }
+        }
+        match tracked {
+            Some(mut keys) => {
+                let mut seen: std::collections::HashSet<&str> =
+                    std::collections::HashSet::with_capacity(keys.len());
+                for key in &keys {
+                    seen.insert(key.as_str());
+                }
+                let mut extras = Vec::with_capacity(live.len().saturating_sub(keys.len()));
+                for key in &live {
+                    if !seen.contains(key.as_str()) {
+                        extras.push(key.clone());
+                        seen.insert(key.as_str());
+                    }
+                }
+                keys.extend(extras);
+                sort_array_indices_first(&mut keys);
+                keys
+            }
+            None => {
+                let mut keys = live;
+                sort_array_indices_first(&mut keys);
+                keys
+            }
+        }
+    }
+
+    fn tracked_object(names: &[&str], tracked: &[Value]) -> Object {
+        let mut object = Object::new();
+        object.properties.insert("__keys".into(), Value::Object(
+            vybe_runtime::heap::alloc(Object::new_array(tracked.to_vec()))));
+        for name in names {
+            object.properties.insert((*name).into(), Value::I32(1));
+        }
+        object
+    }
+
+    #[test]
+    fn aligned_and_fallback_trackers_preserve_existing_order() {
+        for tracking in [
+            vec!["a", "b", "c"],
+            vec!["b", "a", "c"],
+            vec!["a", "missing", "c"],
+            vec!["a", "a", "c"],
+            vec!["a", "b"],
+            Vec::new(),
+        ] {
+            let values: Vec<_> = tracking.iter().map(|name| crate::keys::string_value(name)).collect();
+            let object = tracked_object(&["a", "b", "c"], &values);
+            assert_eq!(ordered_own_string_keys(&object), previous_ordered_own_string_keys(&object));
+        }
+        let mixed = tracked_object(&["a", "b"], &[Value::I32(3), crate::keys::string_value("b")]);
+        assert_eq!(ordered_own_string_keys(&mixed), previous_ordered_own_string_keys(&mixed));
+        let numeric = tracked_object(&["b", "10", "2", "a"],
+            &["b", "10", "2", "a"].map(crate::keys::string_value));
+        assert_eq!(ordered_own_string_keys(&numeric), previous_ordered_own_string_keys(&numeric));
+        assert_eq!(ordered_own_string_keys(&numeric), ["2", "10", "b", "a"]);
+        let mut symbolic = tracked_object(&["a", "b"], &["a", "b"].map(crate::keys::string_value));
+        symbolic.properties.insert("__sym_keys".into(), Value::Object(
+            vybe_runtime::heap::alloc(Object::new_array(vec![crate::keys::string_value("b")]))));
+        assert_eq!(ordered_own_string_keys(&symbolic), previous_ordered_own_string_keys(&symbolic));
+    }
+
+    fn function(vm: &VM, name: &str) -> Value {
+        let index = vm.resolve_host_function_index("ecma:object", name).unwrap();
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(index);
+        Value::Object(vybe_runtime::heap::alloc(function))
+    }
+
+    fn result_keys(value: Value) -> Vec<String> {
+        let Value::Object(array) = value else { panic!("key array"); };
+        let array = array.lock().unwrap();
+        let ObjectKind::Array(values) = &array.kind else { panic!("key array storage"); };
+        values.iter().map(|value| match value {
+            Value::String(text) => text.to_string(),
+            _ => panic!("string key"),
+        }).collect()
+    }
+
+    #[test]
+    fn registered_keys_and_assign_observe_mutations_and_hidden_fields() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let keys = function(&vm, "keys");
+        let assign = function(&vm, "assign");
+        let tracker = ["a", "b", "c"].map(crate::keys::string_value);
+        let mut source = tracked_object(&["a", "b", "c"], &tracker);
+        source.properties.insert("__nonenum".into(), Value::Object(
+            vybe_runtime::heap::alloc(Object::new_array(vec![crate::keys::string_value("b")]))));
+        let source = vybe_runtime::heap::alloc(source);
+        assert_eq!(result_keys(vm.invoke(&keys, &[Value::Object(source.clone())]).unwrap()), ["a", "c"]);
+        let target = vybe_runtime::heap::alloc(Object::new());
+        vm.invoke(&assign, &[Value::Object(target.clone()), Value::Object(source.clone())]).unwrap();
+        assert!(!target.lock().unwrap().properties.contains_key("b"));
+        {
+            let mut object = source.lock().unwrap();
+            object.properties.shift_remove("a");
+            object.properties.insert("d".into(), Value::I32(4));
+        }
+        assert_eq!(result_keys(vm.invoke(&keys, &[Value::Object(source.clone())]).unwrap()), ["c", "d"]);
+        let tracker = {
+            let object = source.lock().unwrap();
+            let Some(Value::Object(tracker)) = object.properties.get("__keys") else { panic!("tracker"); };
+            tracker.clone()
+        };
+        {
+            let mut tracker = tracker.lock().unwrap();
+            let ObjectKind::Array(values) = &mut tracker.kind else { panic!("tracker array"); };
+            *values = ["d", "c", "b"].map(crate::keys::string_value).to_vec();
+        }
+        assert_eq!(result_keys(vm.invoke(&keys, &[Value::Object(source)]).unwrap()), ["d", "c"]);
+    }
+
+    #[test]
+    #[ignore = "paired complete native key enumeration benchmark, not guest timing"]
+    fn paired_aligned_tracker_benchmark() {
+        for count in [0, 3, 16, 64] {
+            let names: Vec<String> = (0..count).map(|index| format!("field{index}")).collect();
+            let borrowed: Vec<_> = names.iter().map(String::as_str).collect();
+            for reversed in [false, true] {
+                let tracked: Vec<_> = if reversed {
+                    names.iter().rev().map(|name| crate::keys::string_value(name)).collect()
+                } else {
+                    names.iter().map(|name| crate::keys::string_value(name)).collect()
+                };
+                let object = tracked_object(&borrowed, &tracked);
+                assert_eq!(ordered_own_string_keys(&object), previous_ordered_own_string_keys(&object));
+                let iterations = if count <= 16 { 1000 } else { 200 };
+                let timed = |current: bool| {
+                    let start = Instant::now();
+                    for _ in 0..iterations {
+                        black_box(if current {
+                            ordered_own_string_keys(black_box(&object))
+                        } else {
+                            previous_ordered_own_string_keys(black_box(&object))
+                        });
+                    }
+                    start.elapsed()
+                };
+                let mut previous = Duration::ZERO;
+                let mut current = Duration::ZERO;
+                for round in 0..8 {
+                    if round % 2 == 0 {
+                        previous += timed(false);
+                        current += timed(true);
+                    } else {
+                        current += timed(true);
+                        previous += timed(false);
+                    }
+                }
+                eprintln!("ordered tracker count={count} reversed={reversed}: previous={previous:?}, current={current:?}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tracked_key_value_snapshot_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn tracked(names: &[Value]) -> Object {
+        let mut object = Object::new();
+        object.properties.insert("__keys".into(), Value::Object(
+            vybe_runtime::heap::alloc(Object::new_array(names.to_vec()))));
+        for name in names {
+            let Value::String(name) = name else { panic!("string key fixture"); };
+            object.properties.insert(name.to_string(), Value::I32(1));
+        }
+        object
+    }
+
+    #[test]
+    fn registered_results_are_fresh_arrays_with_immutable_shared_strings() {
+        let names = [crate::keys::string_value("first"), crate::keys::string_value("second")];
+        let source = vybe_runtime::heap::alloc(tracked(&names));
+        let mut vm = VM::new();
+        register(&mut vm);
+        let index = vm.resolve_host_function_index("ecma:object", "keys").unwrap();
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(index);
+        let function = Value::Object(vybe_runtime::heap::alloc(function));
+        let Value::Object(first) = vm.invoke(&function, &[Value::Object(source.clone())]).unwrap() else { panic!("keys array"); };
+        let Value::Object(second) = vm.invoke(&function, &[Value::Object(source.clone())]).unwrap() else { panic!("keys array"); };
+        assert!(!Arc::ptr_eq(&first, &second));
+        {
+            let first = first.lock().unwrap();
+            let ObjectKind::Array(values) = &first.kind else { panic!("array storage"); };
+            for (value, name) in values.iter().zip(&names) {
+                let (Value::String(actual), Value::String(expected)) = (value, name) else { panic!("string key"); };
+                assert!(Arc::ptr_eq(actual, expected));
+            }
+            assert_eq!(values.len(), 2);
+        }
+        {
+            let mut first = first.lock().unwrap();
+            let ObjectKind::Array(values) = &mut first.kind else { panic!("array storage"); };
+            values.clear();
+        }
+        {
+            let second = second.lock().unwrap();
+            let ObjectKind::Array(values) = &second.kind else { panic!("array storage"); };
+            assert_eq!(values, &names);
+        }
+        source.lock().unwrap().properties.shift_remove("first");
+        let Value::Object(updated) = vm.invoke(&function, &[Value::Object(source)]).unwrap() else { panic!("keys array"); };
+        let updated = updated.lock().unwrap();
+        let ObjectKind::Array(values) = &updated.kind else { panic!("array storage"); };
+        assert_eq!(values, &[names[1].clone()]);
+    }
+
+    #[test]
+    fn guarded_shapes_decline_the_string_sharing_path() {
+        let names = [crate::keys::string_value("field")];
+        for marker in ["__nonenum", "__get_extra", "__set_extra", "__sym_keys", PROXY_TARGET_KEY] {
+            let mut object = tracked(&names);
+            object.properties.insert(marker.into(), Value::Undefined);
+            assert!(aligned_tracked_key_values(&object).is_none());
+        }
+        let numeric = tracked(&[crate::keys::string_value("1")]);
+        assert!(aligned_tracked_key_values(&numeric).is_none());
+        let mut stale = tracked(&names);
+        stale.properties.insert("extra".into(), Value::I32(2));
+        assert!(aligned_tracked_key_values(&stale).is_none());
+        let mut exotic = tracked(&names);
+        exotic.kind = ObjectKind::Array(Vec::new());
+        assert!(aligned_tracked_key_values(&exotic).is_none());
+    }
+
+    fn previous_keys(object: &Object) -> Value {
+        let mut enumerable = descriptor_own_keys(object);
+        enumerable.retain(|key| !is_nonenum(object, key));
+        let values = enumerable.iter().map(|key| crate::keys::string_value(key)).collect();
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)))
+    }
+
+    fn current_keys(object: &Object) -> Value {
+        let values = aligned_tracked_key_values(object).expect("aligned fixture");
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)))
+    }
+
+    #[test]
+    #[ignore = "paired native complete key-array creation benchmark, not guest timing"]
+    fn paired_key_value_snapshot_benchmark() {
+        for count in [0, 3, 16, 64] {
+            let names: Vec<_> = (0..count).map(|index| crate::keys::owned_string_value(format!("field{index}"))).collect();
+            let object = tracked(&names);
+            let iterations = if count <= 16 { 1000 } else { 200 };
+            let timed = |current: bool| {
+                let start = Instant::now();
+                for _ in 0..iterations {
+                    black_box(if current { current_keys(black_box(&object)) } else { previous_keys(black_box(&object)) });
+                }
+                start.elapsed()
+            };
+            let mut previous = Duration::ZERO;
+            let mut current = Duration::ZERO;
+            for round in 0..8 {
+                if round % 2 == 0 {
+                    previous += timed(false);
+                    current += timed(true);
+                } else {
+                    current += timed(true);
+                    previous += timed(false);
+                }
+            }
+            eprintln!("key value snapshot count={count}: previous={previous:?}, current={current:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod fresh_assignment_preparation_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn previous_assign(ctx: &mut HostContext, args: &[Value]) -> Value {
+            let Some(raw_target) = args.first() else {
+                return throw_type_error(ctx, "Cannot convert undefined or null to object");
+            };
+            let Some(target) = to_object_for_object_static(
+                ctx,
+                raw_target,
+                "Cannot convert undefined or null to object",
+            ) else {
+                return Value::Undefined;
+            };
+            let Value::Object(target_obj) = &target else {
+                return target;
+            };
+
+            for source in args.iter().skip(1) {
+                if matches!(source, Value::Null | Value::Undefined) {
+                    continue;
+                }
+                let Some(source_value) =
+                    to_object_for_object_static(ctx, source, "Cannot convert source to object")
+                else {
+                    return Value::Undefined;
+                };
+                if let Some(proxy_keys) = crate::proxy::own_keys_dispatch(ctx, &source_value) {
+                    for key_value in array_elements(&proxy_keys) {
+                        if !matches!(key_value, Value::String(_)) {
+                            continue;
+                        }
+                        let desc = crate::proxy::get_own_property_descriptor_dispatch(
+                            ctx,
+                            &source_value,
+                            &key_value,
+                        )
+                        .unwrap_or(Value::Undefined);
+                        if !matches!(desc, Value::Object(_))
+                            || !descriptor_bool(&desc, "enumerable", false)
+                        {
+                            continue;
+                        }
+                        let key = key_string(&key_value);
+                        let value = crate::proxy::get_dispatch(ctx, &source_value, &key_value);
+                        if !assign_strict_set(ctx, target_obj, &key, value, None) {
+                            return Value::Undefined;
+                        }
+                    }
+                    continue;
+                }
+                let Value::Object(source_obj) = source_value else {
+                    continue;
+                };
+                if try_assign_borrowed_plain_data(target_obj, &source_obj) {
+                    continue;
+                }
+                let assign_keys = enumerable_assign_keys(&source_obj);
+                // A data-overwrite batch needs at least this many own entries.
+                // Reject obviously fresh/exotic targets before cloning values.
+                let may_overwrite = {
+                    let destination = target_obj.lock().unwrap();
+                    is_plain_data_destination(&destination)
+                        && destination.properties.len() >= assign_keys.len()
+                };
+                let direct_values = if may_overwrite {
+                    let src = source_obj.lock().unwrap();
+                    let no_getters = !has_any_getter(&src);
+                    let source_start = aligned_data_prefix_start(
+                        &src,
+                        &assign_keys,
+                        no_getters && matches!(src.kind, ObjectKind::Ordinary),
+                    );
+                    if let Some(start) = source_start {
+                        // Snapshot exactly the enumerated data values under
+                        // the original source lock, without hash lookups or
+                        // callbacks. No values survive this invocation.
+                        Some(src.properties.values().skip(start).take(assign_keys.len()).cloned().collect::<Vec<Value>>())
+                    } else {
+                        let mut values = Vec::with_capacity(assign_keys.len());
+                        let mut direct = true;
+                        for (key, _) in &assign_keys {
+                            if !no_getters {
+                                direct = false;
+                                break;
+                            }
+                            let value = match &src.kind {
+                                ObjectKind::Array(values) => {
+                                    if let Some(index) = array_index_key(key) {
+                                        values.get(index as usize).cloned()
+                                    } else {
+                                        src.properties.get(key).cloned()
+                                    }
+                                }
+                                ObjectKind::TypedArray(ta) => {
+                                    if let Some(index) = array_index_key(key) {
+                                        Some(crate::typedarray::read_element(ta, index as usize))
+                                    } else {
+                                        src.properties.get(key).cloned()
+                                    }
+                                }
+                                _ => src.properties.get(key).cloned(),
+                            };
+                            let Some(value) = value else {
+                                direct = false;
+                                break;
+                            };
+                            values.push(value);
+                        }
+                        if direct { Some(values) } else { None }
+                    }
+                } else {
+                    None
+                };
+                if let Some(values) = direct_values {
+                    if values.len() == assign_keys.len() {
+                        let mut destination = target_obj.lock().unwrap();
+                        let plain = is_plain_data_destination(&destination);
+                        // Bound the scan by the copied key count. A small copy
+                        // into a large target keeps per-key accessor checks.
+                        let accessor_free = plain
+                            && destination.properties.len()
+                                <= assign_keys.len().saturating_mul(2)
+                            && !destination.properties.keys().any(|key| {
+                                key.starts_with("__get_") || key.starts_with("__set_")
+                            });
+                        // Recheck under the write lock. No getters or setters
+                        // can run here, so data writes can share this lock.
+                        let aligned_start = aligned_data_prefix_start(&destination, &assign_keys, accessor_free);
+                        let aligned = aligned_start.is_some();
+                        if aligned || (plain && assign_keys.iter().all(|(key, symbol)| {
+                            symbol.is_none()
+                                && has_writable_own_data_key(&destination, key, accessor_free)
+                        })) {
+                            for (index, ((key, _), value)) in assign_keys.iter().zip(values.iter()).enumerate() {
+                                // Every key was proven own under this lock.
+                                // prepare_track_key_in would return None, so
+                                // overwrites need no tracking lookup or mutation.
+                                let slot = if let Some(start) = aligned_start {
+                                    destination.properties.get_index_mut(start + index)
+                                        .filter(|(stored, _)| stored.as_str() == key.as_str())
+                                } else {
+                                    None
+                                };
+                                if let Some((_, slot)) = slot {
+                                    *slot = value.clone();
+                                } else {
+                                    *destination.properties.get_mut(key)
+                                        .expect("validated assignment data property") = value.clone();
+                                }
+                            }
+                            drop(destination);
+                            continue;
+                        }
+                    }
+                }
+                // Ineligible targets may invoke setters that mutate later source
+                // properties. The speculative data-value snapshot is dropped
+                // above before any ordered fallback callback can run.
+                {
+                    // No callbacks have run in the speculative paths above.
+                    // Capture all own keys before the first ordered Get/Set;
+                    // a preceding callback may reveal an initially hidden key.
+                    for (key, symbol_key) in assign_source_keys(&source_obj, false) {
+                        let enumerable = {
+                            let source = source_obj.lock().unwrap();
+                            own_property_enumerability(&source, &key)
+                        };
+                        if enumerable != Some(true) {
+                            continue;
+                        }
+                        let value = match assign_source_get(ctx, &source_obj, &key) {
+                            Ok(value) => value,
+                            Err(thrown) => {
+                                ctx.throw_value(thrown);
+                                return Value::Undefined;
+                            }
+                        };
+                        if !assign_strict_set(ctx, target_obj, &key, value, symbol_key) {
+                            return Value::Undefined;
+                        }
+                    }
+                }
+            }
+            target
+    }
+
+    fn function(vm: &VM, module: &str, name: &str) -> Value {
+        let index = vm.resolve_host_function_index(module, name).unwrap();
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(index);
+        Value::Object(vybe_runtime::heap::alloc(function))
+    }
+
+    fn source(count: usize) -> Value {
+        let mut object = Object::new();
+        let names: Vec<_> = (0..count).map(|index| format!("field{index}")).collect();
+        object.properties.insert("__keys".into(), Value::Object(
+            vybe_runtime::heap::alloc(Object::new_array(names.iter().map(|name| crate::keys::string_value(name)).collect()))));
+        for (index, name) in names.into_iter().enumerate() {
+            object.properties.insert(name, Value::I32(index as i32));
+        }
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn fresh() -> Value {
+        let mut object = Object::new();
+        object.properties.insert("__keys".into(), Value::Object(
+            vybe_runtime::heap::alloc(Object::new_array(Vec::new()))));
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    fn eligibility_skips_fresh_and_guarded_targets_but_keeps_own_overwrites() {
+        let mut target = Object::new();
+        assert_eq!(assignment_overwrite_capacity(&target), None);
+        target.properties.insert("__keys".into(), Value::Undefined);
+        target.properties.insert("__set_field".into(), Value::Undefined);
+        assert_eq!(assignment_overwrite_capacity(&target), None);
+        target.properties.insert("field".into(), Value::I32(1));
+        assert_eq!(assignment_overwrite_capacity(&target), Some(3));
+        for marker in [FROZEN_MARK, PROXY_TARGET_KEY] {
+            target.properties.insert(marker.into(), Value::Undefined);
+            assert_eq!(assignment_overwrite_capacity(&target), None);
+            target.properties.shift_remove(marker);
+        }
+        target.kind = ObjectKind::Array(Vec::new());
+        assert_eq!(assignment_overwrite_capacity(&target), None);
+    }
+
+    #[test]
+    fn fresh_registered_assignment_matches_previous_for_empty_small_and_large_sources() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:assign-preparation-test", "previous", Box::new(previous_assign));
+        let previous = function(&vm, "ecma:assign-preparation-test", "previous");
+        let current = function(&vm, "ecma:object", "assign");
+        for count in [0, 1, 3, 16] {
+            let source = source(count);
+            let first = fresh();
+            let second = fresh();
+            vm.invoke(&previous, &[first.clone(), source.clone()]).unwrap();
+            vm.invoke(&current, &[second.clone(), source]).unwrap();
+            let (Value::Object(first), Value::Object(second)) = (first, second) else { panic!("targets"); };
+            let first = first.lock().unwrap();
+            let second = second.lock().unwrap();
+            assert_eq!(descriptor_own_keys(&first), descriptor_own_keys(&second));
+            for key in descriptor_own_keys(&first) {
+                assert_eq!(first.properties.get(&key), second.properties.get(&key));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "paired registered complete fresh assignment benchmark, not guest timing"]
+    fn paired_complete_fresh_assignment_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:assign-preparation-test", "previous", Box::new(previous_assign));
+        let previous_fn = function(&vm, "ecma:assign-preparation-test", "previous");
+        let current_fn = function(&vm, "ecma:object", "assign");
+        for count in [0, 1, 3, 16] {
+            let source = source(count);
+            let iterations = if count <= 3 { 500 } else { 100 };
+            let mut totals = [Duration::ZERO; 2];
+            for round in 0..8 {
+                for current in if round % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for _ in 0..iterations {
+                        let args = [fresh(), source.clone()];
+                        black_box(vm.invoke(if current { &current_fn } else { &previous_fn }, black_box(&args)).unwrap());
+                    }
+                    totals[usize::from(current)] += start.elapsed();
+                }
+            }
+            eprintln!("fresh assignment fields={count}: previous={:?}, current={:?}", totals[0], totals[1]);
         }
     }
 }
@@ -1422,6 +3230,20 @@ fn proto_walk_invoke_getter(
 }
 
 fn invoke_getter_value(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>, getter: Value) -> Value {
+    match try_invoke_getter_value(ctx, obj, getter) {
+        Ok(value) => value,
+        Err(thrown) => {
+            ctx.throw_value(thrown);
+            Value::Undefined
+        }
+    }
+}
+
+fn try_invoke_getter_value(
+    ctx: &mut HostContext,
+    obj: &Arc<Mutex<Object>>,
+    getter: Value,
+) -> Result<Value, Value> {
     let getter_arity = match &getter {
         Value::Object(getter_obj) => {
             let getter_guard = getter_obj.lock().unwrap();
@@ -1437,13 +3259,13 @@ fn invoke_getter_value(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>, getter: 
     if ctx.receiver_is_parameter() {
         let previous = ctx.current_js_this();
         ctx.set_js_this(receiver);
-        let out = ctx.invoke(&getter, &[]);
+        let out = ctx.try_invoke(&getter, &[]);
         ctx.set_js_this(previous);
         return out;
     }
     match getter_arity {
-        Some(0) => ctx.invoke(&getter, &[]),
-        _ => ctx.invoke(&getter, &[receiver]),
+        Some(0) => ctx.try_invoke(&getter, &[]),
+        _ => ctx.try_invoke(&getter, &[receiver]),
     }
 }
 
@@ -1978,51 +3800,135 @@ fn register_construction(vm: &mut VM) {
                 let Value::Object(source_obj) = source_value else {
                     continue;
                 };
-                let assign_keys = enumerable_assign_keys(&source_obj);
-                let direct_values = {
-                    let src = source_obj.lock().unwrap();
-                    let mut values = Vec::with_capacity(assign_keys.len());
-                    let mut direct = true;
-                    let no_getters = !has_any_getter(&src);
-                    for (key, _) in &assign_keys {
-                        if !no_getters {
-                            direct = false;
-                            break;
-                        }
-                        let value = match &src.kind {
-                            ObjectKind::Array(values) => {
-                                if let Some(index) = array_index_key(key) {
-                                    values.get(index as usize).cloned()
-                                } else {
-                                    src.properties.get(key).cloned()
-                                }
-                            }
-                            ObjectKind::TypedArray(ta) => {
-                                if let Some(index) = array_index_key(key) {
-                                    Some(crate::typedarray::read_element(ta, index as usize))
-                                } else {
-                                    src.properties.get(key).cloned()
-                                }
-                            }
-                            _ => src.properties.get(key).cloned(),
-                        };
-                        let Some(value) = value else {
-                            direct = false;
-                            break;
-                        };
-                        values.push(value);
-                    }
-                    if direct { Some(values) } else { None }
+                if try_assign_borrowed_plain_data(target_obj, &source_obj) {
+                    continue;
+                }
+                // Fresh targets cannot use the own-data overwrite batch.
+                // Reject them before collecting a speculative source snapshot.
+                let overwrite_capacity = {
+                    let destination = target_obj.lock().unwrap();
+                    assignment_overwrite_capacity(&destination)
                 };
-                if let Some(values) = direct_values {
-                    for ((key, symbol_key), value) in assign_keys.into_iter().zip(values) {
-                        if !assign_strict_set(ctx, target_obj, &key, value, symbol_key) {
-                            return Value::Undefined;
+                let assign_keys = if overwrite_capacity.is_some() {
+                    enumerable_assign_keys(&source_obj)
+                } else {
+                    Vec::new()
+                };
+                let may_overwrite = overwrite_capacity
+                    .is_some_and(|capacity| capacity >= assign_keys.len());
+                let direct_values = if may_overwrite {
+                    let src = source_obj.lock().unwrap();
+                    let no_getters = !has_any_getter(&src);
+                    let source_start = aligned_data_prefix_start(
+                        &src,
+                        &assign_keys,
+                        no_getters && matches!(src.kind, ObjectKind::Ordinary),
+                    );
+                    if let Some(start) = source_start {
+                        // Snapshot exactly the enumerated data values under
+                        // the original source lock, without hash lookups or
+                        // callbacks. No values survive this invocation.
+                        Some(src.properties.values().skip(start).take(assign_keys.len()).cloned().collect::<Vec<Value>>())
+                    } else {
+                        let mut values = Vec::with_capacity(assign_keys.len());
+                        let mut direct = true;
+                        for (key, _) in &assign_keys {
+                            if !no_getters {
+                                direct = false;
+                                break;
+                            }
+                            let value = match &src.kind {
+                                ObjectKind::Array(values) => {
+                                    if let Some(index) = array_index_key(key) {
+                                        values.get(index as usize).cloned()
+                                    } else {
+                                        src.properties.get(key).cloned()
+                                    }
+                                }
+                                ObjectKind::TypedArray(ta) => {
+                                    if let Some(index) = array_index_key(key) {
+                                        Some(crate::typedarray::read_element(ta, index as usize))
+                                    } else {
+                                        src.properties.get(key).cloned()
+                                    }
+                                }
+                                _ => src.properties.get(key).cloned(),
+                            };
+                            let Some(value) = value else {
+                                direct = false;
+                                break;
+                            };
+                            values.push(value);
                         }
+                        if direct { Some(values) } else { None }
                     }
                 } else {
-                    for (key, symbol_key) in assign_keys {
-                        let value = assign_source_get(ctx, &source_obj, &key);
+                    None
+                };
+                if let Some(values) = direct_values {
+                    if values.len() == assign_keys.len() {
+                        let mut destination = target_obj.lock().unwrap();
+                        let plain = is_plain_data_destination(&destination);
+                        // Bound the scan by the copied key count. A small copy
+                        // into a large target keeps per-key accessor checks.
+                        let accessor_free = plain
+                            && destination.properties.len()
+                                <= assign_keys.len().saturating_mul(2)
+                            && !destination.properties.keys().any(|key| {
+                                key.starts_with("__get_") || key.starts_with("__set_")
+                            });
+                        // Recheck under the write lock. No getters or setters
+                        // can run here, so data writes can share this lock.
+                        let aligned_start = aligned_data_prefix_start(&destination, &assign_keys, accessor_free);
+                        let aligned = aligned_start.is_some();
+                        if aligned || (plain && assign_keys.iter().all(|(key, symbol)| {
+                            symbol.is_none()
+                                && has_writable_own_data_key(&destination, key, accessor_free)
+                        })) {
+                            for (index, ((key, _), value)) in assign_keys.iter().zip(values.iter()).enumerate() {
+                                // Every key was proven own under this lock.
+                                // prepare_track_key_in would return None, so
+                                // overwrites need no tracking lookup or mutation.
+                                let slot = if let Some(start) = aligned_start {
+                                    destination.properties.get_index_mut(start + index)
+                                        .filter(|(stored, _)| stored.as_str() == key.as_str())
+                                } else {
+                                    None
+                                };
+                                if let Some((_, slot)) = slot {
+                                    *slot = value.clone();
+                                } else {
+                                    *destination.properties.get_mut(key)
+                                        .expect("validated assignment data property") = value.clone();
+                                }
+                            }
+                            drop(destination);
+                            continue;
+                        }
+                    }
+                }
+                // Ineligible targets may invoke setters that mutate later source
+                // properties. The speculative data-value snapshot is dropped
+                // above before any ordered fallback callback can run.
+                {
+                    // No callbacks have run in the speculative paths above.
+                    // Capture all own keys before the first ordered Get/Set;
+                    // a preceding callback may reveal an initially hidden key.
+                    for (key, symbol_key) in assign_source_keys(&source_obj, false) {
+                        let enumerable = {
+                            let source = source_obj.lock().unwrap();
+                            own_property_enumerability(&source, &key)
+                        };
+                        if enumerable != Some(true) {
+                            continue;
+                        }
+                        let value = match assign_source_get(ctx, &source_obj, &key) {
+                            Ok(value) => value,
+                            Err(thrown) => {
+                                ctx.throw_value(thrown);
+                                return Value::Undefined;
+                            }
+                        };
                         if !assign_strict_set(ctx, target_obj, &key, value, symbol_key) {
                             return Value::Undefined;
                         }
@@ -2207,6 +4113,13 @@ fn register_access(vm: &mut VM) {
                                 {
                                     crate::array::apply_js_array_length(ctx, &mut o, &val);
                                     return Value::Null;
+                                }
+                                if matches!(key_raw, Value::String(_)) {
+                                    if let Some(tracking) = try_update_existing_data_property(&mut o, key, &val) {
+                                        drop(o);
+                                        if let Some(keys) = tracking { append_tracked_key(keys, key); }
+                                        return Value::Null;
+                                    }
                                 }
                                 (
                                     o.properties.contains_key("__exception_type"),
@@ -2980,6 +4893,9 @@ fn register_enumeration(vm: &mut VM) {
                     }
                     _ => {}
                 }
+                if let Some(keys) = aligned_tracked_key_values(&o) {
+                    return Value::Object(vybe_runtime::heap::alloc(Object::new_array(keys)));
+                }
                 if has_plain_ordered_data_properties(&o) {
                     let keys = o
                         .properties
@@ -3254,7 +5170,14 @@ fn register_enumeration(vm: &mut VM) {
                 }
                 drop(o);
                 for k in keys {
-                    values.push(assign_source_get(ctx, &obj, &k));
+                    let value = match assign_source_get(ctx, &obj, &k) {
+                        Ok(value) => value,
+                        Err(thrown) => {
+                            ctx.throw_value(thrown);
+                            return Value::Undefined;
+                        }
+                    };
+                    values.push(value);
                 }
                 return Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)));
             }
@@ -3334,7 +5257,13 @@ fn register_enumeration(vm: &mut VM) {
                 }
                 drop(o);
                 for k in keys {
-                    let v = assign_source_get(ctx, &obj, &k);
+                    let v = match assign_source_get(ctx, &obj, &k) {
+                        Ok(value) => value,
+                        Err(thrown) => {
+                            ctx.throw_value(thrown);
+                            return Value::Undefined;
+                        }
+                    };
                     entries.push(crate::array::make_pair_array(
                         crate::keys::string_value(&k),
                         v,
@@ -3486,7 +5415,7 @@ fn register_descriptors(vm: &mut VM) {
                 // §10.1.6.3: a NEW key on a non-extensible object is
                 // rejected — Object.defineProperty surfaces that as
                 // TypeError (§20.1.2.4; Reflect's form returns false).
-                {
+                let (exists, current_enumerable, current_configurable) = {
                     let o = define_obj.lock().unwrap();
                     let exists = o.properties.contains_key(&key)
                         || o.properties.contains_key(&getter_key)
@@ -3500,7 +5429,8 @@ fn register_descriptors(vm: &mut VM) {
                         ));
                         return Value::Undefined;
                     }
-                }
+                    (exists, !is_nonenum(&o, &key), !is_nonconfig(&o, &key))
+                };
                 // ECMA-262 §10.1: descriptor either has data fields
                 // (`value`, `writable`) or accessor fields (`get`, `set`).
                 // The VM honors `__get_<key>` / `__set_<key>` properties
@@ -3539,7 +5469,7 @@ fn register_descriptors(vm: &mut VM) {
                                 .properties
                                 .get("enumerable")
                                 .map(|x| x.as_bool())
-                                .unwrap_or(false);
+                                .unwrap_or(exists && current_enumerable);
                             // ECMA-262 §6.2.5.1: data descriptors default
                             // writable=false when omitted but value is
                             // present. We treat absence as "true" only when
@@ -3552,7 +5482,7 @@ fn register_descriptors(vm: &mut VM) {
                                 .properties
                                 .get("configurable")
                                 .map(|x| x.as_bool())
-                                .unwrap_or(false);
+                                .unwrap_or(exists && current_configurable);
                             (val, get, set, e, w, c)
                         }
                         _ => (None, None, None, false, None, false),
@@ -3575,9 +5505,6 @@ fn register_descriptors(vm: &mut VM) {
                 } else {
                     track_key(&define_obj, &key);
                 }
-                if !enumerable {
-                    track_nonenum(&define_obj, &key);
-                }
                 {
                     let mut o = define_obj.lock().unwrap();
                     if o.properties.contains_key(&key) && is_nonconfig(&o, &key) {
@@ -3588,7 +5515,8 @@ fn register_descriptors(vm: &mut VM) {
                             .is_some_and(|(next, current)| next != current);
                         let tries_configurable = configurable;
                         let writable_false_transition = matches!(writable, Some(false));
-                        if value_changes || tries_configurable {
+                        let enumerability_changes = enumerable != !is_nonenum(&o, &key);
+                        if value_changes || tries_configurable || enumerability_changes {
                             ctx.throw_value(crate::error::new_error(
                                 ctx,
                                 "TypeError",
@@ -3653,6 +5581,7 @@ fn register_descriptors(vm: &mut VM) {
                         o.properties.insert(key.clone(), Value::Undefined);
                     }
                 }
+                set_property_enumerability(&define_obj, &key, enumerable);
                 if !configurable {
                     track_nonconfig(&define_obj, &key);
                 }
@@ -3869,6 +5798,34 @@ fn register_descriptors(vm: &mut VM) {
 /// §20.1.2.8 core for an ORDINARY object: fresh accessor/data descriptor,
 /// or Undefined when `key` is not an own property. Proxy callers resolve
 /// their target first and pass it here.
+// A descriptor-presence/enumerability query without allocating a descriptor
+// object. Ordinary assignment and propertyIsEnumerable share this predicate;
+// actual GetOwnPropertyDescriptor still builds its public descriptor object.
+fn own_property_enumerability(object: &Object, key: &str) -> Option<bool> {
+    match &object.kind {
+        ObjectKind::Array(values) => {
+            if key == "length" {
+                return Some(false);
+            }
+            if let Some(index) = crate::keys::non_negative_integer_index_key(key) {
+                if index < values.len() && !is_array_hole(object, index as i32) {
+                    return Some(!is_nonenum(object, key));
+                }
+            }
+        }
+        ObjectKind::TypedArray(array) => {
+            if let Some(index) = crate::keys::non_negative_integer_index_key(key) {
+                return (index < crate::typedarray::ta_live_length(array)).then_some(true);
+            }
+        }
+        _ => {}
+    }
+    let present = object.properties.contains_key(key)
+        || crate::keys::with_getter_property_key(key, |getter| object.properties.contains_key(getter))
+        || crate::keys::with_setter_property_key(key, |setter| object.properties.contains_key(setter));
+    present.then(|| !is_nonenum(object, key))
+}
+
 pub fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
     let o = obj.lock().unwrap();
     if let ObjectKind::Array(values) = &o.kind {
@@ -3892,7 +5849,7 @@ pub fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
                     .insert("value".into(), values[index].clone());
                 desc.properties.insert("writable".into(), Value::Bool(true));
                 desc.properties
-                    .insert("enumerable".into(), Value::Bool(true));
+                    .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, key)));
                 desc.properties
                     .insert("configurable".into(), Value::Bool(true));
                 return Value::Object(vybe_runtime::heap::alloc(desc));
@@ -4039,7 +5996,7 @@ pub fn descriptor_own_keys(o: &Object) -> Vec<String> {
         .collect()
 }
 
-fn is_noop_setter_value(value: &Value) -> bool {
+pub(crate) fn is_noop_setter_value(value: &Value) -> bool {
     let Value::Object(obj) = value else {
         return false;
     };
@@ -4789,20 +6746,9 @@ fn register_prototype_methods(vm: &mut VM) {
                 // property map); `length` is own but non-enumerable
                 // (§10.4.2).
                 return with_property_key(key_value, |key| {
-                    if let ObjectKind::Array(ref elems) = o.kind {
-                        if key == "length" {
-                            return Value::Bool(false);
-                        }
-                        if let Some(idx) = crate::keys::non_negative_integer_index_key(key) {
-                            if idx < elems.len() {
-                                return Value::Bool(true);
-                            }
-                        }
-                    }
                     Value::Bool(
-                        o.properties.contains_key(key)
-                            && !key.starts_with("__")
-                            && !is_nonenum(&o, key),
+                        !key.starts_with("__")
+                            && own_property_enumerability(&o, key) == Some(true),
                     )
                 });
             }
@@ -5084,4 +7030,103 @@ fn register_php_extensions(vm: &mut VM) {
             Value::I32(0)
         }),
     );
+}
+
+#[cfg(test)]
+mod live_assign_enumerability_gates {
+    #[test]
+    fn empty_source_with_self_referential_nonenum_does_not_relock() {
+        let source = vybe_runtime::heap::alloc(super::Object::new());
+        {
+            let mut object = source.lock().unwrap();
+            object.properties.insert(
+                "__nonenum".into(),
+                super::Value::Object(source.clone()),
+            );
+        }
+        let keys = super::enumerable_assign_keys(&source);
+        source.lock().unwrap().properties.remove("__nonenum");
+        assert!(keys.is_empty());
+    }
+
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn object(properties: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
+        let mut object = Object::new();
+        for (name, value) in properties {
+            object.properties.insert(name.into(), value);
+        }
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn function(vm: &VM, module: &str, name: &str) -> Value {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(function))
+    }
+
+    fn check_getter_flips_later_enumerability(initially_enumerable: bool) {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let define = function(&vm, "ecma:object", "defineProperty");
+        let assign = function(&vm, "ecma:object", "assign");
+        let get_descriptor = function(&vm, "ecma:object", "getOwnPropertyDescriptor");
+        let source = object([("first", Value::I32(0)), ("later", Value::I32(42))]);
+        let later_key = crate::keys::string_value("later");
+        let initial_descriptor = object([
+            ("value", Value::I32(42)),
+            ("writable", Value::Bool(true)),
+            ("configurable", Value::Bool(true)),
+            ("enumerable", Value::Bool(initially_enumerable)),
+        ]);
+        vm.invoke(&define, &[source.clone(), later_key.clone(), initial_descriptor]).unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let getter_calls = calls.clone();
+        let getter_source = source.clone();
+        let getter_define = define.clone();
+        let getter_key = later_key.clone();
+        let changed_descriptor = object([("enumerable", Value::Bool(!initially_enumerable))]);
+        vm.register_host_fn("ecma:assign-live-gate", "flipLater", Box::new(move |ctx, _| {
+            getter_calls.fetch_add(1, Ordering::SeqCst);
+            ctx.invoke(&getter_define, &[getter_source.clone(), getter_key.clone(), changed_descriptor.clone()]);
+            Value::I32(7)
+        }));
+        let getter = function(&vm, "ecma:assign-live-gate", "flipLater");
+        let first_descriptor = object([
+            ("get", getter),
+            ("configurable", Value::Bool(true)),
+            ("enumerable", Value::Bool(true)),
+        ]);
+        vm.invoke(&define, &[source.clone(), crate::keys::string_value("first"), first_descriptor]).unwrap();
+
+        let target = object([]);
+        let result = vm.invoke(&assign, &[target.clone(), source.clone()]).unwrap();
+        assert!(matches!((&target, &result), (Value::Object(a), Value::Object(b)) if Arc::ptr_eq(a, b)));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let descriptor = vm.invoke(&get_descriptor, &[source, later_key]).unwrap();
+        let Value::Object(descriptor) = descriptor else { panic!("expected live descriptor") };
+        assert_eq!(descriptor.lock().unwrap().properties.get("enumerable"), Some(&Value::Bool(!initially_enumerable)));
+        let Value::Object(target) = target else { unreachable!() };
+        let target = target.lock().unwrap();
+        assert_eq!(target.properties.get("first"), Some(&Value::I32(7)));
+        // ECMA-262 Object.assign checks each snapshotted key's descriptor at
+        // visitation time, after any preceding Get/Set side effects.
+        assert_eq!(target.properties.contains_key("later"), !initially_enumerable);
+        if !initially_enumerable {
+            assert_eq!(target.properties.get("later"), Some(&Value::I32(42)));
+        }
+    }
+
+    #[test]
+    fn registered_getter_can_hide_later_source_property() {
+        check_getter_flips_later_enumerability(true);
+    }
+
+    #[test]
+    fn registered_getter_can_reveal_later_source_property() {
+        check_getter_flips_later_enumerability(false);
+    }
 }

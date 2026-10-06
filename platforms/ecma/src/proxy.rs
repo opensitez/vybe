@@ -83,6 +83,34 @@ fn new_proxy(target: Value, handler: Value, call_idx: Option<usize>) -> Value {
     Value::Object(proxy)
 }
 
+// Per-operation snapshot, never a cache: handler changes and revocation
+// are observed afresh before each operation, with no lock held across traps.
+enum ProxyDispatchState {
+    Ordinary,
+    Revoked,
+    Active { target: Value, handler: Value },
+}
+
+fn proxy_dispatch_state(value: &Value) -> ProxyDispatchState {
+    let Value::Object(object) = value else {
+        return ProxyDispatchState::Ordinary;
+    };
+    let object = object.lock().unwrap();
+    if !object.properties.contains_key(PROXY_TAG)
+        && !(object.properties.contains_key(PROXY_TARGET)
+            && object.properties.contains_key(PROXY_HANDLER))
+    {
+        return ProxyDispatchState::Ordinary;
+    }
+    if matches!(object.properties.get(PROXY_REVOKED), Some(Value::Bool(true))) {
+        return ProxyDispatchState::Revoked;
+    }
+    ProxyDispatchState::Active {
+        target: object.properties.get(PROXY_TARGET).cloned().unwrap_or(Value::Undefined),
+        handler: object.properties.get(PROXY_HANDLER).cloned().unwrap_or(Value::Undefined),
+    }
+}
+
 pub fn is_proxy(v: &Value) -> Option<Arc<Mutex<Object>>> {
     if let Value::Object(obj) = v {
         let o = obj.lock().unwrap();
@@ -263,6 +291,10 @@ fn throw_revoked(ctx: &mut HostContext) -> Value {
 }
 
 fn apply_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
+    apply_dispatch_inner(ctx, args, None)
+}
+
+fn apply_dispatch_inner(ctx: &mut HostContext, args: &[Value], raw_args: Option<&[Value]>) -> Value {
     let proxy_obj = match args.first().and_then(is_proxy) {
         Some(p) => p,
         None => {
@@ -286,6 +318,9 @@ fn apply_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
                 }
             }
             let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(invoke_args) = raw_args {
+                return crate::function::invoke_with_explicit_this(ctx, &target, this_arg, invoke_args);
+            }
             let mut inline: [Value; PROXY_APPLY_INLINE_ARG_LIMIT] =
                 std::array::from_fn(|_| Value::Undefined);
             if let Some(inline_len) = args
@@ -319,11 +354,18 @@ fn apply_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
     let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
     if let Some(trap) = get_trap(&handler, "apply") {
         if is_callable(&trap) {
-            let args_list = args.get(2).cloned().unwrap_or_else(|| {
-                Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
-            });
+            let args_list = if let Some(invoke_args) = raw_args {
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(invoke_args.to_vec())))
+            } else {
+                args.get(2).cloned().unwrap_or_else(|| {
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
+                })
+            };
             return call_trap(ctx, &handler, &trap, &[target, this_arg, args_list]);
         }
+    }
+    if let Some(invoke_args) = raw_args {
+        return crate::function::invoke_with_explicit_this(ctx, &target, this_arg, invoke_args);
     }
     let mut inline: [Value; PROXY_APPLY_INLINE_ARG_LIMIT] =
         std::array::from_fn(|_| Value::Undefined);
@@ -343,56 +385,122 @@ fn apply_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
 }
 
 pub fn get_dispatch(ctx: &mut HostContext, value: &Value, key_value: &Value) -> Value {
-    let proxy_obj = match is_proxy(value) {
-        Some(p) => p,
-        None => {
+    let (target, handler) = match proxy_dispatch_state(value) {
+        ProxyDispatchState::Ordinary => {
             return with_key_string(key_value, |key| target_get(value, key));
         }
+        ProxyDispatchState::Revoked => return throw_revoked(ctx),
+        ProxyDispatchState::Active { target, handler } => (target, handler),
     };
-    if proxy_is_revoked(&proxy_obj) {
-        return throw_revoked(ctx);
-    }
-    let (target, handler) = get_target_and_handler(&proxy_obj);
-    let key = key_string(key_value);
-    if let Some(trap) = get_trap(&handler, "get") {
-        if is_callable(&trap) {
-            let receiver = value.clone();
-            let result = call_trap(
-                ctx,
-                &handler,
-                &trap,
-                &[target.clone(), key_value.clone(), receiver],
-            );
-            if let Some((actual, writable)) = target_nonconfig_data_value(&target, &key) {
-                if !writable && result != actual {
-                    ctx.throw_value(make_type_error(
-                        ctx,
-                        "Proxy get trap violated non-configurable property invariant",
-                    ));
-                    return Value::Undefined;
+    with_key_string(key_value, |key| {
+        if let Some(trap) = get_trap(&handler, "get") {
+            if is_callable(&trap) {
+                let receiver = value.clone();
+                let result = call_trap(
+                    ctx,
+                    &handler,
+                    &trap,
+                    &[target.clone(), key_value.clone(), receiver],
+                );
+                if let Some((actual, writable)) = target_nonconfig_data_value(&target, key) {
+                    if !writable && result != actual {
+                        ctx.throw_value(make_type_error(
+                            ctx,
+                            "Proxy get trap violated non-configurable property invariant",
+                        ));
+                        return Value::Undefined;
+                    }
                 }
+                return result;
             }
-            return result;
         }
-    }
-    if key == "__proto__" {
-        return crate::object::get_prototype_of(ctx, value).unwrap_or(Value::Undefined);
-    }
-    target_get(&target, &key)
+        if key == "__proto__" {
+            return crate::object::get_prototype_of(ctx, value).unwrap_or(Value::Undefined);
+        }
+        target_get(&target, key)
+    })
+}
+
+fn proxy_call_parts(args: &[Value]) -> (Value, Value, &[Value]) {
+    let proxy = args.first().cloned().unwrap_or(Value::Undefined);
+    let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+    (proxy, this_arg, args.get(2..).unwrap_or_default())
 }
 
 fn callable_proxy_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
-    let proxy = args.first().cloned().unwrap_or(Value::Undefined);
-    let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-    let args_list = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
-        args.iter().skip(2).cloned().collect(),
-    )));
-    apply_dispatch(ctx, &[proxy, this_arg, args_list])
+    let (proxy, this_arg, invoke_args) = proxy_call_parts(args);
+    apply_dispatch_inner(ctx, &[proxy, this_arg], Some(invoke_args))
 }
 
 fn is_callable(value: &Value) -> bool {
     matches!(value, Value::Object(obj)
         if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
+}
+
+#[cfg(test)]
+mod call_arguments_speedup_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn raw_call_parts_preserve_receiver_order_and_argument_identity() {
+        for count in [0, 1, 8, 9, 32] {
+            let obj = vybe_runtime::heap::alloc(Object::new());
+            let mut args = vec![Value::I32(11), Value::I32(22)];
+            args.extend((0..count).map(Value::I32));
+            args.push(Value::Object(obj.clone()));
+            let (proxy, receiver, raw) = proxy_call_parts(&args);
+            assert_eq!(proxy.as_i32(), 11);
+            assert_eq!(receiver.as_i32(), 22);
+            assert_eq!(raw.len(), count as usize + 1);
+            assert!(std::ptr::eq(raw.as_ptr(), args[2..].as_ptr()));
+            for (i, value) in raw[..count as usize].iter().enumerate() {
+                assert_eq!(value.as_i32(), i as i32);
+            }
+            assert!(matches!(raw.last(), Some(Value::Object(actual)) if Arc::ptr_eq(actual, &obj)));
+        }
+        let (proxy, receiver, raw) = proxy_call_parts(&[]);
+        assert!(matches!(proxy, Value::Undefined));
+        assert!(matches!(receiver, Value::Undefined));
+        assert!(raw.is_empty());
+        let (_, receiver, raw) = proxy_call_parts(&[Value::I32(11)]);
+        assert!(matches!(receiver, Value::Undefined));
+        assert!(raw.is_empty());
+        let (_, _, raw) = proxy_call_parts(&[Value::I32(11), Value::I32(22)]);
+        assert!(raw.is_empty());
+    }
+
+    #[test]
+    #[ignore = "native call preparation microbenchmark, not full Proxy dispatch timing"]
+    fn native_raw_call_preparation_microbenchmark() {
+        for count in [0, 4, 8, 9, 32] {
+            let mut args = vec![Value::I32(11), Value::I32(22)];
+            args.extend((0..count).map(Value::I32));
+            let mut old = Duration::ZERO;
+            let mut new = Duration::ZERO;
+            for batch in 0..10 {
+                for old_path in if batch % 2 == 0 { [true, false] } else { [false, true] } {
+                    let start = Instant::now();
+                    for _ in 0..1000 {
+                        let args = black_box(&args);
+                        if old_path {
+                            let proxy = args.first().cloned().unwrap_or(Value::Undefined);
+                            let receiver = args.get(1).cloned().unwrap_or(Value::Undefined);
+                            let list = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                                args.iter().skip(2).cloned().collect(),
+                            )));
+                            black_box((proxy, receiver, list));
+                        } else {
+                            black_box(proxy_call_parts(args));
+                        }
+                    }
+                    if old_path { old += start.elapsed(); } else { new += start.elapsed(); }
+                }
+            }
+            eprintln!("native callable Proxy argument preparation, args={count}, calls=10000: array-object={old:?}, raw-slice={new:?}");
+        }
+    }
 }
 
 fn is_constructor(value: &Value) -> bool {
@@ -423,12 +531,86 @@ fn try_call_trap(
 }
 
 fn call_set_trap(ctx: &mut HostContext, handler: &Value, trap: &Value, args: &[Value]) -> Value {
+    match try_call_set_trap(ctx, handler, trap, args) {
+        Ok(value) => value,
+        Err(thrown) => { ctx.throw_value(thrown); Value::Undefined }
+    }
+}
+
+fn try_call_set_trap(ctx: &mut HostContext, handler: &Value, trap: &Value, args: &[Value]) -> Result<Value, Value> {
     let previous = ctx.get_global(PROXY_SET_TRAP_DEPTH);
     let depth = previous.as_f64() as i32;
     ctx.set_global(PROXY_SET_TRAP_DEPTH, Value::I32(depth + 1));
-    let result = call_trap(ctx, handler, trap, args);
+    let result = try_call_trap(ctx, handler, trap, args);
     ctx.set_global(PROXY_SET_TRAP_DEPTH, previous);
     result
+}
+
+// Shared by the registered setter and inherited proxy [[Set]]. The fourth
+// argument retains the original receiver when the proxy is a prototype.
+pub(crate) fn set_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
+    let value = args.first().cloned().unwrap_or(Value::Undefined);
+    let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+    let val = args.get(2).cloned().unwrap_or(Value::Undefined);
+    let receiver = args.get(3).cloned().unwrap_or_else(|| value.clone());
+    let Some(proxy_obj) = is_proxy(&value) else {
+        return with_key_string(&key_value, |key| {
+            crate::reflect::reflect_set(ctx, &value, key, val, receiver)
+        });
+    };
+    if proxy_is_revoked(&proxy_obj) {
+        return throw_revoked(ctx);
+    }
+    let (target, handler) = get_target_and_handler(&proxy_obj);
+    let key = key_string(&key_value);
+    if let Some(trap) = get_trap(&handler, "set") {
+        if !matches!(trap, Value::Undefined | Value::Null) {
+            if !is_callable(&trap) {
+                ctx.throw_value(make_type_error(ctx, "Proxy set trap is not callable"));
+                return Value::Undefined;
+            }
+            let result = match try_call_set_trap(ctx, &handler, &trap, &[
+                target.clone(), key_value, val.clone(), receiver,
+            ]) {
+                Ok(result) => result,
+                Err(thrown) => { ctx.throw_value(thrown); return Value::Undefined; }
+            };
+            let success = crate::boolean::to_boolean(&result);
+            if success {
+                if let Some((actual, writable)) = target_nonconfig_data_value(&target, &key) {
+                    if !writable && val != actual {
+                        ctx.throw_value(make_type_error(ctx,
+                            "Proxy set trap violated non-configurable property invariant"));
+                        return Value::Undefined;
+                    }
+                }
+            }
+            return Value::Bool(success);
+        }
+    }
+    let receiver_is_proxy = matches!(&receiver, Value::Object(object) if Arc::ptr_eq(object, &proxy_obj));
+    if key == "__proto__" {
+        return match crate::object::set_prototype_of(ctx, &receiver, &val) {
+            None => Value::Undefined,
+            Some(success) => Value::Bool(success),
+        };
+    }
+    if receiver_is_proxy && !crate::object::value_is_extensible(&target) && !target_has(&target, &key) {
+        return Value::Bool(false);
+    }
+    if receiver_is_proxy && get_trap(&handler, "defineProperty").is_some() {
+        let mut desc = Object::new();
+        desc.properties.insert("value".into(), val.clone());
+        desc.properties.insert("writable".into(), Value::Bool(true));
+        desc.properties.insert("enumerable".into(), Value::Bool(true));
+        desc.properties.insert("configurable".into(), Value::Bool(true));
+        if let Some(result) = define_property_dispatch(ctx, &proxy_obj, key_value.clone(),
+            Value::Object(vybe_runtime::heap::alloc(desc))) {
+            return Value::Bool(crate::boolean::to_boolean(&result));
+        }
+    }
+    let follow_receiver = if receiver_is_proxy { target.clone() } else { receiver };
+    crate::reflect::reflect_set(ctx, &target, &key, val, follow_receiver)
 }
 
 fn in_proxy_set_trap(ctx: &HostContext) -> bool {
@@ -783,12 +965,20 @@ pub fn define_property_dispatch(
 /// [[OwnPropertyKeys]] for proxy exotic objects — ECMA-262 §10.5.11.
 /// Returns None when `value` is not a proxy so callers (Object.keys etc.)
 /// keep their ordinary-object path.
-pub fn own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> {
-    let proxy_obj = is_proxy(value)?;
-    if proxy_is_revoked(&proxy_obj) {
-        return Some(throw_revoked(ctx));
+fn own_keys_key_text(value: &Value) -> Option<std::borrow::Cow<'_, str>> {
+    match value {
+        Value::String(text) => Some(std::borrow::Cow::Borrowed(text.as_ref())),
+        Value::Symbol(_) => Some(std::borrow::Cow::Owned(key_string(value))),
+        _ => None,
     }
-    let (target, handler) = get_target_and_handler(&proxy_obj);
+}
+
+pub fn own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> {
+    let (target, handler) = match proxy_dispatch_state(value) {
+        ProxyDispatchState::Ordinary => return None,
+        ProxyDispatchState::Revoked => return Some(throw_revoked(ctx)),
+        ProxyDispatchState::Active { target, handler } => (target, handler),
+    };
     let result = if let Some(trap) = get_trap(&handler, "ownKeys") {
         if is_callable(&trap) {
             call_trap(ctx, &handler, &trap, std::slice::from_ref(&target))
@@ -806,9 +996,15 @@ pub fn own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> 
         ));
         return Some(Value::Undefined);
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = std::collections::HashSet::with_capacity(keys.len());
     for key in &keys {
-        let text = key_string(key);
+        let Some(text) = own_keys_key_text(key) else {
+            ctx.throw_value(make_type_error(
+                ctx,
+                "Proxy ownKeys trap keys must be strings or symbols",
+            ));
+            return Some(Value::Undefined);
+        };
         if !seen.insert(text) {
             ctx.throw_value(make_type_error(
                 ctx,
@@ -818,29 +1014,51 @@ pub fn own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> 
         }
     }
     if let Value::Object(target_obj) = &target {
-        let target_keys = {
+        let (target_keys, ordinary_missing_nonconfig) = {
             let o = target_obj.lock().unwrap();
-            crate::object::descriptor_own_keys(&o)
+            let target_keys = crate::object::descriptor_own_keys(&o);
+            // Only native ordinary string-key shapes: exotic descriptors
+            // and symbol storage retain the existing descriptor fallback.
+            let ordinary = matches!(o.kind, ObjectKind::Ordinary)
+                && !o.properties.contains_key(PROXY_TAG)
+                && !o.properties.contains_key(PROXY_TARGET)
+                && !o.properties.contains_key(PROXY_HANDLER)
+                && !o.properties.contains_key("__sym_keys");
+            let missing = ordinary.then(|| target_keys.iter().any(|key| {
+                !seen.contains(key.as_str()) && crate::object::is_nonconfig(&o, key)
+            }));
+            (target_keys, missing)
         };
-        for key in &target_keys {
-            let desc = crate::object::own_property_descriptor(target_obj, key);
-            if !desc_bool(&desc, "configurable", true) && !seen.contains(key) {
-                ctx.throw_value(make_type_error(
-                    ctx,
-                    "Proxy ownKeys trap omitted a non-configurable key",
-                ));
-                return Some(Value::Undefined);
-            }
+        let omitted_nonconfig = match ordinary_missing_nonconfig {
+            Some(missing) => missing,
+            None => target_keys.iter().any(|key| {
+                let desc = crate::object::own_property_descriptor(target_obj, key);
+                !desc_bool(&desc, "configurable", true) && !seen.contains(key.as_str())
+            }),
+        };
+        if omitted_nonconfig {
+            ctx.throw_value(make_type_error(
+                ctx,
+                "Proxy ownKeys trap omitted a non-configurable key",
+            ));
+            return Some(Value::Undefined);
         }
         if target_is_not_extensible(&target) {
             for key in &target_keys {
-                if !seen.contains(key) {
+                if !seen.contains(key.as_str()) {
                     ctx.throw_value(make_type_error(
                         ctx,
                         "Proxy ownKeys trap omitted a key from non-extensible target",
                     ));
                     return Some(Value::Undefined);
                 }
+            }
+            if seen.len() != target_keys.len() {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Proxy ownKeys trap added a key to a non-extensible target",
+                ));
+                return Some(Value::Undefined);
             }
         }
     }
@@ -1049,6 +1267,581 @@ fn construct_dispatch_inner(
     }
 }
 
+#[cfg(test)]
+mod get_dispatch_speedup_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn object(object: Object) -> Value {
+        Value::Object(Arc::new(Mutex::new(object)))
+    }
+
+    fn function(vm: &VM, namespace: &str, name: &str) -> Value {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(namespace, name).unwrap());
+        object(function)
+    }
+
+    fn target(key: &str) -> Value {
+        let mut target = Object::new();
+        target.properties.insert(key.into(), Value::I32(7));
+        target.properties.insert("__proto__".into(), Value::Null);
+        object(target)
+    }
+
+    #[test]
+    fn state_snapshot_preserves_identity_and_rechecks_revocation() {
+        let target = target("field");
+        let handler = object(Object::new());
+        let proxy = new_proxy(target.clone(), handler.clone(), None);
+        let ProxyDispatchState::Active { target: actual_target, handler: actual_handler } =
+            proxy_dispatch_state(&proxy) else { panic!("active proxy"); };
+        let (Value::Object(actual_target), Value::Object(target)) = (actual_target, target) else { unreachable!() };
+        let (Value::Object(actual_handler), Value::Object(handler)) = (actual_handler, handler) else { unreachable!() };
+        assert!(Arc::ptr_eq(&actual_target, &target));
+        assert!(Arc::ptr_eq(&actual_handler, &handler));
+        let Value::Object(proxy_object) = &proxy else { unreachable!() };
+        proxy_object.lock().unwrap().properties.insert(PROXY_REVOKED.into(), Value::Bool(true));
+        assert!(matches!(proxy_dispatch_state(&proxy), ProxyDispatchState::Revoked));
+        assert!(matches!(proxy_dispatch_state(&Value::I32(1)), ProxyDispatchState::Ordinary));
+        assert!(matches!(proxy_dispatch_state(&object(Object::new())), ProxyDispatchState::Ordinary));
+    }
+
+    #[test]
+    fn registered_get_releases_locks_and_observes_trap_replacement() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let target = target("field");
+        let Value::Object(target_object) = &target else { unreachable!() };
+        let target_object = target_object.clone();
+        let handler = Arc::new(Mutex::new(Object::new()));
+        let callback_handler = handler.clone();
+        let callback_target = target_object.clone();
+        vm.register_host_fn("ecma:test-proxy", "getTrap", Box::new(move |_ctx, args| {
+            assert!(matches!(args.first(), Some(Value::Object(actual)) if Arc::ptr_eq(actual, &callback_target)));
+            assert!(matches!(args.get(1), Some(Value::String(key)) if key.as_ref() == "field"));
+            let Some(Value::Object(receiver)) = args.get(2) else { panic!("proxy receiver"); };
+            assert!(receiver.try_lock().is_ok(), "proxy lock must not span trap");
+            callback_target.try_lock().unwrap().properties.insert("field".into(), Value::I32(9));
+            callback_handler.try_lock().unwrap().properties.shift_remove("get");
+            Value::I32(77)
+        }));
+        handler.lock().unwrap().properties.insert("get".into(), function(&vm, "ecma:test-proxy", "getTrap"));
+        let proxy = new_proxy(target, Value::Object(handler), None);
+        let get = function(&vm, "ecma:proxy", "get");
+        let args = [proxy, crate::keys::string_value("field")];
+        assert!(matches!(vm.invoke(&get, &args).unwrap(), Value::I32(77)));
+        assert!(matches!(vm.invoke(&get, &args).unwrap(), Value::I32(9)));
+    }
+
+    #[test]
+    fn registered_get_allows_current_trap_to_revoke_and_rejects_next_read() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:test-proxy", "revokeDuringGet", Box::new(|_ctx, args| {
+            let Some(Value::Object(receiver)) = args.get(2) else { panic!("proxy receiver"); };
+            receiver.lock().unwrap().properties.insert(PROXY_REVOKED.into(), Value::Bool(true));
+            Value::I32(55)
+        }));
+        let mut handler = Object::new();
+        handler.properties.insert("get".into(), function(&vm, "ecma:test-proxy", "revokeDuringGet"));
+        let proxy = new_proxy(target("field"), object(handler), None);
+        let get = function(&vm, "ecma:proxy", "get");
+        let args = [proxy, crate::keys::string_value("field")];
+        assert!(matches!(vm.invoke(&get, &args).unwrap(), Value::I32(55)));
+        assert!(vm.invoke(&get, &args).is_err());
+    }
+
+    #[test]
+    fn registered_get_retains_nonconfigurable_readonly_invariant() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:test-proxy", "wrongGet", Box::new(|_ctx, _args| Value::I32(99)));
+        let target = target("field");
+        let Value::Object(target_object) = &target else { unreachable!() };
+        crate::object::install_noop_setter(&mut target_object.lock().unwrap(), "field");
+        crate::object::track_nonconfig(target_object, "field");
+        let mut handler = Object::new();
+        handler.properties.insert("get".into(), function(&vm, "ecma:test-proxy", "wrongGet"));
+        let proxy = new_proxy(target, object(handler), None);
+        let get = function(&vm, "ecma:proxy", "get");
+        assert!(vm.invoke(&get, &[proxy, crate::keys::string_value("field")]).is_err());
+    }
+
+    #[test]
+    #[ignore = "paired registered Proxy.get benchmark; not a conformance gate"]
+    fn registered_proxy_get_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:test-proxy", "legacyGet", Box::new(|ctx, args| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+            legacy_get_dispatch(ctx, &value, &key)
+        }));
+        vm.register_host_fn("ecma:test-proxy", "constantTrap", Box::new(|_ctx, _args| Value::I32(7)));
+        let mut trap_handler = Object::new();
+        trap_handler.properties.insert("get".into(), function(&vm, "ecma:test-proxy", "constantTrap"));
+        let trapped = new_proxy(target("field"), object(trap_handler), None);
+        let long_key = "long_property_name_".repeat(8);
+        let old = function(&vm, "ecma:test-proxy", "legacyGet");
+        let new = function(&vm, "ecma:proxy", "get");
+        for (label, value, key) in [
+            ("ordinary", target("field"), "field"),
+            ("proxy-short-key", new_proxy(target("field"), object(Object::new()), None), "field"),
+            ("proxy-long-key", new_proxy(target(&long_key), object(Object::new()), None), long_key.as_str()),
+            ("proxy-get-trap", trapped, "field"),
+        ] {
+            let args = [value, crate::keys::string_value(key)];
+            for function in [&old, &new] {
+                assert!(matches!(vm.invoke(function, &args).unwrap(), Value::I32(7)));
+                for _ in 0..5_000 { std::hint::black_box(vm.invoke(function, &args).unwrap()); }
+            }
+            let mut old_time = Duration::ZERO;
+            let mut new_time = Duration::ZERO;
+            for sample in 0..6 {
+                for old_path in [sample % 2 == 0, sample % 2 != 0] {
+                    let function = if old_path { &old } else { &new };
+                    let start = Instant::now();
+                    for _ in 0..30_000 { std::hint::black_box(vm.invoke(function, &args).unwrap()); }
+                    if old_path { old_time += start.elapsed(); } else { new_time += start.elapsed(); }
+                }
+            }
+            eprintln!("{label}: old={old_time:?} new={new_time:?} ratio={:.3}x",
+                old_time.as_secs_f64() / new_time.as_secs_f64());
+        }
+    }
+
+fn legacy_get_dispatch(ctx: &mut HostContext, value: &Value, key_value: &Value) -> Value {
+    let proxy_obj = match is_proxy(value) {
+        Some(p) => p,
+        None => {
+            return with_key_string(key_value, |key| target_get(value, key));
+        }
+    };
+    if proxy_is_revoked(&proxy_obj) {
+        return throw_revoked(ctx);
+    }
+    let (target, handler) = get_target_and_handler(&proxy_obj);
+    let key = key_string(key_value);
+    if let Some(trap) = get_trap(&handler, "get") {
+        if is_callable(&trap) {
+            let receiver = value.clone();
+            let result = call_trap(
+                ctx,
+                &handler,
+                &trap,
+                &[target.clone(), key_value.clone(), receiver],
+            );
+            if let Some((actual, writable)) = target_nonconfig_data_value(&target, &key) {
+                if !writable && result != actual {
+                    ctx.throw_value(make_type_error(
+                        ctx,
+                        "Proxy get trap violated non-configurable property invariant",
+                    ));
+                    return Value::Undefined;
+                }
+            }
+            return result;
+        }
+    }
+    if key == "__proto__" {
+        return crate::object::get_prototype_of(ctx, value).unwrap_or(Value::Undefined);
+    }
+    target_get(&target, &key)
+}
+}
+
+#[cfg(test)]
+mod own_keys_speedup_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn duplicate_tracking_borrows_strings_and_retains_symbol_conversion() {
+        let text = Arc::<str>::from("immutable_long_key_".repeat(16));
+        let key = Value::String(text.clone());
+        let Some(std::borrow::Cow::Borrowed(borrowed)) = own_keys_key_text(&key) else {
+            panic!("string keys should borrow their backing");
+        };
+        assert_eq!(borrowed.as_ptr(), text.as_ptr());
+        assert_eq!(borrowed, text.as_ref());
+        let symbol = Value::Symbol(Arc::from("symbol-key"));
+        let Some(std::borrow::Cow::Owned(converted)) = own_keys_key_text(&symbol) else {
+            panic!("symbol fallback should retain canonical conversion");
+        };
+        assert_eq!(converted, key_string(&symbol));
+        for invalid in [Value::Undefined, Value::Null, Value::I32(1), Value::Bool(true)] {
+            assert!(own_keys_key_text(&invalid).is_none());
+        }
+    }
+
+    #[test]
+    #[ignore = "paired registered borrowed-key comparison against descriptor-optimized ownKeys"]
+    fn registered_borrowed_own_keys_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:test-ownkeys", "preBorrowedOwnKeys", Box::new(|ctx, args| {
+            let value = args.first().unwrap_or(&Value::Undefined);
+            pre_borrowed_own_keys_dispatch(ctx, value).unwrap_or_else(|| target_own_keys(value))
+        }));
+        let old = function(&vm, "ecma:test-ownkeys", "preBorrowedOwnKeys");
+        let new = function(&vm, "ecma:proxy", "ownKeys");
+        for count in [16, 256, 1024, 4096] {
+            let names: Vec<_> = (0..count).map(|index| format!("property_{index}")).collect();
+            let mut target = Object::new();
+            for name in &names { target.properties.insert(name.clone(), Value::I32(1)); }
+            let keys = object(Object::new_array(names.iter().map(|name| crate::keys::string_value(name)).collect()));
+            let (proxy, _) = setup(&mut vm, object(target), keys);
+            let args = [proxy];
+            for function in [&old, &new] {
+                let Value::Object(result) = vm.invoke(function, &args).unwrap() else { panic!("key array"); };
+                let result = result.lock().unwrap();
+                let ObjectKind::Array(values) = &result.kind else { panic!("key array"); };
+                assert_eq!(values.len(), count);
+                for (value, name) in values.iter().zip(&names) {
+                    assert!(matches!(value, Value::String(text) if text.as_ref() == name));
+                }
+            }
+            let iterations = (16_384 / count).max(8);
+            let mut old_time = Duration::ZERO;
+            let mut new_time = Duration::ZERO;
+            for sample in 0..8 {
+                for old_path in [sample % 2 == 0, sample % 2 != 0] {
+                    let function = if old_path { &old } else { &new };
+                    let start = Instant::now();
+                    for _ in 0..iterations { std::hint::black_box(vm.invoke(function, &args).unwrap()); }
+                    if old_path { old_time += start.elapsed(); } else { new_time += start.elapsed(); }
+                }
+            }
+            eprintln!("borrowed-ownKeys count={count}: owned={old_time:?} borrowed={new_time:?} ratio={:.3}x",
+                old_time.as_secs_f64() / new_time.as_secs_f64());
+        }
+    }
+
+fn pre_borrowed_own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> {
+    let (target, handler) = match proxy_dispatch_state(value) {
+        ProxyDispatchState::Ordinary => return None,
+        ProxyDispatchState::Revoked => return Some(throw_revoked(ctx)),
+        ProxyDispatchState::Active { target, handler } => (target, handler),
+    };
+    let result = if let Some(trap) = get_trap(&handler, "ownKeys") {
+        if is_callable(&trap) {
+            call_trap(ctx, &handler, &trap, std::slice::from_ref(&target))
+        } else {
+            target_own_keys(&target)
+        }
+    } else {
+        target_own_keys(&target)
+    };
+    let keys = array_values(&result);
+    if !matches!(result, Value::Object(_)) {
+        ctx.throw_value(make_type_error(
+            ctx,
+            "Proxy ownKeys trap must return an object",
+        ));
+        return Some(Value::Undefined);
+    }
+    let mut seen = std::collections::HashSet::with_capacity(keys.len());
+    for key in &keys {
+        if !matches!(key, Value::String(_) | Value::Symbol(_)) {
+            ctx.throw_value(make_type_error(
+                ctx,
+                "Proxy ownKeys trap keys must be strings or symbols",
+            ));
+            return Some(Value::Undefined);
+        }
+        let text = key_string(key);
+        if !seen.insert(text) {
+            ctx.throw_value(make_type_error(
+                ctx,
+                "Proxy ownKeys trap returned duplicate keys",
+            ));
+            return Some(Value::Undefined);
+        }
+    }
+    if let Value::Object(target_obj) = &target {
+        let (target_keys, ordinary_missing_nonconfig) = {
+            let o = target_obj.lock().unwrap();
+            let target_keys = crate::object::descriptor_own_keys(&o);
+            let ordinary = matches!(o.kind, ObjectKind::Ordinary)
+                && !o.properties.contains_key(PROXY_TAG)
+                && !o.properties.contains_key(PROXY_TARGET)
+                && !o.properties.contains_key(PROXY_HANDLER)
+                && !o.properties.contains_key("__sym_keys");
+            let missing = ordinary.then(|| target_keys.iter().any(|key| {
+                !seen.contains(key) && crate::object::is_nonconfig(&o, key)
+            }));
+            (target_keys, missing)
+        };
+        let omitted_nonconfig = match ordinary_missing_nonconfig {
+            Some(missing) => missing,
+            None => target_keys.iter().any(|key| {
+                let desc = crate::object::own_property_descriptor(target_obj, key);
+                !desc_bool(&desc, "configurable", true) && !seen.contains(key)
+            }),
+        };
+        if omitted_nonconfig {
+            ctx.throw_value(make_type_error(
+                ctx,
+                "Proxy ownKeys trap omitted a non-configurable key",
+            ));
+            return Some(Value::Undefined);
+        }
+        if target_is_not_extensible(&target) {
+            for key in &target_keys {
+                if !seen.contains(key) {
+                    ctx.throw_value(make_type_error(
+                        ctx,
+                        "Proxy ownKeys trap omitted a key from non-extensible target",
+                    ));
+                    return Some(Value::Undefined);
+                }
+            }
+            if seen.len() != target_keys.len() {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Proxy ownKeys trap added a key to a non-extensible target",
+                ));
+                return Some(Value::Undefined);
+            }
+        }
+    }
+    Some(result)
+}
+
+    fn object(object: Object) -> Value {
+        Value::Object(Arc::new(Mutex::new(object)))
+    }
+
+    fn function(vm: &VM, namespace: &str, name: &str) -> Value {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(namespace, name).unwrap());
+        object(function)
+    }
+
+    fn list(keys: &[&str]) -> Value {
+        object(Object::new_array(keys.iter().map(|key| crate::keys::string_value(key)).collect()))
+    }
+
+    fn setup(vm: &mut VM, target: Value, result: Value) -> (Value, Arc<Mutex<Object>>) {
+        let Value::Object(result_object) = result else { panic!("array result"); };
+        let callback_result = result_object.clone();
+        vm.register_host_fn("ecma:test-ownkeys", "trap", Box::new(move |_ctx, _args| {
+            Value::Object(callback_result.clone())
+        }));
+        let mut handler = Object::new();
+        handler.properties.insert("ownKeys".into(), function(vm, "ecma:test-ownkeys", "trap"));
+        (new_proxy(target, object(handler), None), result_object)
+    }
+
+    fn replace_keys(result: &Arc<Mutex<Object>>, keys: &[&str]) {
+        let mut result = result.lock().unwrap();
+        let ObjectKind::Array(values) = &mut result.kind else { unreachable!() };
+        *values = keys.iter().map(|key| crate::keys::string_value(key)).collect();
+    }
+
+    #[test]
+    fn ordinary_metadata_gates_omissions_and_preserves_result_identity() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let mut target = Object::new();
+        target.properties.insert("fixed".into(), Value::I32(1));
+        target.properties.insert("optional".into(), Value::I32(2));
+        let target = Arc::new(Mutex::new(target));
+        crate::object::track_nonconfig(&target, "fixed");
+        let (proxy, result) = setup(&mut vm, Value::Object(target), list(&["fixed"]));
+        let own_keys = function(&vm, "ecma:proxy", "ownKeys");
+        let actual = vm.invoke(&own_keys, &[proxy.clone()]).unwrap();
+        assert!(matches!(actual, Value::Object(actual) if Arc::ptr_eq(&actual, &result)));
+        replace_keys(&result, &["optional"]);
+        assert!(vm.invoke(&own_keys, &[proxy]).is_err());
+    }
+
+    #[test]
+    fn nonextensible_target_requires_exact_key_set() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let mut target = Object::new();
+        target.properties.insert("field".into(), Value::I32(1));
+        crate::object::mark_not_extensible(&mut target);
+        let (proxy, result) = setup(&mut vm, object(target), list(&["field"]));
+        let own_keys = function(&vm, "ecma:proxy", "ownKeys");
+        assert!(vm.invoke(&own_keys, &[proxy.clone()]).is_ok());
+        replace_keys(&result, &[]);
+        assert!(vm.invoke(&own_keys, &[proxy.clone()]).is_err());
+        replace_keys(&result, &["field", "extra"]);
+        assert!(vm.invoke(&own_keys, &[proxy]).is_err());
+    }
+
+    #[test]
+    fn accessor_metadata_is_checked_without_running_getter() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:test-ownkeys", "getter", Box::new(|_ctx, _args| {
+            panic!("ownKeys must not invoke accessors")
+        }));
+        let mut target = Object::new();
+        target.properties.insert("__get_accessor".into(), function(&vm, "ecma:test-ownkeys", "getter"));
+        let target = Arc::new(Mutex::new(target));
+        crate::object::track_nonconfig(&target, "accessor");
+        let (proxy, result) = setup(&mut vm, Value::Object(target), list(&["accessor"]));
+        let own_keys = function(&vm, "ecma:proxy", "ownKeys");
+        assert!(vm.invoke(&own_keys, &[proxy.clone()]).is_ok());
+        replace_keys(&result, &[]);
+        assert!(vm.invoke(&own_keys, &[proxy]).is_err());
+    }
+
+    #[test]
+    fn target_metadata_is_read_after_trap_mutation() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let mut target = Object::new();
+        target.properties.insert("field".into(), Value::I32(1));
+        let target = Arc::new(Mutex::new(target));
+        let callback_target = target.clone();
+        vm.register_host_fn("ecma:test-ownkeys", "mutatingTrap", Box::new(move |_ctx, _args| {
+            crate::object::track_nonconfig(&callback_target, "field");
+            list(&[])
+        }));
+        let mut handler = Object::new();
+        handler.properties.insert("ownKeys".into(), function(&vm, "ecma:test-ownkeys", "mutatingTrap"));
+        let proxy = new_proxy(Value::Object(target), object(handler), None);
+        let own_keys = function(&vm, "ecma:proxy", "ownKeys");
+        assert!(vm.invoke(&own_keys, &[proxy]).is_err());
+    }
+
+    #[test]
+    fn exotic_array_length_keeps_descriptor_fallback() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let (proxy, result) = setup(&mut vm, object(Object::new_array(vec![Value::I32(1)])), list(&["0", "length"]));
+        let own_keys = function(&vm, "ecma:proxy", "ownKeys");
+        assert!(vm.invoke(&own_keys, &[proxy.clone()]).is_ok());
+        replace_keys(&result, &["0"]);
+        assert!(vm.invoke(&own_keys, &[proxy]).is_err());
+    }
+
+    #[test]
+    fn invalid_and_duplicate_trap_keys_are_rejected() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let (proxy, result) = setup(&mut vm, object(Object::new()), list(&["same", "same"]));
+        let own_keys = function(&vm, "ecma:proxy", "ownKeys");
+        assert!(vm.invoke(&own_keys, &[proxy.clone()]).is_err());
+        result.lock().unwrap().kind = ObjectKind::Array(vec![Value::I32(1)]);
+        assert!(vm.invoke(&own_keys, &[proxy]).is_err());
+    }
+
+    #[test]
+    #[ignore = "paired registered Proxy.ownKeys benchmark; not a conformance gate"]
+    fn registered_own_keys_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:test-ownkeys", "legacyOwnKeys", Box::new(|ctx, args| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            legacy_own_keys_dispatch(ctx, &value).unwrap_or_else(|| target_own_keys(&value))
+        }));
+        let old = function(&vm, "ecma:test-ownkeys", "legacyOwnKeys");
+        let new = function(&vm, "ecma:proxy", "ownKeys");
+        for count in [16, 256, 1024] {
+            let names: Vec<_> = (0..count).map(|index| format!("field_{index}")).collect();
+            let mut target = Object::new();
+            for (index, name) in names.iter().enumerate() {
+                target.properties.insert(name.clone(), Value::I32(index as i32));
+            }
+            let result = object(Object::new_array(names.iter().map(|name| crate::keys::string_value(name)).collect()));
+            let (proxy, _) = setup(&mut vm, object(target), result);
+            let args = [proxy];
+            for function in [&old, &new] {
+                let Value::Object(result) = vm.invoke(function, &args).unwrap() else { panic!("keys"); };
+                let result = result.lock().unwrap();
+                let ObjectKind::Array(values) = &result.kind else { panic!("key array"); };
+                assert_eq!(values.len(), count);
+                for (value, name) in values.iter().zip(&names) {
+                    assert!(matches!(value, Value::String(key) if key.as_ref() == name));
+                }
+            }
+            let iterations = (16_384 / count).max(16);
+            let mut old_time = Duration::ZERO;
+            let mut new_time = Duration::ZERO;
+            for sample in 0..6 {
+                for old_path in [sample % 2 == 0, sample % 2 != 0] {
+                    let function = if old_path { &old } else { &new };
+                    let start = Instant::now();
+                    for _ in 0..iterations { std::hint::black_box(vm.invoke(function, &args).unwrap()); }
+                    if old_path { old_time += start.elapsed(); } else { new_time += start.elapsed(); }
+                }
+            }
+            eprintln!("ordinary-ownKeys count={count}: old={old_time:?} new={new_time:?} ratio={:.3}x",
+                old_time.as_secs_f64() / new_time.as_secs_f64());
+        }
+    }
+
+fn legacy_own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> {
+    let proxy_obj = is_proxy(value)?;
+    if proxy_is_revoked(&proxy_obj) {
+        return Some(throw_revoked(ctx));
+    }
+    let (target, handler) = get_target_and_handler(&proxy_obj);
+    let result = if let Some(trap) = get_trap(&handler, "ownKeys") {
+        if is_callable(&trap) {
+            call_trap(ctx, &handler, &trap, std::slice::from_ref(&target))
+        } else {
+            target_own_keys(&target)
+        }
+    } else {
+        target_own_keys(&target)
+    };
+    let keys = array_values(&result);
+    if !matches!(result, Value::Object(_)) {
+        ctx.throw_value(make_type_error(
+            ctx,
+            "Proxy ownKeys trap must return an object",
+        ));
+        return Some(Value::Undefined);
+    }
+    let mut seen = std::collections::HashSet::new();
+    for key in &keys {
+        let text = key_string(key);
+        if !seen.insert(text) {
+            ctx.throw_value(make_type_error(
+                ctx,
+                "Proxy ownKeys trap returned duplicate keys",
+            ));
+            return Some(Value::Undefined);
+        }
+    }
+    if let Value::Object(target_obj) = &target {
+        let target_keys = {
+            let o = target_obj.lock().unwrap();
+            crate::object::descriptor_own_keys(&o)
+        };
+        for key in &target_keys {
+            let desc = crate::object::own_property_descriptor(target_obj, key);
+            if !desc_bool(&desc, "configurable", true) && !seen.contains(key) {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Proxy ownKeys trap omitted a non-configurable key",
+                ));
+                return Some(Value::Undefined);
+            }
+        }
+        if target_is_not_extensible(&target) {
+            for key in &target_keys {
+                if !seen.contains(key) {
+                    ctx.throw_value(make_type_error(
+                        ctx,
+                        "Proxy ownKeys trap omitted a key from non-extensible target",
+                    ));
+                    return Some(Value::Undefined);
+                }
+            }
+        }
+    }
+    Some(result)
+}
+}
+
 pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:proxy",
@@ -1077,96 +1870,16 @@ pub fn register(vm: &mut VM) {
         "ecma:proxy",
         "get",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let value = args.first().cloned().unwrap_or(Value::Undefined);
-            let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
-            get_dispatch(ctx, &value, &key_value)
+            let value = args.first().unwrap_or(&Value::Undefined);
+            let key_value = args.get(1).unwrap_or(&Value::Undefined);
+            get_dispatch(ctx, value, key_value)
         }),
     );
 
     vm.register_host_fn(
         "ecma:proxy",
         "set",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let proxy_obj = match args.first().and_then(is_proxy) {
-                Some(p) => p,
-                None => {
-                    let target = args.first().cloned().unwrap_or(Value::Undefined);
-                    let undefined = Value::Undefined;
-                    let key_ref = args.get(1).unwrap_or(&undefined);
-                    let val = args.get(2).cloned().unwrap_or(Value::Undefined);
-                    return with_key_string(key_ref, |key| {
-                        target_set(ctx, &target, key_ref.clone(), key, val);
-                        Value::Bool(true)
-                    });
-                }
-            };
-            if proxy_is_revoked(&proxy_obj) {
-                return throw_revoked(ctx);
-            }
-            let (target, handler) = get_target_and_handler(&proxy_obj);
-            let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let key = key_string(&key_value);
-            let val = args.get(2).cloned().unwrap_or(Value::Undefined);
-            if let Some(trap) = get_trap(&handler, "set") {
-                if is_callable(&trap) {
-                    let receiver = args.first().cloned().unwrap_or(Value::Undefined);
-                    // §10.5.9 step 6: ToBoolean(trap result), not === true.
-                    let result = call_set_trap(
-                        ctx,
-                        &handler,
-                        &trap,
-                        &[target.clone(), key_value, val.clone(), receiver],
-                    );
-                    let success = crate::boolean::to_boolean(&result);
-                    if success {
-                        if let Some((actual, writable)) = target_nonconfig_data_value(&target, &key)
-                        {
-                            if !writable && val != actual {
-                                ctx.throw_value(make_type_error(
-                                    ctx,
-                                    "Proxy set trap violated non-configurable property invariant",
-                                ));
-                                return Value::Undefined;
-                            }
-                        }
-                    }
-                    return Value::Bool(success);
-                }
-            }
-            // Mirror of the `get` path: with no `set` trap, assigning
-            // `__proto__` is %Object.prototype%'s setter, i.e.
-            // [[SetPrototypeOf]](receiver) — which is where a
-            // `setPrototypeOf` trap gets its chance to run.
-            if key == "__proto__" {
-                let receiver = args.first().cloned().unwrap_or(Value::Undefined);
-                return match crate::object::set_prototype_of(ctx, &receiver, &val) {
-                    None => Value::Undefined,
-                    Some(success) => Value::Bool(success),
-                };
-            }
-            if !crate::object::value_is_extensible(&target) && !target_has(&target, &key) {
-                return Value::Bool(false);
-            }
-            if get_trap(&handler, "defineProperty").is_some() {
-                let mut desc = Object::new();
-                desc.properties.insert("value".into(), val.clone());
-                desc.properties.insert("writable".into(), Value::Bool(true));
-                desc.properties
-                    .insert("enumerable".into(), Value::Bool(true));
-                desc.properties
-                    .insert("configurable".into(), Value::Bool(true));
-                if let Some(result) = define_property_dispatch(
-                    ctx,
-                    &proxy_obj,
-                    key_value.clone(),
-                    Value::Object(vybe_runtime::heap::alloc(desc)),
-                ) {
-                    return Value::Bool(crate::boolean::to_boolean(&result));
-                }
-            }
-            target_set(ctx, &target, key_value, &key, val);
-            Value::Bool(true)
-        }),
+        Box::new(set_dispatch),
     );
 
     vm.register_host_fn(
@@ -1255,8 +1968,8 @@ pub fn register(vm: &mut VM) {
         "ecma:proxy",
         "ownKeys",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let value = args.first().cloned().unwrap_or(Value::Undefined);
-            own_keys_dispatch(ctx, &value).unwrap_or_else(|| target_own_keys(&value))
+            let value = args.first().unwrap_or(&Value::Undefined);
+            own_keys_dispatch(ctx, value).unwrap_or_else(|| target_own_keys(value))
         }),
     );
 

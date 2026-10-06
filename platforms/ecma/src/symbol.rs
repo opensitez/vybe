@@ -63,21 +63,30 @@ fn well_known() -> &'static WellKnown {
 // Process-global Symbol.for(...) registry. Per spec §20.4.2.2 each key
 // maps to one canonical symbol shared across realms (in our case, the
 // VM process).
-static REGISTRY: std::sync::OnceLock<Mutex<HashMap<Arc<str>, Arc<str>>>> = std::sync::OnceLock::new();
+#[derive(Default)]
+struct SymbolRegistry {
+    symbols: HashMap<Arc<str>, Arc<str>>,
+    // Registry symbols are retained for the lifetime of the process. Their
+    // allocation identities therefore cannot be recycled while indexed here.
+    identities: HashSet<usize>,
+}
+
+static REGISTRY: std::sync::OnceLock<Mutex<SymbolRegistry>> = std::sync::OnceLock::new();
 static NO_DESCRIPTION_SYMBOLS: std::sync::OnceLock<Mutex<HashSet<usize>>> =
     std::sync::OnceLock::new();
 
-fn registry() -> &'static Mutex<HashMap<Arc<str>, Arc<str>>> {
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+fn registry() -> &'static Mutex<SymbolRegistry> {
+    REGISTRY.get_or_init(|| Mutex::new(SymbolRegistry::default()))
 }
 
 fn symbol_for_key(key: &str) -> Arc<str> {
     let mut reg = registry().lock().unwrap();
-    if let Some(symbol) = reg.get(key) {
+    if let Some(symbol) = reg.symbols.get(key) {
         return symbol.clone();
     }
     let symbol = crate::keys::owned_string_arc(key.to_owned());
-    reg.insert(symbol.clone(), symbol.clone());
+    reg.identities.insert(symbol.as_ptr() as usize);
+    reg.symbols.insert(symbol.clone(), symbol.clone());
     symbol
 }
 
@@ -85,8 +94,8 @@ fn is_registered_symbol(symbol: &Arc<str>) -> bool {
     registry()
         .lock()
         .unwrap()
-        .get(symbol.as_ref())
-        .is_some_and(|registered| Arc::ptr_eq(symbol, registered))
+        .identities
+        .contains(&(symbol.as_ptr() as usize))
 }
 
 fn no_description_symbols() -> &'static Mutex<HashSet<usize>> {
@@ -314,6 +323,47 @@ mod registry_speedup_tests {
             assert_eq!(symbol.as_ref(), key);
             assert!(is_registered_symbol(&symbol));
             assert!(Arc::ptr_eq(&symbol, &symbol_for_key(key)));
+        }
+    }
+
+    #[test]
+    fn reverse_identity_index_handles_long_keys_and_parallel_interning() {
+        let key = format!("ecma-speedup-long-registry-{}", "x".repeat(16_384));
+        let handles: Vec<_> = (0..8).map(|_| {
+            let key = key.clone();
+            std::thread::spawn(move || symbol_for_key(&key))
+        }).collect();
+        let symbols: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap()).collect();
+        for symbol in &symbols {
+            assert!(Arc::ptr_eq(&symbols[0], symbol));
+            assert!(is_registered_symbol(symbol));
+            assert!(!is_registered_symbol(&Arc::from(symbol.as_ref())));
+        }
+    }
+
+    #[test]
+    #[ignore = "native registry reverse lookup performance measurement"]
+    fn reverse_identity_index_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        for length in [16, 1024, 16_384] {
+            let key = format!("ecma-speedup-reverse-benchmark-{}", "x".repeat(length));
+            let symbol = symbol_for_key(&key);
+            for sample in 0..4 {
+                for optimized in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for _ in 0..20_000 {
+                        let registered = if optimized {
+                            is_registered_symbol(black_box(&symbol))
+                        } else {
+                            super::registry().lock().unwrap().symbols.get(black_box(symbol.as_ref()))
+                                .is_some_and(|registered| Arc::ptr_eq(&symbol, registered))
+                        };
+                        black_box(registered);
+                    }
+                    println!("Symbol.keyFor key_bytes={} sample={sample} optimized={optimized} elapsed={:?}", key.len(), start.elapsed());
+                }
+            }
         }
     }
 }

@@ -639,6 +639,28 @@ fn js_nonfinite_str(n: f64) -> String {
     }
 }
 
+fn integer_radix_value(number: i64, radix: u32) -> Value {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    // An i64 needs at most 64 binary digits and one sign. Fill backwards to
+    // avoid both temporary String allocation and shifting existing digits.
+    let mut buffer = [0u8; 65];
+    let mut start = buffer.len();
+    let mut remaining = number.unsigned_abs();
+    loop {
+        start -= 1;
+        buffer[start] = DIGITS[(remaining % u64::from(radix)) as usize];
+        remaining /= u64::from(radix);
+        if remaining == 0 {
+            break;
+        }
+    }
+    if number < 0 {
+        start -= 1;
+        buffer[start] = b'-';
+    }
+    s_val(std::str::from_utf8(&buffer[start..]).expect("radix digits are ASCII"))
+}
+
 fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:number",
@@ -702,23 +724,7 @@ fn register_prototype(vm: &mut VM) {
             // Integer-only radix conversion (ECMA's algorithm for
             // fractional values is quite involved; this covers the
             // common case.)
-            let int_value = n as i64;
-            let negative = int_value < 0;
-            let mut value = (int_value as i128).unsigned_abs();
-            if value == 0 {
-                return s_val("0");
-            }
-            let mut out = String::new();
-            while value > 0 {
-                let digit = (value % radix as u128) as u32;
-                let ch = char::from_digit(digit, radix).unwrap_or('?');
-                out.insert(0, ch);
-                value /= radix as u128;
-            }
-            if negative {
-                out.insert(0, '-');
-            }
-            s_owned(out)
+            integer_radix_value(n as i64, radix)
         }),
     );
 
@@ -932,5 +938,56 @@ mod numeric_parser_speedup_tests {
         let args = [crate::keys::string_value(&input)];
         assert!(matches!(s_arg(&args, 0), Cow::Borrowed(_)));
         assert_eq!(s_arg(&[Value::I32(42)], 0), "42");
+    }
+}
+
+#[cfg(test)]
+mod integer_radix_performance_tests {
+    use super::*;
+
+    fn original(number: i64, radix: u32) -> Value {
+        let mut remaining = (number as i128).unsigned_abs();
+        if remaining == 0 { return s_val("0"); }
+        let mut output = String::new();
+        while remaining != 0 {
+            output.insert(0, char::from_digit((remaining % radix as u128) as u32, radix).unwrap());
+            remaining /= radix as u128;
+        }
+        if number < 0 { output.insert(0, '-'); }
+        s_owned(output)
+    }
+
+    #[test]
+    fn stack_radix_output_matches_signed_limits() {
+        for radix in 2..=36 {
+            for number in [0, 1, -1, 42, -42, i32::MIN as i64, i32::MAX as i64, i64::MIN, i64::MAX] {
+                assert_eq!(integer_radix_value(number, radix), original(number, radix));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "matched integer radix kernel benchmark; run explicitly"]
+    fn integer_radix_microbenchmark() {
+        use std::time::{Duration, Instant};
+        for radix in [2, 16, 36] {
+            for sample in 0..4 {
+                let mut old_time = Duration::ZERO;
+                let mut new_time = Duration::ZERO;
+                for optimized in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    for index in 0..20_000i64 {
+                        let number = if index % 2 == 0 { i64::MAX - index } else { i64::MIN + index };
+                        std::hint::black_box(if optimized {
+                            integer_radix_value(number, radix)
+                        } else {
+                            original(number, radix)
+                        });
+                    }
+                    if optimized { new_time = start.elapsed(); } else { old_time = start.elapsed(); }
+                }
+                eprintln!("radix={radix} sample={sample} operations=20000 old={old_time:?} new={new_time:?}");
+            }
+        }
     }
 }

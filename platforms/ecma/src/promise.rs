@@ -24,23 +24,6 @@ use std::sync::{Arc, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
 
-static PROMISE_REACTION_HOST_IDX: OnceLock<usize> = OnceLock::new();
-// Host-fn indices for the settle thunks, so free functions (resolve_promise_with_value)
-// can build bound settlers to adopt a returned promise/thenable's eventual state.
-static SETTLE_FULFILLED_IDX: OnceLock<usize> = OnceLock::new();
-static SETTLE_REJECTED_IDX: OnceLock<usize> = OnceLock::new();
-// §27.2.1.3.2 Promise Resolve Function — resolves THROUGH thenables
-// (unlike __settle_fulfilled, which settles with the raw value). This is
-// what the executor's `resolve` and thenable-job callbacks must be.
-static RESOLVE_IDX: OnceLock<usize> = OnceLock::new();
-// §27.2.2.2 NewPromiseResolveThenableJob — calls thenable.then(res, rej)
-// in a MICROTASK with `this` = thenable.
-static THENABLE_JOB_IDX: OnceLock<usize> = OnceLock::new();
-// Settles a promise with a *forced* (state, value), ignoring the awaited value.
-// Used by `.finally` to preserve the original settlement after awaiting a
-// thenable the finally callback returned.
-static PRESERVE_IDX: OnceLock<usize> = OnceLock::new();
-
 #[inline]
 fn promise_host_key(name: &'static str) -> &'static (String, String) {
     macro_rules! key {
@@ -296,13 +279,13 @@ pub fn register(vm: &mut VM) {
             let promise = ctx.capture(args, 0);
             let thenable = ctx.capture(args, 1);
             let then_fn = ctx.capture(args, 2);
-            let res = RESOLVE_IDX
-                .get()
-                .map(|&i| bound_settler(i, promise.clone()))
+            let res = ctx
+                .resolve_host_function_index("ecma:promise", "__resolve")
+                .map(|i| bound_settler(i, promise.clone()))
                 .unwrap_or(Value::Undefined);
-            let rej = SETTLE_REJECTED_IDX
-                .get()
-                .map(|&i| bound_settler(i, promise.clone()))
+            let rej = ctx
+                .resolve_host_function_index("ecma:promise", "__settle_rejected")
+                .map(|i| bound_settler(i, promise.clone()))
                 .unwrap_or(Value::Undefined);
             let saved_this = ctx.current_js_this();
             ctx.set_js_this(thenable.clone());
@@ -369,27 +352,11 @@ pub fn register(vm: &mut VM) {
         .get(promise_host_key("__any_rejected"))
         .copied()
         .expect("__any_rejected just registered");
-    let reaction_idx = vm
-        .host_registry
-        .get(promise_host_key("__reaction"))
-        .copied()
-        .expect("__reaction just registered");
-    let _ = PROMISE_REACTION_HOST_IDX.set(reaction_idx);
-    let _ = SETTLE_FULFILLED_IDX.set(resolve_idx);
-    let _ = SETTLE_REJECTED_IDX.set(reject_idx);
     let resolve_through_idx = vm
         .host_registry
         .get(promise_host_key("__resolve"))
         .copied()
         .expect("__resolve just registered");
-    let _ = RESOLVE_IDX.set(resolve_through_idx);
-    if let Some(&tj) = vm.host_registry.get(promise_host_key("__thenable_job")) {
-        let _ = THENABLE_JOB_IDX.set(tj);
-    }
-    if let Some(&preserve_idx) = vm.host_registry.get(promise_host_key("__preserve")) {
-        let _ = PRESERVE_IDX.set(preserve_idx);
-    }
-
     vm.register_host_fn(
         "ecma:promise",
         "new",
@@ -853,7 +820,7 @@ fn finally_impl(ctx: &mut HostContext, p: Value, on_finally: Value) -> Value {
     match state {
         PromiseState::Fulfilled | PromiseState::Rejected => {
             let result_promise = pending_promise_with_id(ctx);
-            let reaction = finally_reaction(result_promise.clone(), state.as_str(), on_finally);
+let reaction = finally_reaction(ctx, result_promise.clone(), state.as_str(), on_finally);
             ctx.queue_ready(reaction, value);
             result_promise
         }
@@ -863,8 +830,8 @@ fn finally_impl(ctx: &mut HostContext, p: Value, on_finally: Value) -> Value {
         // original settlement unless onFinally throws (§27.2.5.3).
         PromiseState::Pending => {
             let result_promise = pending_promise_with_id(ctx);
-            let on_f = finalizer_forwarder(on_finally.clone(), "fulfilled");
-            let on_r = finalizer_forwarder(on_finally, "rejected");
+let on_f = finalizer_forwarder(ctx, on_finally.clone(), "fulfilled");
+let on_r = finalizer_forwarder(ctx, on_finally, "rejected");
             add_reaction(&p, on_f, on_r, result_promise.clone());
             result_promise
         }
@@ -895,25 +862,19 @@ fn add_reaction(promise: &Value, on_fulfilled: Value, on_rejected: Value, result
 }
 
 fn pending_promise_with_id(ctx: &mut HostContext) -> Value {
-    let promise = make_promise("pending", Value::Undefined);
     let id = ctx.next_promise_id();
-    if let Value::Object(ref obj) = promise {
-        obj.lock()
-            .unwrap()
-            .properties
-            .insert("__id".into(), Value::F64(id as f64));
-    }
-    promise
+    make_promise_record("pending", Value::Undefined, Some(id))
 }
 
 fn promise_reaction(
+    ctx: &HostContext,
     result_promise: Value,
     state: &str,
     on_fulfilled: Value,
     on_rejected: Value,
 ) -> Value {
-    let idx = *PROMISE_REACTION_HOST_IDX
-        .get()
+    let idx = ctx
+        .resolve_host_function_index("ecma:promise", "__reaction")
         .expect("ecma:promise::__reaction registered before Promise reactions");
     let mut obj = Object::new();
     obj.properties.insert(
@@ -929,18 +890,19 @@ fn promise_reaction(
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
-fn finally_reaction(result_promise: Value, state: &str, on_finally: Value) -> Value {
+fn finally_reaction(ctx: &HostContext, result_promise: Value, state: &str, on_finally: Value) -> Value {
     promise_reaction(
+        ctx,
         result_promise,
         state,
-        finalizer_forwarder(on_finally.clone(), state),
-        finalizer_forwarder(on_finally, state),
+        finalizer_forwarder(ctx, on_finally.clone(), state),
+        finalizer_forwarder(ctx, on_finally, state),
     )
 }
 
-fn finalizer_forwarder(on_finally: Value, state: &str) -> Value {
-    let idx = *PROMISE_REACTION_HOST_IDX
-        .get()
+fn finalizer_forwarder(ctx: &HostContext, on_finally: Value, state: &str) -> Value {
+    let idx = ctx
+        .resolve_host_function_index("ecma:promise", "__reaction")
         .expect("ecma:promise::__reaction registered before Promise reactions");
     let mut obj = Object::new();
     obj.properties
@@ -961,7 +923,7 @@ fn queue_promise_reaction(
     on_rejected: Value,
     value: Value,
 ) {
-    let reaction = promise_reaction(result_promise, state, on_fulfilled, on_rejected);
+let reaction = promise_reaction(ctx, result_promise, state, on_fulfilled, on_rejected);
     ctx.queue_ready(reaction, value);
 }
 
@@ -994,9 +956,9 @@ fn run_reaction(
                     // settlement is preserved.
                     let temp = pending_promise_with_id(ctx);
                     resolve_promise_with_value(ctx, &temp, ret);
-                    let preserve = PRESERVE_IDX
-                        .get()
-                        .map(|&i| {
+let preserve = ctx
+                        .resolve_host_function_index("ecma:promise", "__preserve")
+                        .map(|i| {
                             bound_settler3(
                                 i,
                                 result_promise.clone(),
@@ -1005,9 +967,9 @@ fn run_reaction(
                             )
                         })
                         .unwrap_or(Value::Undefined);
-                    let reject_fwd = SETTLE_REJECTED_IDX
-                        .get()
-                        .map(|&i| bound_settler(i, result_promise.clone()))
+let reject_fwd = ctx
+                        .resolve_host_function_index("ecma:promise", "__settle_rejected")
+                        .map(|i| bound_settler(i, result_promise.clone()))
                         .unwrap_or(Value::Undefined);
                     let (ts, tv) = read_promise_state(&temp);
                     match ts {
@@ -1091,7 +1053,10 @@ fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Val
                 // Pending: forward `value`'s settlement onto `promise` —
                 // fulfillment re-resolves (the settled value could itself
                 // be a thenable), rejection forwards raw.
-                if let (Some(&fi), Some(&ri)) = (RESOLVE_IDX.get(), SETTLE_REJECTED_IDX.get()) {
+if let (Some(fi), Some(ri)) = (
+                    ctx.resolve_host_function_index("ecma:promise", "__resolve"),
+                    ctx.resolve_host_function_index("ecma:promise", "__settle_rejected"),
+                ) {
                     let on_f = bound_settler(fi, promise.clone());
                     let on_r = bound_settler(ri, promise.clone());
                     add_reaction(&value, on_f, on_r, pending_promise_with_id(ctx));
@@ -1107,7 +1072,7 @@ fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Val
         Err(exc) => mutate_promise_state(ctx, promise, "rejected", exc),
         Ok(Some(then_fn)) => {
             remember_thenable_resolution(promise, &value);
-            if let Some(&job_idx) = THENABLE_JOB_IDX.get() {
+if let Some(job_idx) = ctx.resolve_host_function_index("ecma:promise", "__thenable_job") {
                 let job = bound_settler3(job_idx, promise.clone(), value, then_fn);
                 ctx.queue_ready(job, Value::Undefined);
             }
@@ -1179,43 +1144,12 @@ fn get_then(ctx: &mut HostContext, val: &Value) -> Result<Option<Value>, Value> 
 /// Called by the `__settle_fulfilled` / `__settle_rejected` bound thunks.
 fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
     let promise = match args.first() {
-        Some(p) => p.clone(),
+        Some(p) => p,
         None => return,
     };
-    let value = args.get(1).cloned().unwrap_or(Value::Undefined);
-
-    let promise_id = if let Value::Object(ref obj) = promise {
-        obj.lock()
-            .unwrap()
-            .properties
-            .get("__id")
-            .map(|v| v.as_f64() as u64)
-    } else {
-        None
-    };
-
-    // Settle the promise (no-op if already settled).
-    let reactions: Vec<Value> = {
-        let Value::Object(obj) = &promise else { return };
-        let mut o = obj.lock().unwrap();
-        let already = promise_state_is_not_pending(o.properties.get("__state"));
-        if already {
-            return;
-        }
-        o.properties
-            .insert("__state".into(), crate::keys::string_value(state));
-        o.properties.insert("__value".into(), value.clone());
-        // Drain the reactions list before releasing the lock.
-        if let Some(Value::Object(arr)) = o.properties.shift_remove("__pending_reactions") {
-            let mut a = arr.lock().unwrap();
-            if let ObjectKind::Array(ref mut elems) = a.kind {
-                std::mem::take(elems)
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        }
+    let value = args.get(1).unwrap_or(&Value::Undefined);
+    let Some((promise_id, reactions)) = settle_promise_record(promise, state, value, false) else {
+        return;
     };
 
     if let Some(id) = promise_id {
@@ -1261,30 +1195,8 @@ fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
 
 /// Overwrite a promise's state/value in-place and wake up any suspended fiber.
 fn mutate_promise_state(ctx: &mut HostContext, promise: &Value, state: &str, value: Value) {
-    let mut reactions: Vec<Value> = vec![];
-    let promise_id = if let Value::Object(obj) = promise {
-        let mut o = obj.lock().unwrap();
-        if promise_type_is_promise(o.properties.get("__type")) {
-            let already = promise_state_is_not_pending(o.properties.get("__state"));
-            if already {
-                return;
-            }
-            o.properties.shift_remove("__resolving_thenable");
-            o.properties
-                .insert("__state".into(), crate::keys::string_value(state));
-            o.properties.insert("__value".into(), value.clone());
-            if let Some(Value::Object(arr)) = o.properties.shift_remove("__pending_reactions") {
-                let mut a = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut elems) = a.kind {
-                    reactions = std::mem::take(elems);
-                }
-            }
-            o.properties.get("__id").map(|v| v.as_f64() as u64)
-        } else {
-            None
-        }
-    } else {
-        None
+    let Some((promise_id, reactions)) = settle_promise_record(promise, state, &value, true) else {
+        return;
     };
     if let Some(id) = promise_id {
         if state == "rejected" {
@@ -1321,6 +1233,40 @@ fn mutate_promise_state(ctx: &mut HostContext, promise: &Value, state: &str, val
             value.clone(),
         );
     }
+}
+
+// Record mutation only: callers retain the existing wake-up/microtask order,
+// and no guest callback or scheduler operation runs while this guard is held.
+fn settle_promise_record(
+    promise: &Value,
+    state: &str,
+    value: &Value,
+    require_promise_type: bool,
+) -> Option<(Option<u64>, Vec<Value>)> {
+    let Value::Object(obj) = promise else { return None; };
+    let mut o = obj.lock().unwrap();
+    if require_promise_type && !promise_type_is_promise(o.properties.get("__type")) {
+        return None;
+    }
+    if promise_state_is_not_pending(o.properties.get("__state")) {
+        return None;
+    }
+    if require_promise_type {
+        o.properties.shift_remove("__resolving_thenable");
+    }
+    o.properties.insert("__state".into(), crate::keys::string_value(state));
+    o.properties.insert("__value".into(), value.clone());
+    let reactions = if let Some(Value::Object(arr)) = o.properties.shift_remove("__pending_reactions") {
+        let mut a = arr.lock().unwrap();
+        match &mut a.kind {
+            ObjectKind::Array(elems) => std::mem::take(elems),
+            _ => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    let id = o.properties.get("__id").map(|v| v.as_f64() as u64);
+    Some((id, reactions))
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1533,7 +1479,14 @@ pub fn shared_promise_prototype() -> Value {
 }
 
 pub fn make_promise(state: &str, value: Value) -> Value {
+    make_promise_record(state, value, None)
+}
+
+// Construct the fixed record before publishing it to the tracked heap.
+// ID-bearing records need no second object lock or incremental map growth.
+fn make_promise_record(state: &str, value: Value, id: Option<u64>) -> Value {
     let mut obj = Object::new();
+    obj.properties.reserve(if id.is_some() { 5 } else { 4 });
     // §27.2.3.1 step 5 — OrdinaryCreateFromConstructor(…, "%Promise.prototype%").
     // This is the link `instanceof` walks; without it the only available answer
     // was the `__type` stamp below, which is a vybe representation and not
@@ -1545,6 +1498,9 @@ pub fn make_promise(state: &str, value: Value) -> Value {
     obj.properties
         .insert("__state".into(), crate::keys::string_value(state));
     obj.properties.insert("__value".into(), value);
+    if let Some(id) = id {
+        obj.properties.insert("__id".into(), Value::F64(id as f64));
+    }
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
@@ -1629,4 +1585,345 @@ fn is_promise(v: &Value) -> bool {
         return promise_type_is_promise(lock.properties.get("__type"));
     }
     false
+}
+
+#[cfg(test)]
+mod construction_speedup_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn function(vm: &VM, namespace: &str, name: &str) -> Value {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(namespace, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(function))
+    }
+
+    #[test]
+    fn reserved_records_preserve_fields_prototype_value_and_fresh_identity() {
+        let value = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        for state in ["pending", "fulfilled", "rejected"] {
+            let first = make_promise(state, value.clone());
+            let second = make_promise(state, value.clone());
+            assert!(!same_object(&first, &second));
+            let Value::Object(object) = &first else { panic!("promise"); };
+            let object = object.lock().unwrap();
+            assert_eq!(object.properties.keys().map(String::as_str).collect::<Vec<_>>(),
+                vec!["__proto__", "__type", "__state", "__value"]);
+            assert!(same_object(object.properties.get("__proto__").unwrap(), &shared_promise_prototype()));
+            assert!(same_object(object.properties.get("__value").unwrap(), &value));
+            assert_eq!(promise_metadata_state_text(object.properties.get("__state").unwrap()), state);
+            assert!(object.properties.capacity() >= 4);
+        }
+    }
+
+    #[test]
+    fn id_bearing_records_preserve_order_state_and_runtime_settlement() {
+        let mut vm = VM::new();
+        vm.register_host_fn("ecma:test-promise-construction", "pending", Box::new(|ctx, _args| {
+            let promise = pending_promise_with_id(ctx);
+            {
+                let Value::Object(object) = &promise else { panic!("promise"); };
+                let object = object.lock().unwrap();
+                assert_eq!(object.properties.keys().map(String::as_str).collect::<Vec<_>>(),
+                    vec!["__proto__", "__type", "__state", "__value", "__id"]);
+                assert!(object.properties.contains_key("__id"));
+                assert_eq!(promise_metadata_state_text(object.properties.get("__state").unwrap()), "pending");
+                assert!(matches!(object.properties.get("__value"), Some(Value::Undefined)));
+            }
+            mutate_promise_state(ctx, &promise, "fulfilled", Value::I32(17));
+            promise
+        }));
+        let make_pending = function(&vm, "ecma:test-promise-construction", "pending");
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let promise = vm.invoke(&make_pending, &[]).unwrap();
+            let (state, value) = read_promise_state(&promise);
+            assert_eq!(state.as_str(), "fulfilled");
+            assert_eq!(value.as_i32(), 17);
+            let Value::Object(object) = promise else { panic!("promise"); };
+            ids.push(object.lock().unwrap().properties.get("__id").unwrap().as_f64());
+        }
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    #[ignore = "paired registered Promise record construction benchmark; not microtask timing"]
+    fn registered_promise_construction_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:test-promise-construction", "legacyReject", Box::new(|_ctx, args| {
+            legacy_make_promise("rejected", args.first().cloned().unwrap_or(Value::Undefined))
+        }));
+        let old = function(&vm, "ecma:test-promise-construction", "legacyReject");
+        let new = function(&vm, "ecma:promise", "reject");
+        let value = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        let args = [value.clone()];
+        for function in [&old, &new] {
+            let promise = vm.invoke(function, &args).unwrap();
+            let (state, actual) = read_promise_state(&promise);
+            assert_eq!(state.as_str(), "rejected");
+            assert!(same_object(&actual, &value));
+            for _ in 0..1000 { std::hint::black_box(vm.invoke(function, &args).unwrap()); }
+        }
+        let mut old_time = Duration::ZERO;
+        let mut new_time = Duration::ZERO;
+        for sample in 0..8 {
+            for old_path in [sample % 2 == 0, sample % 2 != 0] {
+                let function = if old_path { &old } else { &new };
+                let start = Instant::now();
+                for _ in 0..5000 { std::hint::black_box(vm.invoke(function, &args).unwrap()); }
+                if old_path { old_time += start.elapsed(); } else { new_time += start.elapsed(); }
+            }
+        }
+        eprintln!("registered Promise.reject construction: old={old_time:?} new={new_time:?} ratio={:.3}x",
+            old_time.as_secs_f64() / new_time.as_secs_f64());
+    }
+
+fn legacy_make_promise(state: &str, value: Value) -> Value {
+    let mut obj = Object::new();
+    // §27.2.3.1 step 5 — OrdinaryCreateFromConstructor(…, "%Promise.prototype%").
+    // This is the link `instanceof` walks; without it the only available answer
+    // was the `__type` stamp below, which is a vybe representation and not
+    // something the ECMA host is allowed to decide identity from.
+    obj.properties
+        .insert("__proto__".into(), shared_promise_prototype());
+    obj.properties
+        .insert("__type".into(), crate::keys::string_value("Promise"));
+    obj.properties
+        .insert("__state".into(), crate::keys::string_value(state));
+    obj.properties.insert("__value".into(), value);
+    Value::Object(vybe_runtime::heap::alloc(obj))
+}
+}
+
+#[cfg(test)]
+mod vm_local_helper_tests {
+    use super::*;
+    use vybe_runtime::{ExportEntry, ModuleRecord};
+
+    fn host_ref(index: usize) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(index);
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn invoke_named(vm: &mut VM, module: &str, name: &str, args: &[Value]) -> Value {
+        let index = vm.resolve_host_function_index(module, name).unwrap();
+        vm.invoke(&host_ref(index), args).unwrap()
+    }
+
+    fn drain_jobs(vm: &mut VM) {
+        for _ in 0..32 {
+            let task = vm.event_loop.borrow_mut().next_immediate();
+            match task {
+                None => return,
+                Some(vybe_runtime::event_loop::Task::Callback { callback, value }) => {
+                    vm.invoke(&callback, &[value]).unwrap();
+                }
+                Some(_) => panic!("unexpected fiber in Promise helper test"),
+            }
+        }
+        panic!("Promise jobs did not finish");
+    }
+
+    fn shifted_vm(prefix: usize) -> VM {
+        let mut vm = VM::new();
+        for index in 0..prefix {
+            vm.register_free_fn("test:prefix", &format!("dummy{index}"),
+                Box::new(|_, _| panic!("wrong VM's Promise helper index")));
+        }
+        register(&mut vm);
+        vm.register_free_fn("test:promise", "then",
+            Box::new(|ctx, args| then_impl(ctx, args[0].clone(), Value::Undefined, Value::Undefined)));
+        vm.register_free_fn("test:promise", "adopt",
+            Box::new(|ctx, args| {
+                resolve_promise_with_value(ctx, &args[0], args[1].clone());
+                Value::Undefined
+            }));
+        vm.register_free_fn("test:promise", "finally",
+            Box::new(|ctx, args| finally_impl(ctx, args[0].clone(), args[1].clone())));
+        vm.register_free_fn("test:promise", "finalizer",
+            Box::new(|_, _| make_promise("fulfilled", Value::I32(91))));
+        vm.register_free_fn("test:promise", "thenable",
+            Box::new(|ctx, args| {
+                let receiver = ctx.current_js_this();
+                let Value::Object(receiver) = receiver else { panic!("missing thenable receiver") };
+                assert!(matches!(receiver.lock().unwrap().properties.get("marker"), Some(Value::Bool(true))));
+                ctx.invoke(&args[0], &[Value::I32(77)]);
+                Value::Undefined
+            }));
+        vm
+    }
+
+    #[test]
+    fn reactions_adoption_thenables_and_finally_use_each_current_vm() {
+        // Register both before running either: registration order must not leak
+        // across VM instances, even when a helper was initialized earlier.
+        let mut vms = [shifted_vm(0), shifted_vm(19)];
+        for vm in &mut vms {
+            let settled = make_promise("fulfilled", Value::I32(31));
+            let derived = invoke_named(vm, "test:promise", "then", &[settled]);
+            assert_eq!(read_promise_state(&derived).0.as_str(), "pending");
+            drain_jobs(vm);
+            let (state, value) = read_promise_state(&derived);
+            assert_eq!(state.as_str(), "fulfilled");
+            assert_eq!(value.as_i32(), 31);
+
+            for rejected in [false, true] {
+                let inner = make_promise("pending", Value::Undefined);
+                let adopted = make_promise("pending", Value::Undefined);
+                invoke_named(vm, "test:promise", "adopt", &[adopted.clone(), inner.clone()]);
+                let name = if rejected { "__settle_rejected" } else { "__settle_fulfilled" };
+                let index = vm.resolve_host_function_index("ecma:promise", name).unwrap();
+                vm.invoke(&bound_settler(index, inner), &[Value::I32(42)]).unwrap();
+                drain_jobs(vm);
+                let (state, value) = read_promise_state(&adopted);
+                assert_eq!(state.as_str(), if rejected { "rejected" } else { "fulfilled" });
+                assert_eq!(value.as_i32(), 42);
+            }
+
+            let then_index = vm.resolve_host_function_index("test:promise", "thenable").unwrap();
+            let mut thenable = Object::new();
+            thenable.properties.insert("marker".into(), Value::Bool(true));
+            thenable.properties.insert("then".into(), host_ref(then_index));
+            let thenable = Value::Object(vybe_runtime::heap::alloc(thenable));
+            let resolved = make_promise("pending", Value::Undefined);
+            invoke_named(vm, "test:promise", "adopt", &[resolved.clone(), thenable]);
+            assert_eq!(read_promise_state(&resolved).0.as_str(), "pending");
+            drain_jobs(vm);
+            let (state, value) = read_promise_state(&resolved);
+            assert_eq!(state.as_str(), "fulfilled");
+            assert_eq!(value.as_i32(), 77);
+
+            let finalizer_index = vm.resolve_host_function_index("test:promise", "finalizer").unwrap();
+            for state in ["fulfilled", "rejected"] {
+                let original = make_promise(state, Value::I32(13));
+                let result = invoke_named(vm, "test:promise", "finally",
+                    &[original, host_ref(finalizer_index)]);
+                drain_jobs(vm);
+                let (actual_state, value) = read_promise_state(&result);
+                assert_eq!(actual_state.as_str(), state);
+                assert_eq!(value.as_i32(), 13);
+            }
+        }
+    }
+
+    #[test]
+    fn context_lookup_matches_canonical_reexports_cycles_and_registry_changes() {
+        assert!(HostContext::empty().resolve_host_function_index("ecma:promise", "__resolve").is_none());
+        let mut vm = shifted_vm(7);
+        let mut aliases = ModuleRecord::new_synthetic("test:aliases");
+        aliases.exports.insert("resolve".into(), ExportEntry::Indirect {
+            from: "ecma:promise".into(), name: "__resolve".into(),
+        });
+        aliases.exports.insert("cycle".into(), ExportEntry::Indirect {
+            from: "test:aliases".into(), name: "cycle".into(),
+        });
+        aliases.exports.insert("value".into(), ExportEntry::Value(Value::I32(1)));
+        vm.modules.insert("test:aliases".into(), aliases);
+        vm.register_free_fn("test:lookup", "target", Box::new(|_, _| Value::Undefined));
+        vm.register_free_fn("test:lookup", "probe", Box::new(|ctx, _| {
+            assert!(ctx.resolve_host_function_index("test:aliases", "cycle").is_none());
+            assert!(ctx.resolve_host_function_index("test:aliases", "value").is_none());
+            assert!(ctx.resolve_host_function_index("test:aliases", "missing").is_none());
+            assert_eq!(ctx.resolve_host_function_index("test:aliases", "resolve"),
+                ctx.resolve_host_function_index("ecma:promise", "__resolve"));
+            Value::F64(ctx.resolve_host_function_index("test:lookup", "target").unwrap() as f64)
+        }));
+        for _ in 0..2 {
+            let expected = vm.resolve_host_function_index("test:lookup", "target").unwrap();
+            assert_eq!(invoke_named(&mut vm, "test:lookup", "probe", &[]).as_f64() as usize, expected);
+            vm.register_free_fn("test:lookup", "target", Box::new(|_, _| Value::I32(2)));
+        }
+    }
+}
+
+#[cfg(test)]
+mod settlement_speedup_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn record_settlement_preserves_value_identity_reaction_order_and_single_settlement() {
+        for checked in [false, true] {
+            let promise = make_promise("pending", Value::Undefined);
+            let value = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+            let reactions = vybe_runtime::heap::alloc(Object::new_array(vec![Value::I32(1), Value::I32(2)]));
+            let Value::Object(obj) = &promise else { panic!("expected promise") };
+            {
+                let mut o = obj.lock().unwrap();
+                o.properties.insert("__id".into(), Value::I32(17));
+                o.properties.insert("__pending_reactions".into(), Value::Object(reactions.clone()));
+                o.properties.insert("__resolving_thenable".into(), value.clone());
+            }
+            let (id, drained) = settle_promise_record(&promise, "rejected", &value, checked).unwrap();
+            assert_eq!(id, Some(17));
+            assert_eq!(drained.iter().map(Value::as_i32).collect::<Vec<_>>(), vec![1, 2]);
+            assert!(obj.try_lock().is_ok());
+            {
+                let o = obj.lock().unwrap();
+                assert_eq!(promise_metadata_state(o.properties.get("__state").unwrap()).as_str(), "rejected");
+                assert!(same_object(o.properties.get("__value").unwrap(), &value));
+                assert!(!o.properties.contains_key("__pending_reactions"));
+                assert_eq!(o.properties.contains_key("__resolving_thenable"), !checked);
+            }
+            assert!(matches!(&reactions.lock().unwrap().kind, ObjectKind::Array(values) if values.is_empty()));
+            assert!(settle_promise_record(&promise, "fulfilled", &Value::I32(9), checked).is_none());
+            let o = obj.lock().unwrap();
+            assert!(same_object(o.properties.get("__value").unwrap(), &value));
+        }
+    }
+
+    #[test]
+    fn checked_and_unchecked_paths_keep_their_existing_record_requirements() {
+        assert!(settle_promise_record(&Value::Null, "fulfilled", &Value::Null, false).is_none());
+        let ordinary = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        assert!(settle_promise_record(&ordinary, "fulfilled", &Value::I32(3), true).is_none());
+        let (id, reactions) = settle_promise_record(&ordinary, "fulfilled", &Value::I32(3), false).unwrap();
+        assert!(id.is_none());
+        assert!(reactions.is_empty());
+        let (state, value) = read_promise_state(&ordinary);
+        assert_eq!(state.as_str(), "fulfilled");
+        assert_eq!(value.as_i32(), 3);
+    }
+
+    fn original_unchecked_settlement(promise: &Value, value: &Value) -> Option<(Option<u64>, Vec<Value>)> {
+        let promise = promise.clone();
+        let value = value.clone();
+        let id = if let Value::Object(obj) = &promise {
+            obj.lock().unwrap().properties.get("__id").map(|v| v.as_f64() as u64)
+        } else { None };
+        let Value::Object(obj) = &promise else { return None; };
+        let mut o = obj.lock().unwrap();
+        if promise_state_is_not_pending(o.properties.get("__state")) { return None; }
+        o.properties.insert("__state".into(), crate::keys::string_value("fulfilled"));
+        o.properties.insert("__value".into(), value.clone());
+        let reactions = if let Some(Value::Object(arr)) = o.properties.shift_remove("__pending_reactions") {
+            let mut a = arr.lock().unwrap();
+            match &mut a.kind { ObjectKind::Array(elems) => std::mem::take(elems), _ => Vec::new() }
+        } else { Vec::new() };
+        Some((id, reactions))
+    }
+
+    #[test]
+    #[ignore = "native record-mutation microbenchmark, not Promise job timing"]
+    fn native_settlement_record_microbenchmark() {
+        let mut old = Duration::ZERO;
+        let mut new = Duration::ZERO;
+        for batch in 0..10 {
+            for old_path in if batch % 2 == 0 { [true, false] } else { [false, true] } {
+                let promises: Vec<Value> = (0..1000).map(|_| make_promise("pending", Value::Undefined)).collect();
+                let value = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+                let start = Instant::now();
+                for promise in &promises {
+                    let record = if old_path { original_unchecked_settlement(black_box(promise), black_box(&value)) }
+                        else { settle_promise_record(black_box(promise), "fulfilled", black_box(&value), false) };
+                    assert!(black_box(record).is_some());
+                }
+                if old_path { old += start.elapsed(); } else { new += start.elapsed(); }
+            }
+        }
+        eprintln!("native Promise record settlement, calls=10000: original={old:?}, single-lock={new:?}");
+    }
 }
