@@ -773,6 +773,7 @@ pub fn emit_pylt(chunks: &mut [Chunk], current: usize, line: u32) {
         current,
         "__lt__",
         vybe_compiler::primitives::ops::emit_dyn_lt,
+        emit_boxed_relational_lt,
         line,
     );
 }
@@ -782,6 +783,7 @@ pub fn emit_pygt(chunks: &mut [Chunk], current: usize, line: u32) {
         current,
         "__gt__",
         vybe_compiler::primitives::ops::emit_dyn_gt,
+        emit_boxed_relational_gt,
         line,
     );
 }
@@ -791,6 +793,7 @@ pub fn emit_pyle(chunks: &mut [Chunk], current: usize, line: u32) {
         current,
         "__le__",
         vybe_compiler::primitives::ops::emit_dyn_le,
+        emit_boxed_relational_le,
         line,
     );
 }
@@ -800,8 +803,30 @@ pub fn emit_pyge(chunks: &mut [Chunk], current: usize, line: u32) {
         current,
         "__ge__",
         vybe_compiler::primitives::ops::emit_dyn_ge,
+        emit_boxed_relational_ge,
         line,
     );
+}
+
+
+fn emit_boxed_relational_lt(chunk: &mut Chunk, line: u32) {
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+}
+
+fn emit_boxed_relational_gt(chunk: &mut Chunk, line: u32) {
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+}
+
+fn emit_boxed_relational_le(chunk: &mut Chunk, line: u32) {
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+}
+
+fn emit_boxed_relational_ge(chunk: &mut Chunk, line: u32) {
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 fn emit_relational(
@@ -809,6 +834,7 @@ fn emit_relational(
     current: usize,
     dunder: &str,
     cmp: fn(&mut Chunk, u32),
+    boxed_fallback: fn(&mut Chunk, u32),
     line: u32,
 ) {
     let chunk = &mut chunks[current];
@@ -820,6 +846,7 @@ fn emit_relational(
     crate::emitter::datetime_adapter::emit_is_datetime(chunk, a_slot, line);
     chunk.emit_if_value(line);
     crate::emitter::datetime_adapter::emit_dt_cmp(chunk, a_slot, b_slot, cmp, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     // `set </<=/>/>=` set → subset/superset per Python semantics. Both
     // operands must be sets; a lone set (`{1} < 2`) is a TypeError in
@@ -829,6 +856,7 @@ fn emit_relational(
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if_value(line);
     emit_set_relational(chunk, a_slot, b_slot, dunder, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     // `(1, 2) < (1, 3)` / `[1] < [1, 0]` — sequences compare LEXICOGRAPHICALLY
     // in Python. Without this both operands fall to the numeric path and trap
@@ -839,12 +867,12 @@ fn emit_relational(
     chunk.emit_if_value(line);
     emit_seq_relational(chunk, a_slot, b_slot, dunder, line);
     chunk.emit_else(line);
-    emit_object_binop_or(chunk, a_slot, b_slot, dunder, cmp, line);
+    emit_object_binop_or(chunk, a_slot, b_slot, dunder, boxed_fallback, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
-    // The comparison ops yield an i32; Python's `bool` is a real value.
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+    // The user dunder returns ANY; preserve it in value position. Each
+    // numeric/Bool fallback already materialized its language-visible Bool.
 }
 
 fn emit_is_array(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -932,10 +960,10 @@ fn emit_seq_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
 
     // Differing element decides; otherwise the lengths do.
     let cmp: fn(&mut Chunk, u32) = match dunder {
-        "__lt__" => vybe_compiler::primitives::ops::emit_dyn_lt,
-        "__gt__" => vybe_compiler::primitives::ops::emit_dyn_gt,
-        "__le__" => vybe_compiler::primitives::ops::emit_dyn_le,
-        _ => vybe_compiler::primitives::ops::emit_dyn_ge,
+        "__lt__" => emit_boxed_relational_lt,
+        "__gt__" => emit_boxed_relational_gt,
+        "__le__" => emit_boxed_relational_le,
+        _ => emit_boxed_relational_ge,
     };
     chunk.emit_op_u16(Op::LOCAL_GET, diff, line);
     chunk.emit_i32_const(-1, line);
@@ -1130,7 +1158,8 @@ fn emit_is_notimplemented_slot(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_string_const("object", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if_value(line);
+    // Both arms produce the i32 equality predicate consumed by the caller.
+    chunk.emit_if_i32(line);
     let key = class_slots::resolve_interned(
         chunk,
         &ClassSlot::internal("__py_notimplemented"),

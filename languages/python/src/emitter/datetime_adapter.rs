@@ -884,7 +884,8 @@ fn emit_has_key(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     chunk.emit_call(typeof_fn, 1, line);
     chunk.emit_string_const("object", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
+    // Both branches return the native i32 presence predicate.
+    chunk.emit_if_i32(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     struct_get(chunk, &ClassSlot::internal(key), line);
     chunk.emit_op(Op::REF_IS_NULL, line);

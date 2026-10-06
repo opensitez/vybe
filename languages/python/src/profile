@@ -1669,7 +1669,7 @@ isupper         = { emit = "common:str_is_upper", slot = "is_upper", min_args = 
 islower         = { emit = "common:str_is_lower", slot = "is_lower", min_args = 0, max_args = 0 }
 isascii         = { emit = "common:python.str_isascii", min_args = 0, max_args = 0 }
 isidentifier    = { emit = "common:python.str_isidentifier", min_args = 0, max_args = 0 }
-format_map      = { emit = "common:python.format_map",              min_args = 1, max_args = 1 }
+format_map      = { emit = "intrinsic:format_map",              min_args = 1, max_args = 1 }
 
 # List instance methods
 append          = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
@@ -2028,7 +2028,7 @@ __debug__ = true
 # ────────────────────────────────────────────────────────────────────────────
 
 # Component-Model package roots (namespaceplan.md Phase 1): literal host
-# prefix chains (`vybe.gui.setProperty(...)`, `wasi.cli.log(...)`) resolve
+# prefix chains (for example `wasi.cli.log(...)`) resolve
 # through the common resolver's package-root step — the same data the
 # hardcoded `vybe|wasi|wasm` prefix arm used to embody in code.
 

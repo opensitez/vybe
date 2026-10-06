@@ -3023,12 +3023,14 @@ pub fn emit_attr_write(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, cls, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_if_value(line);
+    // Both branches only assign current_value.
+    chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cls, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
     call_import(chunks, current, "ecma:object", "hasIn", 2, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    // Lookup selects the assignment; it leaves no value on the stack.
+    chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cls, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
     collections::emit_get(chunks, current, line);
@@ -4660,14 +4662,17 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
         Dest::Stack,
         line,
     );
-    core_wasm::dup(&mut chunks[current], line);
+    // Each IF arm owns its result; never consume a value below its frame.
+    let size_value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, size_value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, size_value, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::DROP, line); // drop null `.size`
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, size_value, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line); // close the Map branch
