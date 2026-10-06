@@ -81,9 +81,9 @@ pub enum PendingCopyKind {
     /// `stream<u8>` — the byte path.
     StreamBytes,
     /// `stream<T>`, `T` ≠ `u8` — elements are stored at `T`'s layout.
-    StreamTyped(crate::component::ValType),
+    StreamTyped(std::sync::Arc<crate::component::ValType>),
     /// `future<T>` — exactly one element, or none.
-    Future(crate::component::ValType),
+    Future(std::sync::Arc<crate::component::ValType>),
 }
 
 #[derive(Debug, Clone)]

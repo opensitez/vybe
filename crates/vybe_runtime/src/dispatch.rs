@@ -343,7 +343,9 @@ fn copy_final_power2_period_bytes_to_values(
             idx = (idx + 1) & mask_usize;
         }
     }
-    Some(Value::I32(unsafe { *src.get_unchecked(src.len() - 1) } as i32))
+    Some(Value::I32(
+        unsafe { *src.get_unchecked(src.len() - 1) } as i32
+    ))
 }
 
 // ── Task protocol ───────────────────────────────────────────────────────────
@@ -433,9 +435,7 @@ impl VM {
                 Value::I32(n) => self.push_fast(Value::F64(n as f64)),
                 Value::I64(n) => self.push_fast(Value::F64(n as f64)),
                 _ => {
-                    self.raise_js_type_error(
-                        "TypeError: wasm:js-number.toF64 — not a number"
-                    )?;
+                    self.raise_js_type_error("TypeError: wasm:js-number.toF64 — not a number")?;
                 }
             },
             JsNumberBuiltin::ToI32 => {
@@ -448,9 +448,7 @@ impl VM {
                     Value::F32(n) => n as f64,
                     Value::I64(n) => n as f64,
                     _ => {
-                        self.raise_js_type_error(
-                            "TypeError: wasm:js-number.toI32 — not a number"
-                        )?;
+                        self.raise_js_type_error("TypeError: wasm:js-number.toI32 — not a number")?;
                         return Ok(());
                     }
                 };
@@ -474,9 +472,7 @@ impl VM {
                         return Ok(());
                     }
                     _ => {
-                        self.raise_js_type_error(
-                            "TypeError: wasm:js-number.toU32 — not a number"
-                        )?;
+                        self.raise_js_type_error("TypeError: wasm:js-number.toU32 — not a number")?;
                         return Ok(());
                     }
                 };
@@ -516,9 +512,7 @@ impl VM {
                     self.push_fast(Value::I32(if b { 1 } else { 0 }));
                 }
                 _ => {
-                    self.raise_js_type_error(
-                        "TypeError: wasm:js-boolean.cast — not a boolean"
-                    )?;
+                    self.raise_js_type_error("TypeError: wasm:js-boolean.cast — not a boolean")?;
                 }
             },
             JsBooleanBuiltin::FromI32 => {
@@ -796,7 +790,8 @@ impl VM {
                 buf[abs..abs + 2].copy_from_slice(&(value.as_i32() as i16).to_le_bytes());
             }
             crate::value::TypedElemKind::U16 => {
-                buf[abs..abs + 2].copy_from_slice(&((value.as_i32() & 0xffff) as u16).to_le_bytes());
+                buf[abs..abs + 2]
+                    .copy_from_slice(&((value.as_i32() & 0xffff) as u16).to_le_bytes());
             }
             crate::value::TypedElemKind::I32 => {
                 let n = value.as_f64();
@@ -898,16 +893,15 @@ impl VM {
             }
             hash & 15
         };
-        let update_cache = |cache: &mut [Option<crate::vm::ObjectGetInlineCache>; 16],
-                            key: &str,
-                            index: usize| {
-            let slot = cache_slot(key);
-            cache[slot] = Some(crate::vm::ObjectGetInlineCache {
-                object_ptr,
-                key: key.to_string(),
-                index,
-            });
-        };
+        let update_cache =
+            |cache: &mut [Option<crate::vm::ObjectGetInlineCache>; 16], key: &str, index: usize| {
+                let slot = cache_slot(key);
+                cache[slot] = Some(crate::vm::ObjectGetInlineCache {
+                    object_ptr,
+                    key: key.to_string(),
+                    index,
+                });
+            };
         if let Value::String(key_string) = key {
             let slot = cache_slot(key_string.as_ref());
             if let Some(cache) = self.object_get_cache[slot].as_ref() {
@@ -926,13 +920,11 @@ impl VM {
             crate::value::ObjectKind::Array(values) => {
                 if let Value::String(key_string) = key {
                     if key_string.as_ref() == "length" || key_string.as_ref() == "__len__" {
-                        return Ok(
-                            guard
-                                .properties
-                                .get("length")
-                                .cloned()
-                                .unwrap_or(Value::F64(values.len() as f64))
-                        );
+                        return Ok(guard
+                            .properties
+                            .get("length")
+                            .cloned()
+                            .unwrap_or(Value::F64(values.len() as f64)));
                     }
                 }
                 if let Some(idx) = Self::array_numeric_index(key) {
@@ -943,13 +935,11 @@ impl VM {
                 }
                 let key_string = Self::ecma_key_cow(key).ok_or("symbol-key")?;
                 if key_string.as_ref() == "length" || key_string.as_ref() == "__len__" {
-                    return Ok(
-                        guard
-                            .properties
-                            .get("length")
-                            .cloned()
-                            .unwrap_or(Value::F64(values.len() as f64))
-                    );
+                    return Ok(guard
+                        .properties
+                        .get("length")
+                        .cloned()
+                        .unwrap_or(Value::F64(values.len() as f64)));
                 }
             }
             crate::value::ObjectKind::TypedArray(ta) => {
@@ -1050,8 +1040,7 @@ impl VM {
                     }
                 } else if let Value::I32(n) = key {
                     let text = n.to_string();
-                    if let Some(value) = map.get(&Value::String(std::sync::Arc::from(text)))
-                    {
+                    if let Some(value) = map.get(&Value::String(std::sync::Arc::from(text))) {
                         return Some(value.clone());
                     }
                 }
@@ -1175,7 +1164,9 @@ impl VM {
 
     #[inline(always)]
     fn ecma_relative_slice_index(index: i32, len: i32) -> usize {
-        (if index < 0 { len + index } else { index }).max(0).min(len) as usize
+        (if index < 0 { len + index } else { index })
+            .max(0)
+            .min(len) as usize
     }
 
     #[inline(always)]
@@ -1413,7 +1404,7 @@ impl VM {
                     }
                     Err(value) => {
                         let args = [obj, key, value];
-                    self.call_import_host_fallback(fallback_host_idx, &args)
+                        self.call_import_host_fallback(fallback_host_idx, &args)
                     }
                 }
             }
@@ -1530,8 +1521,7 @@ impl VM {
             // the dispatch loop. `block_targets` is built parallel to chunk
             // code, so avoid repeated bounds checks in structured-control
             // opcodes.
-            *self
-                .block_targets
+            self.block_targets
                 .get_unchecked(chunk_index)
                 .get_unchecked(opcode_start)
         }
@@ -1968,6 +1958,60 @@ impl VM {
         }
 
         Some((arr_slot, dst_slot, len_slot, i_slot, byte_slot, i32::MAX))
+    }
+
+    fn match_canonical_byte_array_to_linear_loop(
+        code: &[u8],
+        imports: &[crate::chunk::Import],
+        mut ip: usize,
+    ) -> Option<(u16, u16, u16, u16)> {
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+            return None;
+        }
+        let i_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+            return None;
+        }
+        let len_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_GE_S
+            || Self::decode_op_at(code, &mut ip)? != Op::BR_IF
+            || Self::decode_leb_u32_at(code, &mut ip)? != 1
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+        {
+            return None;
+        }
+        let dst_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+            || Self::decode_u16_at(code, &mut ip)? != i_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+        {
+            return None;
+        }
+        let arr_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+            || Self::decode_u16_at(code, &mut ip)? != i_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::ARRAY_GET
+        {
+            return None;
+        }
+        Self::decode_js_number_to_i32_at(code, imports, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_STORE8
+            || Op::I32_STORE8.operand_format().size_in(code, ip) != 0
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+            || Self::decode_u16_at(code, &mut ip)? != i_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
+            || Self::decode_leb_i32_at(code, &mut ip)? != 1
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_SET
+            || Self::decode_u16_at(code, &mut ip)? != i_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::BR
+            || Self::decode_leb_u32_at(code, &mut ip)? != 0
+            || Self::decode_op_at(code, &mut ip)? != Op::END
+        {
+            return None;
+        }
+        Some((arr_slot, dst_slot, len_slot, i_slot))
     }
 
     fn match_managed_array_to_linear_loop(
@@ -2415,7 +2459,14 @@ impl VM {
         if Self::decode_op_at(code, &mut ip)? != Op::END {
             return None;
         }
-        Some((arr_slot, dst_offset_slot, src_slot, len_slot, i_slot, byte_slot,))
+        Some((
+            arr_slot,
+            dst_offset_slot,
+            src_slot,
+            len_slot,
+            i_slot,
+            byte_slot,
+        ))
     }
 
     fn match_linear_memory_copy_loop(
@@ -3515,11 +3566,7 @@ impl VM {
         Some((src_slot, dst_slot, counter_slot))
     }
 
-    fn match_local_unary_loop(
-        code: &[u8],
-        mut ip: usize,
-        op: Op
-    ) -> Option<(u16, u16, u16)> {
+    fn match_local_unary_loop(code: &[u8], mut ip: usize, op: Op) -> Option<(u16, u16, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
         }
@@ -3615,10 +3662,7 @@ impl VM {
         Some((src_slot, dst_slot, add, counter_slot))
     }
 
-    fn match_local_i32_accum_const_loop(
-        code: &[u8],
-        mut ip: usize
-    ) -> Option<(u16, i32, Op, u16)> {
+    fn match_local_i32_accum_const_loop(code: &[u8], mut ip: usize) -> Option<(u16, i32, Op, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
         }
@@ -4327,10 +4371,7 @@ impl VM {
         Some((src_slot, dst_slot, shift, counter_slot))
     }
 
-    fn match_local_i32_rotl_const_loop(
-        code: &[u8],
-        mut ip: usize
-    ) -> Option<(u16, u16, i32, u16)> {
+    fn match_local_i32_rotl_const_loop(code: &[u8], mut ip: usize) -> Option<(u16, u16, i32, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
         }
@@ -4380,10 +4421,7 @@ impl VM {
         Some((src_slot, dst_slot, shift, counter_slot))
     }
 
-    fn match_local_i32_rotr_const_loop(
-        code: &[u8],
-        mut ip: usize
-    ) -> Option<(u16, u16, i32, u16)> {
+    fn match_local_i32_rotr_const_loop(code: &[u8], mut ip: usize) -> Option<(u16, u16, i32, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
         }
@@ -4643,10 +4681,7 @@ impl VM {
         Some((src_slot, dst_slot, value, counter_slot))
     }
 
-    fn match_local_i64_accum_const_loop(
-        code: &[u8],
-        mut ip: usize
-    ) -> Option<(u16, i64, Op, u16)> {
+    fn match_local_i64_accum_const_loop(code: &[u8], mut ip: usize) -> Option<(u16, i64, Op, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
         }
@@ -4869,7 +4904,14 @@ impl VM {
         if Self::decode_op_at(code, &mut ip)? != Op::END {
             return None;
         }
-        Some((tableidx, elem_index, elem_slot, acc_slot, counter_slot, call_ip,))
+        Some((
+            tableidx,
+            elem_index,
+            elem_slot,
+            acc_slot,
+            counter_slot,
+            call_ip,
+        ))
     }
 
     fn match_global_get_local_loop(code: &[u8], mut ip: usize) -> Option<(u32, u16, u16)> {
@@ -5358,11 +5400,7 @@ impl VM {
         code: &[u8],
         mut ip: usize,
     ) -> Option<(u16, Option<u16>, u16, Option<u16>, u16, u16)> {
-        fn decode_index_expr(
-            code: &[u8],
-            ip: &mut usize,
-            i_slot: u16
-        ) -> Option<Option<u16>> {
+        fn decode_index_expr(code: &[u8], ip: &mut usize, i_slot: u16) -> Option<Option<u16>> {
             if VM::decode_op_at(code, ip)? != Op::LOCAL_GET {
                 return None;
             }
@@ -5460,7 +5498,14 @@ impl VM {
         if Self::decode_op_at(code, &mut ip)? != Op::END {
             return None;
         }
-        Some((src_slot, src_offset_slot, dst_slot, dst_offset_slot, len_slot, i_slot,))
+        Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+        ))
     }
 
     fn match_array_set_const_loop(code: &[u8], mut ip: usize) -> Option<(u16, i32, i32, u16)> {
@@ -5605,7 +5650,20 @@ impl VM {
         }
 
         let code = &self.chunks[chunk_index].code;
-        let superop = if let Some((arr_slot, dst_slot, len_slot, i_slot, byte_slot, mask)) =
+        let superop = if let Some((arr_slot, dst_slot, len_slot, i_slot)) =
+            Self::match_canonical_byte_array_to_linear_loop(
+                code,
+                &self.chunks[chunk_index].imports,
+                loop_body_start,
+            )
+        {
+            LoopSuperop::CanonicalByteArrayToLinear {
+                arr_slot,
+                dst_slot,
+                len_slot,
+                i_slot,
+            }
+        } else if let Some((arr_slot, dst_slot, len_slot, i_slot, byte_slot, mask)) =
             Self::match_managed_array_to_linear_loop(code, loop_body_start)
         {
             LoopSuperop::ManagedArrayToLinear {
@@ -6652,6 +6710,75 @@ impl VM {
         superop
     }
 
+    fn try_canonical_byte_array_to_linear_loop(
+        &mut self,
+        arr_slot: u16,
+        dst_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+    ) -> Result<bool, VMError> {
+        let base = self.frame().base;
+        let (Some(Value::I32(i)), Some(Value::I32(len)), Some(Value::I32(dst))) = (
+            self.stack.get(base + i_slot as usize),
+            self.stack.get(base + len_slot as usize),
+            self.stack.get(base + dst_slot as usize),
+        ) else {
+            return Ok(false);
+        };
+        if *i < 0 || *len < 0 || i >= len {
+            return Ok(false);
+        }
+        let (i, len, dst) = (*i as usize, *len as usize, *dst as u32);
+        let Some(entry) = self.label_at_depth(1) else {
+            return Ok(false);
+        };
+        let Some(Value::Object(obj)) = self.stack.get(base + arr_slot as usize) else {
+            return Ok(false);
+        };
+        let obj = obj.clone();
+        let count = len - i;
+        if dst.checked_add((len - 1) as u32).is_none() {
+            return Ok(false);
+        }
+        let start = dst.wrapping_add(i as u32) as usize;
+        let copied = self.memory.with_buffer_mut(|memory| {
+            let Some(end) = start.checked_add(count).filter(|&end| end <= memory.len()) else {
+                return false;
+            };
+            let ob = obj.lock().unwrap();
+            if ob.type_id != 0 {
+                return false;
+            }
+            let ObjectKind::Array(values) = &ob.kind else {
+                return false;
+            };
+            let Some(src) = values.get(i..len) else {
+                return false;
+            };
+            if !src.iter().all(|value| matches!(value, Value::I32(_))) {
+                return false;
+            }
+            for (byte, value) in memory[start..end].iter_mut().zip(src) {
+                let Value::I32(n) = value else { unreachable!() };
+                *byte = *n as u8;
+            }
+            true
+        });
+        if !copied {
+            return Ok(false);
+        }
+        self.stack[base + i_slot as usize] = Value::I32(len as i32);
+        if let Some(counters) = self.perf_counters.as_mut() {
+            let n = count as u64;
+            counters.super_managed_to_linear = counters.super_managed_to_linear.saturating_add(1);
+            counters.array_get = counters.array_get.saturating_add(n);
+            counters.array_get_dense = counters.array_get_dense.saturating_add(n);
+            counters.i32_store8 = counters.i32_store8.saturating_add(n);
+        }
+        self.branch_to_label(1, entry);
+        Ok(true)
+    }
+
     fn try_managed_array_to_linear_loop(
         &mut self,
         arr_slot: u16,
@@ -6719,21 +6846,20 @@ impl VM {
                     && start_idx
                         .checked_add(count)
                         .is_some_and(|end| end <= values.len())
-                    && start_i
-                        .checked_add((count - 1) as u32)
-                        .is_some_and(|last| {
-                            let required = if last == 0 {
-                                0
-                            } else {
-                                last.checked_add(1).and_then(u32::checked_next_power_of_two).map(|n| n - 1).unwrap_or(u32::MAX)
-                            };
-                            (mask_u & required) == required
-                });
+                    && start_i.checked_add((count - 1) as u32).is_some_and(|last| {
+                        let required = if last == 0 {
+                            0
+                        } else {
+                            last.checked_add(1)
+                                .and_then(u32::checked_next_power_of_two)
+                                .map(|n| n - 1)
+                                .unwrap_or(u32::MAX)
+                        };
+                        (mask_u & required) == required
+                    });
                 if contiguous {
                     let src = &values[start_idx..start_idx + count];
-                    for (slot, value) in memory[start_addr..start_addr + count]
-                        .iter_mut()
-                        .zip(src)
+                    for (slot, value) in memory[start_addr..start_addr + count].iter_mut().zip(src)
                     {
                         *slot = value_to_i32_byte(value);
                     }
@@ -6832,16 +6958,17 @@ impl VM {
                 && start_idx
                     .checked_add(count)
                     .is_some_and(|end| end <= values.len())
-                && start_i
-                    .checked_add((count - 1) as u32)
-                    .is_some_and(|last| {
-                        let required = if last == 0 {
-                            0
-                        } else {
-                            last.checked_add(1).and_then(u32::checked_next_power_of_two).map(|n| n - 1).unwrap_or(u32::MAX)
-                        };
-                        (mask_u & required) == required
-            });
+                && start_i.checked_add((count - 1) as u32).is_some_and(|last| {
+                    let required = if last == 0 {
+                        0
+                    } else {
+                        last.checked_add(1)
+                            .and_then(u32::checked_next_power_of_two)
+                            .map(|n| n - 1)
+                            .unwrap_or(u32::MAX)
+                    };
+                    (mask_u & required) == required
+                });
             if contiguous {
                 let src = &values[start_idx..start_idx + count];
                 for (slot, value) in memory[start_addr..end].iter_mut().zip(src) {
@@ -6851,8 +6978,7 @@ impl VM {
             }
             if mask >= 0 && (mask_u as usize) < values.len() {
                 let dst = &mut memory[start_addr..end];
-                if let Some(last) =
-                    copy_power2_masked_values_to_bytes(dst, values, start_i, mask_u)
+                if let Some(last) = copy_power2_masked_values_to_bytes(dst, values, start_i, mask_u)
                 {
                     return Ok(Some(last));
                 }
@@ -7105,16 +7231,17 @@ impl VM {
                     let contiguous = start_idx
                         .checked_add(count)
                         .is_some_and(|end_idx| !is_gc || end_idx <= values.len())
-                        && start_i
-                            .checked_add((count - 1) as u32)
-                            .is_some_and(|last| {
-                                let required = if last == 0 {
-                                    0
-                                } else {
-                                    last.checked_add(1).and_then(u32::checked_next_power_of_two).map(|n| n - 1).unwrap_or(u32::MAX)
-                                };
-                                (mask_u & required) == required
-                            });
+                        && start_i.checked_add((count - 1) as u32).is_some_and(|last| {
+                            let required = if last == 0 {
+                                0
+                            } else {
+                                last.checked_add(1)
+                                    .and_then(u32::checked_next_power_of_two)
+                                    .map(|n| n - 1)
+                                    .unwrap_or(u32::MAX)
+                            };
+                            (mask_u & required) == required
+                        });
                     if contiguous {
                         let end_idx = start_idx + count;
                         if end_idx > values.len() {
@@ -7219,16 +7346,17 @@ impl VM {
                 let contiguous = start_idx
                     .checked_add(count)
                     .is_some_and(|end_idx| !is_gc || end_idx <= values.len())
-                    && start_i
-                        .checked_add((count - 1) as u32)
-                        .is_some_and(|last| {
-                            let required = if last == 0 {
-                                0
-                            } else {
-                                last.checked_add(1).and_then(u32::checked_next_power_of_two).map(|n| n - 1).unwrap_or(u32::MAX)
-                            };
-                            (mask_u & required) == required
-                        });
+                    && start_i.checked_add((count - 1) as u32).is_some_and(|last| {
+                        let required = if last == 0 {
+                            0
+                        } else {
+                            last.checked_add(1)
+                                .and_then(u32::checked_next_power_of_two)
+                                .map(|n| n - 1)
+                                .unwrap_or(u32::MAX)
+                        };
+                        (mask_u & required) == required
+                    });
                 if contiguous {
                     let end_idx = start_idx + count;
                     if end_idx > values.len() {
@@ -7396,7 +7524,8 @@ impl VM {
                 for (slot, byte) in values[dst_start..dst_end].iter_mut().zip(src_bytes) {
                     *slot = Value::I32(*byte as i32);
                 }
-                let last = Value::I32(unsafe { *src_bytes.get_unchecked(src_bytes.len() - 1) } as i32);
+                let last =
+                    Value::I32(unsafe { *src_bytes.get_unchecked(src_bytes.len() - 1) } as i32);
                 (last, values.len())
             };
             if !is_gc {
@@ -7688,7 +7817,8 @@ impl VM {
             counters.i32_load = counters.i32_load.saturating_add(n);
             counters.i32_store = counters.i32_store.saturating_add(n);
             counters.memory_copy = counters.memory_copy.saturating_add(1);
-            counters.memory_copy_bytes = counters.memory_copy_bytes.saturating_add(copy_bytes as u64);
+            counters.memory_copy_bytes =
+                counters.memory_copy_bytes.saturating_add(copy_bytes as u64);
         }
         if let Some(entry) = self.label_at_depth(1) {
             self.branch_to_label(1, entry);
@@ -7799,7 +7929,8 @@ impl VM {
             counters.i64_load = counters.i64_load.saturating_add(n);
             counters.i64_store = counters.i64_store.saturating_add(n);
             counters.memory_copy = counters.memory_copy.saturating_add(1);
-            counters.memory_copy_bytes = counters.memory_copy_bytes.saturating_add(copy_bytes as u64);
+            counters.memory_copy_bytes =
+                counters.memory_copy_bytes.saturating_add(copy_bytes as u64);
         }
         if let Some(entry) = self.label_at_depth(1) {
             self.branch_to_label(1, entry);
@@ -8216,14 +8347,16 @@ impl VM {
                     .copy_from_slice(&self.stack_i32_at(base + value_slot as usize)?.to_le_bytes());
             }
             crate::vm::LinearMemoryTypedFillValue::I64 => {
-                pattern.copy_from_slice(&self.stack_i64_at(base + value_slot as usize)?.to_le_bytes());
+                pattern
+                    .copy_from_slice(&self.stack_i64_at(base + value_slot as usize)?.to_le_bytes());
             }
             crate::vm::LinearMemoryTypedFillValue::F32 => {
                 pattern[..4]
                     .copy_from_slice(&self.stack_f32_at(base + value_slot as usize)?.to_le_bytes());
             }
             crate::vm::LinearMemoryTypedFillValue::F64 => {
-                pattern.copy_from_slice(&self.stack_f64_at(base + value_slot as usize)?.to_le_bytes());
+                pattern
+                    .copy_from_slice(&self.stack_f64_at(base + value_slot as usize)?.to_le_bytes());
             }
         }
 
@@ -8278,7 +8411,8 @@ impl VM {
         if let Some(counters) = self.perf_counters.as_mut() {
             counters.super_linear_fill = counters.super_linear_fill.saturating_add(1);
             counters.memory_fill = counters.memory_fill.saturating_add(1);
-            counters.memory_fill_bytes = counters.memory_fill_bytes.saturating_add(fill_bytes as u64);
+            counters.memory_fill_bytes =
+                counters.memory_fill_bytes.saturating_add(fill_bytes as u64);
         }
         if let Some(entry) = self.label_at_depth(1) {
             self.branch_to_label(1, entry);
@@ -8400,9 +8534,9 @@ impl VM {
             acc = acc.wrapping_add(byte_sum_slice_u32(bytes));
             acc as i32
         };
-        let sum = if let Some(result) = self
-            .memory
-            .with_bytes_exclusive(start_addr, count, sum_from_bytes)
+        let sum = if let Some(result) =
+            self.memory
+                .with_bytes_exclusive(start_addr, count, sum_from_bytes)
         {
             let Ok(sum) = result else {
                 return Ok(false);
@@ -8507,8 +8641,7 @@ impl VM {
         self.frames[frame_index].ip = end_ip.saturating_add(4);
         if let Some(counters) = self.perf_counters.as_mut() {
             let n = count as u64;
-            counters.super_i32_countdown_loop =
-                counters.super_i32_countdown_loop.saturating_add(1);
+            counters.super_i32_countdown_loop = counters.super_i32_countdown_loop.saturating_add(1);
             counters.local_get = counters.local_get.saturating_add(n);
             counters.br_if = counters.br_if.saturating_add(n);
             counters.br_if_taken = counters.br_if_taken.saturating_add(n.saturating_sub(1));
@@ -8597,8 +8730,7 @@ impl VM {
         self.frames[frame_index].ip = end_ip.saturating_add(4);
         if let Some(counters) = self.perf_counters.as_mut() {
             let n = count as u64;
-            counters.super_local_copy_loop =
-                counters.super_local_copy_loop.saturating_add(1);
+            counters.super_local_copy_loop = counters.super_local_copy_loop.saturating_add(1);
             counters.local_get = counters.local_get.saturating_add(n.saturating_mul(2));
             counters.local_set = counters.local_set.saturating_add(n);
             counters.br_if = counters.br_if.saturating_add(n);
@@ -8835,8 +8967,7 @@ impl VM {
         }
 
         let src = self.stack_i32_at(base + src_slot as usize)?;
-        self.stack[base + dst_slot as usize] =
-            Value::I32(src.wrapping_shl((shift as u32) & 0x1f));
+        self.stack[base + dst_slot as usize] = Value::I32(src.wrapping_shl((shift as u32) & 0x1f));
         self.stack[base + counter_slot as usize] = Value::I32(0);
         self.label_stack.pop();
         self.frames[frame_index].ip = end_ip.saturating_add(4);
@@ -9048,8 +9179,7 @@ impl VM {
         self.frames[frame_index].ip = end_ip.saturating_add(4);
         if let Some(counters) = self.perf_counters.as_mut() {
             let n = count as u64;
-            counters.super_local_i32_eqz_loop =
-                counters.super_local_i32_eqz_loop.saturating_add(1);
+            counters.super_local_i32_eqz_loop = counters.super_local_i32_eqz_loop.saturating_add(1);
             counters.local_get = counters.local_get.saturating_add(n.saturating_mul(2));
             counters.local_set = counters.local_set.saturating_add(n);
             counters.i32_eqz = counters.i32_eqz.saturating_add(n);
@@ -9136,8 +9266,9 @@ impl VM {
         self.frames[frame_index].ip = end_ip.saturating_add(4);
         if let Some(counters) = self.perf_counters.as_mut() {
             let n = count as u64;
-            counters.super_local_i32_ord_cmp_const_loop =
-                counters.super_local_i32_ord_cmp_const_loop.saturating_add(1);
+            counters.super_local_i32_ord_cmp_const_loop = counters
+                .super_local_i32_ord_cmp_const_loop
+                .saturating_add(1);
             match op {
                 Op::I32_LT_S => counters.i32_lt_s = counters.i32_lt_s.saturating_add(n),
                 Op::I32_LT_U => counters.i32_lt_u = counters.i32_lt_u.saturating_add(n),
@@ -9863,8 +9994,7 @@ impl VM {
         self.frames[frame_index].ip = end_ip.saturating_add(4);
         if let Some(counters) = self.perf_counters.as_mut() {
             let n = count as u64;
-            counters.super_local_i64_eqz_loop =
-                counters.super_local_i64_eqz_loop.saturating_add(1);
+            counters.super_local_i64_eqz_loop = counters.super_local_i64_eqz_loop.saturating_add(1);
             counters.local_get = counters.local_get.saturating_add(n.saturating_mul(2));
             counters.local_set = counters.local_set.saturating_add(n);
             counters.i64_eqz = counters.i64_eqz.saturating_add(n);
@@ -9940,9 +10070,7 @@ impl VM {
             Some(Value::Object(obj)) => {
                 let o = obj.lock().unwrap();
                 match &o.kind {
-                    ObjectKind::Function(func)
-                        if func.arity == 1 && func.upvalues.is_empty() =>
-                    {
+                    ObjectKind::Function(func) if func.arity == 1 && func.upvalues.is_empty() => {
                         func.chunk_index
                     }
                     _ => return Ok(false),
@@ -10668,7 +10796,9 @@ impl VM {
             if (is_gc && src_start.saturating_add(count) > a.len())
                 || (is_gc && dst_start.saturating_add(count) > a.len())
             {
-                return Err(VMError::new("trap: out of bounds array access (array.copy loop)",));
+                return Err(VMError::new(
+                    "trap: out of bounds array access (array.copy loop)",
+                ));
             }
             if src_start.saturating_add(count) > a.len()
                 || dst_start.saturating_add(count) > a.len()
@@ -10699,7 +10829,13 @@ impl VM {
                 }
                 let src_guard = src_obj.lock().unwrap();
                 let mut dst_guard = dst_obj.lock().unwrap();
-                if !self.copy_array_loop_guards_and_values(&src_guard, &mut dst_guard, src_start, dst_start, count,)? {
+                if !self.copy_array_loop_guards_and_values(
+                    &src_guard,
+                    &mut dst_guard,
+                    src_start,
+                    dst_start,
+                    count,
+                )? {
                     return Ok(false);
                 }
             } else {
@@ -10708,7 +10844,13 @@ impl VM {
                 }
                 let mut dst_guard = dst_obj.lock().unwrap();
                 let src_guard = src_obj.lock().unwrap();
-                if !self.copy_array_loop_guards_and_values(&src_guard, &mut dst_guard, src_start, dst_start, count,)? {
+                if !self.copy_array_loop_guards_and_values(
+                    &src_guard,
+                    &mut dst_guard,
+                    src_start,
+                    dst_start,
+                    count,
+                )? {
                     return Ok(false);
                 }
             }
@@ -10724,7 +10866,8 @@ impl VM {
             counters.array_get_dense = counters.array_get_dense.saturating_add(n);
             counters.array_set = counters.array_set.saturating_add(n);
             counters.array_set_dense = counters.array_set_dense.saturating_add(n);
-            let offset_gets = u64::from(src_offset_slot.is_some()) + u64::from(dst_offset_slot.is_some());
+            let offset_gets =
+                u64::from(src_offset_slot.is_some()) + u64::from(dst_offset_slot.is_some());
             counters.local_get = counters
                 .local_get
                 .saturating_add(n.saturating_mul(5 + offset_gets));
@@ -10771,7 +10914,9 @@ impl VM {
         if (src_is_gc && src_start.saturating_add(count) > src_arr.len())
             || (dst_is_gc && dst_start.saturating_add(count) > dst_arr.len())
         {
-            return Err(VMError::new("trap: out of bounds array access (array.copy loop)",));
+            return Err(VMError::new(
+                "trap: out of bounds array access (array.copy loop)",
+            ));
         }
         if src_start.saturating_add(count) > src_arr.len()
             || dst_start.saturating_add(count) > dst_arr.len()
@@ -11063,7 +11208,11 @@ impl VM {
         let follow_thread = self.debugger.is_some()
             && std::env::var("VYBE_DEBUG_FOLLOW_THREAD")
                 .map_or(false, |value| value == "1" || value == "true");
-        let child_debugger = if follow_thread { self.debugger.take() } else { None };
+        let child_debugger = if follow_thread {
+            self.debugger.take()
+        } else {
+            None
+        };
         if follow_thread {
             self.instrumented = self.trace || self.error_history.is_some();
         }
@@ -11099,9 +11248,8 @@ impl VM {
             child_vm.wasm_tables = child_wasm_tables;
             child_vm.case_aliases = child_case_aliases;
             child_vm.debugger = child_debugger;
-            child_vm.instrumented = child_vm.trace
-                || child_vm.error_history.is_some()
-                || child_vm.debugger.is_some();
+            child_vm.instrumented =
+                child_vm.trace || child_vm.error_history.is_some() || child_vm.debugger.is_some();
             let _report_scope = crate::debugger::DebugReportScope::enter(child_vm.debug_report());
             // record[+8] is the user argument. A bytecode callee that declares
             // a receiver gets an unset host receiver before that argument.
@@ -12591,7 +12739,10 @@ impl VM {
         self.canon_defs.get(idx as usize)?.ty
     }
 
-    fn canon_element_type(&self, builtin: &str) -> Result<crate::component::ValType, VMError> {
+    fn canon_element_type(
+        &mut self,
+        builtin: &str,
+    ) -> Result<std::sync::Arc<crate::component::ValType>, VMError> {
         let Some(idx) = self.canon_type_immediate else {
             return Err(VMError::new(format!(
                 "canon {builtin}: no canonidx — import it as `canon`/`{builtin}@<canonidx>` \
@@ -12626,7 +12777,15 @@ impl VM {
                 .map_err(|e| VMError::new(format!("{e} (canonidx {idx})")))?
         };
         match self.canon_types.get(ty as usize) {
-            Some(Some(v)) => Ok(v.clone()),
+            Some(Some(v)) => {
+                let index = ty as usize;
+                if self.canon_type_refs.len() <= index {
+                    self.canon_type_refs.resize_with(index + 1, || None);
+                }
+                Ok(self.canon_type_refs[index]
+                    .get_or_insert_with(|| std::sync::Arc::new(v.clone()))
+                    .clone())
+            }
             // The typeidx EXISTS but holds something else — a function type, or
             // a form the front end recorded without decomposing. Distinguished
             // from out-of-range because they are different mistakes: one is a
@@ -12641,6 +12800,43 @@ impl VM {
                 self.canon_types.len()
             ))),
         }
+    }
+
+    fn canon_element_layout(
+        &mut self,
+        ty: &std::sync::Arc<crate::component::ValType>,
+    ) -> std::sync::Arc<crate::canon_layout::MemLayout> {
+        let index = self.canon_type_index().map(|index| index as usize);
+        if let Some(index) = index {
+            let same_type = self
+                .canon_type_refs
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|cached| std::sync::Arc::ptr_eq(cached, ty))
+                || self.canon_types.get(index).and_then(Option::as_ref) == Some(ty.as_ref());
+            if same_type {
+                if self.canon_mem_layouts.len() <= index {
+                    self.canon_mem_layouts.resize_with(index + 1, || None);
+                }
+                return self.canon_mem_layouts[index]
+                    .get_or_insert_with(|| {
+                        std::sync::Arc::new(crate::canon_layout::MemLayout::new(ty))
+                    })
+                    .clone();
+            }
+        }
+        if let Some((_, layout)) = self
+            .canon_inline_layouts
+            .iter()
+            .find(|(cached, _)| {
+                std::sync::Arc::ptr_eq(cached, ty) || cached.as_ref() == ty.as_ref()
+            })
+        {
+            return layout.clone();
+        }
+        let layout = std::sync::Arc::new(crate::canon_layout::MemLayout::new(ty));
+        self.canon_inline_layouts.push((ty.clone(), layout.clone()));
+        layout
     }
 
     /// The canon-section row this built-in was defined by, or a trap naming
@@ -12688,6 +12884,85 @@ impl VM {
                 self.canon_functypes.len()
             ))),
         }
+    }
+
+    fn canon_call_shape(
+        &mut self,
+        builtin: &str,
+    ) -> Result<std::sync::Arc<crate::vm::CanonCallShape>, VMError> {
+        fn canon_contains_any(ty: &crate::component::ValType) -> bool {
+            use crate::component::ValType;
+            match ty {
+                ValType::Any => true,
+                ValType::List(inner)
+                | ValType::ListFixed(inner, _)
+                | ValType::Future(inner)
+                | ValType::Stream(inner)
+                | ValType::Option(inner) => canon_contains_any(inner),
+                ValType::Result(ok, err) => [ok.as_deref(), err.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .any(canon_contains_any),
+                ValType::Record(fields) => {
+                    fields.iter().any(|(_, field)| canon_contains_any(field))
+                }
+                ValType::Variant(cases) => cases
+                    .iter()
+                    .filter_map(|(_, payload)| payload.as_ref())
+                    .any(canon_contains_any),
+                _ => false,
+            }
+        }
+        let idx = self.canon_type_immediate.ok_or_else(|| {
+            VMError::new(format!(
+                "canon {builtin}: no canonidx — `{builtin}` is defined by a \
+                 `(canon {builtin} ...)` row carrying its immediates, so it needs a \
+                 row of the canon section; import it as `canon`/`{builtin}@<canonidx>`"
+            ))
+        })? as usize;
+        if let Some(Some(shape)) = self.canon_call_shapes.get(idx) {
+            return Ok(shape.clone());
+        }
+        let def = self.canon_def_required(builtin)?;
+        let functype = Box::new(self.canon_functype(builtin, &def)?);
+        def.require_callee(builtin).map_err(VMError::new)?;
+        if functype.params.iter().any(canon_contains_any)
+            || functype.result.as_ref().is_some_and(canon_contains_any)
+        {
+            return Err(VMError::new(format!(
+                "canon {builtin}: any is not a component value type"
+            )));
+        }
+        let lower = crate::canon_flat::flatten_functype(
+            &functype.params,
+            functype.result.as_ref(),
+            crate::canon_flat::FlattenContext::Lower,
+            def.opts.is_async,
+            def.opts.callback.is_some(),
+            crate::canon_flat::CoreType::I32,
+        );
+        let lift_result = functype.result.as_ref().map(|result| {
+            crate::canon_flat::flatten_type(result, crate::canon_flat::CoreType::I32)
+                .first()
+                .copied()
+                .unwrap_or(crate::canon_flat::CoreType::I32)
+        });
+        let layouts = crate::canon_flat_values::FlatLayoutCache::for_functype(
+            &functype,
+            crate::canon_flat::CoreType::I32,
+        );
+        let shape = std::sync::Arc::new(crate::vm::CanonCallShape {
+            def,
+            functype,
+            lower,
+            lift_result,
+            layouts,
+        });
+        if self.canon_call_shapes.len() <= idx {
+            self.canon_call_shapes.resize_with(idx + 1, || None);
+        }
+        self.canon_call_shapes[idx] = Some(shape.clone());
+        Ok(shape)
     }
 
     /// Call a canon callee to completion and return its single result.
@@ -12812,28 +13087,22 @@ impl VM {
     /// the whole job: lift the flat args up to component values, call, lower
     /// the result back down.
     fn exec_canon_lower(&mut self) -> Result<(), VMError> {
-        use crate::canon_flat::{CoreType, FlattenContext, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS};
-        let def = self.canon_def_required("lower")?;
-        let ft = self.canon_functype("lower", &def)?;
+        use crate::canon_flat::{CoreType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS};
+        let shape = self.canon_call_shape("lower")?;
+        let def = &shape.def;
+        let ft = &shape.functype;
         let callee = def.require_callee("lower").map_err(VMError::new)?;
-
-        let flat_ft = crate::canon_flat::flatten_functype(
-            &ft.params,
-            ft.result.as_ref(),
-            FlattenContext::Lower,
-            def.opts.is_async,
-            def.opts.callback.is_some(),
-            CoreType::I32,
-        );
-        let flat_args = self.pop_core_values(&flat_ft.params)?;
+        let flat_args = self.pop_core_values(&shape.lower.params)?;
 
         let memory = self.memory.clone();
-        let args = crate::canon_flat_values::lift_flat_values(
+        let args = crate::canon_flat_values::lift_flat_values_cached(
             &memory,
             MAX_FLAT_PARAMS,
             &flat_args,
             &ft.params,
             CoreType::I32,
+            &shape.layouts,
+            shape.layouts.params_flat_len,
         )
         .map_err(|e| VMError::new(format!("canon lower: lifting arguments: {e}")))?;
 
@@ -12850,15 +13119,17 @@ impl VM {
             // coercion is explicit because an `impl FnMut` is not the trait
             // object the canonical-ABI helpers take.
             let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
-            let types: Vec<_> = ft.result.iter().cloned().collect();
+            let types = ft.result.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
             let values: Vec<_> = ft.result.iter().map(|_| result.clone()).collect();
-            crate::canon_flat_values::lower_flat_values(
+            crate::canon_flat_values::lower_flat_values_cached(
                 &memory,
                 &mut realloc,
                 MAX_FLAT_RESULTS,
                 &values,
-                &types,
+                types,
                 CoreType::I32,
+                &shape.layouts,
+                shape.layouts.result_flat_len,
             )
             .map_err(|e| VMError::new(format!("canon lower: lowering result: {e}")))?
         };
@@ -12887,8 +13158,9 @@ impl VM {
     /// TASK (`task.return_`), not to the operand stack.
     fn exec_canon_lift(&mut self) -> Result<(), VMError> {
         use crate::canon_flat::{CoreType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS};
-        let def = self.canon_def_required("lift")?;
-        let ft = self.canon_functype("lift", &def)?;
+        let shape = self.canon_call_shape("lift")?;
+        let def = &shape.def;
+        let ft = &shape.functype;
         let callee = def.require_callee("lift").map_err(VMError::new)?;
 
         // "a task is created for each call to a component export (in
@@ -12925,13 +13197,15 @@ impl VM {
         let flat_args = {
             let mut alloc = Self::bump_realloc(&memory, &mut bump);
             let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
-            crate::canon_flat_values::lower_flat_values(
+            crate::canon_flat_values::lower_flat_values_cached(
                 &memory,
                 &mut realloc,
                 MAX_FLAT_PARAMS,
                 &args,
                 &ft.params,
                 CoreType::I32,
+                &shape.layouts,
+                shape.layouts.params_flat_len,
             )
             .map_err(|e| VMError::new(format!("canon lift: lowering arguments: {e}")))?
         };
@@ -12952,22 +13226,23 @@ impl VM {
         // with "wanted a core I32 and got a F64" — the callee was right and the
         // question was wrong.
         let flat_results = match &ft.result {
-            Some(t) => {
-                let want = crate::canon_flat::flatten_type(t, CoreType::I32);
+            Some(_) => {
                 vec![Self::value_to_core_value_as(
                     &raw,
-                    want.first().copied().unwrap_or(CoreType::I32),
+                    shape.lift_result.unwrap_or(CoreType::I32),
                 )]
             }
             None => Vec::new(),
         };
-        let types: Vec<_> = ft.result.iter().cloned().collect();
-        let lifted = crate::canon_flat_values::lift_flat_values(
+        let types = ft.result.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+        let lifted = crate::canon_flat_values::lift_flat_values_cached(
             &memory,
             MAX_FLAT_RESULTS,
             &flat_results,
-            &types,
+            types,
             CoreType::I32,
+            &shape.layouts,
+            shape.layouts.result_flat_len,
         )
         .map_err(|e| VMError::new(format!("canon lift: lifting result: {e}")))?;
 
@@ -13000,13 +13275,15 @@ impl VM {
                 let flat = {
                     let mut alloc = Self::bump_realloc(&memory, &mut bump2);
                     let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
-                    crate::canon_flat_values::lower_flat_values(
+                    crate::canon_flat_values::lower_flat_values_cached(
                         &memory,
                         &mut realloc,
                         MAX_FLAT_RESULTS,
                         std::slice::from_ref(&result),
                         std::slice::from_ref(t),
                         CoreType::I32,
+                        &shape.layouts,
+                        shape.layouts.result_flat_len,
                     )
                     .map_err(|e| VMError::new(format!("canon lift: lowering result: {e}")))?
                 };
@@ -13498,17 +13775,8 @@ impl VM {
 
                 let mut bytes = vec![0u8; n];
                 self.memory.read_bytes(ptr, &mut bytes);
-                // One item per copy, carrying the whole buffer: the reader
-                // flattens items back to bytes, so the item boundary is
-                // invisible downstream (`EventLoop::stream_read_bytes`).
-                let item = Value::Object(crate::heap::alloc(crate::value::Object::new_array(
-                    bytes.iter().map(|b| Value::I32(*b as i32)).collect(),
-                )));
                 let mut el = self.event_loop.borrow_mut();
-                if let Some(fiber) = el.stream_push(end.id, item) {
-                    el.immediate
-                        .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                }
+                el.stream_push_bytes(end.id, bytes);
                 drop(el);
                 // Data is available now, so a reader parked in COPYING by a
                 // BLOCKED read may copy again — the reset the spec performs on
@@ -13722,6 +13990,7 @@ impl VM {
                 let ptr = self.pop_i32_fast();
                 let handle = self.pop_i32_fast() as u32;
                 let t = self.canon_element_type("future.read")?;
+                let layout = self.canon_element_layout(&t);
                 let end = match self.handle_table.get(handle) {
                     Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e)) => *e,
                     _ => {
@@ -13756,12 +14025,13 @@ impl VM {
                         // OutOfMemory for exactly the shape futures carry most.
                         let memory = self.memory.clone();
                         let mut bump = self.canon_bump_start();
-                        crate::canon_value::store_with(
+                        crate::canon_value::store_with_layout(
                             &memory,
                             &mut Self::bump_realloc(&memory, &mut bump),
                             &v,
                             &t,
                             ptr as u32,
+                            &layout,
                         )
                         .map_err(|e| VMError::new(format!("canon future.read: {e}")))?;
                         self.canon_bump_commit(bump);
@@ -13817,6 +14087,7 @@ impl VM {
                 let ptr = self.pop_i32_fast();
                 let handle = self.pop_i32_fast() as u32;
                 let t = self.canon_element_type("future.write")?;
+                let layout = self.canon_element_layout(&t);
                 let end = match self.handle_table.get(handle) {
                     Some(crate::handle_table::HandleEntry::WritableFutureEnd(e)) => *e,
                     _ => {
@@ -13830,7 +14101,7 @@ impl VM {
                         "canon future.write: end is not IDLE — pipelined copies are not permitted",
                     ));
                 }
-                let v = crate::canon_value::load(&self.memory, &t, ptr as u32)
+                let v = crate::canon_value::load_with_layout(&self.memory, &t, ptr as u32, &layout)
                     .map_err(|e| VMError::new(format!("canon future.write: {e}")))?;
                 let mut el = self.event_loop.borrow_mut();
                 if let Some(fiber) = el.resolve_future(end.id, v) {
@@ -14437,10 +14708,11 @@ impl VM {
         end: crate::handle_table::StreamEnd,
         ptr: usize,
         n: usize,
-        elem: &crate::component::ValType,
+        elem: &std::sync::Arc<crate::component::ValType>,
     ) -> Result<(), VMError> {
-        let stride = crate::canon_layout::elem_size(elem) as usize;
-        let align = crate::canon_layout::alignment(elem);
+        let layout = self.canon_element_layout(elem);
+        let stride = layout.size as usize;
+        let align = layout.align;
         if ptr as u32 != crate::canon_layout::align_to(ptr as u32, align) {
             return Err(VMError::new(format!(
                 "canon stream.write: buffer at {ptr} is not aligned to {align} bytes for this element type"
@@ -14454,7 +14726,12 @@ impl VM {
 
         let mut items = Vec::with_capacity(n);
         for i in 0..n {
-            match crate::canon_value::load(&self.memory, elem, (ptr + stride * i) as u32) {
+            match crate::canon_value::load_with_layout(
+                &self.memory,
+                elem,
+                (ptr + stride * i) as u32,
+                &layout,
+            ) {
                 Ok(value) => items.push(value),
                 Err(e) => return Err(VMError::new(format!("canon stream.write: {e}"))),
             }
@@ -14518,6 +14795,7 @@ impl VM {
                 Ok(None)
             }
             K::StreamTyped(elem) => {
+                let layout = self.canon_element_layout(elem);
                 let items = self
                     .event_loop
                     .borrow_mut()
@@ -14529,16 +14807,21 @@ impl VM {
                     }
                     return Ok(None);
                 }
-                let stride = crate::canon_layout::elem_size(elem) as usize;
+                let stride = layout.size as usize;
                 let memory = self.memory.clone();
                 let mut bump = self.canon_bump_start();
                 let mut realloc = Self::bump_realloc(&memory, &mut bump);
                 let mut copied = 0u32;
                 for (i, item) in items.iter().enumerate() {
                     let at = (p.ptr + stride * i) as u32;
-                    if let Err(e) =
-                        crate::canon_value::store_with(&memory, &mut realloc, item, elem, at)
-                    {
+                    if let Err(e) = crate::canon_value::store_with_layout(
+                        &memory,
+                        &mut realloc,
+                        item,
+                        elem,
+                        at,
+                        &layout,
+                    ) {
                         return Err(VMError::new(format!("canon stream.read: {e}")));
                     }
                     copied += 1;
@@ -14549,6 +14832,7 @@ impl VM {
                 Ok(Some(pack(CopyResult::Completed, copied) as i32))
             }
             K::Future(t) => {
+                let layout = self.canon_element_layout(t);
                 let settled = {
                     let el = self.event_loop.borrow();
                     el.future_states
@@ -14559,12 +14843,13 @@ impl VM {
                     Some((crate::event_loop::FuturePhase::Resolved, Some(v))) => {
                         let memory = self.memory.clone();
                         let mut bump = self.canon_bump_start();
-                        crate::canon_value::store_with(
+                        crate::canon_value::store_with_layout(
                             &memory,
                             &mut Self::bump_realloc(&memory, &mut bump),
                             &v,
                             t,
                             p.ptr as u32,
+                            &layout,
                         )
                         .map_err(|e| VMError::new(format!("canon future.read: {e}")))?;
                         self.canon_bump_commit(bump);
@@ -14601,10 +14886,11 @@ impl VM {
         end: crate::handle_table::StreamEnd,
         ptr: usize,
         n: usize,
-        elem: &crate::component::ValType,
+        elem: &std::sync::Arc<crate::component::ValType>,
     ) -> Result<(), VMError> {
-        let stride = crate::canon_layout::elem_size(elem) as usize;
-        let align = crate::canon_layout::alignment(elem);
+        let layout = self.canon_element_layout(elem);
+        let stride = layout.size as usize;
+        let align = layout.align;
         if ptr as u32 != crate::canon_layout::align_to(ptr as u32, align) {
             return Err(VMError::new(format!(
                 "canon stream.read: buffer at {ptr} is not aligned to {align} bytes for this element type"
@@ -14675,7 +14961,14 @@ impl VM {
         let mut copied = 0u32;
         for (i, item) in items.iter().enumerate() {
             let at = (ptr + stride * i) as u32;
-            if let Err(e) = crate::canon_value::store_with(&memory, &mut realloc, item, elem, at) {
+            if let Err(e) = crate::canon_value::store_with_layout(
+                &memory,
+                &mut realloc,
+                item,
+                elem,
+                at,
+                &layout,
+            ) {
                 return Err(VMError::new(format!("canon stream.read: {e}")))?;
             }
             copied += 1;
@@ -14719,10 +15012,7 @@ impl VM {
         if start > end || end > elems.len() {
             return Err(VMError::new("trap: out of bounds array access"));
         }
-        Ok(elems[start..end]
-            .iter()
-            .map(|v| v.as_i32() as u8)
-            .collect())
+        Ok(elems[start..end].iter().map(|v| v.as_i32() as u8).collect())
     }
 
     /// Read `[start, end)` UTF-16 code units from a GC array.
@@ -15454,18 +15744,12 @@ impl VM {
                 (
                     self.decoded_ops.get_unchecked(chunk_index).as_ptr(),
                     self.decoded_operands.get_unchecked(chunk_index).as_ptr(),
-                    self.decoded_operands64
-                        .get_unchecked(chunk_index)
-                        .as_ptr(),
-                    self.native_call_sites
-                        .get_unchecked(chunk_index)
-                        .as_ptr(),
+                    self.decoded_operands64.get_unchecked(chunk_index).as_ptr(),
+                    self.native_call_sites.get_unchecked(chunk_index).as_ptr(),
                     self.native_result_fast_paths
                         .get_unchecked(chunk_index)
                         .as_ptr(),
-                    self.local_fast_paths
-                        .get_unchecked(chunk_index)
-                        .as_ptr(),
+                    self.local_fast_paths.get_unchecked(chunk_index).as_ptr(),
                 )
             };
             let op = unsafe {
@@ -15478,16 +15762,12 @@ impl VM {
             };
             macro_rules! cached_operand {
                 () => {
-                    unsafe {
-                        *decoded_operands_ptr.add(opcode_start)
-                    }
+                    unsafe { *decoded_operands_ptr.add(opcode_start) }
                 };
             }
             macro_rules! cached_operand64 {
                 () => {
-                    unsafe {
-                        *decoded_operands64_ptr.add(opcode_start)
-                    }
+                    unsafe { *decoded_operands64_ptr.add(opcode_start) }
                 };
             }
             macro_rules! cached_byte_operand {
@@ -15762,10 +16042,7 @@ impl VM {
                         }
                         LocalFastPath::LocalGetJsUndefinedTest { next_ip } => {
                             self.frames[frame_index].ip = next_ip as usize;
-                            self.push_fast(Value::I32(i32::from(matches!(
-                                val,
-                                Value::Undefined
-                            ))));
+                            self.push_fast(Value::I32(i32::from(matches!(val, Value::Undefined))));
                             continue;
                         }
                         LocalFastPath::LocalGetLocalSet {
@@ -15790,7 +16067,8 @@ impl VM {
                             if second_idx >= self.stack.len() {
                                 return Err(VMError::new("trap: local index out of bounds"));
                             }
-                            let second_val = unsafe { self.stack.get_unchecked(second_idx).clone() };
+                            let second_val =
+                                unsafe { self.stack.get_unchecked(second_idx).clone() };
                             if let Some(rec) = self.type_recorder.as_mut() {
                                 rec.record(chunk_idx, second_slot as usize, &second_val);
                             }
@@ -15943,10 +16221,7 @@ impl VM {
                     let operand = cached_operand!();
                     let (typeidx, idx) = if operand & crate::vm::DECODED_ONE_BYTE_LEB_PRESENT != 0 {
                         self.frames[frame_index].ip = opcode_start + 4 + 2;
-                        (
-                            (operand & 0xff) as usize,
-                            ((operand >> 8) & 0xff) as u32
-                        )
+                        ((operand & 0xff) as usize, ((operand >> 8) & 0xff) as u32)
                     } else {
                         (self.read_leb_u32() as usize, self.read_leb_u32())
                     };
@@ -15993,23 +16268,22 @@ impl VM {
                     }
                     // Auto-join thread when accessing .result on a Task/Thread object
                     if let Value::Object(ref o) = obj {
-                        let needs_join = name == "result"
-                            && {
-                                let o_ref = o.lock().unwrap();
-                                // ⛔ ONE MEMBER, AND IT IS THE PROTOCOL'S. This also
-                                // fired on `exitcode` — `System.Diagnostics.Process`'s
-                                // spelling — which no object reaching this guard can
-                                // even have: `__thread_id` is written ONLY by
-                                // `primitives/channels.rs`, and a `Process` built by
-                                // the dotnet adapter carries neither. The arm named a
-                                // framework member the VM cannot see.
-                                o_ref.properties.contains_key("__thread_id")
-                                    && !o_ref
-                                        .properties
-                                        .get("iscompleted")
-                                        .map(|v| v.as_bool())
-                                        .unwrap_or(true)
-                            };
+                        let needs_join = name == "result" && {
+                            let o_ref = o.lock().unwrap();
+                            // ⛔ ONE MEMBER, AND IT IS THE PROTOCOL'S. This also
+                            // fired on `exitcode` — `System.Diagnostics.Process`'s
+                            // spelling — which no object reaching this guard can
+                            // even have: `__thread_id` is written ONLY by
+                            // `primitives/channels.rs`, and a `Process` built by
+                            // the dotnet adapter carries neither. The arm named a
+                            // framework member the VM cannot see.
+                            o_ref.properties.contains_key("__thread_id")
+                                && !o_ref
+                                    .properties
+                                    .get("iscompleted")
+                                    .map(|v| v.as_bool())
+                                    .unwrap_or(true)
+                        };
                         if needs_join {
                             let tid = o
                                 .lock()
@@ -16114,10 +16388,7 @@ impl VM {
                     let operand = cached_operand!();
                     let (typeidx, idx) = if operand & crate::vm::DECODED_ONE_BYTE_LEB_PRESENT != 0 {
                         self.frames[frame_index].ip = opcode_start + 4 + 2;
-                        (
-                            (operand & 0xff) as usize,
-                            ((operand >> 8) & 0xff) as u32
-                        )
+                        ((operand & 0xff) as usize, ((operand >> 8) & 0xff) as u32)
                     } else {
                         (self.read_leb_u32() as usize, self.read_leb_u32())
                     };
@@ -16349,9 +16620,7 @@ impl VM {
                                     } else if let ObjectKind::TypedArray(ref ta) = ob.kind {
                                         Some(typed_array_read(ta, i).unwrap_or(Value::Undefined))
                                     } else if is_gc {
-                                        return Err(VMError::new(
-                                            "trap: array.get on a non-array"
-                                        ));
+                                        return Err(VMError::new("trap: array.get on a non-array"));
                                     } else {
                                         None
                                     }
@@ -16461,7 +16730,8 @@ impl VM {
                                 let typed_field = if ob.type_id > 0
                                     && !self.calling_module_fields_are_own_properties()
                                 {
-                                    self.type_registry.get(ob.type_id)
+                                    self.type_registry
+                                        .get(ob.type_id)
                                         .and_then(|ty| ty.field_index(&k))
                                         .and_then(|index| ob.fields.get(index))
                                         .cloned()
@@ -16497,7 +16767,9 @@ impl VM {
                         Value::String(s) => {
                             let i = key.as_f64() as usize;
                             if let Some(ch) = s.chars().nth(i) {
-                                self.replace_top_pair_fast(Value::String(Arc::from(ch.to_string().as_str(),)));
+                                self.replace_top_pair_fast(Value::String(Arc::from(
+                                    ch.to_string().as_str(),
+                                )));
                             } else {
                                 self.replace_top_pair_fast(Value::Null);
                             }
@@ -16569,9 +16841,7 @@ impl VM {
                                 typed_array_write(ta, i, &val);
                                 continue;
                             } else if is_gc {
-                                return Err(VMError::new(
-                                    "trap: array.set on a non-array"
-                                ));
+                                return Err(VMError::new("trap: array.set on a non-array"));
                             }
                         } else {
                             if let Some(counters) = self.perf_counters.as_mut() {
@@ -16637,7 +16907,9 @@ impl VM {
                             && ob.type_id > 0
                             && !self.calling_module_fields_are_own_properties()
                         {
-                            if let Some(index) = self.type_registry.get(ob.type_id)
+                            if let Some(index) = self
+                                .type_registry
+                                .get(ob.type_id)
                                 .and_then(|ty| ty.field_index(&k))
                             {
                                 if let Some(field) = ob.fields.get_mut(index) {
@@ -17396,7 +17668,9 @@ impl VM {
                 Op::RETURN => {
                     let debug_return = self.debug_report().map(|report| {
                         crate::debugger::DebugHostCall::new(
-                            Some(report), "vm:return values".to_string(),)
+                            Some(report),
+                            "vm:return values".to_string(),
+                        )
                     });
                     let frame_chunk = self.frame().chunk_index;
                     let frame_label_base = self.frame().label_base;
@@ -17431,12 +17705,18 @@ impl VM {
                         Vec::new()
                     };
                     let base = self.frame().base;
-                    if let Some(stage) = &debug_return { stage.stage("vm:return close_upvalues"); }
+                    if let Some(stage) = &debug_return {
+                        stage.stage("vm:return close_upvalues");
+                    }
                     self.close_upvalues(base);
-                    if let Some(stage) = &debug_return { stage.stage("vm:return labels"); }
+                    if let Some(stage) = &debug_return {
+                        stage.stage("vm:return labels");
+                    }
                     self.label_stack.truncate(frame_label_base);
                     self.frames.pop();
-                    if let Some(stage) = &debug_return { stage.stage("vm:return handlers"); }
+                    if let Some(stage) = &debug_return {
+                        stage.stage("vm:return handlers");
+                    }
                     // A returning frame's exception handlers die with the frame:
                     // a JS async-wrapper `try_table`, or a `return` from inside a
                     // `try`, leaves handlers that nothing else pops (a `return`
@@ -17458,7 +17738,9 @@ impl VM {
                     // Mark the cont Done and transfer control back to the
                     // caller of RESUME/GEN_NEXT rather than exiting the VM.
                     if self.frames.is_empty() {
-                        if let Some(stage) = &debug_return { stage.stage("vm:return continuation"); }
+                        if let Some(stage) = &debug_return {
+                            stage.stage("vm:return continuation");
+                        }
                         if dbg_ac {
                             eprintln!(
                                 "[AC-DEBUG] empty-frames RETURN: chunk={} ip={} min_depth={} ac_len={} fiber={} stack_len={}",
@@ -17471,7 +17753,9 @@ impl VM {
                             );
                         }
                         if let Some(ac) = self.active_continuations.pop() {
-                            if let Some(stage) = &debug_return { stage.stage("vm:return finish continuation"); }
+                            if let Some(stage) = &debug_return {
+                                stage.stage("vm:return finish continuation");
+                            }
                             if let Value::Object(ref obj) = ac.cont {
                                 let o = obj.lock().unwrap();
                                 if let ObjectKind::Continuation(cs) = &o.kind {
@@ -17482,14 +17766,13 @@ impl VM {
                             let ret_val = if n == 1 {
                                 result.take().unwrap_or(Value::Null)
                             } else if n == 2 {
-                                result_pair
-                                    .take()
-                                    .map(|(_, b)| b)
-                                    .unwrap_or(Value::Null)
+                                result_pair.take().map(|(_, b)| b).unwrap_or(Value::Null)
                             } else {
                                 results.pop().unwrap_or(Value::Null)
                             };
-                            if let Some(stage) = &debug_return { stage.stage("vm:return resume fiber"); }
+                            if let Some(stage) = &debug_return {
+                                stage.stage("vm:return resume fiber");
+                            }
                             self.resume_fiber_with(ac.caller_fiber, Some(ret_val))?;
                             if ac.mode == ResumeMode::Iterator {
                                 // has_more = 0 — generator is exhausted
@@ -17500,10 +17783,7 @@ impl VM {
                         let last = if n == 1 {
                             result.take().unwrap_or(Value::Null)
                         } else if n == 2 {
-                            result_pair
-                                .take()
-                                .map(|(_, b)| b)
-                                .unwrap_or(Value::Null)
+                            result_pair.take().map(|(_, b)| b).unwrap_or(Value::Null)
                         } else {
                             results.pop().unwrap_or(Value::Null)
                         };
@@ -17520,16 +17800,15 @@ impl VM {
                         let last = if n == 1 {
                             result.take().unwrap_or(Value::Null)
                         } else if n == 2 {
-                            result_pair
-                                .take()
-                                .map(|(_, b)| b)
-                                .unwrap_or(Value::Null)
+                            result_pair.take().map(|(_, b)| b).unwrap_or(Value::Null)
                         } else {
                             results.pop().unwrap_or(Value::Null)
                         };
                         return Ok(last);
                     }
-                    if let Some(stage) = &debug_return { stage.stage("vm:return restore stack"); }
+                    if let Some(stage) = &debug_return {
+                        stage.stage("vm:return restore stack");
+                    }
                     self.stack.truncate(base);
                     if n == 1 {
                         self.push_fast(result.take().unwrap_or(Value::Null));
@@ -17544,7 +17823,10 @@ impl VM {
                     }
                 }
                 Op::REF_FUNC => {
-                    let func_idx = self.read_u16() as usize;
+                    let func_idx = cached_operand64!() as usize;
+                    // Consume the original module-relative u16 without using
+                    // it as a VM-wide index. Capture bytes stay unchanged.
+                    self.frames[frame_index].ip += 2;
                     // The uv_count byte's high bit (0x80) is a "do not intern"
                     // flag: a bound method stamps a per-receiver property on its
                     // funcref, so it must be a FRESH object per binding — never
@@ -19011,10 +19293,13 @@ impl VM {
                         // of this dispatch iteration.
                         *native_call_sites_ptr.add(opcode_start)
                     };
-                    if let Some(native_target) = cached_native_target {
-                        record_native_call_site!(native_target);
-                        exec_native_call_site!(native_target);
-                        continue;
+                    match cached_native_target {
+                        Some(native_target) => {
+                            record_native_call_site!(native_target);
+                            exec_native_call_site!(native_target);
+                            continue;
+                        }
+                        None => {}
                     }
 
                     let target = match self.resolve_chunk_call_target(chunk_index, import_idx)? {
@@ -19035,7 +19320,7 @@ impl VM {
                                         import_idx
                                     ))
                                 })?
-                            }
+                        }
                     };
 
                     if let Some(native_target) = NativeCallSiteTarget::from_resolved(&target) {
@@ -19082,24 +19367,34 @@ impl VM {
                             ResolvedCallTarget::JsBoolean(builtin) => counters.record_host_import(
                                 format!("native-call:wasm:js-boolean:{}", builtin.name()),
                             ),
-                            ResolvedCallTarget::JsUndefined(builtin) => counters.record_host_import(
-                                format!("native-call:wasm:js-undefined:{}", builtin.name())
-                            ),
+                            ResolvedCallTarget::JsUndefined(builtin) => counters
+                                .record_host_import(format!(
+                                    "native-call:wasm:js-undefined:{}",
+                                    builtin.name()
+                                )),
                             ResolvedCallTarget::JsString(builtin) => counters.record_host_import(
                                 format!("native-call:wasm:js-string:{}", builtin.name()),
                             ),
-                            ResolvedCallTarget::EcmaNumber(builtin, _) => counters.record_host_import(
-                                format!("native-call:ecma:number:{}", builtin.name())
-                            ),
-                            ResolvedCallTarget::EcmaBoolean(builtin, _) => counters.record_host_import(
-                                format!("native-call:ecma:boolean:{}", builtin.name())
-                            ),
-                            ResolvedCallTarget::EcmaObject(builtin, _) => counters.record_host_import(
-                                format!("native-call:ecma:object:{}", builtin.name())
-                            ),
-                            ResolvedCallTarget::EcmaArray(builtin, _) => counters.record_host_import(
-                                format!("native-call:ecma:array:{}", builtin.name())
-                            ),
+                            ResolvedCallTarget::EcmaNumber(builtin, _) => counters
+                                .record_host_import(format!(
+                                    "native-call:ecma:number:{}",
+                                    builtin.name()
+                                )),
+                            ResolvedCallTarget::EcmaBoolean(builtin, _) => counters
+                                .record_host_import(format!(
+                                    "native-call:ecma:boolean:{}",
+                                    builtin.name()
+                                )),
+                            ResolvedCallTarget::EcmaObject(builtin, _) => counters
+                                .record_host_import(format!(
+                                    "native-call:ecma:object:{}",
+                                    builtin.name()
+                                )),
+                            ResolvedCallTarget::EcmaArray(builtin, _) => counters
+                                .record_host_import(format!(
+                                    "native-call:ecma:array:{}",
+                                    builtin.name()
+                                )),
                             _ => {}
                         }
                     }
@@ -19133,9 +19428,12 @@ impl VM {
                                     if self.debugger.is_some() {
                                         let debug_report = self.debug_report();
                                         debug_report.map(|report| {
-                                        let name = self.debugger.as_mut().unwrap()
-                                            .host_name(host_idx, &self.host_registry);
-                                        crate::debugger::DebugHostCall::new(Some(report), name)
+                                            let name = self
+                                                .debugger
+                                                .as_mut()
+                                                .unwrap()
+                                                .host_name(host_idx, &self.host_registry);
+                                            crate::debugger::DebugHostCall::new(Some(report), name)
                                         })
                                     } else {
                                         None
@@ -19198,18 +19496,18 @@ impl VM {
                                     call_host_fn!(&mut ctx, &args)
                                 }
                                 _ => {
-                                let base = self.stack.len() - argc;
-                                let mut args = std::mem::take(&mut self.host_call_args);
-                                args.clear();
-                                args.extend(self.stack.drain(base..));
+                                    let base = self.stack.len() - argc;
+                                    let mut args = std::mem::take(&mut self.host_call_args);
+                                    args.clear();
+                                    args.extend(self.stack.drain(base..));
                                     let _debug_host_call = prepare_host_debug!();
-                                let result = {
-                                    let mut ctx = self.make_host_context();
-                                    call_host_fn!(&mut ctx, &args)
-                                };
-                                args.clear();
-                                self.host_call_args = args;
-                                result
+                                    let result = {
+                                        let mut ctx = self.make_host_context();
+                                        call_host_fn!(&mut ctx, &args)
+                                    };
+                                    args.clear();
+                                    self.host_call_args = args;
+                                    result
                                 }
                             };
                             if let Some(exc) = self.last_exception.take() {
@@ -19498,8 +19796,8 @@ impl VM {
                         1 => {
                             for chunk in src.chunks_exact(8) {
                                 elems.push(Value::I64(i64::from_le_bytes([
-                                    chunk[0], chunk[1], chunk[2], chunk[3],
-                                    chunk[4], chunk[5], chunk[6], chunk[7],
+                                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5],
+                                    chunk[6], chunk[7],
                                 ])));
                             }
                         }
@@ -19513,8 +19811,8 @@ impl VM {
                         3 => {
                             for chunk in src.chunks_exact(8) {
                                 elems.push(Value::F64(f64::from_le_bytes([
-                                    chunk[0], chunk[1], chunk[2], chunk[3],
-                                    chunk[4], chunk[5], chunk[6], chunk[7],
+                                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5],
+                                    chunk[6], chunk[7],
                                 ])));
                             }
                         }
@@ -19640,9 +19938,7 @@ impl VM {
                                 Value::I32(v)
                             }
                             ObjectKind::Array(elems) => {
-                                if is_gc_array
-                                    && (raw_idx < 0 || raw_idx as usize >= elems.len())
-                                {
+                                if is_gc_array && (raw_idx < 0 || raw_idx as usize >= elems.len()) {
                                     return Err(VMError::new(
                                         "trap: out of bounds array access (array.get)",
                                     ));
@@ -19739,7 +20035,8 @@ impl VM {
                                 }
                                 let byte_count = size.saturating_mul(elem_size);
                                 let src_start = src_offset;
-                                let dst_start = ta.byte_offset + dst_offset.saturating_mul(elem_size);
+                                let dst_start =
+                                    ta.byte_offset + dst_offset.saturating_mul(elem_size);
                                 buf[dst_start..dst_start + byte_count]
                                     .copy_from_slice(&data[src_start..src_start + byte_count]);
                             }
@@ -20008,10 +20305,7 @@ impl VM {
                     let (_typeidx, field_idx) =
                         if operand & crate::vm::DECODED_ONE_BYTE_LEB_PRESENT != 0 {
                             self.frames[frame_index].ip = opcode_start + 4 + 2;
-                            (
-                                (operand & 0xff) as usize,
-                                ((operand >> 8) & 0xff) as u32
-                            )
+                            ((operand & 0xff) as usize, ((operand >> 8) & 0xff) as u32)
                         } else {
                             (self.read_leb_u32() as usize, self.read_leb_u32())
                         };
@@ -20138,18 +20432,14 @@ impl VM {
                     };
                     let next_ip = self.frames[frame_index].ip;
                     let mut store_slot = None;
-                    if next_ip < code_len
-                        && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL
-                    {
+                    if next_ip < code_len && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL {
                         let next_operand = unsafe { *decoded_operands_ptr.add(next_ip) };
                         let next_argc = ((next_operand >> 16) & 0xff) as usize;
                         let next_native = unsafe { *native_call_sites_ptr.add(next_ip) };
                         if next_argc == 1
                             && matches!(
                                 next_native,
-                                Some(NativeCallSiteTarget::JsNumber(
-                                    JsNumberBuiltin::FromI32
-                                ))
+                                Some(NativeCallSiteTarget::JsNumber(JsNumberBuiltin::FromI32))
                             )
                         {
                             let after_call_ip = next_ip + 7;
@@ -20214,18 +20504,14 @@ impl VM {
                     self.frames[frame_index].ip = opcode_start + 12;
                     let next_ip = self.frames[frame_index].ip;
                     let mut store_slot = None;
-                    if next_ip < code_len
-                        && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL
-                    {
+                    if next_ip < code_len && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL {
                         let next_operand = unsafe { *decoded_operands_ptr.add(next_ip) };
                         let next_argc = ((next_operand >> 16) & 0xff) as usize;
                         let next_native = unsafe { *native_call_sites_ptr.add(next_ip) };
                         if next_argc == 1
                             && matches!(
                                 next_native,
-                                Some(NativeCallSiteTarget::JsNumber(
-                                    JsNumberBuiltin::FromF64
-                                ))
+                                Some(NativeCallSiteTarget::JsNumber(JsNumberBuiltin::FromF64))
                             )
                         {
                             let after_call_ip = next_ip + 7;
@@ -20514,16 +20800,13 @@ impl VM {
                         return Err(VMError::new("trap: out of bounds array access"));
                     }
                     if wtf16 {
-                        for (slot, unit) in elems[start..start + count]
-                            .iter_mut()
-                            .zip(s.encode_utf16())
+                        for (slot, unit) in
+                            elems[start..start + count].iter_mut().zip(s.encode_utf16())
                         {
                             *slot = Value::I32(unit as i32);
                         }
                     } else {
-                        for (slot, byte) in elems[start..start + count]
-                            .iter_mut()
-                            .zip(s.as_bytes())
+                        for (slot, byte) in elems[start..start + count].iter_mut().zip(s.as_bytes())
                         {
                             *slot = Value::I32(*byte as i32);
                         }
@@ -21037,7 +21320,8 @@ impl VM {
                     // handlers above recorded `label_depth` BEFORE this push,
                     // so it names the OUTER level — a thrown exception unwinds
                     // to there (catch code lives past this block's `end`).
-                    let end_ip = self.block_targets_at(chunk_index, opcode_start)
+                    let end_ip = self
+                        .block_targets_at(chunk_index, opcode_start)
                         .map_or(self.frames[frame_index].ip, |t| t.end_ip);
                     self.label_stack.push(LabelEntry {
                         target: end_ip,
@@ -21129,7 +21413,9 @@ impl VM {
                         (direct_target, funcref)
                     };
                     if let Some((chunk_index, arity, func)) = direct_target {
-                        if !self.func_switches.is_empty() && self.func_switches.contains_key(&chunk_index) {
+                        if !self.func_switches.is_empty()
+                            && self.func_switches.contains_key(&chunk_index)
+                        {
                             return Err(VMError::new(
                                 "call: a func_switch has no type and cannot be called \
                                  directly — reach it with call_with_tag"
@@ -21168,7 +21454,9 @@ impl VM {
                     if let Some((chunk_index, arity, func)) =
                         Self::bytecode_funcref_target(&self.stack[callee_idx])
                     {
-                        if !self.func_switches.is_empty() && self.func_switches.contains_key(&chunk_index) {
+                        if !self.func_switches.is_empty()
+                            && self.func_switches.contains_key(&chunk_index)
+                        {
                             return Err(VMError::new(
                                 "call: a func_switch has no type and cannot be called \
                                  directly — reach it with call_with_tag"
@@ -21338,11 +21626,17 @@ impl VM {
                 }
                 Op::I32_LOAD8_U => {
                     let memarg = cached_operand!();
-                    let byte = if let Some(addr) = self.cached_memory0_i32_load_addr(frame_index, opcode_start + 4, memarg) {
+                    let byte = if let Some(addr) =
+                        self.cached_memory0_i32_load_addr(frame_index, opcode_start + 4, memarg)
+                    {
                         self.read_memory0_u8(addr)?
                     } else {
-                        let (addr, memidx) =
-                            self.read_memory_load_addr(frame_index, chunk_index, opcode_start + 4, memarg,);
+                        let (addr, memidx) = self.read_memory_load_addr(
+                            frame_index,
+                            chunk_index,
+                            opcode_start + 4,
+                            memarg,
+                        );
                         self.read_cached_memory_u8(memarg, memidx, addr)?
                     };
                     self.replace_top_value_fast(Value::I32(byte as i32));
@@ -21350,11 +21644,17 @@ impl VM {
                 Op::I32_STORE8 => {
                     let val = self.peek_i32_top_fast() as u8;
                     let memarg = cached_operand!();
-                    if let Some(addr) = self.cached_memory0_i32_store_addr(frame_index, opcode_start + 4, memarg) {
+                    if let Some(addr) =
+                        self.cached_memory0_i32_store_addr(frame_index, opcode_start + 4, memarg)
+                    {
                         self.write_memory0_u8(addr, val)?;
                     } else {
-                        let (addr, memidx) =
-                            self.read_memory_store_addr(frame_index, chunk_index, opcode_start + 4, memarg,);
+                        let (addr, memidx) = self.read_memory_store_addr(
+                            frame_index,
+                            chunk_index,
+                            opcode_start + 4,
+                            memarg,
+                        );
                         self.write_cached_memory_u8(memarg, memidx, addr, val)?;
                     }
                     self.truncate_top_pair_fast();
@@ -21574,7 +21874,9 @@ impl VM {
                         );
                         self.read_cached_memory_array::<4>(memarg, memidx, addr)?
                     };
-                    self.replace_top_value_fast(Value::I64(i32::from_le_bytes(bytes) as u32 as i64),);
+                    self.replace_top_value_fast(
+                        Value::I64(i32::from_le_bytes(bytes) as u32 as i64),
+                    );
                 }
                 Op::I64_STORE8 => {
                     let val = self.peek_i64_top_fast() as u8;
@@ -21721,7 +22023,8 @@ impl VM {
                     let param_arity = (operand & 0xff) as usize;
                     let result_arity = ((operand >> 8) & 0xff) as u8;
                     self.frames[frame_index].ip = opcode_start + 6;
-                    let end_ip = self.block_targets_at(chunk_index, opcode_start)
+                    let end_ip = self
+                        .block_targets_at(chunk_index, opcode_start)
                         .map_or(self.frames[frame_index].ip, |t| t.end_ip);
                     self.label_stack.push(LabelEntry {
                         target: end_ip,
@@ -21765,6 +22068,18 @@ impl VM {
                     });
                     if param_arity == 0 {
                         match self.classify_loop_superop(chunk_index, loop_body_start) {
+                            LoopSuperop::CanonicalByteArrayToLinear {
+                                arr_slot,
+                                dst_slot,
+                                len_slot,
+                                i_slot,
+                            } => {
+                                if self.try_canonical_byte_array_to_linear_loop(
+                                    arr_slot, dst_slot, len_slot, i_slot,
+                                )? {
+                                    continue;
+                                }
+                            }
                             LoopSuperop::ManagedArrayToLinear {
                                 arr_slot,
                                 dst_slot,
@@ -22035,7 +22350,8 @@ impl VM {
                                 mul,
                                 add,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_i32_lcg_loop(
@@ -22050,7 +22366,8 @@ impl VM {
                                 }
                             }
                             LoopSuperop::I32CountdownLoop { counter_slot } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_i32_countdown_loop(counter_slot, end_ip)? {
@@ -22062,7 +22379,8 @@ impl VM {
                                 src_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_get_drop_loop(
@@ -22079,7 +22397,8 @@ impl VM {
                                 dst_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_copy_loop(
@@ -22097,7 +22416,8 @@ impl VM {
                                 dst_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_eqz_loop(
@@ -22116,7 +22436,8 @@ impl VM {
                                 rhs,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_compare_const_loop(
@@ -22137,7 +22458,8 @@ impl VM {
                                 rhs,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_compare_const_loop(
@@ -22159,7 +22481,8 @@ impl VM {
                                 op,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_ordered_compare_const_loop(
@@ -22180,7 +22503,8 @@ impl VM {
                                 add,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_add_const_loop(
@@ -22200,7 +22524,8 @@ impl VM {
                                 sub,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_sub_const_loop(
@@ -22220,7 +22545,8 @@ impl VM {
                                 op,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_accum_const_loop(
@@ -22240,7 +22566,8 @@ impl VM {
                                 mask,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_and_const_loop(
@@ -22260,7 +22587,8 @@ impl VM {
                                 mul,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_mul_const_loop(
@@ -22280,7 +22608,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_shl_const_loop(
@@ -22300,7 +22629,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_rotl_const_loop(
@@ -22320,7 +22650,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_rotr_const_loop(
@@ -22340,7 +22671,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_shr_s_const_loop(
@@ -22360,7 +22692,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_shr_u_const_loop(
@@ -22380,7 +22713,8 @@ impl VM {
                                 mask,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_or_const_loop(
@@ -22400,7 +22734,8 @@ impl VM {
                                 mask,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i32_xor_const_loop(
@@ -22420,7 +22755,8 @@ impl VM {
                                 add,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_add_const_loop(
@@ -22440,7 +22776,8 @@ impl VM {
                                 sub,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_sub_const_loop(
@@ -22460,7 +22797,8 @@ impl VM {
                                 op,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_accum_const_loop(
@@ -22480,7 +22818,8 @@ impl VM {
                                 mask,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_and_const_loop(
@@ -22500,7 +22839,8 @@ impl VM {
                                 mul,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_mul_const_loop(
@@ -22520,7 +22860,8 @@ impl VM {
                                 mask,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_or_const_loop(
@@ -22540,7 +22881,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_shl_const_loop(
@@ -22560,7 +22902,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_shr_s_const_loop(
@@ -22580,7 +22923,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_shr_u_const_loop(
@@ -22600,7 +22944,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_rotl_const_loop(
@@ -22620,7 +22965,8 @@ impl VM {
                                 shift,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_rotr_const_loop(
@@ -22640,7 +22986,8 @@ impl VM {
                                 mask,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_xor_const_loop(
@@ -22661,7 +23008,8 @@ impl VM {
                                 op,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_compare_const_loop(
@@ -22683,7 +23031,8 @@ impl VM {
                                 op,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_f32_compare_const_loop(
@@ -22705,7 +23054,8 @@ impl VM {
                                 op,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_f64_compare_const_loop(
@@ -22727,7 +23077,8 @@ impl VM {
                                 op,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_f32_binary_const_loop(
@@ -22749,7 +23100,8 @@ impl VM {
                                 op,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_f64_binary_const_loop(
@@ -22769,7 +23121,8 @@ impl VM {
                                 dst_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_i64_eqz_loop(
@@ -22787,7 +23140,8 @@ impl VM {
                                 value,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_local_set_const_loop(
@@ -22805,7 +23159,8 @@ impl VM {
                                 acc_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_call_i32_add_loop(
@@ -22824,7 +23179,8 @@ impl VM {
                                 acc_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_call_ref_i32_add_loop(
@@ -22845,7 +23201,8 @@ impl VM {
                                 counter_slot,
                                 call_ip,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_call_indirect_i32_add_loop(
@@ -22866,7 +23223,8 @@ impl VM {
                                 dst_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_global_get_local_loop(
@@ -22883,7 +23241,8 @@ impl VM {
                                 global_idx,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_global_get_drop_loop(
@@ -22900,7 +23259,8 @@ impl VM {
                                 value,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_global_set_const_loop(
@@ -22918,7 +23278,8 @@ impl VM {
                                 value_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_global_set_local_loop(
@@ -22936,7 +23297,8 @@ impl VM {
                                 name_idx,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_struct_get_drop_loop(
@@ -22955,7 +23317,8 @@ impl VM {
                                 dst_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_struct_get_local_loop(
@@ -22975,7 +23338,8 @@ impl VM {
                                 name_idx,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_struct_set_const_loop(
@@ -22995,7 +23359,8 @@ impl VM {
                                 name_idx,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_struct_set_local_loop(
@@ -23014,7 +23379,8 @@ impl VM {
                                 index,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_array_get_drop_loop(
@@ -23033,7 +23399,8 @@ impl VM {
                                 dst_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_array_get_local_loop(
@@ -23055,7 +23422,8 @@ impl VM {
                                 len_slot,
                                 i_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_array_copy_loop(
@@ -23077,7 +23445,8 @@ impl VM {
                                 value,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_array_set_const_loop(
@@ -23097,7 +23466,8 @@ impl VM {
                                 value_slot,
                                 counter_slot,
                             } => {
-                                if let Some(end_ip) = self.block_targets_at(chunk_index, opcode_start)
+                                if let Some(end_ip) = self
+                                    .block_targets_at(chunk_index, opcode_start)
                                     .map(|t| t.end_ip)
                                 {
                                     if self.try_array_set_local_loop(
@@ -23122,11 +23492,12 @@ impl VM {
                     let param_arity = (operand & 0xff) as usize;
                     let result_arity = ((operand >> 8) & 0xff) as u8;
                     self.frames[frame_index].ip = opcode_start + 6;
-                    let targets = self.block_targets_at(chunk_index, opcode_start)
-                        .unwrap_or(BlockTargets {
-                            else_ip: None,
-                            end_ip: self.frames[frame_index].ip,
-                        });
+                    let targets =
+                        self.block_targets_at(chunk_index, opcode_start)
+                            .unwrap_or(BlockTargets {
+                                else_ip: None,
+                                end_ip: self.frames[frame_index].ip,
+                            });
                     // WASM `if` consumes an i32 condition (spec §4.4.1).
                     // The compiler must lower dynamic truthiness to i32 before this opcode.
                     // We also accept Bool (from VM-internal ops like REF_IS_*, emit_dyn_eq etc.)
@@ -23182,7 +23553,8 @@ impl VM {
                     // block: pop the IF label and jump past the else-body (to past END).
                     // The else-body is thus never executed on the then-path.
                     self.label_stack.pop();
-                    let end_ip = self.block_targets_at(chunk_index, opcode_start)
+                    let end_ip = self
+                        .block_targets_at(chunk_index, opcode_start)
                         .map_or(self.frames[frame_index].ip, |t| t.end_ip);
                     self.frame_mut().ip = end_ip;
                 }
@@ -23331,7 +23703,9 @@ impl VM {
                         }
                     }
                     if let Some((chunk_index, arity, func)) = direct_target {
-                        if !self.func_switches.is_empty() && self.func_switches.contains_key(&chunk_index) {
+                        if !self.func_switches.is_empty()
+                            && self.func_switches.contains_key(&chunk_index)
+                        {
                             return Err(VMError::new(
                                 "call: a func_switch has no type and cannot be called \
                                  directly — reach it with call_with_tag"
@@ -23366,19 +23740,16 @@ impl VM {
                 // -- Multi-Memory --
                 Op::MEMORY_INIT => {
                     let operand = cached_operand!();
-                    let (data_idx, memidx) =
-                        if operand != crate::vm::DECODED_BULK_MEMORY_FALLBACK {
-                            let len =
-                                (operand >> crate::vm::DECODED_BULK_MEMORY_LEN_SHIFT) as usize;
-                            self.frames[frame_index].ip = opcode_start + 4 + len;
-                            (
-                                (operand & 0xff) as u32,
-                                ((operand >> crate::vm::DECODED_BULK_MEMORY_SRC_SHIFT) & 0xff)
-                                    as usize,
-                            )
-                        } else {
-                            (self.read_leb_u32() as u32, self.read_leb_u32() as usize)
-                        };
+                    let (data_idx, memidx) = if operand != crate::vm::DECODED_BULK_MEMORY_FALLBACK {
+                        let len = (operand >> crate::vm::DECODED_BULK_MEMORY_LEN_SHIFT) as usize;
+                        self.frames[frame_index].ip = opcode_start + 4 + len;
+                        (
+                            (operand & 0xff) as u32,
+                            ((operand >> crate::vm::DECODED_BULK_MEMORY_SRC_SHIFT) & 0xff) as usize,
+                        )
+                    } else {
+                        (self.read_leb_u32() as u32, self.read_leb_u32() as usize)
+                    };
                     // Spec (bulk-memory Overview §data.drop): a dropped
                     // segment SHRINKS TO ZERO LENGTH — it may still be used
                     // by memory.init, "but only a zero-length access at
@@ -23519,22 +23890,18 @@ impl VM {
                 }
                 Op::TABLE_COPY => {
                     let operand = cached_operand!();
-                    let (dst_table_idx, src_table_idx) =
-                        if operand != crate::vm::DECODED_BULK_MEMORY_FALLBACK {
-                            let len =
-                                (operand >> crate::vm::DECODED_BULK_MEMORY_LEN_SHIFT) as usize;
-                            self.frames[frame_index].ip = opcode_start + 4 + len;
-                            (
-                                (operand & 0xff) as usize,
-                                ((operand >> crate::vm::DECODED_BULK_MEMORY_SRC_SHIFT) & 0xff)
-                                    as usize,
-                            )
-                        } else {
-                            (
-                                self.read_leb_u32() as usize,
-                                self.read_leb_u32() as usize
-                            )
-                        };
+                    let (dst_table_idx, src_table_idx) = if operand
+                        != crate::vm::DECODED_BULK_MEMORY_FALLBACK
+                    {
+                        let len = (operand >> crate::vm::DECODED_BULK_MEMORY_LEN_SHIFT) as usize;
+                        self.frames[frame_index].ip = opcode_start + 4 + len;
+                        (
+                            (operand & 0xff) as usize,
+                            ((operand >> crate::vm::DECODED_BULK_MEMORY_SRC_SHIFT) & 0xff) as usize,
+                        )
+                    } else {
+                        (self.read_leb_u32() as usize, self.read_leb_u32() as usize)
+                    };
                     // table64: operands are i64 if either table is 64-bit.
                     let is64 = self.tbl_is_64(dst_table_idx) || self.tbl_is_64(src_table_idx);
                     let count = self.pop_table_count(is64);
@@ -23563,12 +23930,10 @@ impl VM {
                             }
                         } else if dst < src {
                             let (dst_region, src_region) = table.split_at_mut(src);
-                            dst_region[dst..dst + count]
-                                .clone_from_slice(&src_region[..count]);
+                            dst_region[dst..dst + count].clone_from_slice(&src_region[..count]);
                         } else if dst > src {
                             let (src_region, dst_region) = table.split_at_mut(dst);
-                            dst_region[..count]
-                                .clone_from_slice(&src_region[src..src + count]);
+                            dst_region[..count].clone_from_slice(&src_region[src..src + count]);
                         } else {
                             // Source and destination are identical.
                         }
@@ -23597,31 +23962,28 @@ impl VM {
                         let (left, right) = self.wasm_tables.split_at_mut(dst_table_idx);
                         let source = &left[src_table_idx];
                         let destination = &mut right[0];
-                        destination[dst..dst + count]
-                            .clone_from_slice(&source[src..src + count]);
+                        destination[dst..dst + count].clone_from_slice(&source[src..src + count]);
                     } else {
                         let (left, right) = self.wasm_tables.split_at_mut(src_table_idx);
                         let destination = &mut left[dst_table_idx];
                         let source = &right[0];
-                        destination[dst..dst + count]
-                            .clone_from_slice(&source[src..src + count]);
+                        destination[dst..dst + count].clone_from_slice(&source[src..src + count]);
                     }
                 }
                 Op::TABLE_INIT => {
                     let operand = cached_operand!();
-                    let (elem_idx, table_idx) =
-                        if operand != crate::vm::DECODED_BULK_MEMORY_FALLBACK {
-                            let len =
-                                (operand >> crate::vm::DECODED_BULK_MEMORY_LEN_SHIFT) as usize;
-                            self.frames[frame_index].ip = opcode_start + 4 + len;
-                            (
-                                (operand & 0xff) as u32,
-                                ((operand >> crate::vm::DECODED_BULK_MEMORY_SRC_SHIFT) & 0xff)
-                                    as usize,
-                            )
-                        } else {
-                            (self.read_leb_u32() as u32, self.read_leb_u32() as usize)
-                        };
+                    let (elem_idx, table_idx) = if operand
+                        != crate::vm::DECODED_BULK_MEMORY_FALLBACK
+                    {
+                        let len = (operand >> crate::vm::DECODED_BULK_MEMORY_LEN_SHIFT) as usize;
+                        self.frames[frame_index].ip = opcode_start + 4 + len;
+                        (
+                            (operand & 0xff) as u32,
+                            ((operand >> crate::vm::DECODED_BULK_MEMORY_SRC_SHIFT) & 0xff) as usize,
+                        )
+                    } else {
+                        (self.read_leb_u32() as u32, self.read_leb_u32() as usize)
+                    };
                     // ⚠ A DROPPED segment is an EMPTY one, not an error of
                     // its own. The spec drops the payload and leaves the
                     // segment in place, so the bounds check is what decides:
@@ -23680,18 +24042,16 @@ impl VM {
                 }
                 Op::MEMORY_COPY => {
                     let operand = cached_operand!();
-                    let (dst_mem, src_mem) =
-                        if operand != crate::vm::DECODED_BULK_MEMORY_FALLBACK {
-                            let len = (operand >> crate::vm::DECODED_BULK_MEMORY_LEN_SHIFT) as usize;
-                            self.frames[frame_index].ip = opcode_start + 4 + len;
-                            (
-                                (operand & 0xff) as usize,
-                                ((operand >> crate::vm::DECODED_BULK_MEMORY_SRC_SHIFT) & 0xff)
-                                    as usize,
-                            )
-                        } else {
-                            (self.read_leb_u32() as usize, self.read_leb_u32() as usize)
-                        };
+                    let (dst_mem, src_mem) = if operand != crate::vm::DECODED_BULK_MEMORY_FALLBACK {
+                        let len = (operand >> crate::vm::DECODED_BULK_MEMORY_LEN_SHIFT) as usize;
+                        self.frames[frame_index].ip = opcode_start + 4 + len;
+                        (
+                            (operand & 0xff) as usize,
+                            ((operand >> crate::vm::DECODED_BULK_MEMORY_SRC_SHIFT) & 0xff) as usize,
+                        )
+                    } else {
+                        (self.read_leb_u32() as usize, self.read_leb_u32() as usize)
+                    };
                     // memory64: operands are i64 if either memory is 64-bit.
                     let is64 = self.mem_is_64(dst_mem) || self.mem_is_64(src_mem);
                     let count = self.pop_mem_index(is64);
@@ -23807,9 +24167,7 @@ impl VM {
                                     .is_some_and(|td| td.is_array());
                             if let ObjectKind::Array(ref mut a) = o.kind {
                                 if is_gc
-                                    && (src_off
-                                        .checked_add(len)
-                                        .map_or(true, |end| end > a.len())
+                                    && (src_off.checked_add(len).map_or(true, |end| end > a.len())
                                         || dst_off
                                             .checked_add(len)
                                             .map_or(true, |end| end > a.len()))
@@ -23836,26 +24194,28 @@ impl VM {
                                         .clone_from_slice(&src_region[..count]);
                                 } else if dst_off > src_start {
                                     let (src_region, dst_region) = a.split_at_mut(dst_off);
-                                    dst_region[..count]
-                                        .clone_from_slice(&src_region[src_start..src_start + count],);
+                                    dst_region[..count].clone_from_slice(
+                                        &src_region[src_start..src_start + count],
+                                    );
                                 } else {
                                     // Source and destination are identical.
                                 }
                             }
                         } else {
-                            let copy_distinct = |src_guard: &Object,
-                                                 dst_guard: &mut Object|
-                             -> Result<(), VMError> {
-                                let src_is_gc = src_guard.type_id > 0
-                                    && self
-                                        .type_registry
-                                        .get(src_guard.type_id)
-                                        .is_some_and(|td| td.is_array());
-                                let dst_is_gc = dst_guard.type_id > 0
-                                    && self
-                                        .type_registry
-                                        .get(dst_guard.type_id)
-                                        .is_some_and(|td| td.is_array());
+                            let copy_distinct =
+                                |src_guard: &Object,
+                                 dst_guard: &mut Object|
+                                 -> Result<(), VMError> {
+                                    let src_is_gc = src_guard.type_id > 0
+                                        && self
+                                            .type_registry
+                                            .get(src_guard.type_id)
+                                            .is_some_and(|td| td.is_array());
+                                    let dst_is_gc = dst_guard.type_id > 0
+                                        && self
+                                            .type_registry
+                                            .get(dst_guard.type_id)
+                                            .is_some_and(|td| td.is_array());
                                     if let (
                                         ObjectKind::Array(src_arr),
                                         ObjectKind::Array(dst_arr),
@@ -23881,10 +24241,9 @@ impl VM {
                                         let dst_count = dst_arr.len().saturating_sub(dst_off);
                                         let count = count.min(dst_count);
                                         if count != 0 {
-                                            dst_arr[dst_off..dst_off + count]
-                                                .clone_from_slice(
-                                                    &src_arr[src_start..src_start + count],
-                                                );
+                                            dst_arr[dst_off..dst_off + count].clone_from_slice(
+                                                &src_arr[src_start..src_start + count],
+                                            );
                                         }
                                     }
                                     Ok(())
@@ -24442,9 +24801,12 @@ impl VM {
                     let mut out = [0u8; 16];
                     for i in 0..2 {
                         let j = i * 4;
-                        let v =
-                            i32::from_le_bytes([bytes[j], bytes[j + 1], bytes[j + 2], bytes[j + 3],])
-                                as i64;
+                        let v = i32::from_le_bytes([
+                            bytes[j],
+                            bytes[j + 1],
+                            bytes[j + 2],
+                            bytes[j + 3],
+                        ]) as i64;
                         write_v128_i64_lane(&mut out, i, v);
                     }
                     self.push_fast(Value::V128(out));
@@ -24455,9 +24817,12 @@ impl VM {
                     let mut out = [0u8; 16];
                     for i in 0..2 {
                         let j = i * 4;
-                        let v =
-                            u32::from_le_bytes([bytes[j], bytes[j + 1], bytes[j + 2], bytes[j + 3],])
-                                as u64;
+                        let v = u32::from_le_bytes([
+                            bytes[j],
+                            bytes[j + 1],
+                            bytes[j + 2],
+                            bytes[j + 3],
+                        ]) as u64;
                         write_v128_i64_lane(&mut out, i, v as i64);
                     }
                     self.push_fast(Value::V128(out));
@@ -25053,8 +25418,7 @@ impl VM {
                     if let Some(a) = self.pop_v128_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
-                            let f =
-                                v128_f64_lane(&a, i) as f32;
+                            let f = v128_f64_lane(&a, i) as f32;
                             write_v128_f32_lane(&mut out, i, f);
                         }
                         self.push_fast(Value::V128(out));
@@ -25066,8 +25430,7 @@ impl VM {
                     if let Some(a) = self.pop_v128_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
-                            let f =
-                                v128_f32_lane(&a, i) as f64;
+                            let f = v128_f32_lane(&a, i) as f64;
                             write_v128_f64_lane(&mut out, i, f);
                         }
                         self.push_fast(Value::V128(out));
@@ -25290,11 +25653,9 @@ impl VM {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
-                            let v = v128_i32_lane(&va, i)
-                                .clamp(-32768, 32767) as i16;
+                            let v = v128_i32_lane(&va, i).clamp(-32768, 32767) as i16;
                             write_v128_i16_lane(&mut out, i, v as i16);
-                            let v2 = v128_i32_lane(&vb, i)
-                                .clamp(-32768, 32767) as i16;
+                            let v2 = v128_i32_lane(&vb, i).clamp(-32768, 32767) as i16;
                             write_v128_i16_lane(&mut out, 4 + i, v2);
                         }
                         self.push_fast(Value::V128(out));
@@ -25306,11 +25667,9 @@ impl VM {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
-                            let v = v128_i32_lane(&va, i)
-                                .clamp(0, 65535) as u16;
+                            let v = v128_i32_lane(&va, i).clamp(0, 65535) as u16;
                             write_v128_i16_lane(&mut out, i, v as i16);
-                            let v2 = v128_i32_lane(&vb, i)
-                                .clamp(0, 65535) as u16;
+                            let v2 = v128_i32_lane(&vb, i).clamp(0, 65535) as u16;
                             write_v128_i16_lane(&mut out, 4 + i, v2 as i16);
                         }
                         self.push_fast(Value::V128(out));
@@ -25601,8 +25960,11 @@ impl VM {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
-                            let v = (v128_i16_lane(&va, 4 + i) as i32)
-                                .wrapping_mul(v128_i16_lane(&vb, 4 + i,) as i32);
+                            let v = (v128_i16_lane(&va, 4 + i) as i32).wrapping_mul(v128_i16_lane(
+                                &vb,
+                                4 + i,
+                            )
+                                as i32);
                             write_v128_i32_lane(&mut out, i, v as i32);
                         }
                         self.push_fast(Value::V128(out));
@@ -25627,8 +25989,11 @@ impl VM {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
-                            let v = (v128_u16_lane(&va, 4 + i) as i32)
-                                .wrapping_mul(v128_u16_lane(&vb, 4 + i,) as i32);
+                            let v = (v128_u16_lane(&va, 4 + i) as i32).wrapping_mul(v128_u16_lane(
+                                &vb,
+                                4 + i,
+                            )
+                                as i32);
                             write_v128_i32_lane(&mut out, i, v as i32);
                         }
                         self.push_fast(Value::V128(out));
@@ -25663,8 +26028,7 @@ impl VM {
                     if let Some(a) = self.pop_v128_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
-                            let v =
-                                v128_i32_lane(&a, i) as i64;
+                            let v = v128_i32_lane(&a, i) as i64;
                             write_v128_i64_lane(&mut out, i, v as i64);
                         }
                         self.push_fast(Value::V128(out));
@@ -25688,8 +26052,7 @@ impl VM {
                     if let Some(a) = self.pop_v128_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
-                            let v =
-                                v128_u32_lane(&a, i) as i64;
+                            let v = v128_u32_lane(&a, i) as i64;
                             write_v128_i64_lane(&mut out, i, v as i64);
                         }
                         self.push_fast(Value::V128(out));
@@ -25765,8 +26128,11 @@ impl VM {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
-                            let v = (v128_i32_lane(&va, 2 + i) as i64)
-                                .wrapping_mul(v128_i32_lane(&vb, 2 + i,) as i64);
+                            let v = (v128_i32_lane(&va, 2 + i) as i64).wrapping_mul(v128_i32_lane(
+                                &vb,
+                                2 + i,
+                            )
+                                as i64);
                             write_v128_i64_lane(&mut out, i, v as i64);
                         }
                         self.push_fast(Value::V128(out));
@@ -25791,8 +26157,11 @@ impl VM {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
-                            let v = (v128_u32_lane(&va, 2 + i) as i64)
-                                .wrapping_mul(v128_u32_lane(&vb, 2 + i,) as i64);
+                            let v = (v128_u32_lane(&va, 2 + i) as i64).wrapping_mul(v128_u32_lane(
+                                &vb,
+                                2 + i,
+                            )
+                                as i64);
                             write_v128_i64_lane(&mut out, i, v as i64);
                         }
                         self.push_fast(Value::V128(out));
@@ -25931,8 +26300,7 @@ impl VM {
                     if let Some(a) = self.pop_v128_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
-                            let v =
-                                v128_i32_lane(&a, i) as f32;
+                            let v = v128_i32_lane(&a, i) as f32;
                             write_v128_f32_lane(&mut out, i, v);
                         }
                         self.push_fast(Value::V128(out));
@@ -25944,8 +26312,7 @@ impl VM {
                     if let Some(a) = self.pop_v128_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
-                            let v =
-                                v128_u32_lane(&a, i) as f32;
+                            let v = v128_u32_lane(&a, i) as f32;
                             write_v128_f32_lane(&mut out, i, v);
                         }
                         self.push_fast(Value::V128(out));
@@ -25991,8 +26358,7 @@ impl VM {
                     if let Some(a) = self.pop_v128_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
-                            let v =
-                                v128_i32_lane(&a, i) as f64;
+                            let v = v128_i32_lane(&a, i) as f64;
                             write_v128_f64_lane(&mut out, i, v);
                         }
                         self.push_fast(Value::V128(out));
@@ -26004,8 +26370,7 @@ impl VM {
                     if let Some(a) = self.pop_v128_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
-                            let v =
-                                v128_u32_lane(&a, i) as f64;
+                            let v = v128_u32_lane(&a, i) as f64;
                             write_v128_f64_lane(&mut out, i, v);
                         }
                         self.push_fast(Value::V128(out));
@@ -26284,10 +26649,8 @@ impl VM {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..8 {
-                            let av =
-                                v128_i16_lane(&va, i) as i32;
-                            let bv =
-                                v128_i16_lane(&vb, i) as i32;
+                            let av = v128_i16_lane(&va, i) as i32;
+                            let bv = v128_i16_lane(&vb, i) as i32;
                             let r = ((av * bv) + (1 << 14)) >> 15;
                             let r = r.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
                             write_v128_i16_lane(&mut out, i, r as i16);
@@ -26326,8 +26689,7 @@ impl VM {
                     if let Some((va, vb, vc)) = self.pop_v128_triple_fast() {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
-                            let mut sum: i32 =
-                                v128_i32_lane(&vc, i);
+                            let mut sum: i32 = v128_i32_lane(&vc, i);
                             for j in 0..4 {
                                 let av = va[i * 4 + j] as i8 as i32;
                                 let bv = vb[i * 4 + j] as i8 as i32;
@@ -26444,5 +26806,299 @@ mod thread_block_tests {
             !err.contains("no host work is pending"),
             "a ready thread must be switched to, never reported as a deadlock: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod canon_call_cache_tests {
+    use super::*;
+    use crate::canon_def::{CalleeRef, CanonDef, CanonFuncType};
+    use crate::component::ValType;
+
+    #[test]
+    fn memory_layout_cache_is_instance_local_and_invalidated_with_type_space() {
+        let mut vm = VM::new();
+        let baseline = vm.snapshot();
+        vm.canon_type_immediate = Some(1);
+        let first = vm.canon_element_layout(&std::sync::Arc::new(ValType::I32));
+        let again = vm.canon_element_layout(&std::sync::Arc::new(ValType::I32));
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
+        let mut other = VM::new();
+        other.canon_type_immediate = Some(1);
+        let other_layout = other.canon_element_layout(&std::sync::Arc::new(ValType::I32));
+        assert!(!std::sync::Arc::ptr_eq(&first, &other_layout));
+        assert_eq!((first.size, first.align), (4, 4));
+
+        let mut chunk = crate::chunk::Chunk::new("component");
+        chunk.canon_valtypes = vec![Some(ValType::I64)].into();
+        vm.merge_canon_types(std::slice::from_ref(&chunk)).unwrap();
+        assert!(vm.canon_mem_layouts.is_empty());
+        assert!(vm.canon_inline_layouts.is_empty());
+        vm.canon_type_immediate = Some(0);
+        let second = vm.canon_element_layout(&std::sync::Arc::new(ValType::I64));
+        assert_eq!((second.size, second.align), (8, 8));
+        assert!(!std::sync::Arc::ptr_eq(&first, &second));
+
+        vm.reset_to(&baseline);
+        assert!(vm.canon_mem_layouts.is_empty());
+        assert!(vm.canon_inline_layouts.is_empty());
+        assert_eq!(vm.canon_types[1], Some(ValType::I32));
+    }
+
+    #[test]
+    fn canonical_type_refs_reuse_nested_types_and_clear_on_merge_and_reset() {
+        let mut vm = VM::new();
+        let baseline = vm.snapshot();
+        let nested = ValType::Variant(vec![
+            ("none".into(), None),
+            (
+                "some".into(),
+                Some(ValType::Option(Box::new(ValType::List(Box::new(
+                    ValType::I64,
+                ))))),
+            ),
+        ]);
+        vm.canon_type_immediate = Some(1);
+        let bootstrap = vm.canon_element_type("future.read").unwrap();
+        let mut other = VM::new();
+        other.canon_type_immediate = Some(1);
+        assert!(!std::sync::Arc::ptr_eq(
+            &bootstrap,
+            &other.canon_element_type("future.read").unwrap()
+        ));
+        let mut first_chunk = crate::chunk::Chunk::new("component");
+        first_chunk.canon_valtypes = vec![Some(nested.clone())].into();
+        vm.merge_canon_types(std::slice::from_ref(&first_chunk))
+            .unwrap();
+        assert!(vm.canon_type_refs.is_empty());
+        vm.canon_type_immediate = Some(0);
+        let first = vm.canon_element_type("future.read").unwrap();
+        let again = vm.canon_element_type("future.write").unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
+        assert_eq!(*first, nested);
+        let first_layout = vm.canon_element_layout(&first);
+        let again_layout = vm.canon_element_layout(&again);
+        assert!(std::sync::Arc::ptr_eq(&first_layout, &again_layout));
+
+        first_chunk.canon_section = vec![CanonDef {
+            ty: Some(0),
+            ..Default::default()
+        }]
+        .into();
+        vm.merge_canon_section(std::slice::from_ref(&first_chunk))
+            .unwrap();
+        assert!(vm.canon_type_refs.is_empty());
+        let after_section = vm.canon_element_type("future.read").unwrap();
+        assert_eq!(*after_section, nested);
+        assert!(!std::sync::Arc::ptr_eq(&first, &after_section));
+
+        vm.reset_to(&baseline);
+        assert!(vm.canon_type_refs.is_empty());
+        vm.canon_type_immediate = Some(0);
+        let after_reset = vm.canon_element_type("future.read").unwrap();
+        assert_eq!(*after_reset, ValType::Bool);
+        assert!(!std::sync::Arc::ptr_eq(&first, &after_reset));
+    }
+
+    #[test]
+    fn canonical_type_ref_preserves_missing_and_wrong_kind_traps() {
+        let mut vm = VM::new();
+        assert!(
+            vm.canon_element_type("future.read")
+                .unwrap_err()
+                .message
+                .contains("no canonidx")
+        );
+        vm.canon_type_immediate = Some(8);
+        assert!(
+            vm.canon_element_type("future.read")
+                .unwrap_err()
+                .message
+                .contains("not registered")
+        );
+        vm.canon_types.push(None);
+        vm.canon_type_immediate = Some(4);
+        assert!(
+            vm.canon_element_type("future.read")
+                .unwrap_err()
+                .message
+                .contains("does not hold a VALUE type")
+        );
+    }
+
+    #[test]
+    fn canonical_type_ref_cache_uses_resolved_type_index_not_canon_row() {
+        let mut vm = VM::new();
+        vm.canon_defs = vec![
+            CanonDef {
+                ty: Some(1),
+                ..Default::default()
+            },
+            CanonDef {
+                ty: Some(1),
+                ..Default::default()
+            },
+        ];
+        vm.canon_type_immediate = Some(0);
+        let first = vm.canon_element_type("future.read").unwrap();
+        vm.canon_type_immediate = Some(1);
+        let second = vm.canon_element_type("future.write").unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(*second, ValType::I32);
+    }
+
+    #[test]
+    #[ignore = "manual canonical type lookup microbenchmark"]
+    fn bench_canonical_type_ref_vs_deep_clone() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let nested = ValType::Variant(
+            (0..12)
+                .map(|i| {
+                    (
+                        format!("case{i}"),
+                        Some(ValType::List(Box::new(ValType::Option(Box::new(
+                            ValType::I64,
+                        ))))),
+                    )
+                })
+                .collect(),
+        );
+        let mut vm = VM::new();
+        let mut chunk = crate::chunk::Chunk::new("component");
+        chunk.canon_valtypes = vec![Some(nested.clone())].into();
+        vm.merge_canon_types(std::slice::from_ref(&chunk)).unwrap();
+        vm.canon_type_immediate = Some(0);
+        vm.canon_element_type("future.read").unwrap();
+
+        let before = Instant::now();
+        for _ in 0..100_000 {
+            black_box(nested.clone());
+        }
+        let deep_clone = before.elapsed();
+        let before = Instant::now();
+        for _ in 0..100_000 {
+            black_box(vm.canon_element_type("future.read").unwrap());
+        }
+        let cached_lookup = before.elapsed();
+        eprintln!("100k nested canonical type uses: deep clone {deep_clone:?}, cached lookup {cached_lookup:?}");
+    }
+
+    #[test]
+    fn caches_nested_variant_shape_and_clears_it_on_reset() {
+        let mut vm = VM::new();
+        let baseline = vm.snapshot();
+        let variant = ValType::Variant(vec![
+            ("empty".into(), None),
+            (
+                "nested".into(),
+                Some(ValType::Option(Box::new(ValType::I64))),
+            ),
+        ]);
+        vm.canon_defs.push(CanonDef {
+            callee: Some(CalleeRef::Core(0)),
+            functype: Some(0),
+            ..Default::default()
+        });
+        vm.canon_functypes.push(Some(CanonFuncType {
+            params: vec![variant.clone()],
+            result: Some(variant.clone()),
+        }));
+        vm.canon_type_immediate = Some(0);
+        let first = vm.canon_call_shape("lift").unwrap();
+        let second = vm.canon_call_shape("lift").unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(
+            first.lower.params,
+            crate::canon_flat::flatten_functype(
+                &[variant.clone()],
+                Some(&variant),
+                crate::canon_flat::FlattenContext::Lower,
+                false,
+                false,
+                crate::canon_flat::CoreType::I32,
+            )
+            .params
+        );
+        assert_eq!(first.lift_result, Some(crate::canon_flat::CoreType::I32));
+
+        vm.reset_to(&baseline);
+        assert!(vm.canon_call_shapes.is_empty());
+        vm.canon_type_immediate = Some(0);
+        assert!(
+            vm.canon_call_shape("lift")
+                .unwrap_err()
+                .message
+                .contains("not a row")
+        );
+    }
+
+    #[test]
+    fn invalid_function_type_is_not_cached() {
+        let mut vm = VM::new();
+        vm.canon_defs.push(CanonDef {
+            callee: Some(CalleeRef::Core(0)),
+            functype: Some(7),
+            ..Default::default()
+        });
+        vm.canon_type_immediate = Some(0);
+        assert!(
+            vm.canon_call_shape("lift")
+                .unwrap_err()
+                .message
+                .contains("$ft 7")
+        );
+        assert!(vm.canon_call_shapes.is_empty());
+    }
+
+    #[test]
+    fn nested_any_is_rejected_before_layout_is_cached() {
+        let mut vm = VM::new();
+        vm.canon_defs.push(CanonDef {
+            callee: Some(CalleeRef::Core(0)),
+            functype: Some(0),
+            ..Default::default()
+        });
+        vm.canon_functypes.push(Some(CanonFuncType {
+            params: vec![ValType::Record(vec![(
+                "payload".into(),
+                ValType::Variant(vec![("bad".into(), Some(ValType::Any))]),
+            )])],
+            result: None,
+        }));
+        vm.canon_type_immediate = Some(0);
+        let err = vm.canon_call_shape("lift").unwrap_err();
+        assert!(err.message.contains("any is not a component value type"));
+        assert!(vm.canon_call_shapes.is_empty());
+    }
+
+    #[test]
+    fn merging_component_metadata_invalidates_cached_shape() {
+        let mut vm = VM::new();
+        let def = CanonDef {
+            callee: Some(CalleeRef::Core(0)),
+            functype: Some(0),
+            ..Default::default()
+        };
+        let ft = CanonFuncType {
+            params: vec![ValType::I32],
+            result: Some(ValType::I32),
+        };
+        vm.canon_defs.push(def.clone());
+        vm.canon_functypes.push(Some(ft.clone()));
+        vm.canon_type_immediate = Some(0);
+        let first = vm.canon_call_shape("lift").unwrap();
+
+        let mut chunk = crate::chunk::Chunk::new("component");
+        chunk.canon_section = vec![def].into();
+        chunk.canon_functypes = vec![Some(ft)].into();
+        chunk.canon_valtypes = vec![Some(ValType::I32)].into();
+        vm.merge_canon_section(std::slice::from_ref(&chunk))
+            .unwrap();
+        vm.merge_canon_types(std::slice::from_ref(&chunk)).unwrap();
+        let second = vm.canon_call_shape("lift").unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(first.lower, second.lower);
     }
 }

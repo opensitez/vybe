@@ -13,6 +13,32 @@
 use crate::value::Value;
 use std::collections::{BTreeMap, HashMap};
 
+/// Shared canonical export lookup. Direct exports require no allocation;
+/// re-export traversal borrows names and checks cycles without copying strings.
+pub(crate) fn resolve_host_export<'a>(
+    modules: &'a HashMap<String, ModuleRecord>,
+    module: &str,
+    name: &str,
+) -> Option<&'a ExportEntry> {
+    let mut module = module;
+    let mut name = name;
+    let mut visited = Vec::new();
+    loop {
+        let export = modules.get(module)?.exports.get(name)?;
+        match export {
+            ExportEntry::Indirect { from, name: target_name } => {
+                if visited.contains(&(module, name)) {
+                    return None;
+                }
+                visited.push((module, name));
+                module = from;
+                name = target_name;
+            }
+            export => return Some(export),
+        }
+    }
+}
+
 /// A registered module — Synthetic (Rust-backed), Wasm (loaded `.wasm`),
 /// or Adapter (source-language file re-exporting from Synthetic modules).
 #[derive(Debug)]

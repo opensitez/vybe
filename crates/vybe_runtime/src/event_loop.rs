@@ -17,6 +17,7 @@
 use crate::fiber::Fiber;
 use crate::value::Value;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 /// Close all open upvalues captured in a lambda Value.
 /// Timer callbacks escape their creating stack frame and run in a fresh
@@ -43,8 +44,9 @@ fn close_upvalues_in_value(val: &Value, stack: &[Value]) {
 ///
 /// The same conversion [`VM::stream_drain`] applies, kept identical on purpose:
 /// two byte-views of one stream that disagree would show up as corrupted output
-/// far from here. `I32` is a single byte (a `u8` element), `String` is its
-/// UTF-8 bytes, and an array is the concatenation of its elements.
+/// far from here. Legacy `I32` is a single byte, `String` is its UTF-8 bytes,
+/// and an array is the concatenation of its elements. Raw byte runs bypass
+/// this conversion.
 fn flatten_into(item: &Value, out: &mut Vec<u8>) {
     use crate::value::ObjectKind;
     match item {
@@ -82,7 +84,7 @@ pub struct FutureRecord {
 /// Registered state for a single stream<T>.
 #[derive(Debug)]
 pub struct StreamRecord {
-    pub buffer: VecDeque<Value>,
+    pub buffer: VecDeque<StreamItem>,
     pub closed: bool,
     /// The `T` of `stream<T>`, when it is not `u8`.
     ///
@@ -91,11 +93,31 @@ pub struct StreamRecord {
     /// spelled as some 1-byte stand-in here, because `canon stream.read`'s
     /// byte path and its element path are different code, and conflating the
     /// two types is how a `stream<u8>` would silently acquire element strides.
-    pub elem: Option<crate::component::ValType>,
+    pub elem: Option<Arc<crate::component::ValType>>,
     /// Bytes flattened out of `buffer` but not yet handed to a reader.
     /// `canon stream.read` copies a byte count, which need not land on an item
     /// boundary; the remainder waits here. See [`EventLoop::stream_read_bytes`].
     pub pending: Vec<u8>,
+    pending_start: usize,
+}
+
+#[derive(Debug)]
+pub enum StreamItem {
+    Value(Value),
+    Bytes(Vec<u8>),
+}
+
+impl StreamItem {
+    fn into_value(self) -> Value {
+        match self {
+            Self::Value(value) => value,
+            Self::Bytes(bytes) => Value::Object(crate::heap::alloc(
+                crate::value::Object::new_array(
+                    bytes.into_iter().map(|byte| Value::I32(byte as i32)).collect(),
+                ),
+            )),
+        }
+    }
 }
 
 /// A task in the event loop.
@@ -393,14 +415,15 @@ impl EventLoop {
                 buffer: VecDeque::new(),
                 closed: false,
                 pending: Vec::new(),
-                elem,
+                pending_start: 0,
+                elem: elem.map(Arc::new),
             },
         );
         id
     }
 
     /// The `T` of `stream<T>`, or `None` for a byte stream.
-    pub fn stream_elem(&self, stream_id: u64) -> Option<crate::component::ValType> {
+    pub fn stream_elem(&self, stream_id: u64) -> Option<Arc<crate::component::ValType>> {
         self.stream_buffers
             .get(&stream_id)
             .and_then(|rec| rec.elem.clone())
@@ -418,7 +441,7 @@ impl EventLoop {
             return Vec::new();
         };
         let take = max.min(rec.buffer.len());
-        rec.buffer.drain(..take).collect()
+        rec.buffer.drain(..take).map(StreamItem::into_value).collect()
     }
 
     /// Suspend a fiber waiting for the next item from a stream.
@@ -440,7 +463,7 @@ impl EventLoop {
             Some(fiber)
         } else {
             if let Some(rec) = self.stream_buffers.get_mut(&stream_id) {
-                rec.buffer.push_back(item);
+                rec.buffer.push_back(StreamItem::Value(item));
             }
             // Buffered FIRST, then the parked synchronous readers are released
             // — they resume by copying out of that buffer, so waking them
@@ -451,11 +474,35 @@ impl EventLoop {
         }
     }
 
+    /// Buffer a byte run as one internal item. This changes no stream handle or
+    /// canonical ABI shape; `canon stream.read` still copies individual bytes.
+    pub fn stream_push_bytes(&mut self, stream_id: u64, bytes: Vec<u8>) {
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(rec) = self.stream_buffers.get_mut(&stream_id) {
+            assert!(rec.elem.is_none(), "byte run pushed to typed stream");
+            if let Some(pos) = self
+                .stream_waiting_fibers
+                .iter()
+                .position(|(id, _)| *id == stream_id)
+            {
+                let (_, mut fiber) = self.stream_waiting_fibers.remove(pos);
+                fiber.resume_value = Some(StreamItem::Bytes(bytes).into_value());
+                self.immediate.push_back(Task::ResumeFiber(fiber));
+                return;
+            }
+            rec.buffer.push_back(StreamItem::Bytes(bytes));
+            self.wake_stream_sync_readers(stream_id);
+        }
+    }
+
     /// Pop one buffered item from a stream. Returns None if the buffer is empty.
     pub fn stream_pop(&mut self, stream_id: u64) -> Option<Value> {
         self.stream_buffers
             .get_mut(&stream_id)
             .and_then(|rec| rec.buffer.pop_front())
+            .map(StreamItem::into_value)
     }
 
     /// Read up to `max` BYTES out of a `stream<u8>` — the unit `canon
@@ -468,20 +515,44 @@ impl EventLoop {
     /// would either overrun the guest's buffer or silently drop 90 bytes —
     /// and the guest would have no way to detect either.
     ///
-    /// Conversion matches [`VM::stream_drain`]: `I32` is one byte, `String` is
-    /// its UTF-8 bytes, an array is the concatenation of its elements.
+    /// Legacy values are flattened as above; raw byte runs are copied directly.
     pub fn stream_read_bytes(&mut self, stream_id: u64, max: usize) -> Vec<u8> {
         let Some(rec) = self.stream_buffers.get_mut(&stream_id) else {
             return Vec::new();
         };
-        while rec.pending.len() < max {
+        if rec.pending_start == rec.pending.len()
+            && matches!(rec.buffer.front(), Some(StreamItem::Bytes(bytes))
+                if bytes.len() <= max && (rec.buffer.len() == 1 || bytes.len() == max))
+        {
+            if let Some(StreamItem::Bytes(bytes)) = rec.buffer.pop_front() {
+                return bytes;
+            }
+        }
+        while rec.pending.len() - rec.pending_start < max {
             let Some(item) = rec.buffer.pop_front() else {
                 break;
             };
-            flatten_into(&item, &mut rec.pending);
+            if rec.pending_start != 0 {
+                rec.pending.drain(..rec.pending_start);
+                rec.pending_start = 0;
+            }
+            match item {
+                StreamItem::Value(value) => flatten_into(&value, &mut rec.pending),
+                StreamItem::Bytes(bytes) if rec.pending.is_empty() => rec.pending = bytes,
+                StreamItem::Bytes(bytes) => rec.pending.extend_from_slice(&bytes),
+            }
         }
-        let take = max.min(rec.pending.len());
-        rec.pending.drain(..take).collect()
+        let take = max.min(rec.pending.len() - rec.pending_start);
+        if max == usize::MAX && rec.pending_start == 0 {
+            return std::mem::take(&mut rec.pending);
+        }
+        let bytes = rec.pending[rec.pending_start..rec.pending_start + take].to_vec();
+        rec.pending_start += take;
+        if rec.pending_start == rec.pending.len() {
+            rec.pending.clear();
+            rec.pending_start = 0;
+        }
+        bytes
     }
 
     /// True when a `stream<u8>` has no bytes left AND no items that could
@@ -490,21 +561,23 @@ impl EventLoop {
     pub fn stream_has_bytes(&self, stream_id: u64) -> bool {
         self.stream_buffers
             .get(&stream_id)
-            .is_some_and(|rec| !rec.pending.is_empty() || !rec.buffer.is_empty())
+            .is_some_and(|rec| rec.pending_start < rec.pending.len() || !rec.buffer.is_empty())
     }
 
     /// Check whether a stream's buffer is empty AND the stream is closed (EOF).
     pub fn stream_is_eof(&self, stream_id: u64) -> bool {
         self.stream_buffers
             .get(&stream_id)
-            .map_or(true, |rec| rec.closed && rec.buffer.is_empty())
+            .map_or(true, |rec| {
+                rec.closed && rec.buffer.is_empty() && rec.pending_start == rec.pending.len()
+            })
     }
 
     /// Check whether a stream has buffered items ready to read.
     pub fn stream_has_item(&self, stream_id: u64) -> bool {
         self.stream_buffers
             .get(&stream_id)
-            .map_or(false, |rec| !rec.buffer.is_empty())
+            .map_or(false, |rec| rec.pending_start < rec.pending.len() || !rec.buffer.is_empty())
     }
 
     /// Close a stream. If a fiber is waiting, wake it with EOF (resume_value = None → Null).
@@ -549,4 +622,137 @@ pub fn monotonic_now_ms() -> f64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
     start.elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::EventLoop;
+    use crate::value::Value;
+
+    #[test]
+    fn byte_runs_preserve_order_and_partial_reads() {
+        let mut events = EventLoop::new();
+        let stream = events.create_stream();
+        events.stream_push_bytes(stream, vec![0, 255, 1, 2, 3]);
+        events.stream_push(stream, Value::I32(4));
+        events.stream_push_bytes(stream, vec![5, 6]);
+
+        assert_eq!(events.stream_read_bytes(stream, 2), [0, 255]);
+        assert!(events.stream_has_bytes(stream));
+        assert_eq!(events.stream_read_bytes(stream, 4), [1, 2, 3, 4]);
+        assert_eq!(events.stream_read_bytes(stream, 4), [5, 6]);
+        assert!(!events.stream_has_bytes(stream));
+    }
+
+    #[test]
+    fn closing_a_partially_read_byte_stream_keeps_remaining_bytes_ready() {
+        let mut events = EventLoop::new();
+        let stream = events.create_stream();
+        events.stream_push_bytes(stream, vec![1, 2, 3]);
+        assert_eq!(events.stream_read_bytes(stream, 1), [1]);
+        events.stream_close(stream);
+        assert!(events.stream_has_item(stream));
+        assert!(!events.stream_is_eof(stream));
+        assert_eq!(events.stream_read_bytes(stream, 4), [2, 3]);
+        assert!(events.stream_is_eof(stream));
+    }
+
+    #[test]
+    fn typed_stream_keeps_whole_items() {
+        let mut events = EventLoop::new();
+        let stream = events.create_stream_of(Some(crate::component::ValType::I32));
+        events.stream_push(stream, Value::I32(257));
+        assert!(matches!(events.stream_read_items(stream, 1).as_slice(), [Value::I32(257)]));
+    }
+
+    #[test]
+    fn typed_stream_reuses_its_element_type_between_copies() {
+        use crate::component::ValType;
+
+        let nested = ValType::List(Box::new(ValType::Option(Box::new(ValType::I64))));
+        let mut events = EventLoop::new();
+        let stream = events.create_stream_of(Some(nested.clone()));
+        let first = events.stream_elem(stream).unwrap();
+        let second = events.stream_elem(stream).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(*first, nested);
+        let other = events.create_stream_of(Some(nested));
+        assert!(!std::sync::Arc::ptr_eq(
+            &first,
+            &events.stream_elem(other).unwrap()
+        ));
+    }
+
+    #[test]
+    fn draining_multiple_byte_runs_does_not_stop_at_the_first() {
+        let mut events = EventLoop::new();
+        let stream = events.create_stream();
+        events.stream_push_bytes(stream, vec![1, 2]);
+        events.stream_push_bytes(stream, vec![3, 4]);
+        assert_eq!(events.stream_read_bytes(stream, usize::MAX), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn full_drain_after_partial_read_keeps_only_remaining_bytes() {
+        let mut events = EventLoop::new();
+        let stream = events.create_stream();
+        events.stream_push_bytes(stream, vec![1, 2, 3]);
+        events.stream_push_bytes(stream, vec![4, 5]);
+        assert_eq!(events.stream_read_bytes(stream, 2), [1, 2]);
+        assert_eq!(events.stream_read_bytes(stream, usize::MAX), [3, 4, 5]);
+        assert!(!events.stream_has_bytes(stream));
+    }
+
+    #[test]
+    fn small_reads_cross_large_byte_run_boundaries() {
+        let mut events = EventLoop::new();
+        let stream = events.create_stream();
+        let first: Vec<u8> = (0..65536).map(|index| index as u8).collect();
+        let second: Vec<u8> = (0..65536).map(|index| (index >> 3) as u8).collect();
+        events.stream_push_bytes(stream, first.clone());
+        events.stream_push_bytes(stream, second.clone());
+        events.stream_close(stream);
+
+        let mut actual = Vec::new();
+        while !events.stream_is_eof(stream) {
+            actual.extend(events.stream_read_bytes(stream, 64));
+        }
+        assert_eq!(actual.len(), first.len() + second.len());
+        assert_eq!(&actual[..first.len()], first);
+        assert_eq!(&actual[first.len()..], second);
+    }
+
+    #[test]
+    #[ignore = "local byte-stream drain diagnostic"]
+    fn bench_large_byte_run_small_reads() {
+        use std::time::Instant;
+
+        let chunks: Vec<Vec<u8>> = (0..4)
+            .map(|_| (0..65536).map(|index| index as u8).collect())
+            .collect();
+        for _ in 0..3 {
+            let mut old_pending = Vec::new();
+            let old_start = Instant::now();
+            for chunk in &chunks {
+                old_pending.extend_from_slice(chunk);
+                while !old_pending.is_empty() {
+                    std::hint::black_box(old_pending.drain(..64).collect::<Vec<_>>());
+                }
+            }
+            let old_elapsed = old_start.elapsed();
+
+            let mut events = EventLoop::new();
+            let stream = events.create_stream();
+            for chunk in &chunks {
+                events.stream_push_bytes(stream, chunk.clone());
+            }
+            let cursor_start = Instant::now();
+            for _ in 0..4096 {
+                std::hint::black_box(events.stream_read_bytes(stream, 64));
+            }
+            let cursor_elapsed = cursor_start.elapsed();
+            assert!(!events.stream_has_bytes(stream));
+            println!("front drain: {old_elapsed:?}, cursor: {cursor_elapsed:?}");
+        }
+    }
 }

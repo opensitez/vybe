@@ -29,6 +29,15 @@ pub(crate) const DECODED_BULK_MEMORY_LEN_SHIFT: u32 = 24;
 pub(crate) const DECODED_ONE_BYTE_LEB_PRESENT: u32 = 0x8000_0000;
 pub(crate) const DECODED_ONE_BYTE_LEB_VALUE_MASK: u32 = 0xff;
 
+#[derive(Debug)]
+pub(crate) struct CanonCallShape {
+    pub def: crate::canon_def::CanonDef,
+    pub functype: Box<crate::canon_def::CanonFuncType>,
+    pub lower: crate::canon_flat::CoreFuncType,
+    pub lift_result: Option<crate::canon_flat::CoreType>,
+    pub layouts: crate::canon_flat_values::FlatLayoutCache,
+}
+
 // Heap-OOM guard for the iterative frame Vec (vybe's WASM recursion is
 // iterative — `call` pushes a CallFrame and the single `run` loop continues —
 // so this bounds heap growth, NOT the native OS stack). WASM imposes no
@@ -380,7 +389,11 @@ impl RuntimePerfCounters {
 
     #[inline(always)]
     pub fn record_host_import(&mut self, name: String) {
-        if let Some((_, count)) = self.host_imports.iter_mut().find(|(entry, _)| *entry == name) {
+        if let Some((_, count)) = self
+            .host_imports
+            .iter_mut()
+            .find(|(entry, _)| *entry == name)
+        {
             *count = count.saturating_add(1);
         } else {
             self.host_imports.push((name, 1));
@@ -875,6 +888,8 @@ pub struct HostContext<'a> {
     /// Raw pointer to the chunk table, so the receiver query can fall back to
     /// `Chunk.is_method` for a chunk that declares no tag.
     chunks_slot: *const Vec<crate::chunk::Chunk>,
+    // Canonical exports of the VM that owns this synchronous host call.
+    host_modules_slot: *const HashMap<String, ModuleRecord>,
 }
 
 // SAFETY: HostContext is always created and used on the VM's owning thread.
@@ -883,6 +898,22 @@ pub struct HostContext<'a> {
 unsafe impl Send for HostContext<'_> {}
 
 impl<'a> HostContext<'a> {
+    /// Resolve a function export in the current VM, including re-exports.
+    /// Empty contexts have no registry. No guest ABI or registry mutation is exposed.
+    pub fn resolve_host_function_index(&self, module: &str, name: &str) -> Option<usize> {
+        if self.host_modules_slot.is_null() {
+            return None;
+        }
+        // SAFETY: make_host_context installs a pointer to VM.modules for the
+        // synchronous host-call lifetime. This read invokes no callbacks and
+        // retains no reference across re-entry into the VM.
+        let modules = unsafe { &*self.host_modules_slot };
+        match crate::module_record::resolve_host_export(modules, module, name)? {
+            ExportEntry::Function { idx } => Some(*idx),
+            _ => None,
+        }
+    }
+
     /// Does this funcref declare that it handles `tag`?
     ///
     /// The question property dispatch actually wants — "does parameter 0 mean
@@ -938,11 +969,18 @@ impl<'a> HostContext<'a> {
                 .eq_ignore_ascii_case(&normalized)
         })?;
         let signature = format!("{}$sig", method.to_ascii_lowercase());
-        let instance = typedef.field_defs.iter().any(|field|
-            field.name.to_ascii_lowercase().starts_with(&signature));
-        let present = typedef.field_defs.iter().any(|field|
-            field.name.eq_ignore_ascii_case(method))
-            || typedef.methods.keys().any(|name| name.eq_ignore_ascii_case(method));
+        let instance = typedef
+            .field_defs
+            .iter()
+            .any(|field| field.name.to_ascii_lowercase().starts_with(&signature));
+        let present = typedef
+            .field_defs
+            .iter()
+            .any(|field| field.name.eq_ignore_ascii_case(method))
+            || typedef
+                .methods
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case(method));
         Some((instance, present && !instance))
     }
 
@@ -1241,7 +1279,10 @@ impl<'a> HostContext<'a> {
     /// Source-declared parameter names, indexed by argument slot, for a
     /// compiled function. An unnamed slot remains `None`; callers must not
     /// infer a parameter name from a compiler-generated local.
-    pub fn source_parameter_names_for_chunk(&self, chunk_name: &str,) -> Option<Vec<Option<String>>> {
+    pub fn source_parameter_names_for_chunk(
+        &self,
+        chunk_name: &str,
+    ) -> Option<Vec<Option<String>>> {
         if self.chunks_slot.is_null() {
             return None;
         }
@@ -1525,6 +1566,13 @@ impl<'a> HostContext<'a> {
         }
     }
 
+    /// Push a byte run without boxing each `u8` as a VM value.
+    pub fn stream_push_bytes(&mut self, stream_id: u64, bytes: Vec<u8>) {
+        if let Some(ref el) = self.event_loop {
+            el.borrow_mut().stream_push_bytes(stream_id, bytes);
+        }
+    }
+
     /// Name the host function that produces more elements for `stream_id`.
     ///
     /// For a stream whose elements arrive over TIME — `wasi:sockets`'
@@ -1581,30 +1629,10 @@ impl<'a> HostContext<'a> {
         } else {
             return Vec::new();
         };
-        let mut out: Vec<u8> = Vec::new();
         if let Some(ref el) = self.event_loop {
-            let mut el_mut = el.borrow_mut();
-            if let Some(rec) = el_mut.stream_buffers.get_mut(&stream_id) {
-                while let Some(item) = rec.buffer.pop_front() {
-                    match &item {
-                        Value::I32(b) => out.push(*b as u8),
-                        Value::String(s) => out.extend_from_slice(s.as_bytes()),
-                        Value::Object(inner_obj) => {
-                            let o = inner_obj.lock().unwrap();
-                            if let ObjectKind::Array(arr) = &o.kind {
-                                for v in arr {
-                                    if let Value::I32(b) = v {
-                                        out.push(*b as u8);
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            return el.borrow_mut().stream_read_bytes(stream_id, usize::MAX);
         }
-        out
+        Vec::new()
     }
 
     /// Resolve a CM3 readable-stream-end handle (i32 from the handle table)
@@ -1698,7 +1726,8 @@ impl<'a> HostContext<'a> {
                 ObjectKind::Function(function) => {
                     for upvalue in &function.upvalues {
                         if let Ok(upvalue) = upvalue.lock() {
-                            if let crate::value::UpvalueLocation::Closed(value) = &upvalue.location {
+                            if let crate::value::UpvalueLocation::Closed(value) = &upvalue.location
+                            {
                                 pending.push(value.clone());
                             }
                         }
@@ -1731,6 +1760,7 @@ impl<'a> HostContext<'a> {
             call_tag_registry_slot: std::ptr::null(),
             func_call_tags_slot: std::ptr::null(),
             chunks_slot: std::ptr::null(),
+            host_modules_slot: std::ptr::null(),
         }
     }
 
@@ -2003,7 +2033,10 @@ pub enum ImportTarget {
     /// Index into VM::host_fns
     Host(usize),
     /// Chunk index + arity — calls a function defined in another component
-    ChunkFn { chunk_index: usize, arity: u8 ,},
+    ChunkFn {
+        chunk_index: usize,
+        arity: u8,
+    },
     /// Runtime global lookup (stdlib functions registered via globals)
     StdlibRedirect(String),
     /// js-string-builtins imported string constant — returns the string value.
@@ -3034,7 +3067,7 @@ pub struct VM {
     /// Per-chunk structured-control target cache, indexed by byte offset.
     /// Entries are `Some` only for BLOCK/IF/ELSE/TRY_TABLE starts that need
     /// pre-scanned END/ELSE targets on the hot dispatch path.
-    pub(crate) block_targets: Vec<Vec<Option<BlockTargets>>>,
+    pub(crate) block_targets: Vec<std::sync::Arc<BlockTargetCache>>,
     /// Per-chunk loop-superinstruction cache, indexed by loop-body byte offset.
     /// `Unknown` means the loop has not been classified yet; `None` means it
     /// was checked once and should not be re-decoded on future iterations.
@@ -3055,7 +3088,7 @@ pub struct VM {
     pub(crate) decoded_operands: Vec<Vec<u32>>,
     /// Per-chunk wide operand cache, indexed by byte offset in parallel with
     /// `decoded_ops`. Used for fixed-width operands that do not fit in the
-    /// compact `u32` cache, currently `f64.const`.
+    /// compact `u32` cache: `f64.const` bits and fully relocated `ref.func` targets.
     pub(crate) decoded_operands64: Vec<Vec<u64>>,
     /// Per-call-site native dispatch specialization, indexed by opcode byte
     /// offset. This is interpreter metadata only: bytecode stays the canonical
@@ -3193,6 +3226,12 @@ pub struct VM {
     /// funcs over the same built-in — the distinctness the spec requires,
     /// expressed in the one channel a core import has.
     pub canon_types: Vec<Option<crate::component::ValType>>,
+    pub(crate) canon_type_refs: Vec<Option<Arc<crate::component::ValType>>>,
+    pub(crate) canon_mem_layouts: Vec<Option<Arc<crate::canon_layout::MemLayout>>>,
+    pub(crate) canon_inline_layouts: Vec<(
+        Arc<crate::component::ValType>,
+        Arc<crate::canon_layout::MemLayout>,
+    )>,
     /// The component's FUNCTION type index space — `canon lift`'s
     /// `ft:<typeidx>`.
     ///
@@ -3211,6 +3250,7 @@ pub struct VM {
     /// A canon import resolves to a row here at link time, which is the spec's
     /// instantiation-time capture of `$callee` / `$opts` / `$ft`.
     pub canon_defs: Vec<crate::canon_def::CanonDef>,
+    pub(crate) canon_call_shapes: Vec<Option<Arc<CanonCallShape>>>,
     /// The component instance — `CanonicalABI.md class ComponentInstance`.
     /// Owns `may_enter`/`may_leave`, the backpressure counter and the thread
     /// table. One instance, so `current_instance()` is always this.
@@ -3389,6 +3429,101 @@ pub struct BlockTargets {
     pub end_ip: usize,
 }
 
+/// Immutable structured-control metadata. Most byte offsets do not start a
+/// block: store only a compact index there, not an entire optional target.
+#[derive(Debug, Default)]
+pub(crate) struct BlockTargetCache {
+    indices: Vec<u32>,
+    targets: Vec<BlockTargets>,
+}
+
+impl BlockTargetCache {
+    fn from_entries(
+        code_len: usize,
+        entries: impl IntoIterator<Item = (usize, BlockTargets)>,
+    ) -> Self {
+        let mut cache = Self::default();
+        for (offset, target) in entries {
+            if offset >= code_len {
+                continue;
+            }
+            if cache.indices.is_empty() {
+                cache.indices.resize(code_len, u32::MAX);
+            }
+            let index = u32::try_from(cache.targets.len())
+                .expect("block target count exceeds the Wasm index space");
+            cache.indices[offset] = index;
+            cache.targets.push(target);
+        }
+        cache
+    }
+
+    /// # Safety
+    /// `offset` must be a validated byte offset in this chunk's code.
+    #[inline(always)]
+    pub(crate) unsafe fn get_unchecked(&self, offset: usize) -> Option<BlockTargets> {
+        if self.indices.is_empty() {
+            return None;
+        }
+        let index = unsafe { *self.indices.get_unchecked(offset) };
+        if index == u32::MAX {
+            None
+        } else {
+            Some(unsafe { *self.targets.get_unchecked(index as usize) })
+        }
+    }
+}
+
+#[cfg(test)]
+mod block_target_cache_tests {
+    use super::{BlockTargetCache, BlockTargets};
+
+    #[test]
+    fn empty_control_metadata_does_not_allocate_per_byte() {
+        let cache = BlockTargetCache::from_entries(100_000, []);
+        assert!(cache.indices.is_empty());
+        assert!(cache.targets.is_empty());
+        assert!(unsafe { cache.get_unchecked(99_999) }.is_none());
+    }
+
+    #[test]
+    fn packed_targets_preserve_offsets_and_else_targets() {
+        let entries = [
+            (
+                3,
+                BlockTargets {
+                    else_ip: Some(40),
+                    end_ip: 80,
+                },
+            ),
+            (
+                40,
+                BlockTargets {
+                    else_ip: None,
+                    end_ip: 80,
+                },
+            ),
+            (
+                90,
+                BlockTargets {
+                    else_ip: None,
+                    end_ip: 99,
+                },
+            ),
+        ];
+        let cache = BlockTargetCache::from_entries(100, entries);
+        assert_eq!(cache.indices.len(), 100);
+        assert_eq!(cache.targets.len(), 3);
+        for (offset, expected) in entries {
+            let actual = unsafe { cache.get_unchecked(offset) }.unwrap();
+            assert_eq!(actual.else_ip, expected.else_ip);
+            assert_eq!(actual.end_ip, expected.end_ip);
+        }
+        assert!(unsafe { cache.get_unchecked(0) }.is_none());
+        assert!(unsafe { cache.get_unchecked(99) }.is_none());
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BrTableTargets {
     pub depths: Vec<usize>,
@@ -3401,6 +3536,12 @@ pub struct BrTableTargets {
 pub(crate) enum LoopSuperop {
     Unknown,
     None,
+    CanonicalByteArrayToLinear {
+        arr_slot: u16,
+        dst_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+    },
     ManagedArrayToLinear {
         arr_slot: u16,
         dst_slot: u16,
@@ -3912,8 +4053,8 @@ impl VM {
 
     pub fn new() -> Self {
         let trace = std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true");
-        let error_context = std::env::var("VYBE_ERROR_CONTEXT")
-            .map_or(false, |v| v == "1" || v == "true");
+        let error_context =
+            std::env::var("VYBE_ERROR_CONTEXT").map_or(false, |v| v == "1" || v == "true");
         VM {
             host_receiver: Value::Undefined,
             host_originated_call: false,
@@ -4033,12 +4174,16 @@ impl VM {
                 Some(crate::component::ValType::I64),  // 2
                 Some(crate::component::ValType::F64),  // 3
             ],
+            canon_type_refs: Vec::new(),
+            canon_mem_layouts: Vec::new(),
+            canon_inline_layouts: Vec::new(),
             // Both start EMPTY. A component registers its own types and
             // canon definitions; an absent row must be an error naming the
             // missing declaration, not index 0 standing in for it.
             canon_functypes: Vec::new(),
             component_funcs: Vec::new(),
             canon_defs: Vec::new(),
+            canon_call_shapes: Vec::new(),
             cm_instance: crate::cm_instance::ComponentInstance::new(),
             current_thread: None,
             canon_type_immediate: None,
@@ -4144,7 +4289,11 @@ impl VM {
         // A second job's section is REJECTED, not overwritten, so leaving these
         // behind made the first component program in a worker poison the rest.
         self.canon_defs = snap.canon_defs.clone();
+        self.canon_call_shapes.clear();
         self.canon_types = snap.canon_types.clone();
+        self.canon_type_refs.clear();
+        self.canon_mem_layouts.clear();
+        self.canon_inline_layouts.clear();
         self.canon_functypes = snap.canon_functypes.clone();
         // 4b. Drop the prior run's appended CODE (and its embedded string/data
         //     constants — security: no earlier tenant's bytes survive) + the
@@ -4295,7 +4444,9 @@ impl VM {
     /// Shared debugger timing state, readable while the VM thread compiles an
     /// include. No state is allocated when no debugger is attached.
     pub fn debug_report(&self) -> Option<crate::debugger::SharedDebugReport> {
-        self.debugger.as_ref().map(|debugger| debugger.report.clone())
+        self.debugger
+            .as_ref()
+            .map(|debugger| debugger.report.clone())
     }
 
     #[inline(always)]
@@ -4335,7 +4486,9 @@ impl VM {
 
     /// Bounded instruction history owned by the attached step debugger.
     pub fn debug_recent_instructions(&self) -> Option<String> {
-        self.debugger.as_ref().map(|debugger| debugger.recent_instruction_report(self))
+        self.debugger
+            .as_ref()
+            .map(|debugger| debugger.recent_instruction_report(self))
     }
 
     pub fn debug_rearm_after_restart(&mut self) {
@@ -4345,7 +4498,9 @@ impl VM {
     }
 
     pub fn debug_wait_after_exit(&mut self) -> bool {
-        self.debugger.as_mut().is_some_and(|debugger| debugger.wait_after_exit())
+        self.debugger
+            .as_mut()
+            .is_some_and(|debugger| debugger.wait_after_exit())
     }
 
     /// Detach the debugger and (unless tracing) leave the hot path uninstrumented.
@@ -4532,8 +4687,8 @@ impl VM {
                 let old_operands64 = self
                     .decoded_operands64
                     .get(i)
-                    .cloned()
-                    .unwrap_or_else(|| Self::build_decoded_operands64_for_chunk(&old));
+                    .expect("installed chunks have fully resolved wide operands")
+                    .clone();
                 let old_block_targets = self
                     .block_targets
                     .get(i)
@@ -4592,8 +4747,7 @@ impl VM {
             if self.decoded_operands64.len() <= i {
                 self.decoded_operands64.resize_with(i + 1, Vec::new);
             }
-            self.decoded_operands64[i] =
-                Self::build_decoded_operands64_for_chunk(&self.chunks[i]);
+            self.decoded_operands64[i] = Self::build_decoded_operands64_for_chunk(&self.chunks[i]);
             if self.native_call_sites.len() <= i {
                 self.native_call_sites.resize_with(i + 1, Vec::new);
             }
@@ -4613,7 +4767,8 @@ impl VM {
                 self.native_call_sites.get(i).map(Vec::as_slice),
             );
             if self.block_targets.len() <= i {
-                self.block_targets.resize_with(i + 1, Vec::new);
+                self.block_targets
+                    .resize_with(i + 1, || std::sync::Arc::new(BlockTargetCache::default()));
             }
             self.block_targets[i] = Self::build_block_targets_for_chunk(&self.chunks[i]);
             if self.loop_superops.len() <= i {
@@ -4809,7 +4964,13 @@ impl VM {
                     if count == 0 {
                         out.push_str("\n  Current source locals:");
                     }
-                    let _ = write!(out, "\n    {} = {}: {}", local.name, value.tag().name(), value);
+                    let _ = write!(
+                        out,
+                        "\n    {} = {}: {}",
+                        local.name,
+                        value.tag().name(),
+                        value
+                    );
                     count += 1;
                     if count == 24 {
                         break;
@@ -5183,11 +5344,7 @@ impl VM {
     }
 
     #[inline(always)]
-    fn checked_memory_end(
-        addr: usize,
-        size: usize,
-        limit: usize
-    ) -> Result<usize, crate::VMError> {
+    fn checked_memory_end(addr: usize, size: usize, limit: usize) -> Result<usize, crate::VMError> {
         addr.checked_add(size)
             .filter(|&end| end <= limit)
             .ok_or_else(|| Self::memory_oob(addr, size, limit))
@@ -5476,7 +5633,10 @@ impl VM {
         }
         if dst_mem == 0 {
             let extra_memories = &self.extra_memories;
-            let source_mem = extra_memories.get(src_mem - 1).map(Vec::as_slice).unwrap_or(&[]);
+            let source_mem = extra_memories
+                .get(src_mem - 1)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let src_limit = source_mem.len();
             let src_end = Self::checked_memory_end(src, count, src_limit)?;
             let source = &source_mem[src..src_end];
@@ -5930,8 +6090,7 @@ impl VM {
     /// Resolve a host function import through the authoritative Module Records,
     /// following any Indirect re-exports until a concrete host function is found.
     pub fn resolve_host_function_index(&self, module: &str, name: &str) -> Option<usize> {
-        let mut visited = Vec::new();
-        match self.resolve_host_export(module, name, &mut visited)? {
+        match self.resolve_host_export(module, name)? {
             ExportEntry::Function { idx } => Some(*idx),
             _ => None,
         }
@@ -5978,31 +6137,12 @@ impl VM {
         Some((alias_module, leaf.to_string()))
     }
 
-    fn resolve_host_export<'a>(
-        &'a self,
-        module: &str,
-        name: &str,
-        visited: &mut Vec<(String, String)>,
-    ) -> Option<&'a ExportEntry> {
-        let key = (module.to_string(), name.to_string());
-        if visited.contains(&key) {
-            return None;
-        }
-        visited.push(key);
-
-        let record = self.modules.get(module)?;
-        match record.exports.get(name)? {
-            ExportEntry::Indirect {
-                from,
-                name: target_name,
-            } => self.resolve_host_export(from, target_name, visited),
-            export => Some(export),
-        }
+    fn resolve_host_export<'a>(&'a self, module: &str, name: &str) -> Option<&'a ExportEntry> {
+        crate::module_record::resolve_host_export(&self.modules, module, name)
     }
 
     fn resolve_host_type_export(&self, module: &str, name: &str) -> Option<crate::TypeDef> {
-        let mut visited = Vec::new();
-        match self.resolve_host_export(module, name, &mut visited)? {
+        match self.resolve_host_export(module, name)? {
             ExportEntry::Class { type_id } | ExportEntry::ResourceType { type_id } => {
                 self.type_registry.get(*type_id).cloned()
             }
@@ -6016,6 +6156,7 @@ impl VM {
         // Instead, we pass raw pointers — this is safe because the HostContext
         // lifetime is strictly scoped within the host function call.
         let vm_ptr = self as *mut VM;
+        let host_modules_ptr = &self.modules as *const HashMap<String, ModuleRecord>;
         // Clone the Rc so host functions can enqueue ready work without
         // holding a mutable borrow of the VM.
         let el = self.event_loop.clone();
@@ -6076,6 +6217,7 @@ impl VM {
             call_tag_registry_slot: &self.call_tag_registry as *const HashMap<String, u32>,
             func_call_tags_slot: &self.func_call_tags as *const HashMap<usize, Vec<u32>>,
             chunks_slot: &self.chunks as *const Vec<crate::chunk::Chunk>,
+            host_modules_slot: host_modules_ptr,
         }
     }
 
@@ -6263,8 +6405,12 @@ impl VM {
         // 6 → 141. Every internal settler had its arguments shifted.
         // `call_value_inner` tells the host function which of the two it was,
         // via `HostContext::call_receiver_argc`.
+        // Explicit receiver suppression belongs to this invocation, not its
+        // entire dynamic extent. Nested callbacks still need their own
+        // receiver slots even while an accessor's explicit call is running.
+        let receiver_already_supplied = std::mem::take(&mut self.suppress_receiver_prepend);
         let receiver_argc =
-            usize::from(!self.suppress_receiver_prepend && self.callee_takes_receiver(func_ref));
+            usize::from(!receiver_already_supplied && self.callee_takes_receiver(func_ref));
         if receiver_argc == 1 {
             // WHICH receiver — not a hard-coded `undefined`.
             //
@@ -6324,7 +6470,8 @@ impl VM {
                 // already-raised language exception, or surface the VM error
                 // instead of silently making the callback return null.
                 if self.last_exception.is_none() && !error.is_suspension() {
-                    self.last_exception = Some(crate::calls::make_runtime_error(&error.to_string()));
+                    self.last_exception =
+                        Some(crate::calls::make_runtime_error(&error.to_string()));
                 }
                 while self.frames.len() > saved_frame_depth {
                     let base = self.frames.last().unwrap().base;
@@ -6521,18 +6668,14 @@ impl VM {
             let op = Op::from_code_at(code, opcode_start);
             let operand_start = opcode_start + 4;
             decoded[opcode_start] = match op {
-                Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE
-                    if operand_start + 1 < code.len() =>
-                {
+                Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE if operand_start + 1 < code.len() => {
                     ((code[operand_start] as u32) << 8) | code[operand_start + 1] as u32
                 }
                 Op::CALL if operand_start + 2 < code.len() => {
                     (((code[operand_start] as u32) << 8) | code[operand_start + 1] as u32)
                         | ((code[operand_start + 2] as u32) << 16)
                 }
-                Op::CALL_INDIRECT | Op::RETURN_CALL_INDIRECT
-                    if operand_start + 2 < code.len() =>
-                {
+                Op::CALL_INDIRECT | Op::RETURN_CALL_INDIRECT if operand_start + 2 < code.len() => {
                     (code[operand_start] as u32)
                         | ((code[operand_start + 1] as u32) << 8)
                         | ((code[operand_start + 2] as u32) << 16)
@@ -6543,9 +6686,7 @@ impl VM {
                 Op::CALL_REF | Op::RETURN_CALL_REF if operand_start + 1 < code.len() => {
                     (code[operand_start] as u32) | ((code[operand_start + 1] as u32) << 8)
                 }
-                Op::CALL_WITH_TAG | Op::CALL_RETURN_WITH_TAG
-                    if operand_start + 2 < code.len() =>
-                {
+                Op::CALL_WITH_TAG | Op::CALL_RETURN_WITH_TAG if operand_start + 2 < code.len() => {
                     (((code[operand_start] as u32) << 8) | code[operand_start + 1] as u32)
                         | ((code[operand_start + 2] as u32) << 16)
                 }
@@ -6669,7 +6810,12 @@ impl VM {
                         0
                     }
                 }
-                Op::I32_CONST | Op::I64_CONST | Op::BR | Op::BR_IF | Op::TABLE_GET | Op::TABLE_SET
+                Op::I32_CONST
+                | Op::I64_CONST
+                | Op::BR
+                | Op::BR_IF
+                | Op::TABLE_GET
+                | Op::TABLE_SET
                     if operand_start < code.len() && code[operand_start] & 0x80 == 0 =>
                 {
                     DECODED_ONE_BYTE_LEB_PRESENT | code[operand_start] as u32
@@ -6742,6 +6888,10 @@ impl VM {
     }
 
     fn build_decoded_operands64_for_chunk(chunk: &Chunk) -> Vec<u64> {
+        Self::build_decoded_operands64_with_ref_base(chunk, 0)
+    }
+
+    fn build_decoded_operands64_with_ref_base(chunk: &Chunk, ref_base: usize) -> Vec<u64> {
         let code = &chunk.code;
         let mut decoded = vec![0u64; code.len()];
         let mut ip = 0usize;
@@ -6762,6 +6912,14 @@ impl VM {
                 ]);
             }
             if op == Op::REF_FUNC {
+                // The bytecode target remains module-relative. Resolve it in
+                // the existing wide cache, never truncate the VM chunk index.
+                let relative =
+                    u16::from_be_bytes([code[operand_start], code[operand_start + 1]]) as usize;
+                decoded[opcode_start] = ref_base
+                    .checked_add(relative)
+                    .expect("ref.func chunk index exceeds usize")
+                    as u64;
                 ip += 4 + 2 + 1;
                 if ip - 1 < code.len() {
                     let uv_count = (code[ip - 1] & 0x7f) as usize;
@@ -6787,26 +6945,23 @@ impl VM {
         let code = &chunk.code;
         let call_native_matches =
             |ip: usize, argc: u8, matches_target: fn(NativeCallSiteTarget) -> bool| -> bool {
-            if ip + 6 >= code.len() || Op::from_code_at(code, ip) != Op::CALL {
-                return false;
-            }
-            code[ip + 6] == argc
-                && native_call_sites
-                    .get(ip)
-                    .copied()
-                    .flatten()
-                    .is_some_and(matches_target)
-        };
+                if ip + 6 >= code.len() || Op::from_code_at(code, ip) != Op::CALL {
+                    return false;
+                }
+                code[ip + 6] == argc
+                    && native_call_sites
+                        .get(ip)
+                        .copied()
+                        .flatten()
+                        .is_some_and(matches_target)
+            };
         if opcode_start + 3 >= code.len() || Op::from_code_at(code, opcode_start) != Op::CALL {
             return NativeResultFastPath::None;
         }
         let after_call_ip = opcode_start + 7;
         let after_end_ip = after_call_ip + 4;
         if call_native_matches(opcode_start, 1, |site| {
-            matches!(
-                site,
-                NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32)
-            )
+            matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32))
         }) && after_call_ip + 3 < code.len()
             && Op::from_code_at(code, after_call_ip) == Op::I32_EQZ
         {
@@ -6890,25 +7045,32 @@ impl VM {
         let code = &chunk.code;
         let native_call_sites = native_call_sites.unwrap_or(&[]);
         let mut fast_paths = vec![LocalFastPath::None; code.len()];
-        let call_matches =
-            |ip: usize, argc: u8, matches_target: fn(NativeCallSiteTarget) -> bool, module: &str, name: &str| -> bool {
-                if ip + 6 >= code.len() || Op::from_code_at(code, ip) != Op::CALL || code[ip + 6] != argc {
-                    return false;
-                }
-                if native_call_sites
-                    .get(ip)
-                    .copied()
-                    .flatten()
-                    .is_some_and(matches_target)
-                {
-                    return true;
-                }
-                let fn_idx = ((code[ip + 4] as usize) << 8) | code[ip + 5] as usize;
-                chunk
-                    .imports
-                    .get(fn_idx)
-                    .is_some_and(|import| import.module == module && import.name == name)
-            };
+        let call_matches = |ip: usize,
+                            argc: u8,
+                            matches_target: fn(NativeCallSiteTarget) -> bool,
+                            module: &str,
+                            name: &str|
+         -> bool {
+            if ip + 6 >= code.len()
+                || Op::from_code_at(code, ip) != Op::CALL
+                || code[ip + 6] != argc
+            {
+                return false;
+            }
+            if native_call_sites
+                .get(ip)
+                .copied()
+                .flatten()
+                .is_some_and(matches_target)
+            {
+                return true;
+            }
+            let fn_idx = ((code[ip + 4] as usize) << 8) | code[ip + 5] as usize;
+            chunk
+                .imports
+                .get(fn_idx)
+                .is_some_and(|import| import.module == module && import.name == name)
+        };
         let decode_sleb_i32 = |mut ip: usize| -> Option<(i32, usize)> {
             let byte = *code.get(ip)?;
             ip += 1;
@@ -7038,9 +7200,10 @@ impl VM {
                             next_ip: (next_ip + 7) as u32,
                         };
                     }
-                } else if next_ip + 5 < code.len() && Op::from_code_at(code, next_ip) == Op::LOCAL_SET {
-                    let target_slot =
-                        ((code[next_ip + 4] as u16) << 8) | code[next_ip + 5] as u16;
+                } else if next_ip + 5 < code.len()
+                    && Op::from_code_at(code, next_ip) == Op::LOCAL_SET
+                {
+                    let target_slot = ((code[next_ip + 4] as u16) << 8) | code[next_ip + 5] as u16;
                     fast_paths[opcode_start] = LocalFastPath::LocalGetLocalSet {
                         target_slot,
                         next_ip: (next_ip + 6) as u32,
@@ -7049,8 +7212,7 @@ impl VM {
                     && Op::from_code_at(code, next_ip) == Op::LOCAL_GET
                     && Op::from_code_at(code, next_ip + 6) == Op::LOCAL_SET
                 {
-                    let second_slot =
-                        ((code[next_ip + 4] as u16) << 8) | code[next_ip + 5] as u16;
+                    let second_slot = ((code[next_ip + 4] as u16) << 8) | code[next_ip + 5] as u16;
                     let target_slot =
                         ((code[next_ip + 10] as u16) << 8) | code[next_ip + 11] as u16;
                     fast_paths[opcode_start] = LocalFastPath::LocalGetLocalGetSet {
@@ -7129,14 +7291,11 @@ impl VM {
         Ok(())
     }
 
-    fn build_block_targets_for_chunk(chunk: &Chunk) -> Vec<Option<BlockTargets>> {
-        let mut targets = vec![None; chunk.code.len()];
-        for (opcode_start, block_targets) in crate::dispatch::build_block_table(&chunk.code) {
-            if opcode_start < targets.len() {
-                targets[opcode_start] = Some(block_targets);
-            }
-        }
-        targets
+    fn build_block_targets_for_chunk(chunk: &Chunk) -> std::sync::Arc<BlockTargetCache> {
+        std::sync::Arc::new(BlockTargetCache::from_entries(
+            chunk.code.len(),
+            crate::dispatch::build_block_table(&chunk.code),
+        ))
     }
 
     fn build_loop_superops_for_chunk(chunk: &Chunk) -> Vec<LoopSuperop> {
@@ -7191,13 +7350,20 @@ impl VM {
     }
 
     fn extend_decoded_ops_for_chunks(&mut self, chunks: &[Chunk]) {
+        Self::extend_decoded_ops_with_ref_base(self, chunks, 0);
+    }
+
+    fn extend_decoded_ops_with_ref_base(&mut self, chunks: &[Chunk], ref_base: usize) {
         let first_new_chunk = self.native_call_sites.len();
         self.decoded_ops
             .extend(chunks.iter().map(Self::build_decoded_ops_for_chunk));
         self.decoded_operands
             .extend(chunks.iter().map(Self::build_decoded_operands_for_chunk));
-        self.decoded_operands64
-            .extend(chunks.iter().map(Self::build_decoded_operands64_for_chunk));
+        self.decoded_operands64.extend(
+            chunks
+                .iter()
+                .map(|chunk| Self::build_decoded_operands64_with_ref_base(chunk, ref_base)),
+        );
         self.native_call_sites
             .extend(chunks.iter().map(Self::build_native_call_sites_for_chunk));
         self.native_result_fast_paths.extend(
@@ -7205,14 +7371,15 @@ impl VM {
                 .iter()
                 .map(|chunk| Self::build_native_result_fast_paths_for_chunk(chunk, None)),
         );
-        self.local_fast_paths.extend(chunks.iter().enumerate().map(|(index, chunk)| {
-            Self::build_local_fast_paths_for_chunk(
-                chunk,
-                self.native_call_sites
-                    .get(first_new_chunk + index)
-                    .map(Vec::as_slice),
-            )
-        }));
+        self.local_fast_paths
+            .extend(chunks.iter().enumerate().map(|(index, chunk)| {
+                Self::build_local_fast_paths_for_chunk(
+                    chunk,
+                    self.native_call_sites
+                        .get(first_new_chunk + index)
+                        .map(Vec::as_slice),
+                )
+            }));
     }
 
     fn extend_block_targets_for_chunks(&mut self, chunks: &[Chunk]) {
@@ -7245,44 +7412,9 @@ impl VM {
             Self::validate_chunk_code(&chunks)?;
         }
         let script_idx = self.chunks.len();
-        // Offset ref_func indices
+        // Keep ref.func bytecode module-relative; the wide decode cache
+        // resolves its target with script_idx below.
         let mut adjusted = chunks;
-        let relocate_phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm relocate");
-        if script_idx > 0 {
-            for chunk in &mut adjusted {
-                let code = &mut chunk.code;
-                let mut ip = 0;
-                while ip < code.len() {
-                    if ip + 3 >= code.len() {
-                        break;
-                    }
-                    let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
-                    let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
-                    if let Some(op) = Op::decode(group, sub) {
-                        if op == Op::REF_FUNC {
-                            if ip + 5 < code.len() {
-                                let old_idx = ((code[ip + 4] as u16) << 8) | (code[ip + 5] as u16);
-                                let new_idx = old_idx + script_idx as u16;
-                                code[ip + 4] = (new_idx >> 8) as u8;
-                                code[ip + 5] = (new_idx & 0xff) as u8;
-                            }
-                            ip += 4 + 2 + 1; // 4 opcode + 2 func_idx + 1 uv_count
-                            if ip - 1 < code.len() {
-                                let uv_count = (code[ip - 1] & 0x7f) as usize;
-                                ip += uv_count * 3; // u8 is_local + u16 index
-                            }
-                            continue;
-                        }
-                        ip += 4;
-                        let fmt = op.operand_format();
-                        ip += fmt.size_in(code, ip);
-                    } else {
-                        ip += 4;
-                    }
-                }
-            }
-        }
-        drop(relocate_phase);
         // Rewrite the incoming set's global operands into THIS VM's index
         // space before the chunks join it — each set was compiled against
         // its own table.
@@ -7294,7 +7426,7 @@ impl VM {
         self.merge_canon_types(&adjusted)?;
         {
             let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm decode");
-            self.extend_decoded_ops_for_chunks(&adjusted);
+            self.extend_decoded_ops_with_ref_base(&adjusted, script_idx);
         }
         {
             let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm blocks");
@@ -7536,52 +7668,16 @@ impl VM {
             self.frames.reserve(64 - self.frames.capacity());
         }
         let script_idx = self.chunks.len(); // offset for new chunks
-        // Offset ref_func indices in the new chunks so they point to correct positions
+        // Keep ref.func bytecode module-relative; the wide decode cache
+        // resolves its target with script_idx below.
         let mut adjusted = chunks;
-        if script_idx > 0 {
-            for chunk in &mut adjusted {
-                let code = &mut chunk.code;
-                let mut ip = 0;
-                while ip < code.len() {
-                    if ip + 3 >= code.len() {
-                        break;
-                    }
-                    let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
-                    let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
-                    if let Some(op) = Op::decode(group, sub) {
-                        if op == Op::REF_FUNC {
-                            // Operand layout after the 4-byte opcode: func_idx
-                            // (u16) at ip+4, then uv_count (u8) at ip+6, then
-                            // upvalues. Relocate the func_idx by script_idx.
-                            if ip + 6 <= code.len() {
-                                let old_idx = ((code[ip + 4] as u16) << 8) | (code[ip + 5] as u16);
-                                let new_idx = old_idx + script_idx as u16;
-                                code[ip + 4] = (new_idx >> 8) as u8;
-                                code[ip + 5] = (new_idx & 0xff) as u8;
-                            }
-                            ip += 4 + 2 + 1; // opcode + func_idx + uv_count
-                            if ip - 1 < code.len() {
-                                let uv_count = (code[ip - 1] & 0x7f) as usize;
-                                ip += uv_count * 3; // per upvalue: u8 is_local + u16 index
-                            }
-                            continue;
-                        }
-                        ip += 4; // opcodes are 4 bytes
-                        let fmt = op.operand_format();
-                        ip += fmt.size_in(code, ip);
-                    } else {
-                        ip += 4; // skip unknown 4-byte opcode
-                    }
-                }
-            }
-        }
         // Rewrite the incoming set's global operands into THIS VM's index
         // space before the chunks join it — each set was compiled against
         // its own table.
         self.merge_global_table(&mut adjusted);
         self.merge_canon_section(&adjusted)?;
         self.merge_canon_types(&adjusted)?;
-        self.extend_decoded_ops_for_chunks(&adjusted);
+        self.extend_decoded_ops_with_ref_base(&adjusted, script_idx);
         self.extend_block_targets_for_chunks(&adjusted);
         self.extend_loop_superops_for_chunks(&adjusted);
         self.extend_br_table_targets_for_chunks(&adjusted);
@@ -7823,7 +7919,8 @@ impl VM {
         });
 
         let local_count = self.chunks[script_idx].local_count as usize;
-        self.stack.resize(self.stack.len() + local_count, Value::Null);
+        self.stack
+            .resize(self.stack.len() + local_count, Value::Null);
 
         // Run synchronous code
         let result = self.execute_with_async()?;
@@ -7992,7 +8089,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_top_value_fast(&mut self, value: Value) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         unsafe {
             *self.stack.get_unchecked_mut(len - 1) = value;
         }
@@ -8001,7 +8100,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_ref_is_null_fast(&mut self) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let is_null = {
             let value = unsafe { self.stack.get_unchecked(len - 1) };
             value.is_null_ref() || matches!(value, Value::Undefined)
@@ -8017,7 +8118,9 @@ impl VM {
         f: impl FnOnce(&Value) -> Result<Value, crate::VMError>,
     ) -> Result<(), crate::VMError> {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = f(unsafe { self.stack.get_unchecked(idx) })?;
         unsafe {
@@ -8029,7 +8132,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn select_top_fast(&mut self) {
         let len = self.stack.len();
-        if len < 3 { panic!("stack underflow"); }
+        if len < 3 {
+            panic!("stack underflow");
+        }
         let cond = unsafe { self.stack.get_unchecked(len - 1).as_i32() };
         if cond != 0 {
             self.stack.truncate(len - 2);
@@ -8048,7 +8153,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_top_pair_fast(&mut self, value: Value) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         unsafe {
             *self.stack.get_unchecked_mut(len - 2) = value;
         }
@@ -8058,7 +8165,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn truncate_top_pair_fast(&mut self) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         self.stack.truncate(len - 2);
     }
 
@@ -8120,7 +8229,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i32_unary_fast(&mut self, f: impl FnOnce(i32) -> i32) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::I32(n) => *n,
@@ -8134,7 +8245,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i32_unary_with_i64_fast(&mut self, f: impl FnOnce(i32) -> i64) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::I32(n) => *n,
@@ -8148,7 +8261,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i32_unary_with_f32_fast(&mut self, f: impl FnOnce(i32) -> f32) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::I32(n) => *n,
@@ -8162,7 +8277,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i32_unary_with_f64_fast(&mut self, f: impl FnOnce(i32) -> f64) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::I32(n) => *n,
@@ -8176,7 +8293,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn pop_i32_pair_fast(&mut self) -> (i32, i32) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8193,7 +8312,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i32_pair_fast(&mut self, f: impl FnOnce(i32, i32) -> i32) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8215,7 +8336,9 @@ impl VM {
         f: impl FnOnce(i32, i32) -> Result<i32, crate::VMError>,
     ) -> Result<(), crate::VMError> {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8244,7 +8367,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i64_unary_fast(&mut self, f: impl FnOnce(i64) -> i64) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::I64(n) => *n,
@@ -8258,7 +8383,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i64_unary_with_i32_fast(&mut self, f: impl FnOnce(i64) -> i32) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::I64(n) => *n,
@@ -8272,7 +8399,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i64_unary_with_f32_fast(&mut self, f: impl FnOnce(i64) -> f32) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::I64(n) => *n,
@@ -8286,7 +8415,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i64_unary_with_f64_fast(&mut self, f: impl FnOnce(i64) -> f64) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::I64(n) => *n,
@@ -8300,7 +8431,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn pop_i64_pair_fast(&mut self) -> (i64, i64) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8317,7 +8450,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i64_pair_fast(&mut self, f: impl FnOnce(i64, i64) -> i64) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8339,7 +8474,9 @@ impl VM {
         f: impl FnOnce(i64, i64) -> Result<i64, crate::VMError>,
     ) -> Result<(), crate::VMError> {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8360,7 +8497,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_i64_pair_with_i32_fast(&mut self, f: impl FnOnce(i64, i64) -> i32) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8387,7 +8526,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f32_unary_fast(&mut self, f: impl FnOnce(f32) -> f32) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::F32(n) => *n,
@@ -8401,7 +8542,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f32_unary_with_i32_fast(&mut self, f: impl FnOnce(f32) -> i32) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::F32(n) => *n,
@@ -8415,7 +8558,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f32_unary_with_i64_fast(&mut self, f: impl FnOnce(f32) -> i64) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::F32(n) => *n,
@@ -8429,7 +8574,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f32_unary_with_f64_fast(&mut self, f: impl FnOnce(f32) -> f64) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::F32(n) => *n,
@@ -8443,7 +8590,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn pop_f32_pair_fast(&mut self) -> (f32, f32) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8460,7 +8609,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f32_pair_fast(&mut self, f: impl FnOnce(f32, f32) -> f32) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8479,7 +8630,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f32_pair_with_i32_fast(&mut self, f: impl FnOnce(f32, f32) -> i32) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8506,7 +8659,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f64_unary_fast(&mut self, f: impl FnOnce(f64) -> f64) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::F64(n) => *n,
@@ -8520,7 +8675,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f64_unary_with_i32_fast(&mut self, f: impl FnOnce(f64) -> i32) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::F64(n) => *n,
@@ -8534,7 +8691,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f64_unary_with_i64_fast(&mut self, f: impl FnOnce(f64) -> i64) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::F64(n) => *n,
@@ -8548,7 +8707,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f64_unary_with_f32_fast(&mut self, f: impl FnOnce(f64) -> f32) {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         let idx = len - 1;
         let value = match unsafe { self.stack.get_unchecked(idx) } {
             Value::F64(n) => *n,
@@ -8562,7 +8723,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn pop_f64_pair_fast(&mut self) -> (f64, f64) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8579,7 +8742,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f64_pair_fast(&mut self, f: impl FnOnce(f64, f64) -> f64) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8598,7 +8763,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_f64_pair_with_i32_fast(&mut self, f: impl FnOnce(f64, f64) -> i32) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8625,7 +8792,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn pop_ecma_i32_pair_fast(&mut self) -> (i32, i32) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8642,7 +8811,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn replace_ecma_i32_pair_fast(&mut self, f: impl FnOnce(i32, i32) -> i32) {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         let (a, b) = match unsafe {
             (
                 self.stack.get_unchecked(len - 2),
@@ -8666,7 +8837,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn peek_i32_top_fast(&self) -> i32 {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         match unsafe { self.stack.get_unchecked(len - 1) } {
             Value::I32(n) => *n,
             other => other.as_i32(),
@@ -8676,7 +8849,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn peek_i32_next_fast(&self) -> i32 {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         match unsafe { self.stack.get_unchecked(len - 2) } {
             Value::I32(n) => *n,
             other => other.as_i32(),
@@ -8686,7 +8861,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn peek_i64_top_fast(&self) -> i64 {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         match unsafe { self.stack.get_unchecked(len - 1) } {
             Value::I64(n) => *n,
             other => other.as_i64(),
@@ -8696,7 +8873,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn peek_i64_next_fast(&self) -> i64 {
         let len = self.stack.len();
-        if len < 2 { panic!("stack underflow"); }
+        if len < 2 {
+            panic!("stack underflow");
+        }
         match unsafe { self.stack.get_unchecked(len - 2) } {
             Value::I64(n) => *n,
             other => other.as_i64(),
@@ -8706,7 +8885,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn peek_f32_top_fast(&self) -> f32 {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         match unsafe { self.stack.get_unchecked(len - 1) } {
             Value::F32(n) => *n,
             other => other.as_f32(),
@@ -8716,7 +8897,9 @@ impl VM {
     #[inline(always)]
     pub(crate) fn peek_f64_top_fast(&self) -> f64 {
         let len = self.stack.len();
-        if len == 0 { panic!("stack underflow"); }
+        if len == 0 {
+            panic!("stack underflow");
+        }
         match unsafe { self.stack.get_unchecked(len - 1) } {
             Value::F64(n) => *n,
             other => other.as_f64(),
@@ -9464,6 +9647,10 @@ impl VM {
             ));
         }
         self.canon_defs = section.to_vec();
+        self.canon_call_shapes.clear();
+        self.canon_type_refs.clear();
+        self.canon_mem_layouts.clear();
+        self.canon_inline_layouts.clear();
         Ok(())
     }
 
@@ -9500,6 +9687,10 @@ impl VM {
             ));
         }
         self.canon_functypes = fts.to_vec();
+        self.canon_call_shapes.clear();
+        self.canon_type_refs.clear();
+        self.canon_mem_layouts.clear();
+        self.canon_inline_layouts.clear();
         self.canon_types = vts.to_vec();
         if let Some(fs) = incoming.first().map(|c| c.component_funcs.clone()) {
             if !fs.is_empty() {
@@ -9619,8 +9810,7 @@ impl VM {
         // on each PHP include makes this work quadratic in the include count.
         let first_new_chunk = self.chunk_import_owner.last().copied().unwrap_or(0);
         let linked_chunks = &self.chunks[first_new_chunk..];
-        let string_bindings: Vec<(String, Arc<str>)> = self
-            .chunks[first_new_chunk..]
+        let string_bindings: Vec<(String, Arc<str>)> = self.chunks[first_new_chunk..]
             .iter()
             .flat_map(|chunk| chunk.global_imports.iter())
             .filter(|import| import.module == crate::chunk::STRING_CONSTANTS_MODULE)
@@ -9634,8 +9824,7 @@ impl VM {
         for (key, value) in string_bindings {
             self.set_global(&key, Value::String(value));
         }
-        let primitive_bindings: Vec<(String, Value)> = self
-            .chunks[first_new_chunk..]
+        let primitive_bindings: Vec<(String, Value)> = self.chunks[first_new_chunk..]
             .iter()
             .flat_map(|chunk| chunk.global_imports.iter())
             .filter_map(|import| {
@@ -10203,5 +10392,189 @@ mod reset_tests {
             baseline,
             "reset_to must reclaim every cyclic structure — live count back to baseline"
         );
+    }
+}
+
+// Proposed new #[cfg(test)] internal vm.rs module. Not compiled or applied.
+#[cfg(test)]
+mod cumulative_ref_func_tests {
+    use super::*;
+    use crate::value::UpvalueLocation;
+
+    fn placeholder() -> Chunk {
+        let mut c = Chunk::new("prior-module");
+        c.emit_ref_null(crate::opcode::heaptype::HT_EXTERN, 0);
+        c.emit_op(Op::RETURN, 0);
+        c
+    }
+    fn module(answer: i32, capture: bool, no_intern: bool) -> Vec<Chunk> {
+        let mut root = Chunk::new("new-module");
+        if capture {
+            root.local_count = 1;
+            root.emit_i32_const(123, 0);
+            root.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        }
+        root.emit_op_u16(Op::REF_FUNC, 1, 0);
+        root.code
+            .push(u8::from(capture) | if no_intern { 0x80 } else { 0 });
+        root.lines.push(0);
+        if capture {
+            root.code.extend_from_slice(&[1, 0, 0]); // capture local slot 0
+            root.lines.extend_from_slice(&[0, 0, 0]);
+        }
+        root.emit_op(Op::RETURN, 0);
+        let mut body = Chunk::new("answer");
+        body.emit_i32_const(answer, 0);
+        body.emit_op(Op::RETURN, 0);
+        vec![root, body]
+    }
+    fn load(vm: &mut VM, kind: u8, chunks: Vec<Chunk>) -> Value {
+        match kind {
+            0 => vm.run(chunks),
+            1 => vm.run_linked(chunks, vec![]),
+            2 => vm.run_linked_nested(chunks, vec![]),
+            _ => unreachable!(),
+        }
+        .unwrap()
+    }
+    #[test]
+    fn every_loader_preserves_full_targets_and_delayed_calls() {
+        for kind in 0..=2 {
+            let mut vm = VM::new();
+            let snap = vm.snapshot();
+            load(&mut vm, kind, vec![placeholder(); u16::MAX as usize + 1]);
+            let retained = load(&mut vm, kind, module(7, false, false));
+            assert_eq!(vm.invoke_callback(&retained, &[]), Value::I32(7));
+            let later = load(&mut vm, kind, module(99, false, false));
+            assert_eq!(vm.invoke_callback(&later, &[]), Value::I32(99));
+            assert_eq!(vm.invoke_callback(&retained, &[]), Value::I32(7));
+            vm.reset_to(&snap);
+            let reused = load(&mut vm, kind, module(21, false, false));
+            assert_eq!(vm.invoke_callback(&reused, &[]), Value::I32(21));
+        }
+    }
+    #[test]
+    fn capture_triplets_and_no_intern_flag_survive_high_load_base() {
+        for kind in 0..=2 {
+            let mut vm = VM::new();
+            load(&mut vm, kind, vec![placeholder(); u16::MAX as usize + 1]);
+            let captured = load(&mut vm, kind, module(7, true, true));
+            let Value::Object(obj) = &captured else {
+                panic!("function required")
+            };
+            let f = {
+                let guard = obj.lock().unwrap();
+                let ObjectKind::Function(f) = &guard.kind else {
+                    panic!("function required")
+                };
+                f.clone()
+            };
+            assert_eq!(f.chunk_index, u16::MAX as usize + 2);
+            assert_eq!(f.upvalues.len(), 1);
+            assert!(matches!(
+                &f.upvalues[0].lock().unwrap().location,
+                UpvalueLocation::Closed(Value::I32(123))
+            ));
+            assert_eq!(vm.invoke_callback(&captured, &[]), Value::I32(7));
+        }
+    }
+    #[test]
+    fn no_intern_flag_and_canonical_identity_survive_high_load_base() {
+        for no_intern in [false, true] {
+            let mut vm = VM::new();
+            load(&mut vm, 0, vec![placeholder(); u16::MAX as usize + 1]);
+            let mut chunks = module(7, false, no_intern);
+            let first_ref = chunks[0].code[..7].to_vec();
+            let code_len = chunks[0].code.len();
+            chunks[0].code.truncate(code_len - 4);
+            chunks[0].lines.truncate(code_len - 4);
+            chunks[0].emit_op(Op::DROP, 0);
+            chunks[0].code.extend_from_slice(&first_ref);
+            chunks[0].lines.extend_from_slice(&[0; 7]);
+            chunks[0].emit_op(Op::RETURN, 0);
+            let before = vm.func_table.len();
+            let retained = load(&mut vm, 0, chunks);
+            assert_eq!(vm.func_table.len() - before, if no_intern { 2 } else { 1 });
+            assert_eq!(vm.invoke_callback(&retained, &[]), Value::I32(7));
+        }
+    }
+    #[test]
+    fn live_reload_keeps_old_wide_targets_and_captured_callback_then_uses_new_body() {
+        let mut vm = VM::new();
+        let first = u16::MAX as usize + 1;
+        load(&mut vm, 0, vec![placeholder(); first]);
+        let mut chunks = module(7, true, true);
+        // A real retained captured callback whose body creates another
+        // function reference. Its relative target 2 needs absolute first+2.
+        let mut old_body = Chunk::new("answer");
+        old_body.emit_op_u16(Op::REF_FUNC, 2, 0);
+        old_body.code.push(0);
+        old_body.lines.push(0);
+        old_body.emit_op(Op::RETURN, 0);
+        let target = chunks[1].clone();
+        chunks[1] = old_body;
+        chunks.push(target);
+        let retained = load(&mut vm, 0, chunks);
+        let Value::Object(obj) = &retained else {
+            panic!("callback required")
+        };
+        let captured = {
+            let guard = obj.lock().unwrap();
+            let ObjectKind::Function(f) = &guard.kind else {
+                panic!("callback required")
+            };
+            f.upvalues[0].clone()
+        };
+        // Establish an actual call frame via normal call machinery. Reload
+        // at this instruction boundary, before that live body executes.
+        vm.stack.push(retained.clone());
+        vm.call_value(0).unwrap();
+        assert_eq!(vm.frames.last().unwrap().chunk_index, first + 1);
+        assert!(Arc::ptr_eq(
+            &vm.frames.last().unwrap().upvalues[0],
+            &captured
+        ));
+        let mut replacement = vm.chunks.clone();
+        let mut new_body = Chunk::new("answer");
+        // Complete-namespace reload input uses absolute target 3, not 3+first.
+        new_body.emit_op_u16(Op::REF_FUNC, 3, 0);
+        new_body.code.push(0);
+        new_body.lines.push(0);
+        new_body.emit_op(Op::RETURN, 0);
+        replacement[first + 1] = new_body;
+        let report = vm.apply_reload(replacement).unwrap();
+        assert!(report.contains("live frame kept on old body"));
+        let relocated = vm.frames.last().unwrap().chunk_index;
+        assert!(relocated > first + 2);
+        assert_eq!(vm.decoded_operands64[relocated][0], (first + 2) as u64);
+        assert_eq!(vm.decoded_operands64[first + 1][0], 3);
+        assert!(Arc::ptr_eq(
+            &vm.frames.last().unwrap().upvalues[0],
+            &captured
+        ));
+        let old_result = vm.execute().unwrap();
+        assert_eq!(vm.invoke_callback(&old_result, &[]), Value::I32(7));
+        assert!(matches!(
+            &captured.lock().unwrap().location,
+            UpvalueLocation::Closed(Value::I32(123))
+        ));
+        // The retained captured callback still identifies its original index,
+        // hence now runs the replacement body and produces absolute target 3.
+        let new_result = vm.invoke_callback(&retained, &[]);
+        let Value::Object(new_obj) = &new_result else {
+            panic!("function required")
+        };
+        {
+            let guard = new_obj.lock().unwrap();
+            let ObjectKind::Function(f) = &guard.kind else {
+                panic!("function required")
+            };
+            assert_eq!(f.chunk_index, 3);
+        }
+        assert_eq!(vm.invoke_callback(&new_result, &[]), Value::Null);
+        load(&mut vm, 0, module(99, false, false));
+        assert_eq!(vm.invoke_callback(&old_result, &[]), Value::I32(7));
+        let new_result = vm.invoke_callback(&retained, &[]);
+        assert_eq!(vm.invoke_callback(&new_result, &[]), Value::Null);
     }
 }

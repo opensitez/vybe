@@ -249,6 +249,47 @@ fn multiple_host_fns_correct_dispatch() {
     assert_string(&result, "beta");
 }
 
+#[test]
+fn repeated_host_call_site_passes_each_argument() {
+    let seen = Arc::new(AtomicUsize::new(0));
+    let captured = seen.clone();
+    let mut vm = VM::new();
+    vm.register_host_fn(
+        "test",
+        "count",
+        Box::new(move |_ctx, args| {
+            let call = captured.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(args, &[Value::I32(3 - call as i32)]);
+            Value::Null
+        }),
+    );
+
+    let mut main = Chunk::new("repeated-host-site");
+    main.local_count = 1;
+    let import = main.add_import("test", "count");
+    main.emit_i32_const(3, 0);
+    main.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    let outer = main.emit_block(0);
+    let (loop_label, _) = main.emit_loop_s(0);
+    main.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    emit_call_import(&mut main, import, 1);
+    main.emit_op(Op::DROP, 0);
+    main.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    main.emit_i32_const(1, 0);
+    main.emit_op(Op::I32_SUB, 0);
+    main.emit_op_u16(Op::LOCAL_TEE, 0, 0);
+    main.emit_br_if(0, 0);
+    main.emit_end(0);
+    main.patch_loop(loop_label);
+    main.emit_end(0);
+    main.patch_block(outer);
+    main.emit_i32_const(0, 0);
+    main.emit_op(Op::RETURN, 0);
+
+    assert_eq!(vm.run(vec![main]).unwrap(), Value::I32(0));
+    assert_eq!(seen.load(Ordering::Relaxed), 3);
+}
+
 // 8. Host fn receiving string args
 #[test]
 fn host_receives_string_args() {

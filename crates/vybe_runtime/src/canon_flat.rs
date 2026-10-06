@@ -121,13 +121,12 @@ pub fn flatten_type(t: &ValType, ptr: CoreType) -> Vec<CoreType> {
         // them through the same path, so they must not get a shape of their
         // own here or a `result` would flatten differently from the two-case
         // variant it is defined to be.
-        ValType::Option(inner) => flatten_variant_cases(&[None, Some(inner.as_ref().clone())], ptr),
+        ValType::Option(inner) => flatten_variant_cases([None, Some(inner.as_ref())].into_iter(), ptr),
         ValType::Result(ok, err) => {
-            flatten_variant_cases(&[ok.as_deref().cloned(), err.as_deref().cloned()], ptr)
+            flatten_variant_cases([ok.as_deref(), err.as_deref()].into_iter(), ptr)
         }
         ValType::Variant(cases) => {
-            let payloads: Vec<Option<ValType>> = cases.iter().map(|(_, t)| t.clone()).collect();
-            flatten_variant_cases(&payloads, ptr)
+            flatten_variant_cases(cases.iter().map(|(_, t)| t.as_ref()), ptr)
         }
         // Handles and the async types are all one index.
         // 📝 `error-context` flattens as its i32 handle, like own/borrow.
@@ -146,8 +145,12 @@ pub fn flatten_type(t: &ValType, ptr: CoreType) -> Vec<CoreType> {
 /// Every case travels in the same static core types regardless of which one is
 /// live, which is why `join` exists: position `i` must carry case A's `f32` and
 /// case B's `i32` alike.
-fn flatten_variant_cases(cases: &[Option<ValType>], ptr: CoreType) -> Vec<CoreType> {
+pub(crate) fn flatten_variant_cases<'a>(
+    cases: impl ExactSizeIterator<Item = Option<&'a ValType>>,
+    ptr: CoreType,
+) -> Vec<CoreType> {
     let mut flat: Vec<CoreType> = Vec::new();
+    let case_count = cases.len();
     for case in cases {
         if let Some(t) = case {
             for (i, ft) in flatten_type(t, ptr).into_iter().enumerate() {
@@ -159,7 +162,7 @@ fn flatten_variant_cases(cases: &[Option<ValType>], ptr: CoreType) -> Vec<CoreTy
             }
         }
     }
-    let mut out = discriminant_core_type(cases.len());
+    let mut out = discriminant_core_type(case_count);
     out.extend(flat);
     out
 }

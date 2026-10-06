@@ -950,10 +950,17 @@ impl Debugger {
         }
 
         // 2. Service any async requests that arrived while running (pause, set-bp,
-        //    inspect). Non-blocking; may flip mode so step 3 stops. Suppressed
+        //    inspect). Poll every 64 instructions in Running mode even when
+        //    breakpoints are installed; step 3 still checks stops on EVERY op.
+        //    This keeps the same bounded command latency as free-running mode
+        //    without paying the channel's synchronization cost for every op.
+        //    Non-blocking; may flip mode so step 3 stops. Suppressed
         //    during the pre-first-pause prelude-skip auto-run (see step 0) so a
         //    piped command batch isn't consumed mid-run.
-        if !matches!(self.mode, RunMode::Paused) && !self.defer_cmds_until_pause {
+        if !matches!(self.mode, RunMode::Paused)
+            && !self.defer_cmds_until_pause
+            && (!matches!(self.mode, RunMode::Running) || self.sampled_instructions % 64 == 0)
+        {
             while let Ok(req) = self.cmd_rx.try_recv() {
                 let ctrl = self.handle_command(vm, req.command, chunk_index, ip);
                 match ctrl.flow {
@@ -1074,8 +1081,10 @@ impl Debugger {
             if let Some(cond) = &condition {
                 let locals = gather_frame_locals(vm);
                 // Fail open (stop) on a broken condition so the user notices.
-                let fires = matches!(vm.debug_eval(cond, &locals), Ok(v) if is_truthy(&v))
-                    || vm.debug_eval(cond, &locals).is_err();
+                let fires = match vm.debug_eval(cond, &locals) {
+                    Ok(value) => is_truthy(&value),
+                    Err(_) => true,
+                };
                 if !fires {
                     continue;
                 }
@@ -2185,12 +2194,18 @@ fn disasm_window(vm: &VM, chunk_index: usize, current_ip: usize, window: usize) 
     let Some(chunk) = vm.chunks.get(chunk_index) else {
         return Vec::new();
     };
+    let owner = vm.chunk_import_owner.get(chunk_index).copied().unwrap_or(chunk_index);
+    let imports = if chunk.imports.is_empty() {
+        vm.chunks.get(owner).map_or(chunk.imports.as_slice(), |module| module.imports.as_slice())
+    } else {
+        chunk.imports.as_slice()
+    };
     // Collect all instruction starts, then window around the current ip.
     let mut instrs: Vec<usize> = Vec::new();
     let mut offset = 0;
     while offset < chunk.code.len() {
         instrs.push(offset);
-        let (_, next) = crate::debug::disassemble_instruction(chunk, offset);
+        let (_, next) = crate::debug::disassemble_instruction_with_imports(chunk, imports, offset);
         if next <= offset {
             break;
         }
@@ -2202,7 +2217,7 @@ fn disasm_window(vm: &VM, chunk_index: usize, current_ip: usize, window: usize) 
     instrs[start..end]
         .iter()
         .map(|&o| {
-            let (text, _) = crate::debug::disassemble_instruction(chunk, o);
+            let (text, _) = crate::debug::disassemble_instruction_with_imports(chunk, imports, o);
             DisasmLine {
                 offset: o,
                 text,
@@ -2265,6 +2280,17 @@ fn chunk_list(vm: &VM) -> Vec<ChunkInfo> {
 
 /// Bounded rendering of a value so a huge graph can't flood the wire.
 fn render_value(v: &crate::Value) -> String {
+    const CAP: usize = 200;
+    if let crate::Value::String(value) = v {
+        if value.len() <= CAP {
+            return value.to_string();
+        }
+        let mut end = CAP;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        return format!("{}… ({} UTF-8 bytes)", &value[..end], value.len());
+    }
     // Snapshot first: a map can contain itself, so never format a child
     // while holding the parent's lock. Keep nested objects shallow.
     let entries = if let crate::Value::Object(object) = v {
@@ -2284,7 +2310,6 @@ fn render_value(v: &crate::Value) -> String {
             .map(|(key, value)| format!("{}: {}", item(key), item(value)))
             .collect::<Vec<_>>().join(", "), if len > entries.len() { ", …" } else { "" })
     } else { format!("{}", v) };
-    const CAP: usize = 200;
     if s.len() > CAP {
         let mut end = CAP;
         while !s.is_char_boundary(end) { end -= 1; }

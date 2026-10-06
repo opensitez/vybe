@@ -38,6 +38,118 @@ use crate::canon_flat::{CoreType, flatten_type, flatten_types};
 use crate::canon_value::{CanonError, Realloc};
 use crate::component::ValType;
 use crate::value::Value;
+use std::collections::HashMap;
+
+#[derive(Debug)]
+struct VariantLayout {
+    joined: Vec<CoreType>,
+    cases: Vec<Vec<CoreType>>,
+}
+
+/// Layouts belong to one immutable function type. Keys are addresses of its
+/// nested `ValType`s; the owning boxed function type must outlive this cache.
+#[derive(Debug, Default)]
+pub(crate) struct FlatLayoutCache {
+    variants: HashMap<usize, VariantLayout>,
+    param_tuple: Option<(ValType, crate::canon_layout::MemLayout)>,
+    result_tuple: Option<(ValType, crate::canon_layout::MemLayout)>,
+    pub params_flat_len: usize,
+    pub result_flat_len: usize,
+}
+
+impl FlatLayoutCache {
+    pub(crate) fn for_functype(ft: &crate::canon_def::CanonFuncType, ptr: CoreType) -> Self {
+        let mut cache = Self {
+            variants: HashMap::new(),
+            param_tuple: None,
+            result_tuple: None,
+            params_flat_len: flatten_types(&ft.params, ptr).len(),
+            result_flat_len: ft.result.as_ref().map_or(0, |t| flatten_type(t, ptr).len()),
+        };
+        if cache.params_flat_len > crate::canon_flat::MAX_FLAT_PARAMS {
+            cache.param_tuple = Some(Self::tuple_layout(&ft.params));
+        }
+        if cache.result_flat_len > crate::canon_flat::MAX_FLAT_RESULTS {
+            cache.result_tuple = Some(Self::tuple_layout(
+                &ft.result.iter().cloned().collect::<Vec<_>>(),
+            ));
+        }
+        for ty in ft.params.iter().chain(ft.result.iter()) {
+            cache.collect(ty, ptr);
+        }
+        cache
+    }
+
+    fn tuple_layout(types: &[ValType]) -> (ValType, crate::canon_layout::MemLayout) {
+        let ty = ValType::Record(
+            types
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (format!("{i}"), t.clone()))
+                .collect(),
+        );
+        let layout = crate::canon_layout::MemLayout::new(&ty);
+        (ty, layout)
+    }
+
+    fn tuple_for(&self, max_flat: usize) -> Option<&(ValType, crate::canon_layout::MemLayout)> {
+        if max_flat == crate::canon_flat::MAX_FLAT_PARAMS {
+            self.param_tuple.as_ref()
+        } else {
+            self.result_tuple.as_ref()
+        }
+    }
+
+    fn collect(&mut self, ty: &ValType, ptr: CoreType) {
+        match ty {
+            ValType::Option(inner) => {
+                self.collect(inner, ptr);
+                self.insert_variant(ty, [None, Some(inner.as_ref())].into_iter(), ptr);
+            }
+            ValType::Result(ok, err) => {
+                for inner in [ok.as_deref(), err.as_deref()].into_iter().flatten() {
+                    self.collect(inner, ptr);
+                }
+                self.insert_variant(ty, [ok.as_deref(), err.as_deref()].into_iter(), ptr);
+            }
+            ValType::Variant(cases) => {
+                for (_, inner) in cases {
+                    if let Some(inner) = inner {
+                        self.collect(inner, ptr);
+                    }
+                }
+                self.insert_variant(ty, cases.iter().map(|(_, inner)| inner.as_ref()), ptr);
+            }
+            ValType::Record(fields) => {
+                for (_, inner) in fields {
+                    self.collect(inner, ptr);
+                }
+            }
+            ValType::ListFixed(inner, _) => self.collect(inner, ptr),
+            _ => {}
+        }
+    }
+
+    fn insert_variant<'a>(
+        &mut self,
+        ty: &ValType,
+        cases: impl ExactSizeIterator<Item = Option<&'a ValType>> + Clone,
+        ptr: CoreType,
+    ) {
+        let joined = crate::canon_flat::flatten_variant_cases(cases.clone(), ptr);
+        let cases = cases
+            .map(|case| case.map_or_else(Vec::new, |inner| flatten_type(inner, ptr)))
+            .collect();
+        self.variants.insert(
+            ty as *const ValType as usize,
+            VariantLayout { joined, cases },
+        );
+    }
+
+    fn variant(&self, ty: &ValType) -> Option<&VariantLayout> {
+        self.variants.get(&(ty as *const ValType as usize))
+    }
+}
 
 /// One core value in transit — the flat representation's alphabet.
 ///
@@ -165,6 +277,16 @@ pub fn lift_flat(
     t: &ValType,
     ptr_type: CoreType,
 ) -> Result<Value, CanonError> {
+    lift_flat_impl(memory, vi, t, ptr_type, None)
+}
+
+fn lift_flat_impl(
+    memory: &crate::shared_memory::SharedMemory,
+    vi: &mut CoreValueIter<'_>,
+    t: &ValType,
+    ptr_type: CoreType,
+    layouts: Option<&FlatLayoutCache>,
+) -> Result<Value, CanonError> {
     Ok(match t {
         ValType::Bool => Value::Bool(matches!(vi.next()?, CoreValue::I32(i) if i != 0)),
         // ⛔ The narrow widths arrive in a full core `i32` slot and must be
@@ -225,7 +347,7 @@ pub fn lift_flat(
         ValType::ListFixed(elem, n) => {
             let mut items = Vec::with_capacity(*n as usize);
             for _ in 0..*n {
-                items.push(lift_flat(memory, vi, elem, ptr_type)?);
+                items.push(lift_flat_impl(memory, vi, elem, ptr_type, layouts)?);
             }
             Value::Object(crate::heap::alloc(crate::value::Object::new_array(items)))
         }
@@ -242,25 +364,33 @@ pub fn lift_flat(
         ValType::Record(fields) => {
             let mut object = crate::value::Object::new();
             for (name, field_ty) in fields {
-                let v = lift_flat(memory, vi, field_ty, ptr_type)?;
+                let v = lift_flat_impl(memory, vi, field_ty, ptr_type, layouts)?;
                 object.properties.insert(name.as_str().into(), v);
             }
             Value::Object(crate::heap::alloc(object))
         }
         ValType::Option(inner) => {
-            let cases = [
-                (String::from("none"), None),
-                (String::from("some"), Some((**inner).clone())),
-            ];
-            let (case, payload) = lift_flat_variant(memory, vi, &cases, ptr_type)?;
+            let cases = [None, Some(inner.as_ref())];
+            let (case, payload) = lift_flat_variant(
+                memory,
+                vi,
+                cases.iter().copied(),
+                ptr_type,
+                layouts.and_then(|c| c.variant(t)),
+                layouts,
+            )?;
             if case == 0 { Value::Null } else { payload }
         }
         ValType::Result(ok, err) => {
-            let cases = [
-                (String::from("ok"), ok.as_deref().cloned()),
-                (String::from("error"), err.as_deref().cloned()),
-            ];
-            let (case, payload) = lift_flat_variant(memory, vi, &cases, ptr_type)?;
+            let cases = [ok.as_deref(), err.as_deref()];
+            let (case, payload) = lift_flat_variant(
+                memory,
+                vi,
+                cases.iter().copied(),
+                ptr_type,
+                layouts.and_then(|c| c.variant(t)),
+                layouts,
+            )?;
             if case == 0 {
                 payload
             } else {
@@ -270,7 +400,14 @@ pub fn lift_flat(
             }
         }
         ValType::Variant(cases) => {
-            let (case, payload) = lift_flat_variant(memory, vi, cases, ptr_type)?;
+            let (case, payload) = lift_flat_variant(
+                memory,
+                vi,
+                cases.iter().map(|(_, payload)| payload.as_ref()),
+                ptr_type,
+                layouts.and_then(|c| c.variant(t)),
+                layouts,
+            )?;
             match cases.get(case as usize) {
                 // Same rule `canon_value::load` follows: a case that carried no
                 // payload lifts as the bare NAME, so the two directions agree.
@@ -311,14 +448,21 @@ pub fn lift_flat(
 /// every case, so a shorter case leaves slots the caller still wrote. Skipping
 /// them leaves the iterator pointing at padding, and the next parameter lifts
 /// from the wrong place.
-fn lift_flat_variant(
+fn lift_flat_variant<'a>(
     memory: &crate::shared_memory::SharedMemory,
     vi: &mut CoreValueIter<'_>,
-    cases: &[(String, Option<ValType>)],
+    cases: impl ExactSizeIterator<Item = Option<&'a ValType>> + Clone,
     ptr_type: CoreType,
+    layout: Option<&VariantLayout>,
+    layouts: Option<&FlatLayoutCache>,
 ) -> Result<(u32, Value), CanonError> {
-    let payloads: Vec<Option<ValType>> = cases.iter().map(|(_, t)| t.clone()).collect();
-    let joined = crate::canon_flat::flatten_type(&ValType::Variant(cases.to_vec()), ptr_type);
+    let joined_storage;
+    let joined = if let Some(layout) = layout {
+        &layout.joined
+    } else {
+        joined_storage = crate::canon_flat::flatten_variant_cases(cases.clone(), ptr_type);
+        &joined_storage
+    };
     // Element 0 is the discriminant; the rest are the joined payload slots.
     let joined_payload = &joined[1..];
 
@@ -331,12 +475,18 @@ fn lift_flat_variant(
     }
 
     let mut consumed = 0usize;
-    let value = match &payloads[case_index as usize] {
+    let value = match cases.clone().nth(case_index as usize).flatten() {
         None => Value::Null,
         Some(t) => {
-            let want = flatten_type(t, ptr_type);
+            let want_storage;
+            let want = if let Some(layout) = layout {
+                &layout.cases[case_index as usize]
+            } else {
+                want_storage = flatten_type(t, ptr_type);
+                &want_storage
+            };
             let mut coerced: Vec<CoreValue> = Vec::with_capacity(want.len());
-            for w in &want {
+            for w in want {
                 let have = joined_payload
                     .get(consumed)
                     .copied()
@@ -346,7 +496,7 @@ fn lift_flat_variant(
                 consumed += 1;
             }
             let mut inner = CoreValueIter::new(&coerced);
-            lift_flat(memory, &mut inner, t, ptr_type)?
+            lift_flat_impl(memory, &mut inner, t, ptr_type, layouts)?
         }
     };
 
@@ -367,22 +517,38 @@ pub fn lower_flat(
     t: &ValType,
     ptr_type: CoreType,
 ) -> Result<Vec<CoreValue>, CanonError> {
-    Ok(match t {
-        ValType::Bool => vec![CoreValue::I32(u32::from(v.as_bool()))],
+    let mut flat = Vec::new();
+    lower_flat_into(memory, realloc, v, t, ptr_type, None, &mut flat)?;
+    Ok(flat)
+}
+
+fn lower_flat_into(
+    memory: &crate::shared_memory::SharedMemory,
+    realloc: &mut Realloc<'_>,
+    v: &Value,
+    t: &ValType,
+    ptr_type: CoreType,
+    layouts: Option<&FlatLayoutCache>,
+    flat: &mut Vec<CoreValue>,
+) -> Result<(), CanonError> {
+    match t {
+        ValType::Bool => flat.push(CoreValue::I32(u32::from(v.as_bool()))),
         // Lowering narrows to the declared width and then widens back into the
         // i32 slot, so a value out of range for its type cannot be smuggled
         // through in the slot's spare bits.
-        ValType::S8 => vec![CoreValue::I32(v.as_i32() as i8 as i32 as u32)],
-        ValType::U8 => vec![CoreValue::I32(v.as_i32() as u8 as u32)],
-        ValType::S16 => vec![CoreValue::I32(v.as_i32() as i16 as i32 as u32)],
-        ValType::U16 => vec![CoreValue::I32(v.as_i32() as u16 as u32)],
-        ValType::I32 => vec![CoreValue::I32(v.as_i32() as u32)],
-        ValType::I64 => vec![CoreValue::I64(v.as_i64() as u64)],
-        ValType::F32 => vec![CoreValue::F32(v.as_f64() as f32)],
-        ValType::F64 => vec![CoreValue::F64(v.as_f64())],
-        ValType::Char => vec![CoreValue::I32(crate::canon_value::value_to_scalar(v)?)],
+        ValType::S8 => flat.push(CoreValue::I32(v.as_i32() as i8 as i32 as u32)),
+        ValType::U8 => flat.push(CoreValue::I32(v.as_i32() as u8 as u32)),
+        ValType::S16 => flat.push(CoreValue::I32(v.as_i32() as i16 as i32 as u32)),
+        ValType::U16 => flat.push(CoreValue::I32(v.as_i32() as u16 as u32)),
+        ValType::I32 => flat.push(CoreValue::I32(v.as_i32() as u32)),
+        ValType::I64 => flat.push(CoreValue::I64(v.as_i64() as u64)),
+        ValType::F32 => flat.push(CoreValue::F32(v.as_f64() as f32)),
+        ValType::F64 => flat.push(CoreValue::F64(v.as_f64())),
+        ValType::Char => flat.push(CoreValue::I32(crate::canon_value::value_to_scalar(v)?)),
         // `lower_flat_flags` — `[pack_flags_into_int(v, labels)]`.
-        ValType::Flags(labels) => vec![CoreValue::I32(crate::canon_value::pack_flags(v, labels))],
+        ValType::Flags(labels) => {
+            flat.push(CoreValue::I32(crate::canon_value::pack_flags(v, labels)))
+        }
         // 🔧 N elements' flat values in sequence. The count check is the same
         // assertion `store` makes: the length is part of the TYPE, so a
         // mismatched value cannot be silently padded or truncated.
@@ -394,58 +560,80 @@ pub fn lower_flat(
                     want: *n,
                 });
             }
-            let mut flat = Vec::new();
             for item in &items {
-                flat.extend(lower_flat(memory, realloc, item, elem, ptr_type)?);
+                lower_flat_into(memory, realloc, item, elem, ptr_type, layouts, flat)?;
             }
-            flat
         }
         // The bytes go to memory; only the pair travels flat.
         ValType::String | ValType::List(_) => {
             let (at, len) = store_pair(memory, realloc, v, t)?;
-            vec![flat_from_ptr(at, ptr_type), flat_from_ptr(len, ptr_type)]
+            flat.push(flat_from_ptr(at, ptr_type));
+            flat.push(flat_from_ptr(len, ptr_type));
         }
         ValType::Record(fields) => {
-            let mut flat = Vec::new();
             for (name, field_ty) in fields {
                 let fv = crate::canon_value::record_field_public(v, name);
-                flat.extend(lower_flat(memory, realloc, &fv, field_ty, ptr_type)?);
+                lower_flat_into(memory, realloc, &fv, field_ty, ptr_type, layouts, flat)?;
             }
-            flat
         }
         ValType::Option(inner) => {
-            let cases = [
-                (String::from("none"), None),
-                (String::from("some"), Some((**inner).clone())),
-            ];
+            let cases = [None, Some(inner.as_ref())];
             let (idx, payload) = if matches!(v, Value::Null) {
                 (0u32, Value::Null)
             } else {
                 (1u32, v.clone())
             };
-            lower_flat_variant(memory, realloc, idx, &payload, &cases, ptr_type)?
+            lower_flat_variant_into(
+                memory,
+                realloc,
+                idx,
+                &payload,
+                cases.iter().copied(),
+                ptr_type,
+                layouts.and_then(|c| c.variant(t)),
+                layouts,
+                flat,
+            )?;
         }
         ValType::Result(ok, err) => {
-            let cases = [
-                (String::from("ok"), ok.as_deref().cloned()),
-                (String::from("error"), err.as_deref().cloned()),
-            ];
+            let cases = [ok.as_deref(), err.as_deref()];
             let (idx, payload) = crate::canon_value::result_parts_public(v);
-            lower_flat_variant(memory, realloc, idx, &payload, &cases, ptr_type)?
+            lower_flat_variant_into(
+                memory,
+                realloc,
+                idx,
+                &payload,
+                cases.iter().copied(),
+                ptr_type,
+                layouts.and_then(|c| c.variant(t)),
+                layouts,
+                flat,
+            )?;
         }
         ValType::Variant(cases) => {
             let (idx, payload) = crate::canon_value::variant_case_public(v, cases)?;
-            lower_flat_variant(memory, realloc, idx, &payload, cases, ptr_type)?
+            lower_flat_variant_into(
+                memory,
+                realloc,
+                idx,
+                &payload,
+                cases.iter().map(|(_, payload)| payload.as_ref()),
+                ptr_type,
+                layouts.and_then(|c| c.variant(t)),
+                layouts,
+                flat,
+            )?;
         }
         ValType::Own(_)
         | ValType::Borrow(_)
         | ValType::Stream(_)
         | ValType::Future(_)
         | ValType::ErrorContext => {
-            vec![CoreValue::I32(v.as_i32() as u32)]
+            flat.push(CoreValue::I32(v.as_i32() as u32));
         }
         ValType::Any => return Err(CanonError::Unsupported("any (not a component type)")),
-    })
+    }
+    Ok(())
 }
 
 /// `lower_flat_variant` — discriminant, coerced payload, then PAD to the joined
@@ -454,31 +642,48 @@ pub fn lower_flat(
 /// The padding is required, not defensive: every case must occupy the same
 /// number of core values, or the receiver's `lift_flat_variant` reads the next
 /// parameter as this variant's tail.
-fn lower_flat_variant(
+fn lower_flat_variant_into<'a>(
     memory: &crate::shared_memory::SharedMemory,
     realloc: &mut Realloc<'_>,
     case_index: u32,
     payload: &Value,
-    cases: &[(String, Option<ValType>)],
+    cases: impl ExactSizeIterator<Item = Option<&'a ValType>> + Clone,
     ptr_type: CoreType,
-) -> Result<Vec<CoreValue>, CanonError> {
-    let joined = crate::canon_flat::flatten_type(&ValType::Variant(cases.to_vec()), ptr_type);
+    layout: Option<&VariantLayout>,
+    layouts: Option<&FlatLayoutCache>,
+    flat: &mut Vec<CoreValue>,
+) -> Result<(), CanonError> {
+    let joined_storage;
+    let joined = if let Some(layout) = layout {
+        &layout.joined
+    } else {
+        joined_storage = crate::canon_flat::flatten_variant_cases(cases.clone(), ptr_type);
+        &joined_storage
+    };
     let joined_payload = &joined[1..];
 
-    let mut flat = vec![CoreValue::I32(case_index)];
+    flat.push(CoreValue::I32(case_index));
+    let payload_start = flat.len();
     let mut written = 0usize;
 
-    if let Some((_, Some(t))) = cases.get(case_index as usize) {
-        let have_types = flatten_type(t, ptr_type);
-        let lowered = lower_flat(memory, realloc, payload, t, ptr_type)?;
-        for (i, fv) in lowered.into_iter().enumerate() {
+    if let Some(t) = cases.clone().nth(case_index as usize).flatten() {
+        let have_storage;
+        let have_types = if let Some(layout) = layout {
+            &layout.cases[case_index as usize]
+        } else {
+            have_storage = flatten_type(t, ptr_type);
+            &have_storage
+        };
+        lower_flat_into(memory, realloc, payload, t, ptr_type, layouts, flat)?;
+        written = flat.len() - payload_start;
+        for i in 0..written {
+            let fv = flat[payload_start + i];
             let have = have_types.get(i).copied().unwrap_or_else(|| fv.core_type());
             let want = joined_payload
-                .get(written)
+                .get(i)
                 .copied()
                 .ok_or(CanonError::Unsupported("variant flattening too short"))?;
-            flat.push(coerce_lower(fv, have, want)?);
-            written += 1;
+            flat[payload_start + i] = coerce_lower(fv, have, want)?;
         }
     }
 
@@ -490,7 +695,7 @@ fn lower_flat_variant(
             CoreType::F64 => CoreValue::F64(0.0),
         });
     }
-    Ok(flat)
+    Ok(())
 }
 
 /// `lower_flat_values` — a whole parameter list, spilling to memory when it
@@ -508,16 +713,53 @@ pub fn lower_flat_values(
     types: &[ValType],
     ptr_type: CoreType,
 ) -> Result<Vec<CoreValue>, CanonError> {
+    lower_flat_values_impl(
+        memory, realloc, max_flat, values, types, ptr_type, None, None,
+    )
+}
+
+pub(crate) fn lower_flat_values_cached(
+    memory: &crate::shared_memory::SharedMemory,
+    realloc: &mut Realloc<'_>,
+    max_flat: usize,
+    values: &[Value],
+    types: &[ValType],
+    ptr_type: CoreType,
+    layouts: &FlatLayoutCache,
+    flat_count: usize,
+) -> Result<Vec<CoreValue>, CanonError> {
+    lower_flat_values_impl(
+        memory,
+        realloc,
+        max_flat,
+        values,
+        types,
+        ptr_type,
+        Some(layouts),
+        Some(flat_count),
+    )
+}
+
+fn lower_flat_values_impl(
+    memory: &crate::shared_memory::SharedMemory,
+    realloc: &mut Realloc<'_>,
+    max_flat: usize,
+    values: &[Value],
+    types: &[ValType],
+    ptr_type: CoreType,
+    layouts: Option<&FlatLayoutCache>,
+    flat_count: Option<usize>,
+) -> Result<Vec<CoreValue>, CanonError> {
     if values.len() != types.len() {
         return Err(CanonError::Unsupported(
             "lower_flat_values: value/type count mismatch",
         ));
     }
-    let flat_types = flatten_types(types, ptr_type);
-    if flat_types.len() <= max_flat {
-        let mut flat = Vec::new();
+    let count = flat_count.unwrap_or_else(|| flatten_types(types, ptr_type).len());
+    if count <= max_flat {
+        let mut flat = Vec::with_capacity(count);
         for (v, t) in values.iter().zip(types) {
-            flat.extend(lower_flat(memory, realloc, v, t, ptr_type)?);
+            lower_flat_into(memory, realloc, v, t, ptr_type, layouts, &mut flat)?;
         }
         return Ok(flat);
     }
@@ -525,23 +767,40 @@ pub fn lower_flat_values(
     // Over the limit: store the arguments as a tuple in memory and pass the
     // pointer. The tuple is a record of the parameter types, so the layout is
     // the one `canon_value` already computes.
-    let tuple_ty = ValType::Record(
-        types
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (format!("{i}"), t.clone()))
-            .collect(),
-    );
+    let fallback_ty;
+    let (tuple_ty, memory_layout) =
+        if let Some((ty, layout)) = layouts.and_then(|cache| cache.tuple_for(max_flat)) {
+            (ty, Some(layout))
+        } else {
+            fallback_ty = ValType::Record(
+                types
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| (format!("{i}"), t.clone()))
+                    .collect(),
+            );
+            (&fallback_ty, None)
+        };
     let mut object = crate::value::Object::new();
     for (i, v) in values.iter().enumerate() {
         object.properties.insert(format!("{i}").into(), v.clone());
     }
     let tuple = Value::Object(crate::heap::alloc(object));
 
-    let size = crate::canon_layout::elem_size(&tuple_ty);
-    let align = crate::canon_layout::alignment(&tuple_ty);
+    let size = memory_layout.map_or_else(
+        || crate::canon_layout::elem_size(tuple_ty),
+        |layout| layout.size,
+    );
+    let align = memory_layout.map_or_else(
+        || crate::canon_layout::alignment(tuple_ty),
+        |layout| layout.align,
+    );
     let at = realloc(size, align).ok_or(CanonError::OutOfMemory { size })?;
-    crate::canon_value::store_with(memory, realloc, &tuple, &tuple_ty, at)?;
+    if let Some(layout) = memory_layout {
+        crate::canon_value::store_with_layout(memory, realloc, &tuple, tuple_ty, at, layout)?;
+    } else {
+        crate::canon_value::store_with(memory, realloc, &tuple, tuple_ty, at)?;
+    }
     Ok(vec![flat_from_ptr(at, ptr_type)])
 }
 
@@ -554,12 +813,43 @@ pub fn lift_flat_values(
     types: &[ValType],
     ptr_type: CoreType,
 ) -> Result<Vec<Value>, CanonError> {
-    let flat_types = flatten_types(types, ptr_type);
-    if flat_types.len() <= max_flat {
+    lift_flat_values_impl(memory, max_flat, values, types, ptr_type, None, None)
+}
+
+pub(crate) fn lift_flat_values_cached(
+    memory: &crate::shared_memory::SharedMemory,
+    max_flat: usize,
+    values: &[CoreValue],
+    types: &[ValType],
+    ptr_type: CoreType,
+    layouts: &FlatLayoutCache,
+    flat_count: usize,
+) -> Result<Vec<Value>, CanonError> {
+    lift_flat_values_impl(
+        memory,
+        max_flat,
+        values,
+        types,
+        ptr_type,
+        Some(layouts),
+        Some(flat_count),
+    )
+}
+
+fn lift_flat_values_impl(
+    memory: &crate::shared_memory::SharedMemory,
+    max_flat: usize,
+    values: &[CoreValue],
+    types: &[ValType],
+    ptr_type: CoreType,
+    layouts: Option<&FlatLayoutCache>,
+    flat_count: Option<usize>,
+) -> Result<Vec<Value>, CanonError> {
+    if flat_count.unwrap_or_else(|| flatten_types(types, ptr_type).len()) <= max_flat {
         let mut vi = CoreValueIter::new(values);
         let mut out = Vec::with_capacity(types.len());
         for t in types {
-            out.push(lift_flat(memory, &mut vi, t, ptr_type)?);
+            out.push(lift_flat_impl(memory, &mut vi, t, ptr_type, layouts)?);
         }
         return Ok(out);
     }
@@ -569,14 +859,19 @@ pub fn lift_flat_values(
         .copied()
         .ok_or(CanonError::Unsupported("lift_flat_values: no pointer"))?;
     let at = flat_ptr(at)?;
-    let tuple_ty = ValType::Record(
-        types
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (format!("{i}"), t.clone()))
-            .collect(),
-    );
-    let tuple = crate::canon_value::load(memory, &tuple_ty, at)?;
+    let fallback_ty;
+    let tuple = if let Some((ty, layout)) = layouts.and_then(|cache| cache.tuple_for(max_flat)) {
+        crate::canon_value::load_with_layout(memory, ty, at, layout)?
+    } else {
+        fallback_ty = ValType::Record(
+            types
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (format!("{i}"), t.clone()))
+                .collect(),
+        );
+        crate::canon_value::load(memory, &fallback_ty, at)?
+    };
     let mut out = Vec::with_capacity(types.len());
     for i in 0..types.len() {
         out.push(crate::canon_value::record_field_public(
@@ -756,6 +1051,187 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nested_variant_coerces_payload_in_place_without_shifting_next_field() {
+        let t = ValType::Record(vec![
+            (
+                s("choice"),
+                ValType::Variant(vec![
+                    (
+                        s("small"),
+                        Some(ValType::Record(vec![
+                            (s("integer"), ValType::I32),
+                            (s("float"), ValType::F32),
+                        ])),
+                    ),
+                    (
+                        s("wide"),
+                        Some(ValType::Record(vec![
+                            (s("integer"), ValType::F64),
+                            (s("float"), ValType::I64),
+                        ])),
+                    ),
+                ]),
+            ),
+            (s("tail"), ValType::I32),
+        ]);
+        let mut payload = crate::value::Object::new();
+        payload.properties.insert("integer".into(), Value::I32(42));
+        payload.properties.insert("float".into(), Value::F64(2.5));
+        let mut choice = crate::value::Object::new();
+        choice
+            .properties
+            .insert("tag".into(), Value::String("small".into()));
+        choice
+            .properties
+            .insert("val".into(), Value::Object(crate::heap::alloc(payload)));
+        let mut record = crate::value::Object::new();
+        record
+            .properties
+            .insert("choice".into(), Value::Object(crate::heap::alloc(choice)));
+        record.properties.insert("tail".into(), Value::I32(9));
+        let value = Value::Object(crate::heap::alloc(record));
+        let memory = mem();
+        let flat = with_alloc(&memory, |realloc| {
+            lower_flat(&memory, realloc, &value, &t, CoreType::I32).unwrap()
+        });
+        assert_eq!(
+            flat,
+            vec![
+                CoreValue::I32(0),
+                CoreValue::I64(42),
+                CoreValue::I64(2.5f32.to_bits() as u64),
+                CoreValue::I32(9),
+            ]
+        );
+        let mut values = CoreValueIter::new(&flat);
+        let lifted = lift_flat(&memory, &mut values, &t, CoreType::I32).unwrap();
+        assert!(values.done());
+        assert_eq!(
+            crate::canon_value::record_field_public(&lifted, "tail").as_i32(),
+            9
+        );
+    }
+
+    #[test]
+    fn nested_lowering_preserves_errors_after_prefix_slots() {
+        let memory = mem();
+        let mut record = crate::value::Object::new();
+        record.properties.insert("head".into(), Value::I32(4));
+        record.properties.insert("items".into(), Value::Null);
+        let value = Value::Object(crate::heap::alloc(record));
+        let fixed = ValType::Record(vec![
+            (s("head"), ValType::I32),
+            (s("items"), ValType::ListFixed(Box::new(ValType::I32), 1)),
+        ]);
+        assert!(matches!(
+            with_alloc(&memory, |realloc| lower_flat(
+                &memory,
+                realloc,
+                &value,
+                &fixed,
+                CoreType::I32
+            )),
+            Err(CanonError::FixedListLength { got: 0, want: 1 })
+        ));
+
+        let unsupported =
+            ValType::Record(vec![(s("head"), ValType::I32), (s("items"), ValType::Any)]);
+        assert!(matches!(
+            with_alloc(&memory, |realloc| lower_flat(
+                &memory,
+                realloc,
+                &value,
+                &unsupported,
+                CoreType::I32
+            )),
+            Err(CanonError::Unsupported("any (not a component type)"))
+        ));
+    }
+
+    #[test]
+    fn cached_nested_layout_matches_uncached_flat_conversion() {
+        let ft = std::sync::Arc::new(crate::canon_def::CanonFuncType {
+            params: vec![ValType::Record(vec![
+                (
+                    s("choice"),
+                    ValType::Variant(vec![(s("empty"), None), (s("number"), Some(ValType::F64))]),
+                ),
+                (s("optional"), ValType::Option(Box::new(ValType::I32))),
+                (
+                    s("result"),
+                    ValType::Result(None, Some(Box::new(ValType::I64))),
+                ),
+            ])],
+            result: None,
+        });
+        let layouts = FlatLayoutCache::for_functype(&ft, CoreType::I32);
+        assert_eq!(layouts.variants.len(), 3);
+
+        let mut error = crate::value::Object::new();
+        error
+            .properties
+            .insert("__wasi_error".into(), Value::I64(19));
+        let mut record = crate::value::Object::new();
+        record
+            .properties
+            .insert("choice".into(), Value::String("empty".into()));
+        record.properties.insert("optional".into(), Value::I32(7));
+        record
+            .properties
+            .insert("result".into(), Value::Object(crate::heap::alloc(error)));
+        let values = [Value::Object(crate::heap::alloc(record))];
+        let memory = mem();
+        let uncached = with_alloc(&memory, |realloc| {
+            lower_flat_values(&memory, realloc, 16, &values, &ft.params, CoreType::I32).unwrap()
+        });
+        let cached = with_alloc(&memory, |realloc| {
+            lower_flat_values_cached(
+                &memory,
+                realloc,
+                16,
+                &values,
+                &ft.params,
+                CoreType::I32,
+                &layouts,
+                layouts.params_flat_len,
+            )
+            .unwrap()
+        });
+        assert_eq!(cached, uncached);
+
+        let back = lift_flat_values_cached(
+            &memory,
+            16,
+            &cached,
+            &ft.params,
+            CoreType::I32,
+            &layouts,
+            layouts.params_flat_len,
+        )
+        .unwrap();
+        let uncached_back =
+            lift_flat_values(&memory, 16, &uncached, &ft.params, CoreType::I32).unwrap();
+        for lifted in [&back[0], &uncached_back[0]] {
+            assert_eq!(
+                format!(
+                    "{}",
+                    crate::canon_value::record_field_public(lifted, "choice")
+                ),
+                "empty"
+            );
+            assert_eq!(
+                crate::canon_value::record_field_public(lifted, "optional").as_i32(),
+                7
+            );
+            let result = crate::canon_value::record_field_public(lifted, "result");
+            assert_eq!(
+                crate::canon_value::record_field_public(&result, "__wasi_error").as_i64(),
+                19
+            );
+        }
+    }
+
     /// Every case must occupy the same number of core values. A short case is
     /// PADDED on lower and DRAINED on lift; if either side forgets, the next
     /// parameter is read from this variant's tail.
@@ -833,6 +1309,63 @@ mod tests {
         assert_eq!(back.len(), types.len());
         for (i, v) in back.iter().enumerate() {
             assert_eq!(v.as_i32(), i as i32, "argument {i} survived the spill");
+        }
+    }
+
+    #[test]
+    fn cached_spilled_tuple_matches_uncached_bytes_and_values() {
+        let types = vec![ValType::I32; crate::canon_flat::MAX_FLAT_PARAMS + 2];
+        let values: Vec<_> = (0..types.len()).map(|i| Value::I32(i as i32)).collect();
+        let ft = crate::canon_def::CanonFuncType {
+            params: types.clone(),
+            result: None,
+        };
+        let layouts = FlatLayoutCache::for_functype(&ft, CoreType::I32);
+        assert!(layouts.param_tuple.is_some());
+        let plain = mem();
+        let cached = mem();
+        let plain_ptr = with_alloc(&plain, |r| {
+            lower_flat_values(
+                &plain,
+                r,
+                crate::canon_flat::MAX_FLAT_PARAMS,
+                &values,
+                &types,
+                CoreType::I32,
+            )
+            .unwrap()
+        });
+        let cached_ptr = with_alloc(&cached, |r| {
+            lower_flat_values_cached(
+                &cached,
+                r,
+                crate::canon_flat::MAX_FLAT_PARAMS,
+                &values,
+                &types,
+                CoreType::I32,
+                &layouts,
+                layouts.params_flat_len,
+            )
+            .unwrap()
+        });
+        assert_eq!(plain_ptr, cached_ptr);
+        let mut a = [0; 128];
+        let mut b = [0; 128];
+        plain.read_bytes(512, &mut a);
+        cached.read_bytes(512, &mut b);
+        assert_eq!(a, b);
+        let lifted = lift_flat_values_cached(
+            &cached,
+            crate::canon_flat::MAX_FLAT_PARAMS,
+            &cached_ptr,
+            &types,
+            CoreType::I32,
+            &layouts,
+            layouts.params_flat_len,
+        )
+        .unwrap();
+        for (i, value) in lifted.iter().enumerate() {
+            assert_eq!(value.as_i32(), i as i32);
         }
     }
 

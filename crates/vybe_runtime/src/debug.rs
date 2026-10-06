@@ -26,12 +26,22 @@ pub fn disassemble(chunk: &Chunk) -> String {
 }
 
 pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
-    disassemble_instruction_inner(chunk, &chunk.globals, offset)
+    disassemble_instruction_with_imports(chunk, &chunk.imports, offset)
+}
+
+/// Linked function chunks use their owning module's unified import table.
+pub(crate) fn disassemble_instruction_with_imports(
+    chunk: &Chunk,
+    imports: &[crate::chunk::Import],
+    offset: usize,
+) -> (String, usize) {
+    disassemble_instruction_inner(chunk, &chunk.globals, imports, offset)
 }
 
 fn disassemble_instruction_inner(
     chunk: &Chunk,
     globals: &[String],
+    imports: &[crate::chunk::Import],
     offset: usize,
 ) -> (String, usize) {
     if offset + 3 >= chunk.code.len() {
@@ -107,7 +117,7 @@ fn disassemble_instruction_inner(
             // Resolve the import name from this chunk's own table — mismatched
             // per-chunk import indices are a recurring bug class and invisible
             // without the name.
-            let label = match chunk.imports.get(fn_idx as usize) {
+            let label = match imports.get(fn_idx as usize) {
                 Some(imp) => format!(" ({}:{})", imp.module, imp.name),
                 None => " (OUT-OF-RANGE)".to_string(),
             };
@@ -275,7 +285,7 @@ fn disassemble_instruction_inner(
                 (chunk.code.get(operand_start + 2).copied().unwrap_or(0) & 0x7f) as usize;
             let total = 3 + uv_count * 3;
             (
-                format!("Closure func={} upvalues={}", func_idx, uv_count),
+                format!("Closure module-func={} upvalues={}", func_idx, uv_count),
                 operand_start + total,
             )
         }

@@ -62,6 +62,9 @@ pub enum CanonError {
         got: usize,
         want: u32,
     },
+    ListByteLengthExceeded {
+        bytes: usize,
+    },
     /// A `char` was not a Unicode scalar value.
     ///
     /// `CanonicalABI.md:2456 convert_i32_to_char` traps on `i >= 0x110000` and
@@ -117,6 +120,10 @@ impl std::fmt::Display for CanonError {
                 "canonical ABI: a fixed-length `list<_, {want}>` was given {got} elements; \
                  the length is part of the TYPE and the elements are stored inline"
             ),
+            CanonError::ListByteLengthExceeded { bytes } => write!(
+                f,
+                "canonical ABI: list payload of {bytes} bytes exceeds MAX_LIST_BYTE_LENGTH"
+            ),
             CanonError::NotAScalarValue { got } => write!(
                 f,
                 "canonical ABI: {got:#x} is not a Unicode scalar value — a `char` must be \
@@ -134,11 +141,13 @@ impl std::fmt::Display for CanonError {
 
 /// The two guards every `store`/`load` opens with.
 fn check(ptr: u32, t: &ValType, memory_len: usize) -> Result<u32, CanonError> {
-    let required = alignment(t);
+    check_layout(ptr, alignment(t), elem_size(t), memory_len)
+}
+
+fn check_layout(ptr: u32, required: u32, size: u32, memory_len: usize) -> Result<u32, CanonError> {
     if ptr != align_to(ptr, required) {
         return Err(CanonError::Misaligned { ptr, required });
     }
-    let size = elem_size(t);
     if (ptr as usize).saturating_add(size as usize) > memory_len {
         return Err(CanonError::OutOfBounds {
             ptr,
@@ -188,7 +197,33 @@ pub fn store_with(
     t: &ValType,
     ptr: u32,
 ) -> Result<(), CanonError> {
-    check(ptr, t, memory.len())?;
+    store_impl(memory, realloc, v, t, ptr, None)
+}
+
+pub(crate) fn store_with_layout(
+    memory: &crate::shared_memory::SharedMemory,
+    realloc: Realloc<'_>,
+    v: &Value,
+    t: &ValType,
+    ptr: u32,
+    layout: &crate::canon_layout::MemLayout,
+) -> Result<(), CanonError> {
+    store_impl(memory, realloc, v, t, ptr, Some(layout))
+}
+
+fn store_impl(
+    memory: &crate::shared_memory::SharedMemory,
+    realloc: Realloc<'_>,
+    v: &Value,
+    t: &ValType,
+    ptr: u32,
+    layout: Option<&crate::canon_layout::MemLayout>,
+) -> Result<(), CanonError> {
+    if let Some(layout) = layout {
+        check_layout(ptr, layout.align, layout.size, memory.len())?;
+    } else {
+        check(ptr, t, memory.len())?;
+    }
     let addr = ptr as usize;
     match t {
         // `store_int(cx, int(bool(v)), ptr, 1)` — a bool is one byte, 0 or 1,
@@ -258,16 +293,38 @@ pub fn store_with(
         // `store_list` — same (ptr, length) shape, but length counts ELEMENTS
         // and each is stored at its own canonical stride.
         ValType::List(elem) => {
+            if matches!(elem.as_ref(), ValType::U8) {
+                let bytes = byte_items(v)?;
+                let dest = if bytes.is_empty() {
+                    0
+                } else {
+                    realloc(bytes.len() as u32, 1).ok_or(CanonError::OutOfMemory {
+                        size: bytes.len() as u32,
+                    })?
+                };
+                write_bytes(memory, dest, &bytes)?;
+                let _ = memory.store_i32(addr, dest as i32);
+                let _ = memory.store_i32(addr + PTR_SIZE as usize, bytes.len() as i32);
+                return Ok(());
+            }
             let items = array_items(v);
-            let stride = elem_size(elem);
+            let child = layout.and_then(|layout| match &layout.shape {
+                crate::canon_layout::MemShape::Elements(child) => Some(child.as_ref()),
+                _ => None,
+            });
+            let stride = child.map_or_else(|| elem_size(elem), |child| child.size);
             let dest = if items.is_empty() {
                 0
             } else {
                 let bytes = stride.saturating_mul(items.len() as u32);
-                realloc(bytes, alignment(elem)).ok_or(CanonError::OutOfMemory { size: bytes })?
+                realloc(
+                    bytes,
+                    child.map_or_else(|| alignment(elem), |child| child.align),
+                )
+                .ok_or(CanonError::OutOfMemory { size: bytes })?
             };
             for (i, item) in items.iter().enumerate() {
-                store_with(memory, realloc, item, elem, dest + stride * i as u32)?;
+                store_impl(memory, realloc, item, elem, dest + stride * i as u32, child)?;
             }
             let _ = memory.store_i32(addr, dest as i32);
             let _ = memory.store_i32(addr + PTR_SIZE as usize, items.len() as i32);
@@ -287,9 +344,13 @@ pub fn store_with(
                     want: *n,
                 });
             }
-            let stride = elem_size(elem);
+            let child = layout.and_then(|layout| match &layout.shape {
+                crate::canon_layout::MemShape::Elements(child) => Some(child.as_ref()),
+                _ => None,
+            });
+            let stride = child.map_or_else(|| elem_size(elem), |child| child.size);
             for (i, item) in items.iter().enumerate() {
-                store_with(memory, realloc, item, elem, ptr + stride * i as u32)?;
+                store_impl(memory, realloc, item, elem, ptr + stride * i as u32, child)?;
             }
         }
         // `store_record` — each field aligned before it is placed, in
@@ -298,11 +359,22 @@ pub fn store_with(
         // rather than shifting every later field.
         ValType::Record(fields) => {
             let mut offset = 0u32;
-            for (name, field_ty) in fields {
-                offset = align_to(offset, alignment(field_ty));
+            for (index, (name, field_ty)) in fields.iter().enumerate() {
+                let child = layout.and_then(|layout| match &layout.shape {
+                    crate::canon_layout::MemShape::Record(fields) => fields.get(index),
+                    _ => None,
+                });
+                offset = child.map_or_else(|| align_to(offset, alignment(field_ty)), |(at, _)| *at);
                 let field = record_field(v, name);
-                store_with(memory, realloc, &field, field_ty, ptr + offset)?;
-                offset += elem_size(field_ty);
+                store_impl(
+                    memory,
+                    realloc,
+                    &field,
+                    field_ty,
+                    ptr + offset,
+                    child.map(|(_, layout)| layout),
+                )?;
+                offset += child.map_or_else(|| elem_size(field_ty), |(_, layout)| layout.size);
             }
         }
         // `option` and `result` DESPECIALISE to `variant`, so they store
@@ -323,6 +395,7 @@ pub fn store_with(
                     ("none".into(), None),
                     ("some".into(), Some((**inner).clone())),
                 ],
+                layout,
             )?;
         }
         ValType::Result(ok, err) => {
@@ -348,11 +421,12 @@ pub fn store_with(
                     ("ok".into(), ok.as_deref().cloned()),
                     ("error".into(), err.as_deref().cloned()),
                 ],
+                layout,
             )?;
         }
         ValType::Variant(cases) => {
             let (case, payload) = variant_case(v, cases)?;
-            store_variant_parts(memory, realloc, ptr, case, &payload, cases)?;
+            store_variant_parts(memory, realloc, ptr, case, &payload, cases, layout)?;
         }
         ValType::Any => return Err(CanonError::Unsupported("any (not a component type)")),
     }
@@ -392,17 +466,35 @@ fn load_variant_parts(
     memory: &crate::shared_memory::SharedMemory,
     ptr: u32,
     cases: &[(String, Option<ValType>)],
+    layout: Option<&crate::canon_layout::MemLayout>,
 ) -> Result<(u32, Value), CanonError> {
     let addr = ptr as usize;
-    let case = match crate::canon_layout::variant_discriminant_size(cases) {
+    let variant = layout.and_then(|layout| match &layout.shape {
+        crate::canon_layout::MemShape::Variant {
+            tag_size,
+            payload_offset,
+            cases,
+        } => Some((*tag_size, *payload_offset, cases.as_slice())),
+        _ => None,
+    });
+    let case = match variant.map_or_else(
+        || crate::canon_layout::variant_discriminant_size(cases),
+        |v| v.0,
+    ) {
         1 => memory.load_u8(addr).unwrap_or(0) as u32,
         2 => load_u16(memory, addr) as u32,
         _ => memory.load_i32(addr).unwrap_or(0) as u32,
     };
     let payload = match cases.get(case as usize) {
         Some((_, Some(payload_ty))) => {
-            let offset = crate::canon_layout::variant_payload_offset(cases);
-            load(memory, payload_ty, ptr + offset)?
+            let offset = variant.map_or_else(
+                || crate::canon_layout::variant_payload_offset(cases),
+                |v| v.1,
+            );
+            let child = variant
+                .and_then(|v| v.2.get(case as usize))
+                .and_then(Option::as_ref);
+            load_impl(memory, payload_ty, ptr + offset, child)?
         }
         _ => Value::Null,
     };
@@ -452,6 +544,54 @@ fn array_items(v: &Value) -> Vec<Value> {
     Vec::new()
 }
 
+const MAX_LIST_BYTE_LENGTH: usize = (1 << 28) - 1;
+
+fn check_byte_list_len(bytes: usize) -> Result<(), CanonError> {
+    if bytes > MAX_LIST_BYTE_LENGTH {
+        return Err(CanonError::ListByteLengthExceeded { bytes });
+    }
+    Ok(())
+}
+
+fn byte_items(v: &Value) -> Result<Vec<u8>, CanonError> {
+    use crate::value::ObjectKind;
+    if let Value::Object(object) = v {
+        let object = object.lock().unwrap();
+        if let ObjectKind::Array(items) = &object.kind {
+            check_byte_list_len(items.len())?;
+            return Ok(items.iter().map(|item| item.as_i32() as u8).collect());
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn load_byte_items(
+    memory: &crate::shared_memory::SharedMemory,
+    ptr: u32,
+    len: u32,
+) -> Result<Value, CanonError> {
+    check_byte_list_len(len as usize)?;
+    let end = (ptr as usize).saturating_add(len as usize);
+    if end > memory.len() {
+        return Err(CanonError::OutOfBounds {
+            ptr,
+            size: len,
+            memory_len: memory.len(),
+        });
+    }
+    let mut bytes = vec![0u8; len as usize];
+    if len != 0 {
+        memory.read_bytes(ptr as usize, &mut bytes);
+    }
+    let items = bytes
+        .into_iter()
+        .map(|byte| Value::I32(byte as i32))
+        .collect();
+    Ok(Value::Object(crate::heap::alloc(
+        crate::value::Object::new_array(items),
+    )))
+}
+
 /// One named field of a record-shaped `Value`.
 ///
 /// A missing field stores as `Null`, which each type's arm turns into its own
@@ -489,9 +629,21 @@ fn store_variant_parts(
     case: u32,
     payload: &Value,
     cases: &[(String, Option<ValType>)],
+    layout: Option<&crate::canon_layout::MemLayout>,
 ) -> Result<(), CanonError> {
     let addr = ptr as usize;
-    match crate::canon_layout::variant_discriminant_size(cases) {
+    let variant = layout.and_then(|layout| match &layout.shape {
+        crate::canon_layout::MemShape::Variant {
+            tag_size,
+            payload_offset,
+            cases,
+        } => Some((*tag_size, *payload_offset, cases.as_slice())),
+        _ => None,
+    });
+    match variant.map_or_else(
+        || crate::canon_layout::variant_discriminant_size(cases),
+        |v| v.0,
+    ) {
         1 => {
             let _ = memory.store_u8(addr, case as u8);
         }
@@ -503,8 +655,14 @@ fn store_variant_parts(
         }
     }
     if let Some(Some(payload_ty)) = cases.get(case as usize).map(|(_, t)| t) {
-        let offset = crate::canon_layout::variant_payload_offset(cases);
-        store_with(memory, realloc, payload, payload_ty, ptr + offset)?;
+        let offset = variant.map_or_else(
+            || crate::canon_layout::variant_payload_offset(cases),
+            |v| v.1,
+        );
+        let child = variant
+            .and_then(|v| v.2.get(case as usize))
+            .and_then(Option::as_ref);
+        store_impl(memory, realloc, payload, payload_ty, ptr + offset, child)?;
     }
     Ok(())
 }
@@ -545,7 +703,29 @@ pub fn load(
     t: &ValType,
     ptr: u32,
 ) -> Result<Value, CanonError> {
-    check(ptr, t, memory.len())?;
+    load_impl(memory, t, ptr, None)
+}
+
+pub(crate) fn load_with_layout(
+    memory: &crate::shared_memory::SharedMemory,
+    t: &ValType,
+    ptr: u32,
+    layout: &crate::canon_layout::MemLayout,
+) -> Result<Value, CanonError> {
+    load_impl(memory, t, ptr, Some(layout))
+}
+
+fn load_impl(
+    memory: &crate::shared_memory::SharedMemory,
+    t: &ValType,
+    ptr: u32,
+    layout: Option<&crate::canon_layout::MemLayout>,
+) -> Result<Value, CanonError> {
+    if let Some(layout) = layout {
+        check_layout(ptr, layout.align, layout.size, memory.len())?;
+    } else {
+        check(ptr, t, memory.len())?;
+    }
     let addr = ptr as usize;
     Ok(match t {
         // `convert_int_to_bool` — any non-zero byte is true.
@@ -597,20 +777,31 @@ pub fn load(
         ValType::List(elem) => {
             let at = memory.load_i32(addr).unwrap_or(0) as u32;
             let count = memory.load_i32(addr + PTR_SIZE as usize).unwrap_or(0) as u32;
-            let stride = elem_size(elem);
+            if matches!(elem.as_ref(), ValType::U8) {
+                return load_byte_items(memory, at, count);
+            }
+            let child = layout.and_then(|layout| match &layout.shape {
+                crate::canon_layout::MemShape::Elements(child) => Some(child.as_ref()),
+                _ => None,
+            });
+            let stride = child.map_or_else(|| elem_size(elem), |child| child.size);
             let mut items = Vec::with_capacity(count as usize);
             for i in 0..count {
-                items.push(load(memory, elem, at + stride * i)?);
+                items.push(load_impl(memory, elem, at + stride * i, child)?);
             }
             Value::Object(crate::heap::alloc(crate::value::Object::new_array(items)))
         }
         // 🔧 `load_list_from_valid_range(cx, ptr, N, t)` — N elements read
         // in place. The count comes from the TYPE, not from memory.
         ValType::ListFixed(elem, n) => {
-            let stride = elem_size(elem);
+            let child = layout.and_then(|layout| match &layout.shape {
+                crate::canon_layout::MemShape::Elements(child) => Some(child.as_ref()),
+                _ => None,
+            });
+            let stride = child.map_or_else(|| elem_size(elem), |child| child.size);
             let mut items = Vec::with_capacity(*n as usize);
             for i in 0..*n {
-                items.push(load(memory, elem, ptr + stride * i)?);
+                items.push(load_impl(memory, elem, ptr + stride * i, child)?);
             }
             Value::Object(crate::heap::alloc(crate::value::Object::new_array(items)))
         }
@@ -618,11 +809,20 @@ pub fn load(
         ValType::Record(fields) => {
             let mut object = crate::value::Object::new();
             let mut offset = 0u32;
-            for (name, field_ty) in fields {
-                offset = align_to(offset, alignment(field_ty));
-                let value = load(memory, field_ty, ptr + offset)?;
+            for (index, (name, field_ty)) in fields.iter().enumerate() {
+                let child = layout.and_then(|layout| match &layout.shape {
+                    crate::canon_layout::MemShape::Record(fields) => fields.get(index),
+                    _ => None,
+                });
+                offset = child.map_or_else(|| align_to(offset, alignment(field_ty)), |(at, _)| *at);
+                let value = load_impl(
+                    memory,
+                    field_ty,
+                    ptr + offset,
+                    child.map(|(_, layout)| layout),
+                )?;
                 object.properties.insert(name.as_str().into(), value);
-                offset += elem_size(field_ty);
+                offset += child.map_or_else(|| elem_size(field_ty), |(_, layout)| layout.size);
             }
             Value::Object(crate::heap::alloc(object))
         }
@@ -633,7 +833,7 @@ pub fn load(
                 ("none".into(), None),
                 ("some".into(), Some((**inner).clone())),
             ];
-            let (case, payload) = load_variant_parts(memory, ptr, &cases)?;
+            let (case, payload) = load_variant_parts(memory, ptr, &cases, layout)?;
             // `none` is `Value::Null`, which is how every host here spells it.
             if case == 0 { Value::Null } else { payload }
         }
@@ -642,7 +842,7 @@ pub fn load(
                 ("ok".into(), ok.as_deref().cloned()),
                 ("error".into(), err.as_deref().cloned()),
             ];
-            let (case, payload) = load_variant_parts(memory, ptr, &cases)?;
+            let (case, payload) = load_variant_parts(memory, ptr, &cases, layout)?;
             if case == 0 {
                 payload
             } else {
@@ -658,7 +858,7 @@ pub fn load(
         // `load_variant` — read the discriminant, name the case, and load the
         // payload if that case carries one.
         ValType::Variant(cases) => {
-            let (case, payload) = load_variant_parts(memory, ptr, cases)?;
+            let (case, payload) = load_variant_parts(memory, ptr, cases, layout)?;
             match cases.get(case as usize) {
                 Some((name, None)) => Value::String(std::sync::Arc::from(name.as_str())),
                 // A case that DECLARES a payload but did not carry one loads
@@ -818,6 +1018,294 @@ mod tests {
             Some("no-entry".to_string()),
             "the error arm must not round-trip into an ok"
         );
+    }
+
+    #[test]
+    fn cached_layout_matches_uncached_memory_and_traps() {
+        let ty = ValType::Record(vec![
+            (
+                "items".into(),
+                ValType::ListFixed(Box::new(ValType::U16), 3),
+            ),
+            (
+                "choice".into(),
+                ValType::Variant(vec![
+                    ("empty".into(), None),
+                    ("number".into(), Some(ValType::I64)),
+                ]),
+            ),
+        ]);
+        let layout = crate::canon_layout::MemLayout::new(&ty);
+        assert_eq!((layout.size, layout.align), (24, 8));
+        let mut choice = crate::value::Object::new();
+        choice
+            .properties
+            .insert("tag".into(), Value::String("number".into()));
+        choice.properties.insert("val".into(), Value::I64(93));
+        let mut value = crate::value::Object::new();
+        value.properties.insert(
+            "items".into(),
+            Value::Object(crate::heap::alloc(crate::value::Object::new_array(vec![
+                Value::I32(2),
+                Value::I32(65535),
+                Value::I32(4),
+            ]))),
+        );
+        value
+            .properties
+            .insert("choice".into(), Value::Object(crate::heap::alloc(choice)));
+        let value = Value::Object(crate::heap::alloc(value));
+        let uncached = SharedMemory::new(64);
+        let cached = SharedMemory::new(64);
+        let mut no_alloc = no_realloc;
+        store_with(&uncached, &mut no_alloc, &value, &ty, 0).unwrap();
+        store_with_layout(&cached, &mut no_alloc, &value, &ty, 0, &layout).unwrap();
+        let mut a = [0; 64];
+        let mut b = [0; 64];
+        uncached.read_bytes(0, &mut a);
+        cached.read_bytes(0, &mut b);
+        assert_eq!(a, b);
+        assert_eq!(
+            format!("{:?}", load(&uncached, &ty, 0).unwrap()),
+            format!("{:?}", load_with_layout(&cached, &ty, 0, &layout).unwrap())
+        );
+
+        for ptr in [1, 48] {
+            let plain = load(&uncached, &ty, ptr).unwrap_err();
+            let fast = load_with_layout(&uncached, &ty, ptr, &layout).unwrap_err();
+            assert_eq!(format!("{plain:?}"), format!("{fast:?}"));
+        }
+        uncached.store_u8(8, 3).unwrap();
+        cached.store_u8(8, 3).unwrap();
+        let plain = load(&uncached, &ty, 0).unwrap_err();
+        let fast = load_with_layout(&cached, &ty, 0, &layout).unwrap_err();
+        assert_eq!(format!("{plain:?}"), format!("{fast:?}"));
+    }
+
+    #[test]
+    fn cached_layout_matches_uncached_dynamic_list_and_result() {
+        let ty = ValType::Record(vec![
+            (
+                "items".into(),
+                ValType::List(Box::new(ValType::Record(vec![
+                    ("id".into(), ValType::I32),
+                    ("maybe".into(), ValType::Option(Box::new(ValType::I64))),
+                ]))),
+            ),
+            (
+                "outcome".into(),
+                ValType::Result(None, Some(Box::new(ValType::String))),
+            ),
+        ]);
+        let layout = crate::canon_layout::MemLayout::new(&ty);
+        let item = |id: i32| {
+            let mut object = crate::value::Object::new();
+            object.properties.insert("id".into(), Value::I32(id));
+            object
+                .properties
+                .insert("maybe".into(), Value::I64((id * 10) as i64));
+            Value::Object(crate::heap::alloc(object))
+        };
+        let mut error = crate::value::Object::new();
+        error
+            .properties
+            .insert("__wasi_error".into(), Value::String("denied".into()));
+        let mut value = crate::value::Object::new();
+        value.properties.insert(
+            "items".into(),
+            Value::Object(crate::heap::alloc(crate::value::Object::new_array(vec![
+                item(2),
+                item(4),
+            ]))),
+        );
+        value
+            .properties
+            .insert("outcome".into(), Value::Object(crate::heap::alloc(error)));
+        let value = Value::Object(crate::heap::alloc(value));
+        let plain = SharedMemory::new(512);
+        let cached = SharedMemory::new(512);
+        let mut plain_next = 128u32;
+        let mut cached_next = 128u32;
+        let mut plain_alloc = |size: u32, align: u32| {
+            let at = align_to(plain_next, align);
+            plain_next = at + size;
+            (plain_next <= 512).then_some(at)
+        };
+        let mut cached_alloc = |size: u32, align: u32| {
+            let at = align_to(cached_next, align);
+            cached_next = at + size;
+            (cached_next <= 512).then_some(at)
+        };
+        store_with(&plain, &mut plain_alloc, &value, &ty, 0).unwrap();
+        store_with_layout(&cached, &mut cached_alloc, &value, &ty, 0, &layout).unwrap();
+        assert_eq!(plain_next, cached_next);
+        let mut a = [0; 512];
+        let mut b = [0; 512];
+        plain.read_bytes(0, &mut a);
+        cached.read_bytes(0, &mut b);
+        assert_eq!(a, b);
+        assert_eq!(
+            format!("{:?}", load(&plain, &ty, 0).unwrap()),
+            format!("{:?}", load_with_layout(&cached, &ty, 0, &layout).unwrap())
+        );
+    }
+
+    #[test]
+    #[ignore = "run explicitly for a controlled cached-vs-uncached comparison"]
+    fn bench_cached_memory_layout() {
+        let ty = ValType::Record(
+            (0..12)
+                .map(|index| {
+                    (
+                        format!("field{index}"),
+                        ValType::Option(Box::new(ValType::I64)),
+                    )
+                })
+                .collect(),
+        );
+        let layout = crate::canon_layout::MemLayout::new(&ty);
+        let memory = SharedMemory::new(layout.size as usize);
+        let mut value = crate::value::Object::new();
+        for index in 0..12 {
+            value
+                .properties
+                .insert(format!("field{index}").into(), Value::I64(index));
+        }
+        let value = Value::Object(crate::heap::alloc(value));
+        let mut alloc = no_realloc;
+        for (label, cached) in [("uncached", false), ("cached", true)] {
+            let start = std::time::Instant::now();
+            for _ in 0..20_000 {
+                if cached {
+                    store_with_layout(&memory, &mut alloc, &value, &ty, 0, &layout).unwrap();
+                    std::hint::black_box(load_with_layout(&memory, &ty, 0, &layout).unwrap());
+                } else {
+                    store_with(&memory, &mut alloc, &value, &ty, 0).unwrap();
+                    std::hint::black_box(load(&memory, &ty, 0).unwrap());
+                }
+            }
+            eprintln!("canonical memory {label}: {:?}", start.elapsed());
+        }
+    }
+
+    #[test]
+    fn byte_list_round_trips_binary_and_narrowed_values() {
+        let memory = SharedMemory::new(64);
+        let value = Value::Object(crate::heap::alloc(crate::value::Object::new_array(vec![
+            Value::I32(0),
+            Value::I32(255),
+            Value::I32(256),
+            Value::I32(-1),
+        ])));
+        let mut alloc = |_size: u32, _align: u32| Some(32);
+        let ty = ValType::List(Box::new(ValType::U8));
+
+        store_with(&memory, &mut alloc, &value, &ty, 0).unwrap();
+        assert_eq!(memory.load_i32(0).unwrap(), 32);
+        assert_eq!(memory.load_i32(4).unwrap(), 4);
+        assert_eq!(memory.read_array::<4>(32).unwrap(), [0, 255, 0, 255]);
+
+        let back = load(&memory, &ty, 0).unwrap();
+        assert_eq!(
+            array_items(&back),
+            vec![
+                Value::I32(0),
+                Value::I32(255),
+                Value::I32(0),
+                Value::I32(255),
+            ]
+        );
+    }
+
+    #[test]
+    fn byte_list_store_rejects_out_of_bounds_payload() {
+        let memory = SharedMemory::new(16);
+        let value = Value::Object(crate::heap::alloc(crate::value::Object::new_array(vec![
+            Value::I32(1),
+            Value::I32(2),
+        ])));
+        let mut alloc = |_size: u32, _align: u32| Some(15);
+        let ty = ValType::List(Box::new(ValType::U8));
+        assert!(matches!(
+            store_with(&memory, &mut alloc, &value, &ty, 0),
+            Err(CanonError::OutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn byte_list_load_rejects_out_of_bounds_payload_before_allocating() {
+        let memory = SharedMemory::new(16);
+        memory.store_i32(0, 12).unwrap();
+        memory.store_i32(4, 100).unwrap();
+        let ty = ValType::List(Box::new(ValType::U8));
+        assert!(matches!(
+            load(&memory, &ty, 0),
+            Err(CanonError::OutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn byte_list_load_enforces_cm3_maximum_and_empty_pointer_bounds() {
+        let memory = SharedMemory::new(16);
+        let ty = ValType::List(Box::new(ValType::U8));
+
+        memory.store_i32(0, 0).unwrap();
+        memory.store_i32(4, 1 << 28).unwrap();
+        assert!(matches!(
+            load(&memory, &ty, 0),
+            Err(CanonError::ListByteLengthExceeded { .. })
+        ));
+
+        memory.store_i32(0, 17).unwrap();
+        memory.store_i32(4, 0).unwrap();
+        assert!(matches!(
+            load(&memory, &ty, 0),
+            Err(CanonError::OutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn byte_list_flat_pair_round_trips() {
+        let memory = SharedMemory::new(64);
+        let value = Value::Object(crate::heap::alloc(crate::value::Object::new_array(vec![
+            Value::I32(0),
+            Value::I32(128),
+            Value::I32(255),
+        ])));
+        let ty = ValType::List(Box::new(ValType::U8));
+        let mut alloc_fn = |_size: u32, _align: u32| Some(32);
+        let mut alloc: Realloc<'_> = &mut alloc_fn;
+        let (ptr, len) = store_pair_public(&memory, &mut alloc, &value, &ty).unwrap();
+        assert_eq!((ptr, len), (32, 3));
+        assert_eq!(memory.read_array::<3>(32).unwrap(), [0, 128, 255]);
+        let back = load_pair_public(&memory, &ty, ptr, len).unwrap();
+        assert_eq!(array_items(&back), array_items(&value));
+    }
+
+    #[test]
+    #[ignore = "local canonical byte-list diagnostic"]
+    fn bench_byte_list_store_and_load() {
+        use std::time::Instant;
+
+        const LEN: usize = 256 * 1024;
+        let memory = SharedMemory::new(LEN + 64);
+        let value = Value::Object(crate::heap::alloc(crate::value::Object::new_array(
+            (0..LEN).map(|i| Value::I32((i & 255) as i32)).collect(),
+        )));
+        let ty = ValType::List(Box::new(ValType::U8));
+        for _ in 0..3 {
+            let start = Instant::now();
+            let mut alloc = |_size: u32, _align: u32| Some(32);
+            store_with(&memory, &mut alloc, &value, &ty, 0).unwrap();
+            let store_time = start.elapsed();
+
+            let start = Instant::now();
+            std::hint::black_box(load(&memory, &ty, 0).unwrap());
+            eprintln!(
+                "canonical list<u8> {LEN} bytes: store {store_time:?}, load {:?}",
+                start.elapsed()
+            );
+        }
     }
 
     /// `wasi:filesystem`'s `directory-entry`, including the ONE case that
@@ -984,6 +1472,9 @@ pub fn load_pair_public(
             Ok(Value::String(std::sync::Arc::from(text)))
         }
         ValType::List(elem) => {
+            if matches!(elem.as_ref(), ValType::U8) {
+                return load_byte_items(memory, at, len);
+            }
             let stride = elem_size(elem);
             let mut items = Vec::with_capacity(len as usize);
             for i in 0..len {
@@ -1017,6 +1508,13 @@ pub fn store_pair_public(
             Ok((at, size))
         }
         ValType::List(elem) => {
+            if matches!(elem.as_ref(), ValType::U8) {
+                let bytes = byte_items(v)?;
+                let size = bytes.len() as u32;
+                let at = realloc(size.max(1), 1).ok_or(CanonError::OutOfMemory { size })?;
+                write_bytes(memory, at, &bytes)?;
+                return Ok((at, size));
+            }
             let items = array_items(v);
             let stride = elem_size(elem);
             let align = alignment(elem);

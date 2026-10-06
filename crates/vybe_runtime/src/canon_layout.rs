@@ -27,6 +27,76 @@ use crate::component::ValType;
 /// than a hunt.
 pub(crate) const PTR_SIZE: u32 = 4;
 
+/// Validated, immutable memory32 layout for one canonical value type.
+/// This is runtime-internal metadata, not a component-model type or opcode.
+#[derive(Debug)]
+pub(crate) struct MemLayout {
+    pub size: u32,
+    pub align: u32,
+    pub shape: MemShape,
+}
+
+#[derive(Debug)]
+pub(crate) enum MemShape {
+    Scalar,
+    Elements(Box<MemLayout>),
+    Record(Vec<(u32, MemLayout)>),
+    Variant {
+        tag_size: u32,
+        payload_offset: u32,
+        cases: Vec<Option<MemLayout>>,
+    },
+}
+
+impl MemLayout {
+    pub(crate) fn new(t: &ValType) -> Self {
+        let shape = match t {
+            ValType::List(elem) | ValType::ListFixed(elem, _) => {
+                MemShape::Elements(Box::new(Self::new(elem)))
+            }
+            ValType::Record(fields) => {
+                let mut offset = 0;
+                let fields = fields
+                    .iter()
+                    .map(|(_, ty)| {
+                        let child = Self::new(ty);
+                        offset = align_to(offset, child.align);
+                        let at = offset;
+                        offset += child.size;
+                        (at, child)
+                    })
+                    .collect();
+                MemShape::Record(fields)
+            }
+            ValType::Option(inner) => Self::variant(&[None, Some(inner.as_ref())]),
+            ValType::Result(ok, err) => Self::variant(&[ok.as_deref(), err.as_deref()]),
+            ValType::Variant(cases) => Self::variant(&variant_cases(cases)),
+            _ => MemShape::Scalar,
+        };
+        Self {
+            size: elem_size(t),
+            align: alignment(t),
+            shape,
+        }
+    }
+
+    fn variant(cases: &[Option<&ValType>]) -> MemShape {
+        let layouts: Vec<_> = cases.iter().map(|case| case.map(Self::new)).collect();
+        let max_align = layouts
+            .iter()
+            .flatten()
+            .map(|layout| layout.align)
+            .max()
+            .unwrap_or(1);
+        let tag_size = discriminant_size(cases.len());
+        MemShape::Variant {
+            tag_size,
+            payload_offset: align_to(tag_size, max_align),
+            cases: layouts,
+        }
+    }
+}
+
 /// `align_to(ptr, alignment)` — round `offset` up to the next multiple.
 pub fn align_to(offset: u32, alignment: u32) -> u32 {
     debug_assert!(alignment.is_power_of_two());
@@ -116,11 +186,10 @@ fn max_case_alignment(cases: &[Option<&ValType>]) -> u32 {
 /// that covers the case count, which is what lets a two-case `result` pack
 /// into fewer bytes than a naive tag would.
 fn discriminant_type(case_count: usize) -> ValType {
-    debug_assert!(case_count > 0);
-    // ceil(log2(n) / 8): 0 or 1 → u8, 2 → u16, 3 → u32.
-    match (case_count as f64).log2().ceil() as u32 / 8 {
-        0 | 1 => ValType::Bool, // one byte, like the spec's U8Type
-        2 => ValType::I32,      // widened below by elem_size_discriminant
+    assert!(case_count > 0 && case_count <= u32::MAX as usize);
+    match case_count {
+        1..=256 => ValType::U8,
+        257..=65_536 => ValType::U16,
         _ => ValType::I32,
     }
 }
@@ -128,11 +197,11 @@ fn discriminant_type(case_count: usize) -> ValType {
 /// Byte width of the discriminant itself, kept separate from `discriminant_type`
 /// because this crate's `ValType` has no `u8`/`u16` to name.
 fn discriminant_size(case_count: usize) -> u32 {
-    debug_assert!(case_count > 0);
-    match (case_count as f64).log2().ceil() as u32 / 8 {
-        0 | 1 => 1,
-        2 => 2,
-        _ => 4,
+    match discriminant_type(case_count) {
+        ValType::U8 => 1,
+        ValType::U16 => 2,
+        ValType::I32 => 4,
+        _ => unreachable!(),
     }
 }
 
@@ -285,6 +354,56 @@ mod tests {
         assert_eq!(elem_size(&o), 8);
         // option<bool> collapses: 1-byte discriminant + 1-byte payload.
         assert_eq!(elem_size(&ValType::Option(Box::new(ValType::Bool))), 2);
+    }
+
+    #[test]
+    fn variant_discriminant_thresholds_match_canonical_abi() {
+        for (count, width, record_size) in [
+            (1, 1, 3),
+            (256, 1, 3),
+            (257, 2, 6),
+            (65_536, 2, 6),
+            (65_537, 4, 12),
+        ] {
+            let cases = vec![(String::new(), None); count];
+            let variant = ValType::Variant(cases.clone());
+            assert_eq!(variant_discriminant_size(&cases), width, "{count} cases");
+            assert_eq!(alignment(&variant), width, "{count} cases");
+            assert_eq!(elem_size(&variant), width, "{count} cases");
+            let record = ValType::Record(vec![
+                ("before".into(), ValType::U8),
+                ("tag".into(), variant),
+                ("after".into(), ValType::U8),
+            ]);
+            assert_eq!(alignment(&record), width, "{count} cases");
+            assert_eq!(elem_size(&record), record_size, "{count} cases");
+        }
+    }
+
+    #[test]
+    fn variant_discriminants_round_trip_at_width_transitions() {
+        use crate::canon_value::{load, store_with};
+        use crate::shared_memory::SharedMemory;
+        use crate::value::Value;
+
+        let memory = SharedMemory::new(16);
+        for (count, last_tag) in [
+            (256, vec![255]),
+            (257, vec![0, 1]),
+            (65_537, vec![0, 0, 1, 0]),
+        ] {
+            let cases = (0..count)
+                .map(|index| (index.to_string(), None))
+                .collect::<Vec<_>>();
+            let variant = ValType::Variant(cases);
+            let value = Value::String((count - 1).to_string().into());
+            let mut unused_realloc = |_, _| None;
+            store_with(&memory, &mut unused_realloc, &value, &variant, 0).unwrap();
+            let mut bytes = vec![0; last_tag.len()];
+            memory.read_bytes(0, &mut bytes);
+            assert_eq!(bytes, last_tag, "{count} cases");
+            assert_eq!(load(&memory, &variant, 0).unwrap(), value);
+        }
     }
 
     #[test]

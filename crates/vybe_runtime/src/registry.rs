@@ -7,6 +7,8 @@
 //! becomes a loadable dylib — it is exactly the entry point the host calls
 //! after `dlopen` to hand back the plugin.
 
+pub mod emitter_results;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
