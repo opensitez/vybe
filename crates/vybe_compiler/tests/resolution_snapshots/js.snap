@@ -35,7 +35,6 @@ namespace  db -> wasi:sql
 namespace  dgram -> wasi:sockets/udp
 namespace  env -> wasi:cli
 namespace  fs -> wasi:filesystem
-namespace  gui -> vybe:gui
 namespace  http -> wasi:http
 namespace  https -> wasi:http
 namespace  net -> wasi:sockets/tcp

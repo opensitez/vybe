@@ -8,6 +8,8 @@ use vybex as _;
 
 #[path = "fixtures/heap_full_sort.rs"]
 mod heap_full_sort;
+#[path = "fixtures/inlined_collection_algorithms.rs"]
+mod inlined_collection_algorithms;
 #[path = "fixtures/insertion_sort.rs"]
 mod insertion_sort;
 #[path = "fixtures/key_selection_sort.rs"]
@@ -661,6 +663,101 @@ fn bounded_selection_without_keys_keeps_numeric_order_and_does_not_mutate() {
 }
 
 #[test]
+fn selection_builds_initial_heap_linearly_after_evaluating_its_keys() {
+    let n = 1024;
+    for parameter_receiver in [false, true] {
+        for largest in [false, true] {
+            for bottom_up in [false, true] {
+                let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                    (0..=n)
+                        .map(|id| array(&[if largest { -id } else { id }, id]))
+                        .collect(),
+                )));
+                let mut runtime = vm(input);
+                runtime.set_global("key_calls", Value::I32(0));
+                runtime.set_global("first_comparison_keys", Value::I32(-1));
+                runtime.set_global("initial_comparisons", Value::I32(0));
+                let mut chunks = selection_program(
+                    n,
+                    true,
+                    parameter_receiver,
+                    match (bottom_up, largest) {
+                        (false, false) => inlined_collection_algorithms::emit_nsmallest,
+                        (false, true) => inlined_collection_algorithms::emit_nlargest,
+                        (true, false) => heap::emit_nsmallest,
+                        (true, true) => heap::emit_nlargest,
+                    },
+                );
+                // Wrap the existing comparison body with bytecode observation.
+                // Registered numeric imports can be intrinsified by the VM, so
+                // replacing a host closure cannot reliably count these operations.
+                let name = if largest {
+                    "__stdlib_dyngt"
+                } else {
+                    "__stdlib_dynlt"
+                };
+                let at = chunks.iter().position(|c| c.name == name).unwrap();
+                let original_at = chunks.len() as u16;
+                let mut observer = Chunk::new(name);
+                observer.arity = 2;
+                observer.local_count = 2;
+                observer.module_receiver_abi = chunks[at].module_receiver_abi;
+                globals::emit_read(&mut observer, "first_comparison_keys", 0);
+                observer.emit_i32_const(-1, 0);
+                observer.emit_op(Op::I32_EQ, 0);
+                observer.emit_if(0);
+                globals::emit_read(&mut observer, "key_calls", 0);
+                globals::emit_write(&mut observer, "first_comparison_keys", 0);
+                observer.emit_end(0);
+                globals::emit_read(&mut observer, "key_calls", 0);
+                observer.emit_i32_const(n, 0);
+                observer.emit_op(Op::I32_LE_S, 0);
+                observer.emit_if(0);
+                globals::emit_read(&mut observer, "initial_comparisons", 0);
+                observer.emit_i32_const(1, 0);
+                observer.emit_op(Op::I32_ADD, 0);
+                globals::emit_write(&mut observer, "initial_comparisons", 0);
+                observer.emit_end(0);
+                observer.emit_op_u16(Op::REF_FUNC, original_at, 0);
+                observer.emit(0, 0);
+                observer.emit_op_u16(Op::LOCAL_GET, 0, 0);
+                observer.emit_op_u16(Op::LOCAL_GET, 1, 0);
+                observer.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
+                observer.emit_op(Op::RETURN, 0);
+                let mut original = std::mem::replace(&mut chunks[at], observer);
+                original.name = "<observed-comparison>".into();
+                chunks.push(original);
+                globals::declare_free_globals(&mut chunks);
+                globals::normalize_global_table(&mut chunks);
+                let result = runtime.run(chunks).unwrap();
+                assert_eq!(
+                    runtime.global("first_comparison_keys").unwrap().as_i32(),
+                    if bottom_up { n } else { 2 }
+                );
+                let comparisons = runtime.global("initial_comparisons").unwrap().as_i32();
+                assert!(
+                    if bottom_up {
+                        comparisons > 0 && comparisons <= 4 * n
+                    } else {
+                        comparisons > 4 * n
+                    },
+                    "initial heap used {comparisons} comparisons"
+                );
+                assert_eq!(runtime.global("key_calls").unwrap().as_i32(), n + 1);
+                let ids: Vec<_> = array_items(result)
+                    .into_iter()
+                    .map(|v| array_items(v)[1].as_i32())
+                    .collect();
+                assert_eq!(ids, (0..n).collect::<Vec<_>>());
+                println!(
+                    "initial-heap bottom_up={bottom_up} largest={largest} receiver={parameter_receiver} n={n}: comparisons={comparisons}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn scalar_helper_equality_preserves_nan_null_and_unicode() {
     for (value, expected) in [
         ("12.5tail", 12.5_f64),
@@ -895,7 +992,7 @@ fn similarity_emission_benchmark() {
     }
 }
 
-fn optimized_wasm_fixtures() -> [(&'static str, Vec<Chunk>); 10] {
+fn optimized_wasm_fixtures() -> [(&'static str, Vec<Chunk>); 13] {
     [
         (
             "levenshtein",
@@ -922,6 +1019,15 @@ fn optimized_wasm_fixtures() -> [(&'static str, Vec<Chunk>); 10] {
             "nlargest",
             selection_program(3, true, true, heap::emit_nlargest),
         ),
+        (
+            "queue-insert",
+            queue_comparator_program(false, false, None, false, heap::emit_push_with_comparator),
+        ),
+        (
+            "queue-helper-insert",
+            queue_comparator_program(true, false, None, false, heap::emit_push_with_comparator),
+        ),
+        ("heapify", queue_program(heap::emit_heapify, 1)),
     ]
 }
 
@@ -1605,5 +1711,642 @@ fn queue_binary_insertion_benchmark() {
             programs[0].iter().map(|c| c.code.len()).sum::<usize>(),
             programs[1].iter().map(|c| c.code.len()).sum::<usize>()
         );
+    }
+}
+
+#[test]
+fn python_queue_frontend_preserves_numeric_pop_order() {
+    vybe_language_python::register();
+    let source = "import heapq\nh = [10, 2, 100, -1, 20, 3]\nheapq.heapify(h)\nheapq.heappush(h, 11)\nreturn [heapq.heappop(h), heapq.heappop(h), heapq.heappop(h), heapq.heappop(h), heapq.heappop(h), heapq.heappop(h), heapq.heappop(h)]\n";
+    let module = vybe_language_python::parse(source).unwrap();
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_language_python::profile_source()).unwrap();
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
+        .compile(&module)
+        .unwrap();
+    let result = vm(Value::Null).run(chunks).unwrap();
+    assert_eq!(
+        array_items(result)
+            .iter()
+            .map(Value::as_i32)
+            .collect::<Vec<_>>(),
+        [-1, 2, 3, 10, 11, 20, 100]
+    );
+}
+
+#[test]
+fn php_spl_queues_use_declared_comparators_after_binary_insertion() {
+    vybe_language_php::register();
+    for (body, expected) in [
+        (
+            "$h = new SplMinHeap(); $h->insert(10); $h->insert(2); $h->insert(3); return [$h->extract(), $h->extract(), $h->extract()];",
+            vec![2, 3, 10],
+        ),
+        (
+            "$h = new SplMaxHeap(); $h->insert(10); $h->insert(2); $h->insert(3); return [$h->extract(), $h->extract(), $h->extract()];",
+            vec![10, 3, 2],
+        ),
+        (
+            "$h = new SplPriorityQueue(); $h->insert(10, 10); $h->insert(2, 2); $h->insert(3, 3); return [$h->extract(), $h->extract(), $h->extract()];",
+            vec![10, 3, 2],
+        ),
+    ] {
+        let source = format!("<?php {body}");
+        let module = vybe_language_php::parse(&source).unwrap();
+        let profile =
+            vybe_compiler::profile::parse_profile(vybe_language_php::profile_source()).unwrap();
+        let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
+            .compile(&module)
+            .unwrap();
+        let result = vm(Value::Null).run(chunks).unwrap();
+        assert_eq!(
+            array_items(result)
+                .iter()
+                .map(Value::as_i32)
+                .collect::<Vec<_>>(),
+            expected,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn outlined_key_sort_shares_body_and_dependencies_and_finalization_is_idempotent() {
+    for parameter_receiver in [false, true] {
+        let repeats = 20;
+        let mut script = Chunk::new("<repeated-key-sort>");
+        if parameter_receiver {
+            script.module_receiver_abi = vybe_runtime::chunk::ReceiverAbi::Parameter;
+        }
+        for _ in 0..repeats {
+            globals::emit_read(&mut script, "input", 0);
+            script.emit_op_u16(Op::REF_FUNC, 1, 0);
+            script.emit(0, 0);
+            collections::emit_sort_by_key_in_place(std::slice::from_mut(&mut script), 0, 0);
+            script.emit_op(Op::DROP, 0);
+        }
+        globals::emit_read(&mut script, "input", 0);
+        script.emit_op(Op::RETURN, 0);
+        let callsite_bytes = script.code.len();
+        assert!(
+            callsite_bytes < repeats * 100,
+            "calls must not carry sorting bodies"
+        );
+        let mut chunks = vec![script, key_callback(parameter_receiver, false, false)];
+        bundle::finalize_with_runtime_helpers(&mut chunks);
+        let helper = if parameter_receiver {
+            "__stdlib_sort_by_key_receiver"
+        } else {
+            "__stdlib_sort_by_key"
+        };
+        assert_eq!(chunks.iter().filter(|c| c.name == helper).count(), 1);
+        assert_eq!(
+            chunks.iter().filter(|c| c.name == "__stdlib_dyngt").count(),
+            1,
+            "helper's comparison dependency must be linked automatically"
+        );
+        let before = (
+            chunks.len(),
+            chunks[0].global_inits.len(),
+            chunks.iter().map(|c| c.code.len()).sum::<usize>(),
+        );
+        bundle::finalize_with_runtime_helpers(&mut chunks);
+        assert_eq!(
+            (
+                chunks.len(),
+                chunks[0].global_inits.len(),
+                chunks.iter().map(|c| c.code.len()).sum::<usize>()
+            ),
+            before
+        );
+        globals::declare_free_globals(&mut chunks);
+        globals::normalize_global_table(&mut chunks);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+            .unwrap();
+        let pairs: Vec<_> = (0..33).map(|id| ((id * 37) % 7, id)).collect();
+        let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+            pairs.iter().map(|&(key, id)| array(&[key, id])).collect(),
+        )));
+        let mut runtime = vm(input.clone());
+        runtime.set_global("key_calls", Value::I32(0));
+        let total_bytes = chunks.iter().map(|c| c.code.len()).sum::<usize>();
+        let result = runtime.run(chunks).unwrap();
+        let actual: Vec<_> = array_items(result)
+            .into_iter()
+            .map(|pair| {
+                let pair = array_items(pair);
+                (pair[0].as_i32(), pair[1].as_i32())
+            })
+            .collect();
+        let mut expected = pairs;
+        expected.sort_by_key(|p| p.0);
+        assert_eq!(actual, expected);
+        assert_eq!(
+            runtime.global("key_calls").unwrap().as_i32(),
+            repeats as i32 * 33
+        );
+        println!(
+            "outlined-key-sort receiver={parameter_receiver} repeats={repeats}: callsite_bytes={callsite_bytes} total_bytes={total_bytes}"
+        );
+    }
+}
+
+#[test]
+fn outlined_bounded_selection_shares_direction_and_receiver_specific_bodies() {
+    for parameter_receiver in [false, true] {
+        let mut script = Chunk::new("<repeated-selection>");
+        if parameter_receiver {
+            script.module_receiver_abi = vybe_runtime::chunk::ReceiverAbi::Parameter;
+        }
+        for emitter in [heap::emit_nsmallest, heap::emit_nlargest] {
+            for _ in 0..10 {
+                script.emit_i32_const(0, 0);
+                globals::emit_write(&mut script, "key_calls", 0);
+                script.emit_i32_const(2, 0);
+                globals::emit_read(&mut script, "input", 0);
+                script.emit_op_u16(Op::REF_FUNC, 1, 0);
+                script.emit(0, 0);
+                emitter(std::slice::from_mut(&mut script), 0, 3, 0);
+                script.emit_op(Op::DROP, 0);
+            }
+        }
+        script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        script.emit_op(Op::RETURN, 0);
+        let callsite_bytes = script.code.len();
+        assert!(callsite_bytes < 20 * 120);
+        let mut chunks = vec![script, key_callback(parameter_receiver, false, true)];
+        bundle::finalize_with_runtime_helpers(&mut chunks);
+        for base in ["__stdlib_nsmallest_key", "__stdlib_nlargest_key"] {
+            let name = if parameter_receiver {
+                format!("{base}_receiver")
+            } else {
+                base.to_owned()
+            };
+            assert_eq!(chunks.iter().filter(|c| c.name == name).count(), 1);
+        }
+        for name in ["__stdlib_dynlt", "__stdlib_dyngt"] {
+            assert_eq!(chunks.iter().filter(|c| c.name == name).count(), 1);
+        }
+        globals::declare_free_globals(&mut chunks);
+        globals::normalize_global_table(&mut chunks);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+            .unwrap();
+        let total_bytes = chunks.iter().map(|c| c.code.len()).sum::<usize>();
+        let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+            (0..33).map(|id| array(&[(id * 37) % 7, id])).collect(),
+        )));
+        let mut runtime = vm(input);
+        runtime.set_global("key_calls", Value::I32(0));
+        runtime.run(chunks).unwrap();
+        assert_eq!(runtime.global("key_calls").unwrap().as_i32(), 33);
+        println!(
+            "outlined-selection receiver={parameter_receiver} repeats=20: callsite_bytes={callsite_bytes} total_bytes={}",
+            total_bytes
+        );
+    }
+}
+
+#[test]
+fn outlining_reduces_full_module_bytes_against_identical_inlined_algorithms() {
+    for selection in [false, true] {
+        let mut sizes = Vec::new();
+        for outlined in [false, true] {
+            let mut script = Chunk::new("<emission-comparison>");
+            for _ in 0..20 {
+                if selection {
+                    script.emit_i32_const(2, 0);
+                }
+                globals::emit_read(&mut script, "input", 0);
+                script.emit_op_u16(Op::REF_FUNC, 1, 0);
+                script.emit(0, 0);
+                if selection {
+                    let emit = if outlined {
+                        heap::emit_nsmallest
+                    } else {
+                        inlined_collection_algorithms::emit_nsmallest
+                    };
+                    emit(std::slice::from_mut(&mut script), 0, 3, 0);
+                } else {
+                    let emit = if outlined {
+                        collections::emit_sort_by_key_in_place
+                    } else {
+                        inlined_collection_algorithms::emit_sort_by_key_in_place
+                    };
+                    emit(std::slice::from_mut(&mut script), 0, 0);
+                }
+                script.emit_op(Op::DROP, 0);
+            }
+            script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+            script.emit_op(Op::RETURN, 0);
+            let mut chunks = vec![script, key_callback(false, false, false)];
+            bundle::finalize_with_runtime_helpers(&mut chunks);
+            globals::declare_free_globals(&mut chunks);
+            globals::normalize_global_table(&mut chunks);
+            let bytecode = chunks.iter().map(|c| c.code.len()).sum::<usize>();
+            let binary = vybe_platform_wasm::write_wasm(&chunks);
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&binary)
+                .unwrap();
+            sizes.push((bytecode, binary.len()));
+            // Run both module shapes too: sizing cannot conceal different
+            // key evaluation or selection behavior.
+            let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                (0..17).map(|id| array(&[(id * 37) % 7, id])).collect(),
+            )));
+            let mut runtime = vm(input);
+            runtime.set_global("key_calls", Value::I32(0));
+            runtime.run(chunks).unwrap();
+            assert_eq!(runtime.global("key_calls").unwrap().as_i32(), 20 * 17);
+        }
+        assert!(
+            sizes[1].0 * 5 < sizes[0].0,
+            "body sharing must reduce total module bytecode, not just caller bytes"
+        );
+        assert!(
+            sizes[1].1 * 5 < sizes[0].1,
+            "the actual WASM binary must shrink too"
+        );
+        println!(
+            "outlining selection={selection} repeats=20: bytecode={}/{} wasm={}/{}",
+            sizes[0].0, sizes[1].0, sizes[0].1, sizes[1].1
+        );
+    }
+}
+
+#[test]
+#[ignore = "execution benchmark; run explicitly with --include-ignored --nocapture"]
+fn outlining_execution_benchmark() {
+    use std::time::Instant;
+    for selection in [false, true] {
+        let size = if selection { 4096 } else { 512 };
+        let programs = if selection {
+            [
+                selection_program(
+                    8,
+                    true,
+                    false,
+                    inlined_collection_algorithms::emit_nsmallest,
+                ),
+                selection_program(8, true, false, heap::emit_nsmallest),
+            ]
+        } else {
+            [
+                key_sort_program_with_emitter(
+                    false,
+                    false,
+                    false,
+                    inlined_collection_algorithms::emit_sort_by_key_in_place,
+                ),
+                key_sort_program_with_emitter(
+                    false,
+                    false,
+                    false,
+                    collections::emit_sort_by_key_in_place,
+                ),
+            ]
+        };
+        let mut samples = [Vec::new(), Vec::new()];
+        for _ in 0..5 {
+            for (which, chunks) in programs.iter().enumerate() {
+                let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                    (0..size).map(|id| array(&[size - id, id])).collect(),
+                )));
+                let mut runtime = vm(input);
+                runtime.set_global("key_calls", Value::I32(0));
+                let start = Instant::now();
+                let result = runtime.run(chunks.clone()).unwrap();
+                samples[which].push(start.elapsed().as_micros());
+                let actual: Vec<_> = array_items(result)
+                    .into_iter()
+                    .map(|pair| array_items(pair)[0].as_i32())
+                    .collect();
+                assert_eq!(
+                    actual,
+                    (1..=if selection { 8 } else { size }).collect::<Vec<_>>()
+                );
+                assert_eq!(runtime.global("key_calls").unwrap().as_i32(), size);
+            }
+        }
+        for sample in &mut samples {
+            sample.sort_unstable();
+        }
+        println!(
+            "outlining-execution selection={selection} size={size}: inline={}us shared={}us ratio={:.3}",
+            samples[0][2],
+            samples[1][2],
+            samples[1][2] as f64 / samples[0][2] as f64
+        );
+    }
+}
+
+#[test]
+#[ignore = "execution benchmark; run explicitly with --include-ignored --nocapture"]
+fn selection_initial_heap_benchmark() {
+    use std::time::Instant;
+    let n = 1024;
+    for largest in [false, true] {
+        let programs = [
+            selection_program(
+                n,
+                true,
+                false,
+                if largest {
+                    inlined_collection_algorithms::emit_nlargest
+                } else {
+                    inlined_collection_algorithms::emit_nsmallest
+                },
+            ),
+            selection_program(
+                n,
+                true,
+                false,
+                if largest {
+                    heap::emit_nlargest
+                } else {
+                    heap::emit_nsmallest
+                },
+            ),
+        ];
+        let mut samples = [Vec::new(), Vec::new()];
+        for _ in 0..5 {
+            for (which, chunks) in programs.iter().enumerate() {
+                // These initial keys force repeated sift-up construction to
+                // traverse to the root. The timed result includes final sorting.
+                let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                    (0..=n)
+                        .map(|id| array(&[if largest { -id } else { id }, id]))
+                        .collect(),
+                )));
+                let mut runtime = vm(input);
+                runtime.set_global("key_calls", Value::I32(0));
+                let start = Instant::now();
+                let result = runtime.run(chunks.clone()).unwrap();
+                samples[which].push(start.elapsed().as_micros());
+                assert_eq!(runtime.global("key_calls").unwrap().as_i32(), n + 1);
+                let ids: Vec<_> = array_items(result)
+                    .into_iter()
+                    .map(|v| array_items(v)[1].as_i32())
+                    .collect();
+                assert_eq!(ids, (0..n).collect::<Vec<_>>());
+            }
+        }
+        for sample in &mut samples {
+            sample.sort_unstable();
+        }
+        println!(
+            "selection-initial-heap n={n} largest={largest}: incremental={}us bottom-up={}us speedup={:.2}x bytecode={}/{}",
+            samples[0][2],
+            samples[1][2],
+            samples[0][2] as f64 / samples[1][2] as f64,
+            programs[0].iter().map(|c| c.code.len()).sum::<usize>(),
+            programs[1].iter().map(|c| c.code.len()).sum::<usize>()
+        );
+    }
+}
+
+#[path = "fixtures/inlined_reversal.rs"]
+mod inlined_reversal;
+
+fn reversal_program(old: bool, calls: usize, parameter_receiver: bool) -> Vec<Chunk> {
+    let mut script = Chunk::new("<reversal>");
+    if parameter_receiver {
+        script.module_receiver_abi = vybe_runtime::chunk::ReceiverAbi::Parameter;
+    }
+    let mut chunks = vec![script];
+    for call in 0..calls {
+        globals::emit_read(&mut chunks[0], "input", 0);
+        if old {
+            inlined_reversal::emit_reversed(&mut chunks, 0, 0);
+        } else {
+            collections::emit_reversed(&mut chunks, 0, 0);
+        }
+        if call + 1 != calls {
+            chunks[0].emit_op(Op::DROP, 0);
+        }
+    }
+    chunks[0].emit_op(Op::RETURN, 0);
+    bundle::finalize_with_runtime_helpers(&mut chunks);
+    globals::declare_free_globals(&mut chunks);
+    globals::normalize_global_table(&mut chunks);
+    chunks
+}
+
+#[test]
+fn shared_reversal_preserves_copy_element_identity_and_indexed_read_contracts() {
+    let element = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+    let values = vec![
+        Value::Null,
+        Value::String("é😀".into()),
+        element.clone(),
+        Value::F64(f64::NAN),
+    ];
+    for values in [vec![], vec![element], values] {
+        for parameter_receiver in [false, true] {
+            for old in [true, false] {
+                let input =
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(values.clone())));
+                let chunks = reversal_program(old, 2, parameter_receiver);
+                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                    .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+                    .unwrap();
+                let result = vm(input.clone()).run(chunks).unwrap();
+                assert_ne!(result, input, "reversal must return a fresh array");
+                assert_eq!(
+                    array_items(result),
+                    values.iter().rev().cloned().collect::<Vec<_>>()
+                );
+                assert_eq!(array_items(input), values, "source must remain unchanged");
+            }
+        }
+    }
+    let mut object = Object::new();
+    object.kind = ObjectKind::Map(
+        [
+            (Value::I32(0), Value::String("first".into())),
+            (Value::I32(1), Value::String("second".into())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    for input in [
+        Value::String("Aé".into()),
+        Value::Object(vybe_runtime::heap::alloc(object)),
+    ] {
+        let old = vm(input.clone())
+            .run(reversal_program(true, 1, false))
+            .unwrap();
+        let new = vm(input).run(reversal_program(false, 1, false)).unwrap();
+        assert_eq!(array_items(new), array_items(old));
+    }
+}
+
+#[test]
+fn shared_reversal_reduces_repeated_module_size_and_links_only_one_body() {
+    let old = reversal_program(true, 20, false);
+    let mut new = reversal_program(false, 20, false);
+    let before: usize = old.iter().map(|c| c.code.len()).sum();
+    let after: usize = new.iter().map(|c| c.code.len()).sum();
+    let old_wasm = vybe_platform_wasm::write_wasm(&old);
+    let new_wasm = vybe_platform_wasm::write_wasm(&new);
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&new_wasm)
+        .unwrap();
+    println!(
+        "reverse 20 calls: bytecode={before}/{after} wasm={}/{}",
+        old_wasm.len(),
+        new_wasm.len()
+    );
+    assert!(after < before);
+    assert!(new_wasm.len() < old_wasm.len());
+    assert_eq!(
+        new.iter()
+            .filter(|c| c.name == "__stdlib_reverse_copy")
+            .count(),
+        1
+    );
+    assert!(!new.iter().any(|c| c.name == "__stdlib_dynge"));
+    bundle::finalize_with_runtime_helpers(&mut new);
+    assert_eq!(vybe_platform_wasm::write_wasm(&new), new_wasm);
+}
+
+#[test]
+fn python_reversal_normalizes_dictionary_keys_and_unicode_before_shared_copy() {
+    vybe_language_python::register();
+    let mut exports = Vec::new();
+    for (body, expected) in [
+        (
+            "data = [1, 2, 3]\nreturn list(reversed(data)) + data",
+            vec![
+                Value::I32(3),
+                Value::I32(2),
+                Value::I32(1),
+                Value::I32(1),
+                Value::I32(2),
+                Value::I32(3),
+            ],
+        ),
+        (
+            "return list(reversed({'first': 1, 'second': 2}))",
+            vec![
+                Value::String("second".into()),
+                Value::String("first".into()),
+            ],
+        ),
+        (
+            "return list(reversed('A😀B'))",
+            vec![
+                Value::String("B".into()),
+                Value::String("😀".into()),
+                Value::String("A".into()),
+            ],
+        ),
+    ] {
+        let module = vybe_language_python::parse(body).unwrap();
+        let profile =
+            vybe_compiler::profile::parse_profile(vybe_language_python::profile_source()).unwrap();
+        let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
+            .compile(&module)
+            .unwrap();
+        assert!(chunks.iter().any(|c| c.name.starts_with("__stdlib_reverse_copy")));
+        let bytes = vybe_platform_wasm::write_wasm(&chunks);
+        assert_eq!(
+            array_items(vm(Value::Null).run(chunks).unwrap()),
+            expected,
+            "{body}"
+        );
+        exports.push((body, bytes));
+    }
+    for (body, bytes) in exports {
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes)
+            .unwrap_or_else(|error| panic!("{body}: {error}"));
+    }
+}
+
+#[test]
+#[ignore = "manual interleaved debug reversal benchmark"]
+fn reversal_execution_benchmark() {
+    for size in [0, 256, 8192] {
+        let input = array(&(0..size).collect::<Vec<_>>());
+        let programs = [
+            reversal_program(true, 20, false),
+            reversal_program(false, 20, false),
+        ];
+        let mut times = [Vec::new(), Vec::new()];
+        for repeat in 0..5 {
+            for which in if repeat % 2 == 0 { [0, 1] } else { [1, 0] } {
+                let mut runtime = vm(input.clone());
+                let chunks = programs[which].clone();
+                let start = std::time::Instant::now();
+                let result = runtime.run(chunks).unwrap();
+                times[which].push(start.elapsed().as_micros());
+                assert_eq!(
+                    array_items(result)
+                        .iter()
+                        .map(Value::as_i32)
+                        .collect::<Vec<_>>(),
+                    (0..size).rev().collect::<Vec<_>>()
+                );
+            }
+        }
+        for samples in &mut times {
+            samples.sort();
+        }
+        println!(
+            "reverse debug size={size}: before={}us after={}us speedup={:.2}x",
+            times[0][2],
+            times[1][2],
+            times[0][2] as f64 / times[1][2] as f64
+        );
+    }
+}
+
+#[test]
+fn outlined_reversal_preserves_existing_field_and_prototype_directives() {
+    for own in [false, true] {
+        for prototype in [false, true] {
+            let mut chunks = vec![Chunk::new("<reversal-directives>")];
+            chunks[0].module_instance_fields_are_own_properties = own;
+            chunks[0].module_members_on_prototype = prototype;
+            globals::emit_read(&mut chunks[0], "input", 0);
+            collections::emit_reversed(&mut chunks, 0, 0);
+            chunks[0].emit_op(Op::RETURN, 0);
+            bundle::finalize_with_runtime_helpers(&mut chunks);
+            globals::declare_free_globals(&mut chunks);
+            globals::normalize_global_table(&mut chunks);
+            let helpers = chunks
+                .iter()
+                .filter(|c| c.name.starts_with("__stdlib_reverse_copy"))
+                .collect::<Vec<_>>();
+            assert_eq!(helpers.len(), 1);
+            assert_eq!(helpers[0].module_instance_fields_are_own_properties, own);
+            assert_eq!(helpers[0].module_members_on_prototype, prototype);
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+                .unwrap();
+            assert_eq!(
+                array_items(vm(array(&[1, 2, 3])).run(chunks.clone()).unwrap())
+                    .iter()
+                    .map(Value::as_i32)
+                    .collect::<Vec<_>>(),
+                vec![3, 2, 1]
+            );
+            let mut runtime = vm(Value::Null);
+            let mut sequence_type = vybe_runtime::typedef::TypeDef::new("ReverseSequence");
+            sequence_type.add_field("0");
+            let type_id = runtime.type_registry.register(sequence_type);
+            let mut source = Object::new_typed_with_fields(type_id, 1);
+            source.fields[0] = Value::I32(7);
+            source.properties.insert("length".into(), Value::I32(1));
+            runtime.set_global("input", Value::Object(vybe_runtime::heap::alloc(source)));
+            let expected = if own { Value::Undefined } else { Value::I32(7) };
+            assert_eq!(
+                array_items(runtime.run(chunks).unwrap()),
+                vec![expected],
+                "own={own} prototype={prototype}"
+            );
+        }
     }
 }

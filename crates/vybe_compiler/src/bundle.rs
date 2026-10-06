@@ -3104,7 +3104,10 @@ $notesTree = [
 }
 
 fn should_resolve_source_import(path_str: &str, resolved: &Path) -> bool {
-    if resolved.exists() {
+    // Bare namespace/symbol imports must not become source imports merely
+    // because a same-named directory exists beside the importing module.
+    // Explicit paths below still reach the read and report genuine errors.
+    if resolved.is_file() {
         return true;
     }
 
@@ -3309,8 +3312,7 @@ fn resolve_export(
 
 /// Add shared vybe namespace to all language profiles.
 /// This eliminates per-language profile duplication by registering `vybe` as a
-/// package-root that gives access to vybe:* modules (gui, types, collections, etc.)
-/// Users write: vybe.gui.createForm(), vybe.types.convert(), etc.
+/// package-root for registered vybe:* exports. GUI operations use web:* instead.
 fn add_shared_gui_namespace(profile: &mut crate::profile::LanguageProfile) {
     use crate::profile::EsmDefault;
 

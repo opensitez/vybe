@@ -20,8 +20,6 @@ fn run_with_prebuilt(script: Chunk, helper_chunks: Vec<Chunk>) -> Value {
 fn helper_reversed() {
     let mut script = Chunk::new("<script>");
     script.local_count = 3;
-    let helpers = build_runtime_helpers(&mut script);
-    let rev_idx = helpers.get("__stdlib_reversed").unwrap() + 1;
 
     // reversed([1, 2, 3]) → [3, 2, 1]
     script.emit_i32_const(1, 0);
@@ -30,16 +28,20 @@ fn helper_reversed() {
     script.emit_array_new_fixed(0, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
-    script.emit_op_u16(Op::REF_FUNC, rev_idx as u16, 0);
-    script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
+    let mut chunks = vec![script];
+    vybe_compiler::primitives::collections::emit_reversed(&mut chunks, 0, 0);
 
     // Get first element — should be 3
-    script.emit_i32_const(0, 0);
-    script.emit_op(Op::ARRAY_GET, 0);
+    chunks[0].emit_i32_const(0, 0);
+    chunks[0].emit_op(Op::ARRAY_GET, 0);
+    chunks[0].emit_op(Op::RETURN, 0);
+    vybe_compiler::primitives::bundle::finalize_with_runtime_helpers(&mut chunks);
+    vybe_compiler::primitives::globals::declare_free_globals(&mut chunks);
+    vybe_compiler::primitives::globals::normalize_global_table(&mut chunks);
 
-    let result = run_with_prebuilt(script, helpers.chunks);
+    let script = chunks.remove(0);
+    let result = run_with_prebuilt(script, chunks);
     assert_eq!(
         result.as_i32(),
         3,
@@ -161,17 +163,12 @@ fn helper_max() {
 fn helper_pow() {
     let mut script = Chunk::new("<script>");
     script.local_count = 2;
-    let helpers = build_runtime_helpers(&mut script);
-    let pow_idx = helpers.get("__stdlib_pow").unwrap() + 1;
-
     // 2^10 = 1024
-    script.emit_op_u16(Op::REF_FUNC, pow_idx as u16, 0);
-    script.emit(0, 0);
     script.emit_f64_const(2.0, 0);
     script.emit_i32_const(10, 0);
-    script.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
+    vybe_compiler::primitives::math::emit_pow(&mut script, 0);
 
-    let result = run_with_prebuilt(script, helpers.chunks);
+    let result = run_with_prebuilt(script, vec![]);
     assert_eq!(result.as_f64() as i32, 1024);
 }
 
@@ -214,12 +211,13 @@ fn helper_has_all_functions() {
         helpers.chunks.len()
     );
     assert!(helpers.get("__stdlib_sorted").is_some());
-    assert!(helpers.get("__stdlib_reversed").is_some());
+    // These operations are emitted directly by their owning primitives.
+    assert!(helpers.get("__stdlib_reversed").is_none());
     assert!(helpers.get("__stdlib_enumerate").is_some());
     assert!(helpers.get("__stdlib_sum").is_some());
     assert!(helpers.get("__stdlib_min").is_some());
     assert!(helpers.get("__stdlib_max").is_some());
-    assert!(helpers.get("__stdlib_pow").is_some());
+    assert!(helpers.get("__stdlib_pow").is_none());
     assert!(helpers.get("__stdlib_slicestep").is_some());
     assert!(helpers.get("__stdlib_dynmul").is_some());
 }

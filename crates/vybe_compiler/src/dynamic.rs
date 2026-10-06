@@ -496,10 +496,7 @@ pub fn debug_eval_expression(
     ));
 
     // 3. Set up the isolated mini-VM (runtime registration + host functions).
-    //    Register WITH gui so the gui module's (module,name) keys exist here to be
-    //    overlaid below — otherwise `vybe.gui.*` in an eval expression would fail
-    //    to link. The fresh GuiState this creates is immediately shadowed by the
-    //    live closures in `overlay_host_fns_from`.
+    //    Register the same platform exports before overlaying live host closures.
     let mut eval_vm = VM::new();
     crate::primitives::platforms::register_platforms(&mut eval_vm, &caps);
     ensure_php_runtime_registered(&mut eval_vm);

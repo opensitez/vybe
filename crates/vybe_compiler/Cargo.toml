@@ -37,6 +37,9 @@ wasmparser = "0.244.0"
 vybe_language_php = { workspace = true }
 vybe_language_python = { workspace = true }
 vybe_language_cobol = { workspace = true }
+vybe_language_c = { workspace = true }
+vybe_language_js = { workspace = true }
+vybe_language_vb = { workspace = true }
 vybex = { path = "../vybex" }
 
 [[test]]
