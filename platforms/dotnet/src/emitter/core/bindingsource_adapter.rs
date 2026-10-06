@@ -240,7 +240,9 @@ pub fn emit_bindingsource_move(chunks: &mut [Chunk], current: usize, mode: Move,
     chunk.emit_end(line);
 
     struct_set_from_local(chunk, bs_slot, POSITION_KEY, pos_slot, line);
-    super::control_binding_adapter::refresh(chunks, current, bs_slot, line);
+    super::control_binding_adapter::refresh_controls(chunks, current, bs_slot, line);
+    super::datagrid_binding_adapter::refresh_source_selection(chunks, current, bs_slot, line);
+    super::bindingnavigator_adapter::refresh_source(chunks, current, bs_slot, line);
     chunks[current].emit_ref_null(HT_EXTERN, line);
 }
 
@@ -276,6 +278,7 @@ pub fn emit_bindingsource_set_data_source(chunks: &mut [Chunk], current: usize, 
         line,
     );
     super::control_binding_adapter::refresh(chunks, current, source, line);
+    super::bindingnavigator_adapter::refresh_source(chunks, current, source, line);
     chunks[current].emit_ref_null(HT_EXTERN, line);
 }
 
@@ -312,7 +315,9 @@ pub fn emit_bindingsource_set_position(chunks: &mut [Chunk], current: usize, lin
     chunk.emit_op_u16(Op::LOCAL_SET, position, line);
     chunk.emit_end(line);
     struct_set_from_local(chunk, source, POSITION_KEY, position, line);
-    super::control_binding_adapter::refresh(chunks, current, source, line);
+    super::control_binding_adapter::refresh_controls(chunks, current, source, line);
+    super::datagrid_binding_adapter::refresh_source_selection(chunks, current, source, line);
+    super::bindingnavigator_adapter::refresh_source(chunks, current, source, line);
     chunks[current].emit_ref_null(HT_EXTERN, line);
 }
 
@@ -321,6 +326,7 @@ pub fn emit_bindingsource_reset_bindings(chunks: &mut [Chunk], current: usize, l
     let source = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, source, line);
     super::control_binding_adapter::refresh(chunks, current, source, line);
+    super::bindingnavigator_adapter::refresh_source(chunks, current, source, line);
     chunks[current].emit_ref_null(HT_EXTERN, line);
 }
 

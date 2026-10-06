@@ -213,21 +213,52 @@ pub fn classes() -> &'static [DotnetClass] {
             name: "TreeNodeCollection",
             parent: None,
             properties: &[],
-            methods: &[DotnetMethod {
-                name: "Add",
-                arity: 2,
-                target: MethodTarget::Common {
-                    emit: "dotnet.tree_add_node",
+            methods: &[
+                DotnetMethod {
+                    name: "Add",
+                    arity: 2,
+                    target: MethodTarget::Common {
+                        emit: "dotnet.tree_add_node",
+                    },
                 },
-            }],
+                DotnetMethod {
+                    name: "Clear",
+                    arity: 1,
+                    target: MethodTarget::Common {
+                        emit: "dotnet.tree_clear_nodes",
+                    },
+                },
+                DotnetMethod {
+                    name: "Remove",
+                    arity: 2,
+                    target: MethodTarget::Common {
+                        emit: "dotnet.tree_remove_node",
+                    },
+                },
+            ],
             ctor_arity: 0,
             widget_host_fn: None,
         },
         DotnetClass {
             name: "TreeNode",
             parent: None,
-            properties: &["Text"],
-            methods: &[],
+            properties: &["Text", "Nodes", "IsExpanded"],
+            methods: &[
+                DotnetMethod {
+                    name: "Expand",
+                    arity: 1,
+                    target: MethodTarget::Common {
+                        emit: "dotnet.tree_node_expand",
+                    },
+                },
+                DotnetMethod {
+                    name: "Collapse",
+                    arity: 1,
+                    target: MethodTarget::Common {
+                        emit: "dotnet.tree_node_collapse",
+                    },
+                },
+            ],
             ctor_arity: 0,
             widget_host_fn: None,
         },

@@ -50,6 +50,29 @@ fn style(c: &mut Chunk, node: u16, property: &str, value: u16, line: u32) {
     c.emit_op(Op::DROP, line);
 }
 
+fn object_get(c: &mut Chunk, control: u16, name: &str, line: u32) {
+    c.emit_op_u16(Op::LOCAL_GET, control, line);
+    c.emit_string_const(name, line);
+    let get = c.add_import("ecma:object", "get");
+    c.emit_call(get, 2, line);
+}
+
+fn object_set(c: &mut Chunk, control: u16, name: &str, value: u16, line: u32) {
+    c.emit_op_u16(Op::LOCAL_GET, control, line);
+    c.emit_string_const(name, line);
+    c.emit_op_u16(Op::LOCAL_GET, value, line);
+    let set = c.add_import("ecma:object", "set");
+    c.emit_call(set, 3, line);
+    c.emit_op(Op::DROP, line);
+}
+
+fn style_text(c: &mut Chunk, node: u16, property: &str, value: &str, line: u32) {
+    c.emit_string_const(value, line);
+    let text = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, text, line);
+    style(c, node, property, text, line);
+}
+
 fn computed_number(c: &mut Chunk, node: u16, property: &str, line: u32) -> u16 {
     document(c, line);
     c.emit_op_u16(Op::LOCAL_GET, node, line);
@@ -97,7 +120,20 @@ fn event_coordinate(c: &mut Chunk, line: u32) -> u16 {
 
 fn set_distance(c: &mut Chunk, control: u16, distance: u16, line: u32) {
     let pane = child(c, control, true, line);
+    object_get(c, control, "panel1minsize", line);
+    let minimum = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, minimum, line);
     c.emit_op_u16(Op::LOCAL_GET, distance, line);
+    c.emit_op_u16(Op::LOCAL_GET, minimum, line);
+    c.emit_op(Op::F64_LT, line);
+    c.emit_if_value(line);
+    c.emit_op_u16(Op::LOCAL_GET, minimum, line);
+    c.emit_else(line);
+    c.emit_op_u16(Op::LOCAL_GET, distance, line);
+    c.emit_end(line);
+    let clamped = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, clamped, line);
+    c.emit_op_u16(Op::LOCAL_GET, clamped, line);
     strings::emit_to_string(c, line);
     let text = c.alloc_scratch(1);
     c.emit_op_u16(Op::LOCAL_SET, text, line);
@@ -122,6 +158,10 @@ fn callback(chunks: &mut Vec<Chunk>, name: &str, line: u32) -> usize {
         c.emit_op_u16(Op::LOCAL_GET, target_id, line);
         let truthy = c.add_import("ecma:boolean", "toBoolean");
         c.emit_call(truthy, 1, line);
+        object_get(&mut c, control, "issplitterfixed", line);
+        ops::emit_dyn_to_bool(&mut c, line);
+        c.emit_op(Op::I32_EQZ, line);
+        c.emit_op(Op::I32_AND, line);
         c.emit_if(line);
         let x = event_coordinate(&mut c, line);
         c.emit_op_u16(Op::LOCAL_GET, x, line);
@@ -170,15 +210,17 @@ fn callback(chunks: &mut Vec<Chunk>, name: &str, line: u32) -> usize {
         c.emit_op_u16(Op::LOCAL_SET, candidate, line);
         let width = computed_number(&mut c, control, "width", line);
         c.emit_op_u16(Op::LOCAL_GET, width, line);
-        c.emit_f64_const(29.0, line);
+        object_get(&mut c, control, "splitterwidth", line);
+        c.emit_f64_const(25.0, line);
+        c.emit_op(Op::F64_ADD, line);
         c.emit_op(Op::F64_SUB, line);
         let maximum = c.alloc_scratch(1);
         c.emit_op_u16(Op::LOCAL_SET, maximum, line);
         c.emit_op_u16(Op::LOCAL_GET, candidate, line);
-        c.emit_f64_const(25.0, line);
+        object_get(&mut c, control, "panel1minsize", line);
         c.emit_op(Op::F64_LT, line);
         c.emit_if_value(line);
-        c.emit_f64_const(25.0, line);
+        object_get(&mut c, control, "panel1minsize", line);
         c.emit_else(line);
         c.emit_op_u16(Op::LOCAL_GET, candidate, line);
         c.emit_op_u16(Op::LOCAL_GET, maximum, line);
@@ -211,6 +253,18 @@ pub fn emit_init(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let c = &mut chunks[current];
     let control = c.alloc_scratch(1);
     c.emit_op_u16(Op::LOCAL_SET, control, line);
+    for (name, value) in [("issplitterfixed", false), ("panel1collapsed", false)] {
+        c.emit_bool_const(value, line);
+        let slot = c.alloc_scratch(1);
+        c.emit_op_u16(Op::LOCAL_SET, slot, line);
+        object_set(c, control, name, slot, line);
+    }
+    for (name, value) in [("panel1minsize", 25), ("splitterwidth", 4)] {
+        c.emit_i32_const(value, line);
+        let slot = c.alloc_scratch(1);
+        c.emit_op_u16(Op::LOCAL_SET, slot, line);
+        object_set(c, control, name, slot, line);
+    }
     let down = callback(chunks, "__dotnet_split_down", line);
     let moving = callback(chunks, "__dotnet_split_move", line);
     let up = callback(chunks, "__dotnet_split_up", line);
@@ -238,6 +292,81 @@ pub fn emit_distance_get(c: &mut Chunk, line: u32) {
     let pane = child(c, control, true, line);
     let width = computed_number(c, pane, "width", line);
     c.emit_op_u16(Op::LOCAL_GET, width, line);
+}
+
+/// Stack: [SplitContainer] -> [property value].
+pub fn emit_property_get(c: &mut Chunk, property: &str, line: u32) {
+    let control = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, control, line);
+    object_get(c, control, property, line);
+}
+
+/// Stack: [SplitContainer, value] -> [null].
+pub fn emit_property_set(c: &mut Chunk, property: &str, line: u32) {
+    let value = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, value, line);
+    let control = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, control, line);
+    object_set(c, control, property, value, line);
+    match property {
+        "issplitterfixed" => {
+            let pane = child(c, control, true, line);
+            let splitter = child(c, pane, false, line);
+            c.emit_op_u16(Op::LOCAL_GET, value, line);
+            ops::emit_dyn_to_bool(c, line);
+            c.emit_if(line);
+            style_text(c, splitter, "cursor", "default", line);
+            c.emit_string_const("", line);
+            let empty = c.alloc_scratch(1);
+            c.emit_op_u16(Op::LOCAL_SET, empty, line);
+            set_attribute(c, control, "data-splitter-start-x", empty, line);
+            c.emit_else(line);
+            style_text(c, splitter, "cursor", "col-resize", line);
+            c.emit_end(line);
+        }
+        "panel1collapsed" => {
+            let pane = child(c, control, true, line);
+            let splitter = child(c, pane, false, line);
+            c.emit_op_u16(Op::LOCAL_GET, value, line);
+            ops::emit_dyn_to_bool(c, line);
+            c.emit_if(line);
+            style_text(c, pane, "display", "none", line);
+            style_text(c, splitter, "display", "none", line);
+            c.emit_else(line);
+            style_text(c, pane, "display", "block", line);
+            style_text(c, splitter, "display", "block", line);
+            c.emit_end(line);
+        }
+        "panel1minsize" => {
+            let distance = attribute(c, control, "data-splitter-distance", line);
+            c.emit_op_u16(Op::LOCAL_GET, distance, line);
+            c.emit_op(Op::REF_IS_NULL, line);
+            c.emit_op(Op::I32_EQZ, line);
+            c.emit_if(line);
+            c.emit_op_u16(Op::LOCAL_GET, distance, line);
+            let number = c.add_import("ecma:number", "Number");
+            c.emit_call(number, 1, line);
+            let numeric = c.alloc_scratch(1);
+            c.emit_op_u16(Op::LOCAL_SET, numeric, line);
+            set_distance(c, control, numeric, line);
+            c.emit_end(line);
+        }
+        "splitterwidth" => {
+            let pane = child(c, control, true, line);
+            let splitter = child(c, pane, false, line);
+            c.emit_string_const("0 0 ", line);
+            c.emit_op_u16(Op::LOCAL_GET, value, line);
+            strings::emit_to_string(c, line);
+            ops::emit_dyn_add(c, line);
+            c.emit_string_const("px", line);
+            ops::emit_dyn_add(c, line);
+            let flex = c.alloc_scratch(1);
+            c.emit_op_u16(Op::LOCAL_SET, flex, line);
+            style(c, splitter, "flex", flex, line);
+        }
+        _ => {}
+    }
+    c.emit_ref_null(HT_EXTERN, line);
 }
 
 pub fn emit_panel(chunk: &mut Chunk, second: bool, line: u32) {

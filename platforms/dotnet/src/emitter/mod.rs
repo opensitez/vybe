@@ -653,6 +653,28 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     // below did nothing until the suffix came off. `.rsplit('.')` strips the
     // namespace and nothing else.
     let class_head = class.split('<').next().unwrap_or(class).trim();
+    if class_head.eq_ignore_ascii_case("HelpProvider") {
+        match method_name.to_ascii_lowercase().as_str() {
+            "gethelpstring" | "gethelpkeyword" => return Some("String".into()),
+            "getshowhelp" => return Some("Boolean".into()),
+            "gethelpnavigator" => return Some("HelpNavigator".into()),
+            _ => {}
+        }
+    }
+    if class_head.eq_ignore_ascii_case("ErrorProvider")
+        && method_name.eq_ignore_ascii_case("GetError")
+    {
+        return Some("String".into());
+    }
+    if method_name.eq_ignore_ascii_case("Item") {
+        match class_head.to_ascii_lowercase().as_str() {
+            "datagridviewselectedrowcollection" => return Some("DataGridViewRow".into()),
+            "datagridviewselectedcellcollection" | "datagridviewcellcollection" => {
+                return Some("DataGridViewCell".into());
+            }
+            _ => {}
+        }
+    }
     if class_head.eq_ignore_ascii_case("CheckedListBox")
         && method_name.eq_ignore_ascii_case("GetItemChecked")
     {
@@ -2511,7 +2533,12 @@ pub fn declared_instance_property_types(
         .to_ascii_lowercase()
         .as_str()
     {
-        "treeview" => &[("Nodes", "TreeNodeCollection")],
+        "treeview" => &[("Nodes", "TreeNodeCollection"), ("SelectedNode", "TreeNode")],
+        "treenode" => &[
+            ("Nodes", "TreeNodeCollection"),
+            ("Text", "String"),
+            ("IsExpanded", "Boolean"),
+        ],
         "sqlcommand" | "oledbcommand" | "adodbcommand" => {
             &[("Parameters", "SqlParameterCollection")]
         }

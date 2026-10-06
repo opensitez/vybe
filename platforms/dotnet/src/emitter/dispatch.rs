@@ -414,6 +414,46 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::core::comparer_adapter as cmp;
     use crate::emitter::core::immutable_adapter as imm;
     use crate::emitter::core::specialized_adapter as sp;
+    if let Some(key) = name.strip_prefix("dotnet.component_field_get.") {
+        crate::emitter::core::component_property_adapter::emit_get(
+            &mut chunks[current], key, line,
+        );
+        return true;
+    }
+    if let Some(key) = name.strip_prefix("dotnet.component_field_set.") {
+        crate::emitter::core::component_property_adapter::emit_set(
+            &mut chunks[current], key, line,
+        );
+        return true;
+    }
+    if let Some(key) = name.strip_prefix("dotnet.scrollbar_get.") {
+        crate::emitter::core::scrollbar_adapter::emit_get(&mut chunks[current], key, line);
+        return true;
+    }
+    if let Some(key) = name.strip_prefix("dotnet.scrollbar_set.") {
+        crate::emitter::core::scrollbar_adapter::emit_set(&mut chunks[current], key, line);
+        return true;
+    }
+    if let Some(key) = name.strip_prefix("dotnet.help_get.") {
+        crate::emitter::core::help_provider_adapter::emit_get(&mut chunks[current], key, line);
+        return true;
+    }
+    if let Some(key) = name.strip_prefix("dotnet.help_set.") {
+        crate::emitter::core::help_provider_adapter::emit_set(&mut chunks[current], key, line);
+        return true;
+    }
+    if let Some(key) = name.strip_prefix("dotnet.monthcalendar_prop_get.") {
+        crate::emitter::core::month_calendar_adapter::emit_property_get(
+            &mut chunks[current], key, line,
+        );
+        return true;
+    }
+    if let Some(key) = name.strip_prefix("dotnet.monthcalendar_prop_set.") {
+        crate::emitter::core::month_calendar_adapter::emit_property_set(
+            &mut chunks[current], key, line,
+        );
+        return true;
+    }
     if crate::emitter::core::runtime_adapter::emit_helper(name, chunks, current, argc, line) {
         return true;
     }
@@ -641,6 +681,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.select_items_count" => {
             crate::emitter::core::select_items_adapter::emit_count(&mut chunks[current], line);
         }
+        "dotnet.select_items_add" => {
+            crate::emitter::core::select_items_adapter::emit_add(&mut chunks[current], line);
+        }
+        "dotnet.select_items_get_sorted" => {
+            crate::emitter::core::select_items_adapter::emit_get_sorted(&mut chunks[current], line);
+        }
+        "dotnet.select_items_set_sorted" => {
+            crate::emitter::core::select_items_adapter::emit_set_sorted(&mut chunks[current], line);
+        }
         "dotnet.select_items_clear" => {
             crate::emitter::core::select_items_adapter::emit_clear(&mut chunks[current], line);
         }
@@ -679,11 +728,199 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.datagrid_add_row" => {
             crate::emitter::core::datagrid_adapter::emit_add_row(chunks, current, argc, line);
         }
+        "dotnet.datagrid_columns_count" => {
+            crate::emitter::core::datagrid_adapter::emit_column_count(chunks, current, line);
+        }
         "dotnet.tree_add_node" => {
             crate::emitter::core::list_tree_adapter::emit_tree_add(chunks, current, line);
         }
+        "dotnet.tree_selected_node_get" => {
+            crate::emitter::core::list_tree_adapter::emit_tree_selected_node_get(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.tree_selected_node_set" => {
+            crate::emitter::core::list_tree_adapter::emit_tree_selected_node_set(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.tree_clear_nodes" => {
+            crate::emitter::core::list_tree_adapter::emit_tree_clear(&mut chunks[current], line);
+        }
+        "dotnet.tree_remove_node" => {
+            crate::emitter::core::list_tree_adapter::emit_tree_remove(&mut chunks[current], line);
+        }
+        "dotnet.tree_node_text_get" => {
+            crate::emitter::core::list_tree_adapter::emit_tree_node_text_get(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.tree_node_text_set" => {
+            crate::emitter::core::list_tree_adapter::emit_tree_node_text_set(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.tree_node_children" => {
+            crate::emitter::core::list_tree_adapter::emit_tree_node_children(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.tree_node_expand" | "dotnet.tree_node_collapse" => {
+            crate::emitter::core::list_tree_adapter::emit_tree_node_expand(
+                &mut chunks[current],
+                name == "dotnet.tree_node_expand",
+                line,
+            );
+        }
+        "dotnet.tree_node_is_expanded" => {
+            crate::emitter::core::list_tree_adapter::emit_tree_node_is_expanded(
+                &mut chunks[current],
+                line,
+            );
+        }
         "dotnet.listview_add_item" => {
             crate::emitter::core::list_tree_adapter::emit_list_add(chunks, current, line);
+        }
+        "dotnet.listview_selected_items_get" => {
+            crate::emitter::core::list_tree_adapter::emit_list_selected_items_get(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.datagrid_rows_count" => {
+            crate::emitter::core::datagrid_adapter::emit_row_count(chunks, current, line);
+        }
+        "dotnet.datagrid_current_row" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_current_row(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.datagrid_current_cell" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_current_cell(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.datagrid_selected_rows" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_selected_rows(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.datagrid_selected_cells" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_selected_cells(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.datagrid_selection_count" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_selection_count(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.datagrid_collection_item" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_collection_item(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.tooltip_set" => {
+            crate::emitter::core::tooltip_adapter::emit_set(chunks, current, line);
+        }
+        "dotnet.tooltip_active_set" => {
+            crate::emitter::core::tooltip_adapter::emit_active_set(chunks, current, line);
+        }
+        "dotnet.tooltip_automatic_delay_set" => {
+            crate::emitter::core::tooltip_adapter::emit_automatic_delay_set(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.tooltip_init" => {
+            crate::emitter::core::tooltip_adapter::emit_init(&mut chunks[current], line);
+        }
+        "dotnet.winforms_timer_init" => {
+            crate::emitter::core::winforms_timer_adapter::emit_init(&mut chunks[current], line);
+        }
+        "dotnet.winforms_timer_enabled_set" => {
+            crate::emitter::core::winforms_timer_adapter::emit_enabled_set(chunks, current, line);
+        }
+        "dotnet.winforms_timer_interval_set" => {
+            crate::emitter::core::winforms_timer_adapter::emit_interval_set(chunks, current, line);
+        }
+        "dotnet.winforms_timer_start" => {
+            crate::emitter::core::winforms_timer_adapter::emit_start(chunks, current, line);
+        }
+        "dotnet.winforms_timer_stop" => {
+            crate::emitter::core::winforms_timer_adapter::emit_stop(&mut chunks[current], line);
+        }
+        "dotnet.background_worker_new" => {
+            crate::emitter::core::background_worker_adapter::emit_new(&mut chunks[current], line);
+        }
+        "dotnet.background_worker_run" => {
+            crate::emitter::core::background_worker_adapter::emit_run(chunks, current, argc, line);
+        }
+        "dotnet.background_worker_cancel" => {
+            crate::emitter::core::background_worker_adapter::emit_cancel(chunks, current, line);
+        }
+        "dotnet.background_worker_progress" => {
+            crate::emitter::core::background_worker_adapter::emit_progress(chunks, current, argc, line);
+        }
+        "dotnet.help_init" => {
+            crate::emitter::core::help_provider_adapter::emit_init(&mut chunks[current], line);
+        }
+        "dotnet.error_provider_set" => {
+            crate::emitter::core::error_provider_adapter::emit_set(chunks, current, line);
+        }
+        "dotnet.error_provider_get" => {
+            crate::emitter::core::error_provider_adapter::emit_get(&mut chunks[current], line);
+        }
+        "dotnet.error_provider_clear" => {
+            crate::emitter::core::error_provider_adapter::emit_clear(chunks, current, line);
+        }
+        "dotnet.scrollbar_init" => {
+            crate::emitter::core::scrollbar_adapter::emit_init(&mut chunks[current], line);
+        }
+        "dotnet.tooltip_get" => {
+            crate::emitter::core::tooltip_adapter::emit_get(&mut chunks[current], line);
+        }
+        "dotnet.tooltip_remove_all" => {
+            crate::emitter::core::tooltip_adapter::emit_remove_all(chunks, current, line);
+        }
+        "dotnet.datagrid_row_cells" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_row_cells(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.datagrid_cell_value" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_cell_value(
+                chunks, current, line,
+            );
+        }
+        "dotnet.datagrid_row_index" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_row_index(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.datagrid_column_index" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_column_index(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.datagrid_bound_item" => {
+            crate::emitter::core::datagrid_selection_adapter::emit_bound_item(
+                chunks, current, line,
+            );
         }
         "dotnet.dom_tree_count"
         | "dotnet.dom_list_columns_count"
@@ -723,6 +960,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 line,
             );
         }
+        name if name.starts_with("dotnet.split_prop_get.") => {
+            let property = name.trim_start_matches("dotnet.split_prop_get.");
+            crate::emitter::core::split_container_adapter::emit_property_get(
+                &mut chunks[current], property, line,
+            );
+        }
+        name if name.starts_with("dotnet.split_prop_set.") => {
+            let property = name.trim_start_matches("dotnet.split_prop_set.");
+            crate::emitter::core::split_container_adapter::emit_property_set(
+                &mut chunks[current], property, line,
+            );
+        }
         "dotnet.bindingnavigator_source_set" => {
             crate::emitter::core::bindingnavigator_adapter::emit_set_source(chunks, current, line);
         }
@@ -740,6 +989,40 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.datagrid_source_get" => {
             crate::emitter::core::datagrid_binding_adapter::get_source(&mut chunks[current], line);
+        }
+        "dotnet.datagrid_properties_init" => {
+            crate::emitter::core::datagrid_properties_adapter::emit_init(
+                &mut chunks[current], line,
+            );
+        }
+        "dotnet.tree_view_properties_init" => {
+            crate::emitter::core::tree_view_properties_adapter::emit_init(
+                &mut chunks[current], line,
+            );
+        }
+        name if name.starts_with("dotnet.tree_view_property_get.") => {
+            let property = name.trim_start_matches("dotnet.tree_view_property_get.");
+            crate::emitter::core::tree_view_properties_adapter::emit_get(
+                &mut chunks[current], property, line,
+            );
+        }
+        name if name.starts_with("dotnet.tree_view_property_set.") => {
+            let property = name.trim_start_matches("dotnet.tree_view_property_set.");
+            crate::emitter::core::tree_view_properties_adapter::emit_set(
+                &mut chunks[current], property, line,
+            );
+        }
+        name if name.starts_with("dotnet.datagrid_property_get.") => {
+            let property = name.trim_start_matches("dotnet.datagrid_property_get.");
+            crate::emitter::core::datagrid_properties_adapter::emit_get(
+                &mut chunks[current], property, line,
+            );
+        }
+        name if name.starts_with("dotnet.datagrid_property_set.") => {
+            let property = name.trim_start_matches("dotnet.datagrid_property_set.");
+            crate::emitter::core::datagrid_properties_adapter::emit_set(
+                chunks, current, property, line,
+            );
         }
         "dotnet.bindingsource_data_source_get" | "dotnet.bindingsource_position_get" => {
             let key = if name.contains("position") {

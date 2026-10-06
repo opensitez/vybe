@@ -25,6 +25,7 @@ use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
 
 /// Inferred member type from the same registered tree used by the compiler.
 pub fn instance_member_return_type(class_name: &str, member: &str) -> Option<String> {
+    register_namespace_tree();
     static SCOPE: OnceLock<[String; 1]> = OnceLock::new();
     let scope = SCOPE.get_or_init(|| ["dotnet".to_string()]);
     namespaces::lookup_type_member_return(scope, class_name, member, namespaces::FOLD_ASCII)
@@ -62,7 +63,8 @@ pub fn register_namespace_tree() {
             // gate briefly existed; copies of one rule drift, so the fact is
             // computed here and only here.
             let class_is_control = interface.eq_ignore_ascii_case("dotnet.System.Windows.Forms")
-                && element_backed_control(&class.name);
+                && element_backed_control(&class.name)
+                && namespaces::inherits(&class.name, "Control", descriptor_parent);
             // A form is `document.body`, so node-scoped destruction does not
             // apply to it — see `gui_control_verb`. `inherits` walks the
             // descriptor chain, so `class MyForm : Form` answers true too.
@@ -146,43 +148,85 @@ pub fn register_namespace_tree() {
             // registration would leave every inherited property unreachable.
             // Nearest declaration wins, so an override shadows its base.
             let mut property_returns: BTreeMap<String, String> = BTreeMap::new();
-            let is_control = element_backed_control(&class.name);
-            // ANYTHING WITHOUT AN ELEMENT DECLARES NO PROPERTY ACCESSOR, so its
-            // properties resolve the way a user-declared class's do: an ordinary
-            // STRUCT FIELD read.
-            //
-            // That covers the `System.Drawing` value types (`Point.X`) and the
-            // NON-VISUAL components (`Timer.Interval`, `BindingSource.DataSource`)
-            // alike, and it is not a behaviour change: both bound the two
-            // generic property host functions, and for an object with no
-            // element that host call collapsed to exactly a lowercased field
-            // access — the getter returned `o.properties.get(&prop_lower)` and
-            // the setter did `properties.insert(prop_lower, val)`. Those ARE the field names
-            // `emit_value_type_new` stores, so declaring nothing reproduces the
-            // behaviour with no host at all.
-            //
-            // `primitives/gui.rs::declared_property_role` records the other half:
-            // a class with no platform role gets a struct field read, which is
-            // why a user-declared `Class Point` works and why the platform
-            // `Point.X` role capturing it looked like object aliasing.
-            for p in inherited_properties(&class.name) {
-                if !is_control && class.name != "Font" {
+            let is_control = class_is_control;
+            let is_component = !is_control
+                && ((interface.eq_ignore_ascii_case("dotnet.System.Windows.Forms")
+                    && element_backed_control(&class.name))
+                    || (interface.eq_ignore_ascii_case("dotnet.System.ComponentModel")
+                        && class.name == "BackgroundWorker"));
+            // Nonvisual components with hidden elements need typed field
+            // accessors; DOM attributes would turn Boolean and number values
+            // into strings. Value types without elements keep ordinary class
+            // field access (for example, Point.X and Size.Width).
+            let properties = if is_component {
+                class.properties.clone()
+            } else {
+                inherited_properties(&class.name)
+            };
+            for p in properties {
+                if !is_control && !is_component && class.name != "Font" {
                     continue;
                 }
-                let node = namespaces::property(
-                    p.getter
-                        .as_ref()
-                        .map(|t| accessor_node(t, &p.name, is_control, &class.name)),
-                    p.setter
-                        .as_ref()
-                        .map(|t| accessor_node(t, &p.name, is_control, &class.name)),
-                );
+                let node = if is_component {
+                    let key = p.name.to_ascii_lowercase();
+                    namespaces::property(
+                        p.getter.as_ref().map(|_| {
+                            NamespaceNode::CommonEmit(format!("dotnet.component_field_get.{key}"))
+                        }),
+                        p.setter.as_ref().map(|_| {
+                            NamespaceNode::CommonEmit(format!("dotnet.component_field_set.{key}"))
+                        }),
+                    )
+                } else {
+                    namespaces::property(
+                        p.getter
+                            .as_ref()
+                            .map(|t| accessor_node(t, &p.name, is_control, &class.name)),
+                        p.setter
+                            .as_ref()
+                            .map(|t| accessor_node(t, &p.name, is_control, &class.name)),
+                    )
+                };
                 // What the property READS BACK as, declared from its ROLE so
                 // the one answer serves every frontend registered this way.
                 // Not decoration: a property whose type is undeclared reads as
                 // `null` to the expression machinery, so `btn.Text.Length` or
                 // `if (c.Enabled)` had nothing to work on.
                 if is_control {
+                    if class.name == "MonthCalendar" {
+                        let ty = match p.name.as_str() {
+                            "ShowToday" | "ShowTodayCircle" | "ShowWeekNumbers" => Some("Boolean"),
+                            "MaxSelectionCount" | "ScrollChange" => Some("Integer"),
+                            "FirstDayOfWeek" => Some("String"),
+                            _ => None,
+                        };
+                        if let Some(ty) = ty {
+                            property_returns.insert(p.name.to_string(), ty.to_string());
+                        }
+                    }
+                    if class.name == "SplitContainer" {
+                        let ty = match p.name.as_str() {
+                            "IsSplitterFixed" | "Panel1Collapsed" => Some("Boolean"),
+                            "Panel1MinSize" | "SplitterWidth" => Some("Integer"),
+                            _ => None,
+                        };
+                        if let Some(ty) = ty {
+                            property_returns.insert(p.name.to_string(), ty.to_string());
+                        }
+                    }
+                    if class.name == "DataGridView"
+                        && matches!(
+                            p.name.as_str(),
+                            "AutoGenerateColumns" | "ColumnHeadersVisible" | "RowHeadersVisible"
+                        )
+                    {
+                        property_returns.insert(p.name.to_string(), "Boolean".to_string());
+                    }
+                    if class.name == "TreeView"
+                        && matches!(p.name.as_str(), "Scrollable" | "ShowPlusMinus")
+                    {
+                        property_returns.insert(p.name.to_string(), "Boolean".to_string());
+                    }
                     if p.name == "Font" {
                         property_returns.insert(p.name.to_string(), "Font".to_string());
                     }
@@ -203,6 +247,40 @@ pub fn register_namespace_tree() {
                         _ => continue,
                     };
                     property_returns.insert(p.name.to_string(), value_type.to_string());
+                } else if class.name == "ToolTip" {
+                    let value_type = match p.name.as_str() {
+                        "Active" | "IsBalloon" | "OwnerDraw" | "ShowAlways"
+                        | "StripAmpersands" | "UseAnimation" | "UseFading" => Some("Boolean"),
+                        "AutomaticDelay" | "AutoPopDelay" | "InitialDelay" | "ReshowDelay" => {
+                            Some("Integer")
+                        }
+                        _ => None,
+                    };
+                    if let Some(value_type) = value_type {
+                        property_returns.insert(p.name.to_string(), value_type.to_string());
+                    }
+                } else if class.name == "Timer"
+                    && interface.eq_ignore_ascii_case("dotnet.System.Windows.Forms")
+                {
+                    let value_type = match p.name.as_str() {
+                        "Enabled" => Some("Boolean"),
+                        "Interval" => Some("Integer"),
+                        _ => None,
+                    };
+                    if let Some(value_type) = value_type {
+                        property_returns.insert(p.name.to_string(), value_type.to_string());
+                    }
+                } else if class.name == "BackgroundWorker"
+                    && interface.eq_ignore_ascii_case("dotnet.System.ComponentModel")
+                    && matches!(
+                        p.name.as_str(),
+                        "IsBusy"
+                            | "CancellationPending"
+                            | "WorkerReportsProgress"
+                            | "WorkerSupportsCancellation"
+                    )
+                {
+                    property_returns.insert(p.name.to_string(), "Boolean".to_string());
                 }
                 methods
                     .entry(p.name.to_string())
@@ -233,6 +311,11 @@ pub fn register_namespace_tree() {
                 }
             }
             for (name, node) in shared_emit_accessors(&class.name) {
+                if class.name == "Timer"
+                    && !interface.eq_ignore_ascii_case("dotnet.System.Windows.Forms")
+                {
+                    continue;
+                }
                 methods.insert(name, node);
             }
             if interface.eq_ignore_ascii_case("dotnet.System")
@@ -274,10 +357,48 @@ pub fn register_namespace_tree() {
                     NamespaceNode::CommonEmit("dotnet.monthcalendar_init".into()),
                 );
             }
+            if class_is_control && class.name.eq_ignore_ascii_case("TreeView") {
+                statics.insert(
+                    "__gui_init".into(),
+                    NamespaceNode::CommonEmit("dotnet.tree_view_properties_init".into()),
+                );
+            }
+            if matches!(class.name.as_str(), "HScrollBar" | "VScrollBar") {
+                statics.insert(
+                    "__gui_init".into(),
+                    NamespaceNode::CommonEmit("dotnet.scrollbar_init".into()),
+                );
+            }
+            if is_component && class.name.eq_ignore_ascii_case("ToolTip") {
+                statics.insert(
+                    "__gui_init".into(),
+                    NamespaceNode::CommonEmit("dotnet.tooltip_init".into()),
+                );
+            }
+            if is_component && class.name.eq_ignore_ascii_case("Timer") {
+                statics.insert(
+                    "__gui_init".into(),
+                    NamespaceNode::CommonEmit("dotnet.winforms_timer_init".into()),
+                );
+            }
+            if class.name.eq_ignore_ascii_case("HelpProvider") {
+                statics.insert(
+                    "__gui_init".into(),
+                    NamespaceNode::CommonEmit("dotnet.help_init".into()),
+                );
+            }
             if class_is_control && class.name.eq_ignore_ascii_case("SplitContainer") {
                 statics.insert(
                     "__gui_init".into(),
                     NamespaceNode::CommonEmit("dotnet.split_init".into()),
+                );
+            }
+            if class_is_control
+                && matches!(class.name.as_str(), "DataGridView" | "DataGrid")
+            {
+                statics.insert(
+                    "__gui_init".into(),
+                    NamespaceNode::CommonEmit("dotnet.datagrid_properties_init".into()),
                 );
             }
             // Declare return types with the class, so the compiler reads them
@@ -381,11 +502,26 @@ pub fn register_namespace_tree() {
             // from the TREE (see `accessor_node` above and the `MethodBody`
             // registration); while they lived on ctor-bound thunks, taking
             // this path would have dropped them.
-            // Consumes `class_is_control` — the one carrier of the fact.
-            let ctor = class_is_control
+            // Nonvisual components also own a hidden element for events and
+            // typed state, but do not inherit visual Control verbs.
+            let ctor = (class_is_control || is_component)
                 .then(|| html_element_for_control(&class.name))
                 .flatten()
-                .map(|element| control_ctor_spec(&class.name, element));
+                .map(|element| {
+                    let mut spec = control_ctor_spec(&class.name, element);
+                    if is_component
+                        && super::class_exports::dotnet_class_exports()
+                            .iter()
+                            .filter(|entry| entry.class.name.eq_ignore_ascii_case(&class.name))
+                            .take(2)
+                            .count()
+                            > 1
+                    {
+                        let namespace = interface.strip_prefix("dotnet.").unwrap_or(interface);
+                        spec.ancestry.insert(0, format!("{namespace}.{}", class.name));
+                    }
+                    spec
+                });
 
             let ty = NamespaceNode::Type {
                 ctor,
@@ -1000,6 +1136,73 @@ fn accessor_node(
                 .into(),
             );
         }
+        if class_name.eq_ignore_ascii_case("MonthCalendar")
+            && matches!(
+                prop.to_ascii_lowercase().as_str(),
+                "showtoday" | "showtodaycircle" | "showweeknumbers"
+                    | "maxselectioncount" | "scrollchange" | "firstdayofweek"
+            )
+        {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.monthcalendar_prop_{}.{}",
+                if setting { "set" } else { "get" },
+                prop.to_ascii_lowercase()
+            ));
+        }
+        if class_name.eq_ignore_ascii_case("SplitContainer")
+            && matches!(
+                prop.to_ascii_lowercase().as_str(),
+                "issplitterfixed" | "panel1collapsed" | "panel1minsize" | "splitterwidth"
+            )
+        {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.split_prop_{}.{}",
+                if setting { "set" } else { "get" },
+                prop.to_ascii_lowercase()
+            ));
+        }
+        if class_name.eq_ignore_ascii_case("DataGridView")
+            && matches!(
+                prop.to_ascii_lowercase().as_str(),
+                "columnheadersvisible" | "rowheadersvisible" | "multiselect"
+                    | "autogeneratecolumns"
+            )
+        {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.datagrid_property_{}.{}",
+                if setting { "set" } else { "get" },
+                prop.to_ascii_lowercase()
+            ));
+        }
+        if matches!(class_name.to_ascii_lowercase().as_str(), "listbox" | "combobox")
+            && prop.eq_ignore_ascii_case("Sorted")
+        {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.select_items_{}_sorted",
+                if setting { "set" } else { "get" }
+            ));
+        }
+        if class_name.eq_ignore_ascii_case("TreeView")
+            && matches!(prop.to_ascii_lowercase().as_str(), "scrollable" | "showplusminus")
+        {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.tree_view_property_{}.{}",
+                if setting { "set" } else { "get" },
+                prop.to_ascii_lowercase()
+            ));
+        }
+        if matches!(class_name, "HScrollBar" | "VScrollBar")
+            && matches!(
+                prop.to_ascii_lowercase().as_str(),
+                "value" | "minimum" | "maximum" | "smallchange" | "largechange"
+            )
+        {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.scrollbar_{}.{}",
+                if setting { "set" } else { "get" },
+                prop.to_ascii_lowercase()
+            ));
+        }
         let role = match gui_property_role(prop) {
             "" => prop.to_ascii_lowercase(),
             // **Most controls INHERIT `Text` and never draw it.** A designer
@@ -1116,7 +1319,9 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // A tree is a nested list, and an EMPTY one is still a control: the
         // border and white field are what the user sees before a single node
         // is added, and what a bare `<ul>` does not draw.
-        "treeview" => "ul;@role=tree;border:1px solid #c8c8c8;background-color:#ffffff;overflow:auto;list-style:none;padding:4px 2px;margin:0",
+        "treeview" => {
+            "ul;@role=tree;border:1px solid #c8c8c8;background-color:#ffffff;overflow:auto;list-style:none;padding:4px 2px;margin:0"
+        }
         "treenode" => "li;@role=treeitem;list-style:none;white-space:nowrap;padding:1px 4px",
         // HTML has these outright, and they carry real semantics a `<div>`
         // cannot: a range input is keyboard-operable and `<progress>` is
@@ -1169,9 +1374,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         "checkedlistbox" => "div;overflow:auto;border:1px solid #7a7a7a;background-color:#fff",
         // The legacy grid is the same control and takes the same element, or
         // the two spellings would render differently for no reason.
-        "datagrid" => {
-            "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff"
-        }
+        "datagrid" => "div;border:1px solid #c8c8c8;background-color:#ffffff",
         // ⚠ These have no widget kind YET, so they render as a label until
         // `widgets` grows one — the designed degradation, visible in a
         // capture instead of the control vanishing. The declaration still buys
@@ -1269,37 +1472,9 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // for it would be a second spelling for something the platform ships.
         "datetimepicker" => "input:datetime-local",
 
-        // **A `DataGridView` is NOT a `<table>`.** This used to emit `table`,
-        // on the reasoning that a table "IS" the grid. It is the reverse
-        // conflation of the one `control_kind` carried on the other side: a
-        // `<table>` is a LAYOUT — a box that arranges its rows and cells —
-        // whereas a `DataGridView` is a CONTROL, with columns it defines
-        // itself, a header it draws itself and scrolling of its own. Now that
-        // `<table>` means the layout, emitting `table` here would render every
-        // WinForms grid as an empty table box with no columns at all.
-        //
-        // **A `DataGridView` IS a `<table>`** — now that a `<table>` is one.
-        //
-        // This is the second half of the same correction. `<table>` used to
-        // mean the datagridview WIDGET, which made an HTML layout impersonate
-        // a .NET control; the widget layer now implements CSS tables, so the
-        // honest mapping runs the other way and the control is the markup.
-        // Its columns and rows are `<th>`s and `<tr>`s, built by
-        // `datagrid_adapter` from `Columns.Add`/`Rows.Add`.
-        //
-        // ⚠ It went through `vybe-datagridview` on the way here, which was
-        // correct while the data surface was inert but is not a destination: a
-        // `vybe-*` tag needs a `customElements.define` AND a grid
-        // implementation before a real engine draws anything, where a `<table>`
-        // needs neither. The custom tag rendered the grid's default chrome —
-        // a header band and empty row lines — and no data could reach it,
-        // because a widget does not render DOM children.
-        //
-        // `border-collapse` is the grid look: one line between cells rather
-        // than two, which is what a data grid draws.
-        "datagridview" => {
-            "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff"
-        }
+        // The control is a scrolling viewport; the inner table gives its
+        // headers and data cells one shared column layout in every engine.
+        "datagridview" => "div;border:1px solid #c8c8c8;background-color:#ffffff",
         // A ListView in its Details mode is a table with a header row, which is
         // what `DataGridView` above already resolves to and what its `Columns`
         // and `Items` append into. The other view modes are a `display`
@@ -1309,7 +1484,9 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         }
         // A month grid. Static chrome is declared below; the .NET adapter
         // supplies the current month and handles its delegated click events.
-        "monthcalendar" => "div;border:1px solid #c8c8c8;background-color:#ffffff;overflow:hidden;min-height:160px",
+        "monthcalendar" => {
+            "div;border:1px solid #c8c8c8;background-color:#ffffff;overflow:hidden;min-height:160px"
+        }
 
         // ── Non-visual components and the dialogs ──────────────────────────
         // A Timer, ToolTip or file dialog is a member of the form, not a box
@@ -1342,8 +1519,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         //
         // An ImageList holds `<img>` children that are never shown, which is
         // what a hidden container IS.
-        "imagelist" | "tooltip" | "notifyicon" | "errorprovider" | "helpprovider"
-        | "backgroundworker" => "div;display:none",
+        "imagelist" | "tooltip" | "notifyicon" | "errorprovider" | "helpprovider" => "div;display:none",
         // **The file dialogs ARE `<input type=file>`.** A web page opens a file
         // chooser by clicking a hidden file input — that is not a polyfill, it
         // is how the platform exposes the OS chooser, and `ShowDialog` is that
@@ -1472,7 +1648,10 @@ fn winforms_control_css(class_name: &str) -> &'static str {
         "groupbox" => ";border:1px solid #bdbdbd;padding:8px 6px 6px;min-width:0",
         "panel" | "flowlayoutpanel" | "tablelayoutpanel" | "splitcontainer" | "tabcontrol"
         | "tabpage" => ";background-color:#f0f0f0",
-        "datagridview" | "datagrid" | "listview" | "propertygrid" | "treeview" => {
+        "datagridview" | "datagrid" => {
+            ";overflow:auto;overflow-anchor:none;background-color:#fff;color:inherit"
+        }
+        "listview" | "propertygrid" | "treeview" => {
             ";overflow:auto;background-color:#fff;color:inherit"
         }
         "menustrip" | "toolstrip" => {
@@ -1536,8 +1715,11 @@ macro_rules! toolstrip_button {
     };
 }
 
+pub(crate) const TREE_NODE_MARKUP: &str = "<details><summary></summary></details>";
+
 fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
     Some(match class_name.to_ascii_lowercase().as_str() {
+        "treenode" => TREE_NODE_MARKUP,
         "toolstripmenuitem" | "toolstripdropdownitem" => concat!(
             "<summary style='display:inline-flex;align-items:center;min-height:22px;",
             "padding:0 7px;list-style:none;white-space:nowrap'></summary>",
@@ -1548,10 +1730,8 @@ fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
         "radiobutton" => "<input type='radio' style='margin:0;flex:none'><span></span>",
         "groupbox" => "<legend style='padding:0 3px'></legend>",
         "datagridview" | "datagrid" => concat!(
-            "<thead style='background:#f0f0f0'><tr>",
-            "<th scope='col' style='width:24px;height:23px;box-sizing:border-box;",
-            "border:1px solid #c8c8c8;padding:0'></th>",
-            "</tr></thead><tbody></tbody>"
+            "<table style='width:100%;table-layout:fixed;border-collapse:collapse;background:#fff'>",
+            "<thead style='background:#f0f0f0'><tr></tr></thead><tbody></tbody></table>"
         ),
         "listview" => "<thead style='background:#f0f0f0'><tr></tr></thead><tbody></tbody>",
         // The standard items, in WinForms' order: move-first, move-previous,
@@ -1608,13 +1788,17 @@ fn month_calendar_markup() -> String {
         "<button type='button' class='vybe-cal-next' data-action='next' style='width:24px;height:20px;border:0;background:transparent'>&#8250;</button>",
         "</div>",
         "<div class='vybe-cal-weekdays' style='display:grid;grid-template-columns:repeat(7,1fr);text-align:center;font-size:10px;height:16px'>",
-        "<span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span></div>",
-        "<div class='vybe-cal-days' style='display:grid;grid-template-columns:repeat(7,1fr);grid-template-rows:repeat(6,1fr);height:calc(100% - 38px)'>"
+        "<span class='vybe-cal-weeknum-head' style='display:none'>Wk</span>",
+        "<span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>",
+        "<div class='vybe-cal-days' style='display:grid;grid-template-columns:repeat(7,1fr);grid-template-rows:repeat(6,1fr);height:calc(100% - 56px)'>"
     ));
-    for _ in 0..42 {
-        html.push_str("<button type='button' class='vybe-cal-day' style='border:0;background:transparent;padding:0;font-size:11px;min-width:0'></button>");
+    for _ in 0..6 {
+        html.push_str("<span class='vybe-cal-weeknum' style='display:none;text-align:center;font-size:10px;color:#666'></span>");
+        for _ in 0..7 {
+            html.push_str("<button type='button' class='vybe-cal-day' style='border:0;background:transparent;padding:0;font-size:11px;min-width:0'></button>");
+        }
     }
-    html.push_str("</div>");
+    html.push_str("</div><div class='vybe-cal-today' style='height:18px;font-size:10px;padding-left:4px'></div>");
     html
 }
 
@@ -1728,6 +1912,42 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
     let rw = |g: &str, s: &str| namespaces::property(Some(emit(g)), Some(emit(s)));
     let ro = |g: &str| namespaces::property(Some(emit(g)), None);
     let entries: &[(&str, NamespaceNode)] = &match class_name.to_ascii_lowercase().as_str() {
+        "timer" => vec![
+            (
+                "Tick",
+                namespaces::property(
+                    None,
+                    Some(emit(&format!("{}ontick", vybe_compiler::primitives::gui::PROP_SET_EMIT))),
+                ),
+            ),
+            (
+                "Enabled",
+                rw("dotnet.component_field_get.enabled", "dotnet.winforms_timer_enabled_set"),
+            ),
+            (
+                "Interval",
+                rw("dotnet.component_field_get.interval", "dotnet.winforms_timer_interval_set"),
+            ),
+        ],
+        "backgroundworker" => vec![
+            ("IsBusy", ro("dotnet.component_field_get.isbusy")),
+            ("CancellationPending", ro("dotnet.component_field_get.cancellationpending")),
+            ("WorkerReportsProgress", rw("dotnet.component_field_get.workerreportsprogress", "dotnet.component_field_set.workerreportsprogress")),
+            ("WorkerSupportsCancellation", rw("dotnet.component_field_get.workersupportscancellation", "dotnet.component_field_set.workersupportscancellation")),
+        ],
+        "tooltip" => vec![
+            (
+                "Active",
+                rw("dotnet.component_field_get.active", "dotnet.tooltip_active_set"),
+            ),
+            (
+                "AutomaticDelay",
+                rw(
+                    "dotnet.component_field_get.automaticdelay",
+                    "dotnet.tooltip_automatic_delay_set",
+                ),
+            ),
+        ],
         "tablelayoutpanel" => vec![
             ("ColumnStyles", ro("dotnet.table_column_styles")),
             ("RowStyles", ro("dotnet.table_row_styles")),
@@ -1910,6 +2130,18 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             vec![
                 ("Columns", ro("dotnet.self")),
                 ("Rows", ro("dotnet.self")),
+                ("CurrentRow", ro("dotnet.datagrid_current_row")),
+                ("CurrentCell", ro("dotnet.datagrid_current_cell")),
+                ("SelectedRows", ro("dotnet.datagrid_selected_rows")),
+                ("SelectedCells", ro("dotnet.datagrid_selected_cells")),
+                (
+                    "ColumnCount",
+                    rw("dotnet.datagrid_columns_count", "gui.prop_set.columncount"),
+                ),
+                (
+                    "RowCount",
+                    rw("dotnet.datagrid_rows_count", "gui.prop_set.rowcount"),
+                ),
                 (
                     "DataSource",
                     rw("dotnet.datagrid_source_get", "dotnet.datagrid_source_set"),
@@ -1920,25 +2152,45 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         // nothing and are never constructed — they exist so that `Add` has
         // somewhere to be found, and so that it can be a DIFFERENT `Add` on
         // each. Arity counts the receiver.
-        "datagridviewcolumncollection" => vec![(
-            "Add",
-            namespaces::overloads(vec![
-                (2, emit("dotnet.datagrid_add_column")),
-                (3, emit("dotnet.datagrid_add_column")),
-            ]),
-        )],
+        "datagridviewcolumncollection" => vec![
+            (
+                "Add",
+                namespaces::overloads(vec![
+                    (2, emit("dotnet.datagrid_add_column")),
+                    (3, emit("dotnet.datagrid_add_column")),
+                ]),
+            ),
+            ("Count", ro("dotnet.datagrid_columns_count")),
+        ],
         // Registered per arity because `Rows.Add(…)` is variadic and bytecode
         // has no variadic shape: each count is its own overload, and the emit
         // reads `argc` to know how many cells to build. Eight is a stated
         // ceiling — beyond it the call is not found, which is the loud answer.
-        "datagridviewrowcollection" => vec![(
-            "Add",
-            namespaces::overloads(
-                (1..=9)
-                    .map(|argc| (argc, emit("dotnet.datagrid_add_row")))
-                    .collect(),
+        "datagridviewrowcollection" => vec![
+            (
+                "Add",
+                namespaces::overloads(
+                    (1..=9)
+                        .map(|argc| (argc, emit("dotnet.datagrid_add_row")))
+                        .collect(),
+                ),
             ),
-        )],
+            ("Count", ro("dotnet.datagrid_rows_count")),
+        ],
+        "datagridviewrow" => vec![
+            ("Index", ro("dotnet.datagrid_row_index")),
+            ("Cells", ro("dotnet.datagrid_row_cells")),
+            ("DataBoundItem", ro("dotnet.datagrid_bound_item")),
+        ],
+        "datagridviewcell" => vec![
+            ("Value", ro("dotnet.datagrid_cell_value")),
+            ("ColumnIndex", ro("dotnet.datagrid_column_index")),
+        ],
+        "datagridviewcellcollection"
+        | "datagridviewselectedrowcollection"
+        | "datagridviewselectedcellcollection" => {
+            vec![("Count", ro("dotnet.datagrid_selection_count"))]
+        }
         "listbox" | "combobox" => vec![("Items", ro("dotnet.self"))],
         "checkedlistbox" => vec![
             ("Items", ro("dotnet.self")),
@@ -1999,8 +2251,29 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
                 rw("dotnet.numeric_step_get", "dotnet.numeric_step_set"),
             ),
         ],
-        "treeview" => vec![("Nodes", ro("dotnet.self"))],
-        "listview" => vec![("Columns", ro("dotnet.self")), ("Items", ro("dotnet.self"))],
+        "treeview" => vec![
+            ("Nodes", ro("dotnet.self")),
+            (
+                "SelectedNode",
+                rw(
+                    "dotnet.tree_selected_node_get",
+                    "dotnet.tree_selected_node_set",
+                ),
+            ),
+        ],
+        "treenode" => vec![
+            (
+                "Text",
+                rw("dotnet.tree_node_text_get", "dotnet.tree_node_text_set"),
+            ),
+            ("Nodes", ro("dotnet.tree_node_children")),
+            ("IsExpanded", ro("dotnet.tree_node_is_expanded")),
+        ],
+        "listview" => vec![
+            ("Columns", ro("dotnet.self")),
+            ("Items", ro("dotnet.self")),
+            ("SelectedItems", ro("dotnet.listview_selected_items_get")),
+        ],
         "tabcontrol" => vec![("TabPages", ro("dotnet.self"))],
         "tabpage" => vec![(
             "Text",
@@ -2042,10 +2315,14 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         "listboxobjectcollection" => vec![
             ("Count", ro("dotnet.select_items_count")),
             (
+                "Item",
+                namespaces::overloads(vec![(2, emit(vybe_compiler::primitives::gui::ITEM_TEXT_EMIT))]),
+            ),
+            (
                 "Add",
                 namespaces::overloads(vec![(
                     2,
-                    emit(vybe_compiler::primitives::gui::APPEND_ITEM_EMIT),
+                    emit("dotnet.select_items_add"),
                 )]),
             ),
             (
@@ -2166,7 +2443,12 @@ fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static st
         "datagridview" | "datagrid" => &[
             ("Columns", "DataGridViewColumnCollection"),
             ("Rows", "DataGridViewRowCollection"),
+            ("CurrentRow", "DataGridViewRow"),
+            ("CurrentCell", "DataGridViewCell"),
+            ("SelectedRows", "DataGridViewSelectedRowCollection"),
+            ("SelectedCells", "DataGridViewSelectedCellCollection"),
         ],
+        "datagridviewrow" => &[("Cells", "DataGridViewCellCollection")],
         "listbox" | "combobox" => &[("Items", "ListBoxObjectCollection")],
         "checkedlistbox" => &[("Items", "CheckedListBoxObjectCollection")],
         "treeview" => &[("Nodes", "TreeNodeCollection")],
@@ -2447,6 +2729,18 @@ mod resolve_gap_tests {
                 "{method}/{argc} did not resolve to {expected}"
             );
         }
+    }
+
+    #[test]
+    fn winforms_timer_member_types_are_registered() {
+        assert_eq!(
+            super::instance_member_return_type("System.Windows.Forms.Timer", "Enabled").as_deref(),
+            Some("Boolean")
+        );
+        assert_eq!(
+            super::instance_member_return_type("System.Windows.Forms.Timer", "Interval").as_deref(),
+            Some("Integer")
+        );
     }
 
     #[test]

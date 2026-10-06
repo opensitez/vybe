@@ -3,7 +3,15 @@
 //! Inherits from `Control` directly. Property surface is large; we list
 //! the user-facing ones (cells, columns, rows, behaviour, appearance).
 
-use super::DotnetClass;
+use super::{DotnetClass, DotnetMethod, MethodTarget};
+
+const COLLECTION_ITEM: &[DotnetMethod] = &[DotnetMethod {
+    name: "Item",
+    arity: 2,
+    target: MethodTarget::Common {
+        emit: "dotnet.datagrid_collection_item",
+    },
+}];
 
 pub fn classes() -> &'static [DotnetClass] {
     &[
@@ -119,6 +127,46 @@ pub fn classes() -> &'static [DotnetClass] {
             parent: None,
             properties: &["Count"],
             methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "DataGridViewRow",
+            parent: None,
+            properties: &["Index", "Cells", "DataBoundItem"],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "DataGridViewCell",
+            parent: None,
+            properties: &["Value", "ColumnIndex"],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "DataGridViewCellCollection",
+            parent: None,
+            properties: &["Count"],
+            methods: COLLECTION_ITEM,
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "DataGridViewSelectedRowCollection",
+            parent: None,
+            properties: &["Count"],
+            methods: COLLECTION_ITEM,
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "DataGridViewSelectedCellCollection",
+            parent: None,
+            properties: &["Count"],
+            methods: COLLECTION_ITEM,
             ctor_arity: 0,
             widget_host_fn: None,
         },

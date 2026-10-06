@@ -62,6 +62,13 @@ fn control_id(chunk: &mut Chunk, control: u16, line: u32) -> u16 {
     slot
 }
 
+fn checkable_input(chunk: &mut Chunk, control: u16, line: u32) {
+    document(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, control, line);
+    let first = chunk.add_import("web:dom", "firstChild");
+    chunk.emit_call(first, 2, line);
+}
+
 fn registry(chunk: &mut Chunk, line: u32) {
     globals::emit_read(chunk, CONTROL_BINDINGS, line);
     core_wasm::dup(chunk, line);
@@ -84,6 +91,23 @@ fn same(chunk: &mut Chunk, value: u16, literal: &str, line: u32) {
     ops::emit_dyn_eq(chunk, line);
 }
 
+fn row_member_key(chunk: &mut Chunk, row: u16, member: u16, line: u32) -> u16 {
+    let key = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, row, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, member, line);
+    vybe_compiler::primitives::reflection::emit_has_in_in_chunk(chunk, line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, member, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, member, line);
+    let lower = chunk.add_import("ecma:string", "toLowerCase");
+    chunk.emit_call(lower, 1, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, key, line);
+    key
+}
+
 fn current_row(chunks: &mut [Chunk], current: usize, source: u16, line: u32) -> u16 {
     chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
     bindingsource_adapter::emit_bindingsource_current(chunks, current, line);
@@ -104,9 +128,9 @@ fn row_value(chunk: &mut Chunk, row: u16, member: u16, line: u32) -> u16 {
     chunk.emit_op_u16(Op::LOCAL_GET, row, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, row, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, member, line);
-    let get = chunk.add_import("ecma:object", "get");
-    chunk.emit_call(get, 2, line);
+    let key = row_member_key(chunk, row, member, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    vybe_compiler::primitives::reflection::emit_get_property_in_chunk(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, value, line);
@@ -123,7 +147,7 @@ fn set_control(chunk: &mut Chunk, control: u16, property: u16, value: u16, line:
     same(chunk, property, "Checked", line);
     chunk.emit_if(line);
     document(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, control, line);
+    checkable_input(chunk, control, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
     let boolean = chunk.add_import("ecma:boolean", "toBoolean");
     chunk.emit_call(boolean, 1, line);
@@ -186,6 +210,11 @@ fn set_control(chunk: &mut Chunk, control: u16, property: u16, value: u16, line:
 
 /// Re-read the current row into every control bound to a BindingSource.
 pub fn refresh(chunks: &mut [Chunk], current: usize, source: u16, line: u32) {
+    refresh_controls(chunks, current, source, line);
+    super::datagrid_binding_adapter::refresh_source_grids(chunks, current, source, line);
+}
+
+pub(super) fn refresh_controls(chunks: &mut [Chunk], current: usize, source: u16, line: u32) {
     let bindings = source_bindings(&mut chunks[current], source, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bindings, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -221,7 +250,6 @@ pub fn refresh(chunks: &mut [Chunk], current: usize, source: u16, line: u32) {
     c.emit_op_u16(Op::LOCAL_SET, index, line);
     loops::emit_loop_end(chunks, current, loop_state, line);
     chunks[current].emit_end(line);
-    super::datagrid_binding_adapter::refresh_source_grids(chunks, current, source, line);
 }
 
 fn change_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
@@ -275,13 +303,15 @@ fn change_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if(line);
     c.emit_else(line);
-    document(c, line);
-    c.emit_op_u16(Op::LOCAL_GET, control, line);
     same(c, property, "Checked", line);
     c.emit_if_value(line);
+    document(c, line);
+    checkable_input(c, control, line);
     let checked = c.add_import("web:html", "checked");
     c.emit_call(checked, 2, line);
     c.emit_else(line);
+    document(c, line);
+    c.emit_op_u16(Op::LOCAL_GET, control, line);
     let value = c.add_import("web:html", "value");
     c.emit_call(value, 2, line);
     c.emit_end(line);
@@ -290,11 +320,11 @@ fn change_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     same(c, member, "", line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line);
+    let key = row_member_key(c, row, member, line);
     c.emit_op_u16(Op::LOCAL_GET, row, line);
-    c.emit_op_u16(Op::LOCAL_GET, member, line);
+    c.emit_op_u16(Op::LOCAL_GET, key, line);
     c.emit_op_u16(Op::LOCAL_GET, value, line);
-    let set = c.add_import("ecma:object", "set");
-    c.emit_call(set, 3, line);
+    vybe_compiler::primitives::reflection::emit_set_property_in_chunk(c, line);
     c.emit_op(Op::DROP, line);
     c.emit_end(line);
     c.emit_end(line);

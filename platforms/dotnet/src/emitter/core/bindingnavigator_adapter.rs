@@ -2,7 +2,7 @@
 
 use vybe_compiler::primitives::class_slots::{Dest, ObjSource};
 use vybe_compiler::primitives::instructions::core_wasm;
-use vybe_compiler::primitives::{class_slots, globals, ops, strings};
+use vybe_compiler::primitives::{class_slots, globals, loops, ops, strings};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, opcode::heaptype::HT_EXTERN};
 
@@ -120,6 +120,61 @@ fn refresh(chunks: &mut [Chunk], current: usize, source: u16, navigator: u16, li
     c.emit_op(Op::DROP, line);
 }
 
+/// Keep navigators in sync when their source is populated or moved after binding.
+pub fn refresh_source(chunks: &mut [Chunk], current: usize, source: u16, line: u32) {
+    source_registry(&mut chunks[current], line);
+    let registry = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, registry, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, registry, line);
+    let keys_fn = chunks[current].add_import("ecma:object", "keys");
+    chunks[current].emit_call(keys_fn, 1, line);
+    let keys = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    let count = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count, line);
+    let index = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    let loop_state = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    let c = &mut chunks[current];
+    c.emit_op_u16(Op::LOCAL_GET, keys, line);
+    c.emit_op_u16(Op::LOCAL_GET, index, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    let id = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, id, line);
+    c.emit_op_u16(Op::LOCAL_GET, registry, line);
+    c.emit_op_u16(Op::LOCAL_GET, id, line);
+    let get = c.add_import("ecma:object", "get");
+    c.emit_call(get, 2, line);
+    c.emit_op_u16(Op::LOCAL_GET, source, line);
+    ops::emit_dyn_eq(c, line);
+    c.emit_if(line);
+    document(c, line);
+    c.emit_op_u16(Op::LOCAL_GET, id, line);
+    let get_element = c.add_import("web:dom", "getElementById");
+    c.emit_call(get_element, 2, line);
+    let navigator = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, navigator, line);
+    c.emit_op_u16(Op::LOCAL_GET, navigator, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    refresh(chunks, current, source, navigator, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    loops::emit_loop_end(chunks, current, loop_state, line);
+}
+
 fn callback(chunks: &mut Vec<Chunk>, mode: Move, line: u32) -> usize {
     let mut function = vybe_compiler::primitives::functions::create_function_chunk(
         "__dotnet_bindingnavigator_click",
@@ -148,7 +203,6 @@ fn callback(chunks: &mut Vec<Chunk>, mode: Move, line: u32) -> usize {
     body[0].emit_op_u16(Op::LOCAL_GET, source, line);
     bindingsource_adapter::emit_bindingsource_move(&mut body, 0, mode, line);
     body[0].emit_op(Op::DROP, line);
-    refresh(&mut body, 0, source, navigator, line);
     body[0].emit_end(line);
     body[0].emit_ref_null(HT_EXTERN, line);
     body[0].emit_op(Op::RETURN, line);

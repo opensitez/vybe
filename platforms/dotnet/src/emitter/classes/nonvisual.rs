@@ -5,7 +5,62 @@
 //! have no UI. They get their own `__set_<prop>` chain even though they
 //! never render — user code still does `bs.DataSource = ...`.
 
-use super::DotnetClass;
+use super::{DotnetClass, DotnetMethod, MethodTarget};
+
+const TOOLTIP_METHODS: &[DotnetMethod] = &[
+    DotnetMethod {
+        name: "SetToolTip",
+        arity: 3,
+        target: MethodTarget::Common {
+            emit: "dotnet.tooltip_set",
+        },
+    },
+    DotnetMethod {
+        name: "GetToolTip",
+        arity: 2,
+        target: MethodTarget::Common {
+            emit: "dotnet.tooltip_get",
+        },
+    },
+    DotnetMethod {
+        name: "RemoveAll",
+        arity: 1,
+        target: MethodTarget::Common {
+            emit: "dotnet.tooltip_remove_all",
+        },
+    },
+];
+
+const HELP_PROVIDER_METHODS: &[DotnetMethod] = &[
+    DotnetMethod { name: "SetHelpString", arity: 3, target: MethodTarget::Common { emit: "dotnet.help_set.string" } },
+    DotnetMethod { name: "GetHelpString", arity: 2, target: MethodTarget::Common { emit: "dotnet.help_get.string" } },
+    DotnetMethod { name: "SetHelpKeyword", arity: 3, target: MethodTarget::Common { emit: "dotnet.help_set.keyword" } },
+    DotnetMethod { name: "GetHelpKeyword", arity: 2, target: MethodTarget::Common { emit: "dotnet.help_get.keyword" } },
+    DotnetMethod { name: "SetHelpNavigator", arity: 3, target: MethodTarget::Common { emit: "dotnet.help_set.navigator" } },
+    DotnetMethod { name: "GetHelpNavigator", arity: 2, target: MethodTarget::Common { emit: "dotnet.help_get.navigator" } },
+    DotnetMethod { name: "SetShowHelp", arity: 3, target: MethodTarget::Common { emit: "dotnet.help_set.show" } },
+    DotnetMethod { name: "GetShowHelp", arity: 2, target: MethodTarget::Common { emit: "dotnet.help_get.show" } },
+];
+
+const ERROR_PROVIDER_METHODS: &[DotnetMethod] = &[
+    DotnetMethod { name: "SetError", arity: 3, target: MethodTarget::Common { emit: "dotnet.error_provider_set" } },
+    DotnetMethod { name: "GetError", arity: 2, target: MethodTarget::Common { emit: "dotnet.error_provider_get" } },
+    DotnetMethod { name: "Clear", arity: 1, target: MethodTarget::Common { emit: "dotnet.error_provider_clear" } },
+];
+
+const WINFORMS_TIMER_METHODS: &[DotnetMethod] = &[
+    DotnetMethod { name: "Start", arity: 1, target: MethodTarget::Common { emit: "dotnet.winforms_timer_start" } },
+    DotnetMethod { name: "Stop", arity: 1, target: MethodTarget::Common { emit: "dotnet.winforms_timer_stop" } },
+    DotnetMethod { name: "Dispose", arity: 1, target: MethodTarget::Common { emit: "dotnet.winforms_timer_stop" } },
+];
+
+const BACKGROUND_WORKER_METHODS: &[DotnetMethod] = &[
+    DotnetMethod { name: "RunWorkerAsync", arity: 1, target: MethodTarget::Common { emit: "dotnet.background_worker_run" } },
+    DotnetMethod { name: "RunWorkerAsync", arity: 2, target: MethodTarget::Common { emit: "dotnet.background_worker_run" } },
+    DotnetMethod { name: "CancelAsync", arity: 1, target: MethodTarget::Common { emit: "dotnet.background_worker_cancel" } },
+    DotnetMethod { name: "ReportProgress", arity: 2, target: MethodTarget::Common { emit: "dotnet.background_worker_progress" } },
+    DotnetMethod { name: "ReportProgress", arity: 3, target: MethodTarget::Common { emit: "dotnet.background_worker_progress" } },
+];
 
 pub fn classes() -> &'static [DotnetClass] {
     &[
@@ -13,7 +68,7 @@ pub fn classes() -> &'static [DotnetClass] {
             name: "Timer",
             parent: Some("Component"),
             properties: &["Enabled", "Interval", "Tag"],
-            methods: &[],
+            methods: WINFORMS_TIMER_METHODS,
             ctor_arity: 0,
             widget_host_fn: None,
         },
@@ -65,7 +120,7 @@ pub fn classes() -> &'static [DotnetClass] {
                 "UseAnimation",
                 "UseFading",
             ],
-            methods: &[],
+            methods: TOOLTIP_METHODS,
             ctor_arity: 0,
             widget_host_fn: None,
         },
@@ -99,7 +154,7 @@ pub fn classes() -> &'static [DotnetClass] {
                 "RightToLeft",
                 "Tag",
             ],
-            methods: &[],
+            methods: ERROR_PROVIDER_METHODS,
             ctor_arity: 0,
             widget_host_fn: None,
         },
@@ -107,7 +162,7 @@ pub fn classes() -> &'static [DotnetClass] {
             name: "HelpProvider",
             parent: Some("Component"),
             properties: &["HelpNamespace", "Tag"],
-            methods: &[],
+            methods: HELP_PROVIDER_METHODS,
             ctor_arity: 0,
             widget_host_fn: None,
         },
@@ -120,7 +175,7 @@ pub fn classes() -> &'static [DotnetClass] {
                 "WorkerReportsProgress",
                 "WorkerSupportsCancellation",
             ],
-            methods: &[],
+            methods: BACKGROUND_WORKER_METHODS,
             ctor_arity: 0,
             widget_host_fn: None,
         },

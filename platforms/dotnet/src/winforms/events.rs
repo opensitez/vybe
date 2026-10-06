@@ -162,12 +162,19 @@ impl EventType {
         "ValueChanged",
         "Scroll",
         "LinkClicked",
+        "NodeMouseClick",
+        "AfterSelect",
+        "Tick",
     ];
 
     pub fn dom_event_for_control(&self, control: &str) -> Option<&'static str> {
         let control = control.to_ascii_lowercase();
         match self {
+            EventType::Tick if control == "timer" => Some("tick"),
             EventType::Click | EventType::MouseClick => Some("click"),
+            EventType::NodeMouseClick | EventType::AfterSelect if control == "treeview" => {
+                Some("click")
+            }
             EventType::LinkClicked if control == "linklabel" => Some("click"),
             EventType::DoubleClick | EventType::DblClick | EventType::MouseDoubleClick => {
                 Some("dblclick")

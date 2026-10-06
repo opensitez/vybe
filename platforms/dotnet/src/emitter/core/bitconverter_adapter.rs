@@ -36,8 +36,10 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     host::emit(chunk, "wasm:js-boolean", "test", 1, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    // Outer wasm Boolean test proves this is a Boolean value, not a Number.
+    host::emit(chunk, "wasm:js-boolean", "cast", 1, line);
     chunk.emit_if_value(line);
     chunk.emit_i32_const(1, line);
     chunk.emit_else(line);
@@ -47,7 +49,7 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     host::emit(chunk, "wasm:js-string", "test", 1, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_i32_const(0, line);
     host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
@@ -143,7 +145,7 @@ fn emit_bytes_of_width(
     line: u32,
 ) {
     use vybe_compiler::primitives::packing::{
-        Endian, emit_store_u32_to_array_from_number_slot,
+        Endian, emit_store_u32_to_array_from_f64_slot,
         emit_store_u64_parts_to_array_from_number_slots,
     };
     for _ in 0..width {
@@ -196,7 +198,7 @@ fn emit_bytes_of_width(
             line,
         );
     } else {
-        emit_store_u32_to_array_from_number_slot(
+        emit_store_u32_to_array_from_f64_slot(
             chunks,
             current,
             array_slot,

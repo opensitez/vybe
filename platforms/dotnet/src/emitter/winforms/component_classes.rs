@@ -100,6 +100,7 @@ pub(crate) fn common_ctor_for(class: &str) -> Option<&'static str> {
         "Pen" => Some("dotnet.pen_new"),
         "SolidBrush" => Some("dotnet.solid_brush_new"),
         "Graphics" => Some("dotnet.graphics_new"),
+        "BackgroundWorker" => Some("dotnet.background_worker_new"),
         "HatchBrush" => Some("dotnet.hatch_brush_new"),
         "LinearGradientBrush" => Some("dotnet.linear_gradient_brush_new"),
         _ => None,
@@ -117,6 +118,7 @@ fn class_to_export(class: &DotnetClass) -> DotnetClassExport {
 fn dotnet_interface_for_class(class: &DotnetClass) -> &'static str {
     match class.name {
         "Object" | "MarshalByRefObject" | "Component" => "dotnet.System",
+        "BackgroundWorker" => "dotnet.System.ComponentModel",
         _ if matches!(
             class.name,
             "Graphics"

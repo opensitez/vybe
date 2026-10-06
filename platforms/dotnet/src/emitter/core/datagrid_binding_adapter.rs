@@ -27,7 +27,7 @@ fn get(chunk: &mut Chunk, object: u16, property: &str, line: u32) -> u16 {
     slot
 }
 
-fn is_binding_source(chunk: &mut Chunk, source: u16, line: u32) {
+pub(super) fn is_binding_source(chunk: &mut Chunk, source: u16, line: u32) {
     let ty = get(chunk, source, "__type", line);
     chunk.emit_op_u16(Op::LOCAL_GET, ty, line);
     chunk.emit_string_const("BindingSource", line);
@@ -72,7 +72,57 @@ fn empty_array(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {
     slot
 }
 
-fn source_data(chunk: &mut Chunk, source: u16, line: u32) -> u16 {
+fn object_columns(chunks: &mut [Chunk], current: usize, row: u16, line: u32) -> u16 {
+    let c = &mut chunks[current];
+    c.emit_op_u16(Op::LOCAL_GET, row, line);
+    let keys = c.add_import("ecma:object", "keys");
+    c.emit_call(keys, 1, line);
+    let all = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, all, line);
+    let visible = empty_array(chunks, current, line);
+    let c = &mut chunks[current];
+    let count = array_len(c, all, line);
+    let index = c.alloc_scratch(1);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, index, line);
+    let loop_state = loops::emit_loop_start(chunks, current, line);
+    let c = &mut chunks[current];
+    c.emit_op_u16(Op::LOCAL_GET, index, line);
+    c.emit_op_u16(Op::LOCAL_GET, count, line);
+    c.emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    let c = &mut chunks[current];
+    let key = array_item(c, all, index, line);
+    c.emit_op_u16(Op::LOCAL_GET, key, line);
+    c.emit_string_const("__", line);
+    let starts_with = c.add_import("ecma:string", "startsWith");
+    c.emit_call(starts_with, 2, line);
+    ops::emit_dyn_to_bool(c, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    c.emit_op_u16(Op::LOCAL_GET, row, line);
+    c.emit_op_u16(Op::LOCAL_GET, key, line);
+    let get = c.add_import("ecma:object", "get");
+    c.emit_call(get, 2, line);
+    let typeof_fn = c.add_import("ecma:value", "typeof");
+    c.emit_call(typeof_fn, 1, line);
+    c.emit_string_const("function", line);
+    ops::emit_dyn_eq(c, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    c.emit_op_u16(Op::LOCAL_GET, visible, line);
+    c.emit_op_u16(Op::LOCAL_GET, key, line);
+    let push = c.add_import("ecma:array", "push");
+    c.emit_call(push, 2, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_end(line);
+    c.emit_end(line);
+    next(c, index, line);
+    loops::emit_loop_end(chunks, current, loop_state, line);
+    visible
+}
+
+pub(super) fn source_data(chunk: &mut Chunk, source: u16, line: u32) -> u16 {
     is_binding_source(chunk, source, line);
     let data = chunk.alloc_scratch(1);
     chunk.emit_if(line);
@@ -92,7 +142,12 @@ fn source_data(chunk: &mut Chunk, source: u16, line: u32) -> u16 {
     data
 }
 
-fn data_arrays(chunks: &mut [Chunk], current: usize, data: u16, line: u32) -> (u16, u16) {
+pub(super) fn data_arrays(
+    chunks: &mut [Chunk],
+    current: usize,
+    data: u16,
+    line: u32,
+) -> (u16, u16) {
     let rows = chunks[current].alloc_scratch(1);
     let columns = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
@@ -127,8 +182,10 @@ fn data_arrays(chunks: &mut [Chunk], current: usize, data: u16, line: u32) -> (u
     chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
-    let keys = chunks[current].add_import("ecma:object", "keys");
-    chunks[current].emit_call(keys, 1, line);
+    let first = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first, line);
+    let visible = object_columns(chunks, current, first, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, visible, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, columns, line);
     chunks[current].emit_else(line);
     let empty = empty_array(chunks, current, line);
@@ -197,25 +254,173 @@ fn next(chunk: &mut Chunk, index: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, index, line);
 }
 
+fn attribute(chunk: &mut Chunk, node: u16, name: &str, line: u32) -> u16 {
+    let slot = chunk.alloc_scratch(1);
+    document(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, node, line);
+    chunk.emit_string_const(name, line);
+    let get = chunk.add_import("web:dom", "getAttribute");
+    chunk.emit_call(get, 3, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    slot
+}
+
+fn push(chunk: &mut Chunk, array: u16, value: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, array, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    let push = chunk.add_import("ecma:array", "push");
+    chunk.emit_call(push, 2, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn case_insensitive_eq(chunk: &mut Chunk, left: u16, right: u16, line: u32) {
+    let lower = chunk.add_import("ecma:string", "toLowerCase");
+    chunk.emit_op_u16(Op::LOCAL_GET, left, line);
+    chunk.emit_call(lower, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right, line);
+    chunk.emit_call(lower, 1, line);
+    ops::emit_dyn_eq(chunk, line);
+}
+
 /// Render a DataTable or an array of objects into a DataGridView table.
 pub fn render(chunks: &mut [Chunk], current: usize, grid: u16, source: u16, line: u32) {
+    let table = chunks[current].alloc_scratch(1);
     let head = chunks[current].alloc_scratch(1);
     let head_row = chunks[current].alloc_scratch(1);
     let body = chunks[current].alloc_scratch(1);
-    datagrid_adapter::child_into(chunks, current, grid, head, true, line);
+    datagrid_adapter::table_into(chunks, current, grid, table, line);
+    datagrid_adapter::child_into(chunks, current, table, head, true, line);
     datagrid_adapter::child_into(chunks, current, head, head_row, true, line);
-    datagrid_adapter::child_into(chunks, current, grid, body, false, line);
+    datagrid_adapter::child_into(chunks, current, table, body, false, line);
+    document(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, head_row, line);
+    let children = chunks[current].add_import("web:dom", "children");
+    chunks[current].emit_call(children, 2, line);
+    let header_children = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, header_children, line);
+    let manual = empty_array(chunks, current, line);
+    let header_count = array_len(&mut chunks[current], header_children, line);
+    let header_index = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, header_index, line);
+    let header_loop = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, header_index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, header_count, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    let existing_header = array_item(&mut chunks[current], header_children, header_index, line);
+    let existing_key = attribute(&mut chunks[current], existing_header, "data-grid-manual-key", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, existing_key, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    push(&mut chunks[current], manual, existing_header, line);
+    chunks[current].emit_end(line);
+    next(&mut chunks[current], header_index, line);
+    loops::emit_loop_end(chunks, current, header_loop, line);
+    let data = source_data(&mut chunks[current], source, line);
+    let (rows, source_columns) = data_arrays(chunks, current, data, line);
+    let columns = empty_array(chunks, current, line);
+    let headers = empty_array(chunks, current, line);
+    let source_count = array_len(&mut chunks[current], source_columns, line);
+    let manual_count = array_len(&mut chunks[current], manual, line);
+    let manual_index = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, manual_index, line);
+    let manual_loop = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, manual_index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, manual_count, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    let manual_header = array_item(&mut chunks[current], manual, manual_index, line);
+    let manual_key = attribute(&mut chunks[current], manual_header, "data-grid-manual-key", line);
+    let bound_key = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, manual_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bound_key, line);
+    let match_index = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, match_index, line);
+    let match_loop = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, match_index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_count, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    let source_key = array_item(&mut chunks[current], source_columns, match_index, line);
+    case_insensitive_eq(&mut chunks[current], manual_key, source_key, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bound_key, line);
+    chunks[current].emit_end(line);
+    next(&mut chunks[current], match_index, line);
+    loops::emit_loop_end(chunks, current, match_loop, line);
+    push(&mut chunks[current], columns, bound_key, line);
+    push(&mut chunks[current], headers, manual_header, line);
+    next(&mut chunks[current], manual_index, line);
+    loops::emit_loop_end(chunks, current, manual_loop, line);
+
+    let auto = get(&mut chunks[current], grid, "autogeneratecolumns", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, auto, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    let source_index = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, source_index, line);
+    let source_loop = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_count, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    let source_key = array_item(&mut chunks[current], source_columns, source_index, line);
+    let found = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, manual_index, line);
+    let match_loop = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, manual_index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, manual_count, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    let key = array_item(&mut chunks[current], columns, manual_index, line);
+    case_insensitive_eq(&mut chunks[current], key, source_key, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found, line);
+    chunks[current].emit_end(line);
+    next(&mut chunks[current], manual_index, line);
+    loops::emit_loop_end(chunks, current, match_loop, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    let generated = chunks[current].alloc_scratch(1);
+    datagrid_adapter::create_into(chunks, current, generated, "th", line);
+    datagrid_adapter::set_text(chunks, current, generated, source_key, line);
+    datagrid_adapter::style_cell(chunks, current, generated, line);
+    push(&mut chunks[current], columns, source_key, line);
+    push(&mut chunks[current], headers, generated, line);
+    chunks[current].emit_end(line);
+    next(&mut chunks[current], source_index, line);
+    loops::emit_loop_end(chunks, current, source_loop, line);
+    chunks[current].emit_end(line);
+
     clear_node(&mut chunks[current], head_row, line);
     clear_node(&mut chunks[current], body, line);
-    let data = source_data(&mut chunks[current], source, line);
-    let (rows, columns) = data_arrays(chunks, current, data, line);
     let column_count = array_len(&mut chunks[current], columns, line);
     let row_count = array_len(&mut chunks[current], rows, line);
 
     let cell = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, column_count, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
     datagrid_adapter::create_into(chunks, current, cell, "th", line);
     datagrid_adapter::style_cell(chunks, current, cell, line);
+    datagrid_adapter::set_cell_width(chunks, current, cell, "24px", line);
+    super::datagrid_properties_adapter::style_new_row_header(
+        &mut chunks[current], grid, cell, line,
+    );
     datagrid_adapter::append(chunks, current, head_row, cell, line);
+    chunks[current].emit_end(line);
 
     let column_index = chunks[current].alloc_scratch(1);
     chunks[current].emit_i32_const(0, line);
@@ -225,10 +430,9 @@ pub fn render(chunks: &mut [Chunk], current: usize, grid: u16, source: u16, line
     chunks[current].emit_op_u16(Op::LOCAL_GET, column_count, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
     loops::emit_loop_cond(chunks, current, line);
-    let column = array_item(&mut chunks[current], columns, column_index, line);
-    datagrid_adapter::create_into(chunks, current, cell, "th", line);
-    datagrid_adapter::set_text(chunks, current, cell, column, line);
-    datagrid_adapter::style_cell(chunks, current, cell, line);
+    let header = array_item(&mut chunks[current], headers, column_index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, header, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cell, line);
     datagrid_adapter::append(chunks, current, head_row, cell, line);
     next(&mut chunks[current], column_index, line);
     loops::emit_loop_end(chunks, current, column_loop, line);
@@ -244,8 +448,13 @@ pub fn render(chunks: &mut [Chunk], current: usize, grid: u16, source: u16, line
     loops::emit_loop_cond(chunks, current, line);
     let row = array_item(&mut chunks[current], rows, row_index, line);
     datagrid_adapter::create_into(chunks, current, tr, "tr", line);
+    super::datagrid_selection_adapter::set_row_index(&mut chunks[current], tr, row_index, line);
     datagrid_adapter::create_into(chunks, current, cell, "th", line);
     datagrid_adapter::style_cell(chunks, current, cell, line);
+    datagrid_adapter::set_cell_width(chunks, current, cell, "24px", line);
+    super::datagrid_properties_adapter::style_new_row_header(
+        &mut chunks[current], grid, cell, line,
+    );
     datagrid_adapter::append(chunks, current, tr, cell, line);
 
     chunks[current].emit_i32_const(0, line);
@@ -272,6 +481,13 @@ pub fn render(chunks: &mut [Chunk], current: usize, grid: u16, source: u16, line
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
     datagrid_adapter::create_into(chunks, current, cell, "td", line);
+    super::datagrid_selection_adapter::set_column_index(
+        &mut chunks[current],
+        cell,
+        column_index,
+        line,
+    );
+    super::datagrid_selection_adapter::set_column_key(&mut chunks[current], cell, column, line);
     datagrid_adapter::set_text(chunks, current, cell, value, line);
     datagrid_adapter::style_cell(chunks, current, cell, line);
     datagrid_adapter::append(chunks, current, tr, cell, line);
@@ -280,10 +496,11 @@ pub fn render(chunks: &mut [Chunk], current: usize, grid: u16, source: u16, line
     datagrid_adapter::append(chunks, current, body, tr, line);
     next(&mut chunks[current], row_index, line);
     loops::emit_loop_end(chunks, current, row_loop, line);
+    super::datagrid_selection_adapter::select_at_position(&mut chunks[current], grid, source, line);
 }
 
 /// Stack: [grid, source] -> [null].
-pub fn set_source(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn set_source(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let c = &mut chunks[current];
     let source = c.alloc_scratch(1);
     c.emit_op_u16(Op::LOCAL_SET, source, line);
@@ -314,6 +531,7 @@ pub fn set_source(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_call(push, 2, line);
     c.emit_op(Op::DROP, line);
     c.emit_end(line);
+    super::datagrid_selection_adapter::register(chunks, current, grid, line);
     render(chunks, current, grid, source, line);
     chunks[current].emit_ref_null(HT_EXTERN, line);
 }
@@ -361,6 +579,33 @@ pub fn refresh_source_grids(chunks: &mut [Chunk], current: usize, source: u16, l
     chunks[current].emit_if(line);
     render(chunks, current, grid, source, line);
     chunks[current].emit_end(line);
+    next(&mut chunks[current], index, line);
+    loops::emit_loop_end(chunks, current, loop_state, line);
+}
+
+pub fn refresh_source_selection(chunks: &mut [Chunk], current: usize, source: u16, line: u32) {
+    let c = &mut chunks[current];
+    c.emit_op_u16(Op::LOCAL_GET, source, line);
+    class_slots::emit_class_get(
+        c,
+        ObjSource::Stack,
+        &field_slot("__grids"),
+        Dest::Stack,
+        line,
+    );
+    let grids = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, grids, line);
+    let count = array_len(c, grids, line);
+    let index = c.alloc_scratch(1);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, index, line);
+    let loop_state = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    let grid = array_item(&mut chunks[current], grids, index, line);
+    super::datagrid_selection_adapter::select_at_position(&mut chunks[current], grid, source, line);
     next(&mut chunks[current], index, line);
     loops::emit_loop_end(chunks, current, loop_state, line);
 }
