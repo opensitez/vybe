@@ -28,7 +28,7 @@ fn call_import_result(module: &str, name: &str, args: Vec<Value>) -> Result<Valu
                 );
                 vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
-                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
             }
         }
     }
@@ -141,7 +141,7 @@ fn call_on(vm: &mut VM, module: &str, name: &str, args: Vec<Value>) -> Value {
                 );
                 vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
-                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
             }
         }
     }
@@ -860,6 +860,55 @@ fn tcp_send_and_receive_move_bytes_between_two_sockets() {
         panic!("receive must answer a tuple");
     };
     assert_eq!(parts.len(), 2, "the stream AND the completion future");
+}
+
+#[test]
+fn tcp_receive_preserves_binary_bytes_in_stream() {
+    use std::io::Write;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let payload: Vec<u8> = (0..16_384).map(|index| index as u8).collect();
+    let sent = payload.clone();
+    let sender = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.write_all(&sent).unwrap();
+    });
+
+    let mut vm = socket_vm();
+    let client = create_tcp(&mut vm);
+    assert_ok(
+        &call_on(
+            &mut vm,
+            "wasi:sockets/types",
+            "[method]tcp-socket.connect",
+            vec![client.clone(), ipv4_loopback(port)],
+        ),
+        "connect",
+    );
+    sender.join().unwrap();
+
+    let mut chunk = Chunk::new("<socket-binary-stream-drain>");
+    let receive = chunk.add_import("wasi:sockets/types", "[method]tcp-socket.receive");
+    let at = chunk.add_import("ecma:array", "at");
+    vm.set_global_owned("__socket_binary_client", client);
+    let client_name = chunk.intern_string_constant("__socket_binary_client");
+    chunk.emit_op_u32(Op::GLOBAL_GET, client_name, 0);
+    chunk.emit_call(receive, 1, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_call(at, 2, 0);
+    vybe_compiler::primitives::io::emit_read_stream_to_bytes(&mut chunk, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let result = vm.run(vec![chunk]).expect("receive and canonical drain");
+    let Value::Object(bytes) = result else {
+        panic!("canonical drain must answer a byte array");
+    };
+    let bytes = bytes.lock().unwrap();
+    let ObjectKind::Array(values) = &bytes.kind else {
+        panic!("canonical drain must answer a byte array");
+    };
+    let received: Vec<u8> = values.iter().map(|value| value.as_i32() as u8).collect();
+    assert_eq!(received, payload);
 }
 
 /// The backlog is taken at `listen(2)`, not by a socket option, so it is

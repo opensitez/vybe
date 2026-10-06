@@ -32,7 +32,7 @@ fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {
                 );
                 vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
-                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
             }
         }
     }
@@ -119,6 +119,85 @@ fn capture_server(status_line: &str, body: &str) -> (String, Arc<Mutex<Option<St
     });
 
     (format!("{}", address), request_line)
+}
+
+#[test]
+fn client_send_preserves_binary_request_body() {
+    let expected = [0u8, 127, 128, 255, 42];
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let authority = listener.local_addr().expect("server addr").to_string();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept request");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        let header_end = loop {
+            let read = stream.read(&mut buffer).expect("read request");
+            assert!(read > 0, "request ended before headers");
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(start) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                break start + 4;
+            }
+        };
+        while request.len() < header_end + expected.len() {
+            let read = stream.read(&mut buffer).expect("read body");
+            assert!(read > 0, "request body ended early");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .expect("write response");
+        (request[..header_end].to_vec(), request[header_end..].to_vec())
+    });
+
+    let mut chunk = Chunk::new("<http-binary-request-send>");
+    let fields = chunk.add_import("wasi:http/types", "[constructor]fields");
+    let request_new = chunk.add_import("wasi:http/types", "[static]request.new");
+    let set_method = chunk.add_import("wasi:http/types", "[method]request.set-method");
+    let set_authority = chunk.add_import("wasi:http/types", "[method]request.set-authority");
+    let send = chunk.add_import("wasi:http/client", "send");
+    let push = chunk.add_import("ecma:array", "push");
+    let bytes_slot = chunk.alloc_scratch(1);
+    let request_slot = chunk.alloc_scratch(1);
+
+    chunk.emit_call(fields, 0, 0);
+    vybe_compiler::primitives::canon_marshal::emit_new_bytes(&mut chunk, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, 0);
+    for byte in expected {
+        chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, 0);
+        chunk.emit_i32_const(byte as i32, 0);
+        chunk.emit_call(push, 2, 0);
+        chunk.emit_op(Op::DROP, 0);
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, 0);
+    vybe_compiler::primitives::io::emit_bytes_to_stream(&mut chunk, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_call(request_new, 4, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, request_slot, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, request_slot, 0);
+    chunk.emit_string_const("POST", 0);
+    chunk.emit_call(set_method, 2, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, request_slot, 0);
+    chunk.emit_string_const(&authority, 0);
+    chunk.emit_call(set_authority, 2, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, request_slot, 0);
+    chunk.emit_call(send, 1, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    register_platforms(&mut vm, &Capabilities::all());
+    let response = vm.run(vec![chunk]).expect("send binary request");
+    assert!(is_error(&response).is_none(), "send failed: {response:?}");
+    let (head, body) = server.join().expect("server thread");
+    let head = String::from_utf8(head).expect("ASCII headers");
+    assert!(head.starts_with("POST / HTTP/1.1\r\n"), "{head}");
+    assert!(head.contains("Content-Length: 5\r\n"), "{head}");
+    assert_eq!(body, expected);
 }
 
 #[test]

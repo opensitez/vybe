@@ -33,7 +33,7 @@ fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {
                 );
                 vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
-                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
             }
         }
     }
@@ -208,6 +208,139 @@ fn start_server(status_line: &str, extra_headers: &[(&str, &str)], body: &str) -
     });
 
     format!("{}", address)
+}
+
+#[test]
+fn outgoing_response_preserves_binary_body() {
+    let body = vec![0, 0xff, b'\r', b'\n', 0x80, b'z'];
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let authority = listener.local_addr().expect("server addr").to_string();
+    let expected = body.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept request");
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request);
+        let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+        stream.write_all(header.as_bytes()).expect("write header");
+        stream.write_all(&body).expect("write body");
+    });
+
+    let fields = types("[constructor]fields", vec![]);
+    let request = types("[static]request.new", vec![fields]);
+    types("[method]request.set-scheme", vec![request.clone(), s("http")]);
+    types(
+        "[method]request.set-authority",
+        vec![request.clone(), s(&authority)],
+    );
+    types("[method]request.set-path-with-query", vec![request.clone(), s("/")]);
+    let response = client("send", vec![request]);
+    assert_eq!(is_error(&response), None);
+    let (_, _, received) = vybe_platform_wasi::http::take_response(&response)
+        .expect("response body should be available");
+    assert_eq!(received, expected);
+    let consumed = types("[static]response.consume-body", vec![response.clone()]);
+    assert_eq!(is_error(&consumed), None);
+    let consumed_again = types("[static]response.consume-body", vec![response]);
+    assert_eq!(is_error(&consumed_again).as_deref(), Some("invalid-argument"));
+    server.join().expect("test server");
+}
+
+#[test]
+fn content_length_response_does_not_wait_for_keep_alive_close() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let authority = listener.local_addr().expect("server addr").to_string();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept request");
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone")
+            .expect("write response");
+        let _ = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+    });
+
+    let fields = types("[constructor]fields", vec![]);
+    let request = types("[static]request.new", vec![fields]);
+    types("[method]request.set-scheme", vec![request.clone(), s("http")]);
+    types(
+        "[method]request.set-authority",
+        vec![request.clone(), s(&authority)],
+    );
+    let started = std::time::Instant::now();
+    let response = client("send", vec![request]);
+    let elapsed = started.elapsed();
+    done_tx.send(()).expect("release server");
+    server.join().expect("test server");
+    assert!(elapsed < std::time::Duration::from_secs(1), "response took {elapsed:?}");
+    assert_eq!(is_error(&response), None);
+    assert_eq!(
+        vybe_platform_wasi::http::take_response(&response).unwrap().2,
+        b"done"
+    );
+}
+
+#[test]
+fn chunked_response_decodes_binary_without_waiting_for_close() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let authority = listener.local_addr().expect("server addr").to_string();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept request");
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request);
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n\
+                  3;test=yes\r\n\x00\xffA\r\n4\r\nB\r\n\x80\r\n0\r\nX-End: yes\r\n\r\n",
+            )
+            .expect("write chunks");
+        let _ = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+    });
+
+    let fields = types("[constructor]fields", vec![]);
+    let request = types("[static]request.new", vec![fields]);
+    types("[method]request.set-scheme", vec![request.clone(), s("http")]);
+    types(
+        "[method]request.set-authority",
+        vec![request.clone(), s(&authority)],
+    );
+    let started = std::time::Instant::now();
+    let response = client("send", vec![request]);
+    let elapsed = started.elapsed();
+    done_tx.send(()).expect("release server");
+    server.join().expect("test server");
+    assert!(elapsed < std::time::Duration::from_secs(1), "response took {elapsed:?}");
+    assert_eq!(is_error(&response), None);
+    assert_eq!(
+        vybe_platform_wasi::http::take_response(&response).unwrap().2,
+        vec![0, 0xff, b'A', b'B', b'\r', b'\n', 0x80]
+    );
+}
+
+#[test]
+fn truncated_chunked_response_reports_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let authority = listener.local_addr().expect("server addr").to_string();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept request");
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nabc")
+            .expect("write truncated chunk");
+    });
+
+    let fields = types("[constructor]fields", vec![]);
+    let request = types("[static]request.new", vec![fields]);
+    types("[method]request.set-scheme", vec![request.clone(), s("http")]);
+    types(
+        "[method]request.set-authority",
+        vec![request.clone(), s(&authority)],
+    );
+    let response = client("send", vec![request]);
+    server.join().expect("test server");
+    assert_eq!(is_error(&response).as_deref(), Some("internal-error"));
 }
 
 #[test]

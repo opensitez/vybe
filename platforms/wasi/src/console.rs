@@ -2,6 +2,182 @@ use std::sync::Arc;
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
+fn read_chunks(
+    mut input: impl std::io::Read,
+    mut push: impl FnMut(Vec<u8>),
+) -> std::io::Result<()> {
+    let mut first = [0u8; 8192];
+    for _ in 0..2 {
+        loop {
+            match input.read(&mut first) {
+                Ok(0) => return Ok(()),
+                Ok(n) => {
+                    push(first[..n].to_vec());
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    let mut buffer = vec![0u8; 65536];
+    loop {
+        match input.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(n) => {
+                buffer.truncate(n);
+                push(buffer);
+                buffer = vec![0u8; 65536];
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn write_bytes(mut output: impl std::io::Write, bytes: &[u8]) -> Result<(), &'static str> {
+    output.write_all(bytes).map_err(|error| match error.kind() {
+        std::io::ErrorKind::BrokenPipe => "pipe",
+        std::io::ErrorKind::InvalidData => "illegal-byte-sequence",
+        _ => "io",
+    })
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::read_chunks;
+    use std::io::{self, Cursor, Read};
+
+    #[test]
+    fn pipe_bytes_are_chunked_without_changing_the_payload() {
+        let input: Vec<u8> = (0..131073).map(|i| (i % 251) as u8).collect();
+        let mut chunks = Vec::new();
+        read_chunks(Cursor::new(&input), |bytes| chunks.push(bytes)).unwrap();
+        assert!(chunks.len() >= 3);
+        assert!(chunks.iter().all(|chunk| chunk.len() <= 65536));
+        assert_eq!(chunks.concat(), input);
+    }
+
+    struct InterruptedThenRead<R>(bool, R);
+
+    impl<R: Read> Read for InterruptedThenRead<R> {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if !self.0 {
+                self.0 = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.1.read(bytes)
+        }
+    }
+
+    #[test]
+    fn interrupted_read_retries() {
+        let mut output = Vec::new();
+        read_chunks(InterruptedThenRead(false, Cursor::new(b"hello")), |bytes| {
+            output.extend_from_slice(&bytes)
+        })
+        .unwrap();
+        assert_eq!(output, b"hello");
+    }
+
+    #[test]
+    fn empty_and_short_input_do_not_need_bulk_chunks() {
+        let mut chunks = Vec::new();
+        read_chunks(Cursor::new([]), |bytes| chunks.push(bytes)).unwrap();
+        assert!(chunks.is_empty());
+
+        read_chunks(Cursor::new(b"hello"), |bytes| chunks.push(bytes)).unwrap();
+        assert_eq!(chunks, vec![b"hello".to_vec()]);
+    }
+
+    #[test]
+    fn error_after_initial_bytes_keeps_them() {
+        struct FirstThenError(bool);
+
+        impl Read for FirstThenError {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                if std::mem::replace(&mut self.0, true) {
+                    Err(io::ErrorKind::PermissionDenied.into())
+                } else {
+                    output[..3].copy_from_slice(b"abc");
+                    Ok(3)
+                }
+            }
+        }
+
+        let mut chunks = Vec::new();
+        let error = read_chunks(FirstThenError(false), |bytes| chunks.push(bytes)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(chunks, vec![b"abc".to_vec()]);
+    }
+
+    #[test]
+    #[ignore = "local small-stdin allocation benchmark"]
+    fn bench_small_input_against_bulk_buffer() {
+        use std::time::Instant;
+
+        for input in [b"".as_slice(), b"hello".as_slice()] {
+            for _ in 0..3 {
+                let start = Instant::now();
+                for _ in 0..100_000 {
+                    let mut chunks = Vec::new();
+                    read_chunks(Cursor::new(input), |bytes| chunks.push(bytes)).unwrap();
+                    std::hint::black_box(chunks);
+                }
+                let small = start.elapsed();
+
+                let start = Instant::now();
+                for _ in 0..100_000 {
+                    let mut source = Cursor::new(input);
+                    let mut chunks = Vec::new();
+                    loop {
+                        let mut buffer = vec![0u8; 65536];
+                        let count = source.read(&mut buffer).unwrap();
+                        if count == 0 {
+                            break;
+                        }
+                        buffer.truncate(count);
+                        chunks.push(buffer);
+                    }
+                    std::hint::black_box(chunks);
+                }
+                eprintln!("stdin {} bytes: small {small:?}, bulk {:?}", input.len(), start.elapsed());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "local stdin bulk-read allocation benchmark"]
+    fn bench_owned_chunks_against_copied_chunks() {
+        use std::time::Instant;
+
+        let input = vec![123u8; 16 * 1024 * 1024];
+        for _ in 0..3 {
+            let mut total = 0;
+            let start = Instant::now();
+            read_chunks(Cursor::new(&input), |bytes| {
+                total += bytes.len();
+                std::hint::black_box(bytes);
+            })
+            .unwrap();
+            let owned = start.elapsed();
+            assert_eq!(total, input.len());
+
+            let mut source = Cursor::new(&input);
+            let mut buffer = [0u8; 65536];
+            let start = Instant::now();
+            loop {
+                let read = source.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                std::hint::black_box(buffer[..read].to_vec());
+            }
+            eprintln!("stdin 16 MiB owned {owned:?}, copied {:?}", start.elapsed());
+        }
+    }
+}
+
 pub fn register(vm: &mut VM) {
     // wasi:logging/logging.log — the WASI logging proposal, STRICT:
     // `log(level: level, context: string, message: string)`. Exactly one
@@ -15,11 +191,14 @@ pub fn register(vm: &mut VM) {
         "wasi:logging/logging",
         "log",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let level = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-            let message = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
-            match level.as_str() {
-                "warn" | "error" | "critical" => eprintln!("{}", message),
-                _ => println!("{}", message),
+            let message = args.get(2);
+            let stderr = matches!(args.first(), Some(Value::String(level))
+                if matches!(level.as_ref(), "warn" | "error" | "critical"));
+            match (stderr, message) {
+                (true, Some(message)) => eprintln!("{message}"),
+                (false, Some(message)) => println!("{message}"),
+                (true, None) => eprintln!(),
+                (false, None) => println!(),
             }
             Value::Null
         }),
@@ -81,8 +260,8 @@ pub fn register(vm: &mut VM) {
     // How MUCH arrives per call depends on what stdin is, and both answers are
     // honest ones:
     //
-    //   - A pipe or a file has all its bytes already, so one `read_to_end`
-    //     hands the whole thing over and the next call sees EOF.
+    //   - A pipe or a file is read to EOF in bounded chunks; the next call
+    //     then sees EOF.
     //   - A TERMINAL has nothing until somebody types, so this blocks for one
     //     line and closes. It used to close EMPTY here on the grounds that
     //     interactive reads were the 0.2 `get-stdin` + `blocking-read` path —
@@ -90,17 +269,15 @@ pub fn register(vm: &mut VM) {
         "wasi:cli/stdin",
         "read-via-stream",
         Box::new(|ctx: &mut HostContext, _args: &[Value]| {
-            use std::io::{BufRead, IsTerminal, Read};
+            use std::io::{BufRead, IsTerminal};
 
             let (stream_val, stream_id) = ctx.create_stream();
             let mut failure: Option<&str> = None;
             if std::io::stdin().is_terminal() {
-                let mut buffer = String::new();
-                match std::io::stdin().lock().read_line(&mut buffer) {
+                let mut buffer = Vec::new();
+                match std::io::stdin().lock().read_until(b'\n', &mut buffer) {
                     Ok(_) => {
-                        for byte in buffer.as_bytes() {
-                            ctx.stream_push(stream_id, Value::I32(*byte as i32));
-                        }
+                        ctx.stream_push_bytes(stream_id, buffer);
                     }
                     Err(error) => {
                         failure = Some(match error.kind() {
@@ -111,13 +288,10 @@ pub fn register(vm: &mut VM) {
                     }
                 }
             } else {
-                let mut buffer = Vec::new();
-                match std::io::stdin().read_to_end(&mut buffer) {
-                    Ok(_) => {
-                        for byte in &buffer {
-                            ctx.stream_push(stream_id, Value::I32(*byte as i32));
-                        }
-                    }
+                match read_chunks(std::io::stdin().lock(), |bytes| {
+                    ctx.stream_push_bytes(stream_id, bytes);
+                }) {
+                    Ok(()) => {}
                     // `error-code` in `wasi:cli/types`: io, illegal-byte-sequence, pipe.
                     Err(error) => {
                         failure = Some(match error.kind() {
@@ -194,15 +368,20 @@ pub fn register(vm: &mut VM) {
         "wasi:cli/stdout",
         "write-via-stream",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let stream_val = args.first().cloned().unwrap_or(Value::Null);
-            let bytes = ctx.stream_drain(&stream_val);
-            if !bytes.is_empty() {
-                use std::io::Write;
-                let _ = std::io::stdout().write_all(&bytes);
+            let bytes = args.first().map(|stream| ctx.stream_drain(stream)).unwrap_or_default();
+            let outcome = if bytes.is_empty() {
+                Ok(())
+            } else {
+                write_bytes(std::io::stdout().lock(), &bytes)
+            };
+            if outcome.is_ok() && !bytes.is_empty() {
                 vybe_runtime::debugger::record_stdout_write();
             }
             let (fut, fut_id) = ctx.create_future();
-            ctx.resolve_future(fut_id, Value::Null);
+            ctx.resolve_future(
+                fut_id,
+                outcome.err().map_or(Value::Null, |code| Value::String(Arc::from(code))),
+            );
             fut
         }),
     );
@@ -211,15 +390,42 @@ pub fn register(vm: &mut VM) {
         "wasi:cli/stderr",
         "write-via-stream",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let stream_val = args.first().cloned().unwrap_or(Value::Null);
-            let bytes = ctx.stream_drain(&stream_val);
-            if !bytes.is_empty() {
-                use std::io::Write;
-                let _ = std::io::stderr().write_all(&bytes);
-            }
+            let bytes = args.first().map(|stream| ctx.stream_drain(stream)).unwrap_or_default();
+            let outcome = if bytes.is_empty() {
+                Ok(())
+            } else {
+                write_bytes(std::io::stderr().lock(), &bytes)
+            };
             let (fut, fut_id) = ctx.create_future();
-            ctx.resolve_future(fut_id, Value::Null);
+            ctx.resolve_future(
+                fut_id,
+                outcome.err().map_or(Value::Null, |code| Value::String(Arc::from(code))),
+            );
             fut
         }),
     );
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::write_bytes;
+    use std::io::{self, Write};
+
+    struct BrokenWriter;
+
+    impl Write for BrokenWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn output_errors_keep_the_wasi_error_code() {
+        assert_eq!(write_bytes(BrokenWriter, b"data"), Err("pipe"));
+        assert_eq!(write_bytes(io::sink(), b"data"), Ok(()));
+    }
 }

@@ -14,6 +14,7 @@ mod http_request_matrix;
 mod http_spec_0_3;
 mod http_spec_0_3_behaviour;
 mod http_status_matrix;
+mod host_call_perf;
 mod interface_coverage;
 // `io`, `io_contracts`, `io_length_matrix` and `io_poll_matrix` are DELETED,
 // not skipped. Between them they made 98 calls to `wasi:io/{streams,poll,error}`

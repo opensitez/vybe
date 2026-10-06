@@ -63,10 +63,9 @@ pub fn secure_bytes(n: usize) -> Option<Vec<u8>> {
 
 /// A single CSPRNG `u64`.
 fn secure_u64() -> Option<u64> {
-    let bytes = secure_bytes(8)?;
-    let mut arr = [0u8; 8];
-    arr.copy_from_slice(&bytes);
-    Some(u64::from_le_bytes(arr))
+    let mut bytes = [0u8; 8];
+    getrandom::getrandom(&mut bytes).ok()?;
+    Some(u64::from_le_bytes(bytes))
 }
 
 // Simple xorshift64 PRNG state — thread-local for safety.
@@ -84,12 +83,15 @@ thread_local! {
 fn next_u64() -> u64 {
     RNG_STATE.with(|state| {
         let mut s = state.borrow_mut();
-        // xorshift64
-        *s ^= *s << 13;
-        *s ^= *s >> 7;
-        *s ^= *s << 17;
-        *s
+        advance(&mut *s)
     })
+}
+
+fn advance(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
 }
 
 /// `tuple<u64, u64>` — the shape `get-insecure-seed` returns.
@@ -109,8 +111,66 @@ fn bytes_to_list(bytes: &[u8]) -> Value {
 
 /// Insecure `list<u8>` from the xorshift stream.
 fn insecure_bytes_value(n: usize) -> Value {
-    let bytes: Vec<u8> = (0..n).map(|_| (next_u64() & 0xFF) as u8).collect();
-    bytes_to_list(&bytes)
+    let values = RNG_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        (0..n)
+            .map(|_| Value::F64((advance(&mut *state) & 0xff) as f64))
+            .collect()
+    });
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)))
+}
+
+#[cfg(test)]
+mod random_tests {
+    use super::{RNG_STATE, advance, insecure_bytes_value, next_u64, secure_u64};
+    use vybe_runtime::value::ObjectKind;
+    use vybe_runtime::Value;
+
+    #[test]
+    fn bulk_insecure_bytes_keep_the_rng_sequence() {
+        let original = RNG_STATE.with(|state| state.replace(0x1234_5678_9abc_def0));
+        let mut expected_state = 0x1234_5678_9abc_def0;
+        let expected: Vec<Value> = (0..32)
+            .map(|_| Value::F64((advance(&mut expected_state) & 0xff) as f64))
+            .collect();
+        let Value::Object(array) = insecure_bytes_value(32) else {
+            panic!("expected byte list")
+        };
+        let array = array.lock().unwrap();
+        let ObjectKind::Array(actual) = &array.kind else {
+            panic!("expected array")
+        };
+        assert_eq!(actual, &expected);
+        drop(array);
+        assert_eq!(next_u64(), advance(&mut expected_state));
+        RNG_STATE.with(|state| *state.borrow_mut() = original);
+    }
+
+    #[test]
+    fn secure_u64_reads_eight_entropy_bytes() {
+        assert!(secure_u64().is_some());
+    }
+
+    #[test]
+    #[ignore = "local secure-u64 allocation benchmark"]
+    fn bench_secure_u64_stack_against_heap() {
+        use std::time::Instant;
+
+        for _ in 0..3 {
+            let start = Instant::now();
+            for _ in 0..100_000 {
+                std::hint::black_box(secure_u64().unwrap());
+            }
+            let stack = start.elapsed();
+
+            let start = Instant::now();
+            for _ in 0..100_000 {
+                let bytes = super::secure_bytes(8).unwrap();
+                std::hint::black_box(u64::from_le_bytes(bytes.try_into().unwrap()));
+            }
+            eprintln!("secure u64: stack {stack:?}, heap {:?}", start.elapsed());
+        }
+    }
 }
 
 /// CSPRNG `list<u8>`. Falls back to nothing — an empty list is a visible

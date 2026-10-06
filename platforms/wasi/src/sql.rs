@@ -42,6 +42,12 @@ mod state;
 /// statements. See `vmhotresetplan.md` and `vybe_host::reset_host_globals`.
 pub fn reset() {
     state::reset();
+    mysql::reset_pools();
+    postgres::reset_pools();
+    if let Some(errors) = LAST_ERROR.get() {
+        let retired = std::mem::take(&mut *errors.lock().unwrap());
+        drop(retired);
+    }
 }
 
 use driver::{SqlDriver, open};
@@ -206,6 +212,16 @@ fn make_error_obj(msg: &str) -> Value {
 
 fn rows_array(rows: Vec<Value>) -> Value {
     Value::Object(vybe_runtime::heap::alloc(Object::new_array(rows)))
+}
+
+pub(super) fn row_object(column_count: usize) -> Object {
+    let mut row = Object::new();
+    row.properties.reserve(2 * column_count + 2);
+    row
+}
+
+pub(super) fn column_index_keys(column_count: usize) -> Vec<String> {
+    (0..column_count).map(|index| index.to_string()).collect()
 }
 
 fn string_value(value: &str) -> Value {
@@ -414,7 +430,13 @@ pub fn register(vm: &mut VM) {
                 .lock()
                 .unwrap()
                 .stmts
-                .insert(id, StmtEntry { query, params });
+                .insert(
+                    id,
+                    StmtEntry {
+                        query: query.into(),
+                        params: params.into(),
+                    },
+                );
             make_stmt_obj(id)
         }),
     );
@@ -602,7 +624,10 @@ fn register_flat_api(vm: &mut VM) {
         vec![receiver()],
         vec![],
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            state().lock().unwrap().conns.remove(&get_conn_id(args));
+            let id = get_conn_id(args);
+            let entry = state().lock().unwrap().conns.remove(&id);
+            drop(entry);
+            clear_error(id);
             Value::Null
         }),
     );
@@ -645,6 +670,29 @@ fn register_flat_api(vm: &mut VM) {
             obj.properties
                 .insert("commandtext".into(), Value::String(Arc::from("")));
             Value::Object(vybe_runtime::heap::alloc(obj))
+        }),
+    );
+
+    // Opt-in metadata for database adapters. Ordinary queries and WIT keep
+    // their row-array contract and do not pay for descriptor allocation.
+    vm.register_host_fn(
+        "wasi:sql", "queryWithMetadata",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let id = get_conn_id(args);
+            let sql = get_sql(args);
+            let params = extract_params(args, 2);
+            match get_driver(id).and_then(|driver| driver.query_with_metadata(&sql, &params)) {
+                Ok((rows, columns)) => {
+                    clear_error(id);
+                    let mut result = Object::new_array(rows);
+                    result.properties.insert("__sql_columns".into(), rows_array(columns));
+                    Value::Object(vybe_runtime::heap::alloc(result))
+                }
+                Err(error) => {
+                    record_error(id, &error);
+                    rows_array(Vec::new())
+                }
+            }
         }),
     );
 

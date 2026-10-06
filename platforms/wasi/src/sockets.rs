@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -28,11 +30,15 @@ use vybe_runtime::{HostContext, VM, Value};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+type SharedTcpStream = Arc<Mutex<Option<TcpStream>>>;
+type SharedUdpSocket = Arc<Mutex<Option<UdpSocket>>>;
+
+#[derive(Default)]
 pub struct SocketState {
-    pub tcp_streams: HashMap<u64, TcpStream>,
+    pub tcp_streams: HashMap<u64, SharedTcpStream>,
     tcp_listeners: HashMap<u64, TcpListener>,
     pending_accepts: HashMap<u64, Vec<TcpStream>>,
-    udp_sockets: HashMap<u64, UdpSocket>,
+    udp_sockets: HashMap<u64, SharedUdpSocket>,
     /// Sockets that exist but have not yet become a listener or a stream.
     ///
     /// WASI 0.3 separates `create` from `bind` from `listen`/`connect`, which
@@ -54,35 +60,36 @@ pub struct SocketState {
     recv_streams: HashMap<u64, u64>,
 }
 
-pub fn get_state() -> Arc<Mutex<SocketState>> {
+pub fn get_state() -> &'static Mutex<SocketState> {
     use std::sync::OnceLock;
-    static STATE: OnceLock<Arc<Mutex<SocketState>>> = OnceLock::new();
-    STATE
-        .get_or_init(|| {
-            Arc::new(Mutex::new(SocketState {
-                tcp_streams: HashMap::new(),
-                tcp_listeners: HashMap::new(),
-                pending_accepts: HashMap::new(),
-                udp_sockets: HashMap::new(),
-                raw_sockets: HashMap::new(),
-                listen_streams: HashMap::new(),
-                recv_streams: HashMap::new(),
-            }))
-        })
-        .clone()
+    static STATE: OnceLock<Mutex<SocketState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(SocketState::default()))
+}
+
+fn tcp_stream(id: u64) -> Option<SharedTcpStream> {
+    get_state().lock().unwrap().tcp_streams.get(&id).cloned()
+}
+
+fn udp_socket(id: u64) -> Option<SharedUdpSocket> {
+    get_state().lock().unwrap().udp_sockets.get(&id).cloned()
 }
 
 /// VM hot-reset (bucket C/D): close/drop all open sockets so a reused VM never
 /// carries a prior run's OS socket handles. See `vmhotresetplan.md`.
 pub fn reset() {
     if let Ok(mut s) = get_state().lock() {
-        s.tcp_streams.clear();
-        s.tcp_listeners.clear();
-        s.pending_accepts.clear();
-        s.udp_sockets.clear();
-        s.raw_sockets.clear();
-        s.listen_streams.clear();
-        s.recv_streams.clear();
+        let retired = std::mem::take(&mut *s);
+        drop(s);
+        retire_socket_state(retired);
+    }
+}
+
+fn retire_socket_state(retired: SocketState) {
+    for stream in retired.tcp_streams.values() {
+        stream.lock().unwrap_or_else(|error| error.into_inner()).take();
+    }
+    for socket in retired.udp_sockets.values() {
+        socket.lock().unwrap_or_else(|error| error.into_inner()).take();
     }
 }
 
@@ -331,10 +338,15 @@ fn with_socket2_view(id: u64, body: impl FnOnce(&socket2::Socket) -> Value) -> V
     if let Some(socket) = guard.raw_sockets.get(&id) {
         return body(socket);
     }
-    // `SockRef` borrows the fd without taking ownership, so the stream stays
-    // usable and is not closed when the view is dropped.
-    if let Some(stream) = guard.tcp_streams.get(&id) {
-        return body(&socket2::SockRef::from(stream));
+    // A connected socket's OS option call needs only its own lock.
+    let stream = guard.tcp_streams.get(&id).cloned();
+    if let Some(stream) = stream {
+        drop(guard);
+        let stream = stream.lock().unwrap();
+        return match stream.as_ref() {
+            Some(stream) => body(&socket2::SockRef::from(stream)),
+            None => socket_err("invalid-state"),
+        };
     }
     if let Some(listener) = guard.tcp_listeners.get(&id) {
         return body(&socket2::SockRef::from(listener));
@@ -397,6 +409,29 @@ const PRODUCER_RECEIVE: &str = "receive-into-stream";
 /// the one that a silent empty read never gave.
 const ACCEPT_WAIT: Duration = Duration::from_secs(20);
 
+#[cfg(unix)]
+fn wait_socket_readable<T: AsRawFd>(socket: &T, deadline: Instant) -> bool {
+    let timeout = deadline
+        .saturating_duration_since(Instant::now())
+        .min(Duration::from_millis(25))
+        .as_millis()
+        .max(1) as i32;
+    let mut fd = libc::pollfd {
+        fd: socket.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // The cloned socket keeps this descriptor valid after the registry lock is released.
+    let ready = unsafe { libc::poll(&mut fd, 1, timeout) };
+    ready > 0 && fd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
+}
+
+#[cfg(not(unix))]
+fn wait_socket_readable<T>(_socket: &T, _deadline: Instant) -> bool {
+    thread::sleep(Duration::from_millis(1));
+    false
+}
+
 /// Accept one inbound connection for `stream_id`'s listener and push it.
 ///
 /// Called by a reader that is about to park on the stream, so blocking here IS
@@ -413,16 +448,21 @@ fn accept_into_stream(ctx: &mut HostContext, args: &[Value]) -> Value {
         return Value::Null;
     };
 
-    // Poll rather than a blocking accept: the listener is shared state behind
-    // a mutex, and holding that lock across a blocking syscall would stop
-    // every other socket call in the program.
+    // Never wait with the registry locked: other sockets and close/reset must
+    // remain usable while this stream waits for a connection.
     let deadline = Instant::now() + ACCEPT_WAIT;
     loop {
-        let accepted = {
+        let (accepted, wait_on) = {
             let state = get_state();
             let guard = state.lock().unwrap();
             match guard.tcp_listeners.get(&listener_id) {
-                Some(listener) => listener.accept().ok(),
+                Some(listener) => match listener.accept() {
+                    Ok(pair) => (Some(pair), None),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        (None, listener.try_clone().ok())
+                    }
+                    Err(_) => return Value::Null,
+                },
                 // The listener is gone — the socket was closed under us. Not
                 // an error, just nothing more to hand over.
                 None => return Value::Null,
@@ -445,7 +485,7 @@ fn accept_into_stream(ctx: &mut HostContext, args: &[Value]) -> Value {
                 .lock()
                 .unwrap()
                 .tcp_streams
-                .insert(child_id, stream);
+                .insert(child_id, Arc::new(Mutex::new(Some(stream))));
             // Same representation rule as `listen`'s own push: the id, which
             // `resource.rep` can actually give back, never the object.
             let rep = match &child {
@@ -461,7 +501,11 @@ fn accept_into_stream(ctx: &mut HostContext, args: &[Value]) -> Value {
         if Instant::now() >= deadline {
             return Value::Null;
         }
-        thread::sleep(Duration::from_millis(1));
+        if let Some(listener) = wait_on {
+            wait_socket_readable(&listener, deadline);
+        } else {
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 
@@ -486,18 +530,29 @@ fn receive_into_stream(ctx: &mut HostContext, args: &[Value]) -> Value {
     };
 
     let deadline = Instant::now() + ACCEPT_WAIT;
+    let mut chunk = vec![0u8; 65536];
     loop {
-        let mut chunk = [0u8; 65536];
-        let outcome = {
-            let state = get_state();
-            let mut guard = state.lock().unwrap();
-            match guard.tcp_streams.get_mut(&socket_id) {
-                Some(stream) => {
+        let (outcome, wait_on) = match tcp_stream(socket_id) {
+            Some(shared) => {
+                let mut guard = shared.lock().unwrap();
+                if let Some(stream) = guard.as_mut() {
                     let _ = stream.set_nonblocking(true);
-                    Some(stream.read(&mut chunk))
+                    let result = stream.read(&mut chunk);
+                    let wait_on = match &result {
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                || error.kind() == std::io::ErrorKind::TimedOut =>
+                        {
+                            stream.try_clone().ok()
+                        }
+                        _ => None,
+                    };
+                    (Some(result), wait_on)
+                } else {
+                    (None, None)
                 }
-                None => None,
             }
+            None => (None, None),
         };
         match outcome {
             // The socket is gone: nothing more can arrive, so this really is
@@ -511,9 +566,8 @@ fn receive_into_stream(ctx: &mut HostContext, args: &[Value]) -> Value {
                 return Value::Null;
             }
             Some(Ok(read)) => {
-                for byte in &chunk[..read] {
-                    ctx.stream_push(stream_id, Value::I32(*byte as i32));
-                }
+                chunk.truncate(read);
+                ctx.stream_push_bytes(stream_id, chunk);
                 return Value::Null;
             }
             Some(Err(error))
@@ -529,7 +583,11 @@ fn receive_into_stream(ctx: &mut HostContext, args: &[Value]) -> Value {
         if Instant::now() >= deadline {
             return Value::Null;
         }
-        thread::sleep(Duration::from_millis(1));
+        if let Some(stream) = wait_on {
+            wait_socket_readable(&stream, deadline);
+        } else {
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 
@@ -618,7 +676,7 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
                     .ok()
                     .and_then(|addr| addr.as_socket())
                     .map(socket_addr_to_value);
-                guard.tcp_streams.insert(id, TcpStream::from(socket));
+                guard.tcp_streams.insert(id, Arc::new(Mutex::new(Some(TcpStream::from(socket)))));
                 drop(guard);
 
                 set_handle(handle, "__state", Value::String(Arc::from("connected")));
@@ -672,7 +730,7 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
                 for (stream, peer) in inbound {
                     let child_id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
                     let family = if peer.is_ipv6() { "ipv6" } else { "ipv4" };
-                    guard.tcp_streams.insert(child_id, stream);
+                    guard.tcp_streams.insert(child_id, Arc::new(Mutex::new(Some(stream))));
                     let child = new_socket_handle("tcp-socket", family);
                     if let Value::Object(object) = &child {
                         object
@@ -773,13 +831,17 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
             let outcome = match handle {
                 Some(handle) => {
                     let id = socket_id_of(&handle);
-                    let state = get_state();
-                    let mut guard = state.lock().unwrap();
-                    match guard.tcp_streams.get_mut(&id) {
-                        Some(stream) => {
-                            match stream.write_all(&bytes).and_then(|()| stream.flush()) {
-                                Ok(()) => Value::Null,
-                                Err(error) => socket_err_from(&error),
+                    match tcp_stream(id) {
+                        Some(shared) => {
+                            let mut guard = shared.lock().unwrap();
+                            match guard.as_mut() {
+                                Some(stream) => {
+                                    match stream.write_all(&bytes).and_then(|()| stream.flush()) {
+                                        Ok(()) => Value::Null,
+                                        Err(error) => socket_err_from(&error),
+                                    }
+                                }
+                                None => socket_err("invalid-state"),
                             }
                         }
                         None => socket_err("invalid-state"),
@@ -802,31 +864,28 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
             let mut failure = Value::Null;
             if let Some(handle) = socket_arg(args) {
                 let id = socket_id_of(&handle);
-                let state = get_state();
-                let mut guard = state.lock().unwrap();
-                match guard.tcp_streams.get_mut(&id) {
-                    Some(stream) => {
-                        // The socket MUST be non-blocking before the read.
-                        //
-                        // A socket that came from `connect` is blocking, so
-                        // `read` on a peer that has sent nothing yet parks the
-                        // thread FOREVER — and because the VM drives host calls
-                        // synchronously, that hangs the whole program, not just
-                        // this call. The `WouldBlock` arm below was written for
-                        // a non-blocking socket and was simply never reachable.
-                        //
-                        // `listen` already does this to its listener; doing it
-                        // here too means "no bytes yet" is an EMPTY stream,
-                        // which is the answer a `stream<u8>` can express, where
-                        // a hang is not an answer at all.
-                        let _ = stream.set_nonblocking(true);
-                        let mut chunk = [0u8; 65536];
-                        match stream.read(&mut chunk) {
-                            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
-                            Err(error)
-                                if error.kind() == std::io::ErrorKind::WouldBlock
-                                    || error.kind() == std::io::ErrorKind::TimedOut => {}
-                            Err(error) => failure = socket_err_from(&error),
+                match tcp_stream(id) {
+                    Some(shared) => {
+                        let mut guard = shared.lock().unwrap();
+                        if let Some(stream) = guard.as_mut() {
+                            // Connected sockets can start out blocking; an empty receive
+                            // must not park the entire synchronous host call.
+                            let _ = stream.set_nonblocking(true);
+                            buffer.resize(65536, 0);
+                            match stream.read(&mut buffer) {
+                                Ok(read) => buffer.truncate(read),
+                                Err(error)
+                                    if error.kind() == std::io::ErrorKind::WouldBlock
+                                        || error.kind() == std::io::ErrorKind::TimedOut => {
+                                    buffer.clear();
+                                }
+                                Err(error) => {
+                                    buffer.clear();
+                                    failure = socket_err_from(&error);
+                                }
+                            }
+                        } else {
+                            failure = socket_err("invalid-state");
                         }
                     }
                     None => failure = socket_err("invalid-state"),
@@ -836,9 +895,7 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
             }
 
             let (stream_val, stream_id) = ctx.create_stream();
-            for byte in &buffer {
-                ctx.stream_push(stream_id, Value::I32(*byte as i32));
-            }
+            ctx.stream_push_bytes(stream_id, buffer);
             if matches!(failure, Value::Null) {
                 // Left OPEN, with a producer, for the same reason `listen`'s
                 // stream is: closing here made "the peer has not sent anything
@@ -1258,7 +1315,7 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                     .ok()
                     .and_then(|addr| addr.as_socket())
                     .map(socket_addr_to_value);
-                guard.udp_sockets.insert(id, UdpSocket::from(socket));
+                guard.udp_sockets.insert(id, Arc::new(Mutex::new(Some(UdpSocket::from(socket)))));
                 drop(guard);
 
                 set_handle(handle, "__state", Value::String(Arc::from("bound")));
@@ -1281,14 +1338,21 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                 };
                 let state = get_state();
                 let guard = state.lock().unwrap();
-                let outcome = match guard.udp_sockets.get(&id) {
-                    Some(socket) => io_result(socket.connect(address)),
+                let bound = guard.udp_sockets.get(&id).cloned();
+                let outcome = match bound {
+                    Some(socket) => {
+                        drop(guard);
+                        let guard = socket.lock().unwrap();
+                        match guard.as_ref() {
+                            Some(socket) => io_result(socket.connect(address)),
+                            None => socket_err("invalid-state"),
+                        }
+                    }
                     None => match guard.raw_sockets.get(&id) {
                         Some(socket) => io_result(socket.connect(&address.into())),
                         None => socket_err("invalid-state"),
                     },
                 };
-                drop(guard);
                 if matches!(outcome, Value::Null) {
                     set_handle(handle, "__remote_address", socket_addr_to_value(address));
                 }
@@ -1302,13 +1366,14 @@ fn register_udp_socket_0_3(vm: &mut VM) {
         "[method]udp-socket.disconnect",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             with_socket(args, |handle, id| {
-                let state = get_state();
-                let guard = state.lock().unwrap();
-                let Some(socket) = guard.udp_sockets.get(&id) else {
+                let Some(socket) = udp_socket(id) else {
+                    return socket_err("invalid-state");
+                };
+                let guard = socket.lock().unwrap();
+                let Some(socket) = guard.as_ref() else {
                     return socket_err("invalid-state");
                 };
                 let outcome = io_result(udp_disassociate(socket));
-                drop(guard);
                 if matches!(outcome, Value::Null) {
                     set_handle(handle, "__remote_address", Value::Null);
                 }
@@ -1328,9 +1393,11 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                     None => Vec::new(),
                 };
                 let remote = method_arg(args, 1).and_then(resolve_socket_addr);
-                let state = get_state();
-                let guard = state.lock().unwrap();
-                let Some(socket) = guard.udp_sockets.get(&id) else {
+                let Some(socket) = udp_socket(id) else {
+                    return socket_err("invalid-state");
+                };
+                let guard = socket.lock().unwrap();
+                let Some(socket) = guard.as_ref() else {
                     return socket_err("invalid-state");
                 };
                 let sent = match remote {
@@ -1350,43 +1417,7 @@ fn register_udp_socket_0_3(vm: &mut VM) {
         "wasi:sockets/types",
         "[method]udp-socket.receive",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            with_socket(args, |_handle, id| {
-                let state = get_state();
-                let guard = state.lock().unwrap();
-                let Some(socket) = guard.udp_sockets.get(&id) else {
-                    return socket_err("invalid-state");
-                };
-                // Non-blocking for the same reason as `tcp-socket.receive`: a
-                // blocking `recv_from` with no datagram pending parks the VM's
-                // only thread forever.
-                //
-                // "Nothing yet" is reported as `timeout`. 0.2 had a
-                // `would-block` error-code and 0.3.1 DELETED it — `receive` is
-                // an `async func` there, so not-ready is the future not having
-                // resolved, not an error. This VM drives host calls
-                // synchronously and has no such future, and `timeout` is the
-                // only DECLARED variant that means "no data within the time I
-                // was willing to wait". Inventing `would-block` back would be
-                // the same offence as the verbs this migration deleted.
-                let _ = socket.set_nonblocking(true);
-                let mut chunk = [0u8; 65536];
-                match socket.recv_from(&mut chunk) {
-                    Ok((read, peer)) => {
-                        let payload: Vec<Value> = chunk[..read]
-                            .iter()
-                            .map(|byte| Value::I32(*byte as i32))
-                            .collect();
-                        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
-                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(payload))),
-                            socket_addr_to_value(peer),
-                        ])))
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        socket_err("timeout")
-                    }
-                    Err(error) => socket_err_from(&error),
-                }
-            })
+            with_socket(args, |_handle, id| receive_udp(id, Duration::from_millis(20)))
         }),
     );
 
@@ -1476,6 +1507,41 @@ fn udp_disassociate(socket: &UdpSocket) -> std::io::Result<()> {
     socket.connect(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
 }
 
+fn receive_udp(id: u64, timeout: Duration) -> Value {
+    let Some(socket) = udp_socket(id) else {
+        return socket_err("invalid-state");
+    };
+    let guard = socket.lock().unwrap();
+    let Some(socket) = guard.as_ref() else {
+        return socket_err("invalid-state");
+    };
+    // A bounded OS wait lets a datagram sent immediately before this call
+    // arrive without spinning or parking the VM forever. With synchronous
+    // host calls, the declared `timeout` is the available not-ready result.
+    let _ = socket.set_nonblocking(false);
+    let _ = socket.set_read_timeout(Some(timeout));
+    let mut chunk = [0u8; 65536];
+    match socket.recv_from(&mut chunk) {
+        Ok((read, peer)) => {
+            let payload: Vec<Value> = chunk[..read]
+                .iter()
+                .map(|byte| Value::I32(*byte as i32))
+                .collect();
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(payload))),
+                socket_addr_to_value(peer),
+            ])))
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::WouldBlock
+                || error.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            socket_err("timeout")
+        }
+        Err(error) => socket_err_from(&error),
+    }
+}
+
 /// Datagram sockets live in `udp_sockets` once bound and in `raw_sockets`
 /// before that; both are the same OS socket seen through `socket2`.
 fn with_socket2_view_udp(id: u64, body: impl FnOnce(&socket2::Socket) -> Value) -> Value {
@@ -1484,8 +1550,14 @@ fn with_socket2_view_udp(id: u64, body: impl FnOnce(&socket2::Socket) -> Value) 
     if let Some(socket) = guard.raw_sockets.get(&id) {
         return body(socket);
     }
-    if let Some(socket) = guard.udp_sockets.get(&id) {
-        return body(&socket2::SockRef::from(socket));
+    let socket = guard.udp_sockets.get(&id).cloned();
+    if let Some(socket) = socket {
+        drop(guard);
+        let socket = socket.lock().unwrap();
+        return match socket.as_ref() {
+            Some(socket) => body(&socket2::SockRef::from(socket)),
+            None => socket_err("invalid-state"),
+        };
     }
     socket_err("invalid-state")
 }
@@ -1654,9 +1726,11 @@ pub fn read_stream_bytes(stream: &Arc<Mutex<Object>>, len: usize, blocking: bool
         return value_array(vec![]);
     }
 
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
-    let Some(tcp_stream) = guard.tcp_streams.get_mut(&socket_id) else {
+    let Some(shared) = tcp_stream(socket_id) else {
+        return Value::Null;
+    };
+    let mut guard = shared.lock().unwrap();
+    let Some(tcp_stream) = guard.as_mut() else {
         return Value::Null;
     };
 
@@ -1684,9 +1758,11 @@ pub fn write_stream_bytes(stream: &Arc<Mutex<Object>>, contents: &[u8], flush: b
     let Some(socket_id) = stream_socket_id(stream) else {
         return Value::Null;
     };
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
-    let Some(tcp_stream) = guard.tcp_streams.get_mut(&socket_id) else {
+    let Some(shared) = tcp_stream(socket_id) else {
+        return Value::Null;
+    };
+    let mut guard = shared.lock().unwrap();
+    let Some(tcp_stream) = guard.as_mut() else {
         return Value::Null;
     };
 
@@ -1708,9 +1784,11 @@ pub fn flush_stream(stream: &Arc<Mutex<Object>>) -> Value {
     let Some(socket_id) = stream_socket_id(stream) else {
         return Value::Null;
     };
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
-    let Some(tcp_stream) = guard.tcp_streams.get_mut(&socket_id) else {
+    let Some(shared) = tcp_stream(socket_id) else {
+        return Value::Null;
+    };
+    let mut guard = shared.lock().unwrap();
+    let Some(tcp_stream) = guard.as_mut() else {
         return Value::Null;
     };
     match tcp_stream.flush() {
@@ -1812,9 +1890,11 @@ fn input_stream_ready(stream: &Arc<Mutex<Object>>) -> bool {
     let Some(socket_id) = stream_socket_id(stream) else {
         return false;
     };
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
-    let Some(tcp_stream) = guard.tcp_streams.get_mut(&socket_id) else {
+    let Some(shared) = tcp_stream(socket_id) else {
+        return false;
+    };
+    let guard = shared.lock().unwrap();
+    let Some(tcp_stream) = guard.as_ref() else {
         return false;
     };
 
@@ -1989,6 +2069,143 @@ pub fn value_array(elements: Vec<Value>) -> Value {
 
 fn value_array_inner(elements: Vec<Value>) -> Value {
     value_array(elements)
+}
+
+#[cfg(all(test, unix))]
+mod readiness_tests {
+    use super::wait_socket_readable;
+    use std::io::Write;
+    use std::net::{TcpListener, TcpStream};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn listener_and_stream_wait_for_real_readiness() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert!(!wait_socket_readable(
+            &listener,
+            Instant::now() + Duration::from_millis(10)
+        ));
+
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        assert!(wait_socket_readable(
+            &listener,
+            Instant::now() + Duration::from_millis(250)
+        ));
+        let (server, _) = listener.accept().unwrap();
+        assert!(!wait_socket_readable(
+            &server,
+            Instant::now() + Duration::from_millis(10)
+        ));
+        client.write_all(b"ready").unwrap();
+        assert!(wait_socket_readable(
+            &server,
+            Instant::now() + Duration::from_millis(250)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::{get_state, new_socket_handle, read_stream_bytes, receive_udp, retire_socket_state, socket_id_of, write_stream_bytes, SocketState, NEXT_ID};
+    use super::Value;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream, UdpSocket};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn a_blocked_tcp_read_does_not_hold_the_socket_registry() {
+        let (mut waiting_client, waiting_server) = connected_pair();
+        let (mut other_client, other_server) = connected_pair();
+        other_client.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let Value::Object(waiting) = new_socket_handle("tcp-socket", "ipv4") else {
+            panic!("expected a socket handle");
+        };
+        let Value::Object(other) = new_socket_handle("tcp-socket", "ipv4") else {
+            panic!("expected a socket handle");
+        };
+        let waiting_id = socket_id_of(&waiting);
+        let other_id = socket_id_of(&other);
+        {
+            let mut state = get_state().lock().unwrap();
+            state
+                .tcp_streams
+                .insert(waiting_id, Arc::new(Mutex::new(Some(waiting_server))));
+            state
+                .tcp_streams
+                .insert(other_id, Arc::new(Mutex::new(Some(other_server))));
+        }
+
+        let (read_done_tx, read_done_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _ = read_stream_bytes(&waiting, 1, true);
+            read_done_tx.send(()).unwrap();
+        });
+        let reader_waiting = read_done_rx.recv_timeout(Duration::from_millis(20)).is_err();
+
+        let (write_done_tx, write_done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let result = write_stream_bytes(&other, b"x", false);
+            write_done_tx.send(matches!(result, Value::Null)).unwrap();
+        });
+        let other_write_completed = write_done_rx
+            .recv_timeout(Duration::from_millis(100))
+            .unwrap_or(false);
+
+        waiting_client.write_all(b"y").unwrap();
+        reader.join().unwrap();
+        writer.join().unwrap();
+        let mut received = [0u8; 1];
+        other_client.read_exact(&mut received).unwrap();
+        assert_eq!(received, *b"x");
+        get_state().lock().unwrap().tcp_streams.remove(&waiting_id);
+        get_state().lock().unwrap().tcp_streams.remove(&other_id);
+        assert!(reader_waiting, "the test reader returned before the unrelated write");
+        assert!(other_write_completed, "an unrelated connection waited for the blocked reader");
+    }
+
+    #[test]
+    fn a_waiting_udp_receive_does_not_hold_the_socket_registry() {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let socket = Arc::new(Mutex::new(Some(UdpSocket::bind("127.0.0.1:0").unwrap())));
+        get_state().lock().unwrap().udp_sockets.insert(id, socket.clone());
+        let receiver = std::thread::spawn(move || receive_udp(id, Duration::from_millis(200)));
+
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while socket.try_lock().is_ok() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let receiving = socket.try_lock().is_err();
+        let registry_available = get_state().try_lock().is_ok();
+        receiver.join().unwrap();
+        get_state().lock().unwrap().udp_sockets.remove(&id);
+        assert!(receiving, "UDP receive did not enter its OS wait");
+        assert!(registry_available, "UDP receive held the socket registry during its OS wait");
+    }
+
+    #[test]
+    fn retired_state_closes_cloned_tcp_and_udp_sockets() {
+        let (_peer, stream) = connected_pair();
+        let tcp = Arc::new(Mutex::new(Some(stream)));
+        let udp = Arc::new(Mutex::new(Some(UdpSocket::bind("127.0.0.1:0").unwrap())));
+        let mut state = SocketState::default();
+        state.tcp_streams.insert(1, tcp.clone());
+        state.udp_sockets.insert(2, udp.clone());
+
+        retire_socket_state(state);
+
+        assert!(tcp.lock().unwrap().is_none());
+        assert!(udp.lock().unwrap().is_none());
+    }
 }
 
 // ── Phase 3: spec-correct [method] prefix forms ───────────────────────────────

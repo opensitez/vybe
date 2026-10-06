@@ -347,8 +347,14 @@ fn local_offset_seconds(seconds: i64) -> Option<i64> {
 /// block is preferred where present, since the 32-bit one cannot express
 /// transitions past 2038.
 fn tzif_type_at(seconds: i64) -> Option<(i64, bool)> {
-    let (_, bytes) = configured_zone().as_ref()?;
-    tzif_type_at_bytes(bytes, seconds)
+    static BLOCK: OnceLock<Option<TzifBlock>> = OnceLock::new();
+    let block = BLOCK
+        .get_or_init(|| {
+            let (_, bytes) = configured_zone().as_ref()?;
+            parse_tzif(bytes)
+        })
+        .as_ref()?;
+    resolve_tzif(block, seconds)
 }
 
 /// The same resolution against explicit TZif bytes.
@@ -357,39 +363,43 @@ fn tzif_type_at(seconds: i64) -> Option<(i64, bool)> {
 /// zone is resolved once per process, so a test that set the variable would
 /// depend on which test ran first.
 pub fn tzif_type_at_bytes(bytes: &[u8], seconds: i64) -> Option<(i64, bool)> {
-    {
-        if bytes.len() < 44 || &bytes[..4] != b"TZif" {
-            return None;
-        }
-        let version = bytes[4];
+    resolve_tzif(&parse_tzif(bytes)?, seconds)
+}
 
-        let first = parse_tzif_block(bytes, 0, 4)?;
-        let block = if version >= b'2' {
-            parse_tzif_block(bytes, first.end, 8).unwrap_or(first)
-        } else {
-            first
-        };
-
-        // Before the first transition, RFC 8536 §3.2 says use the first type that
-        // is not daylight saving, falling back to the first type of all.
-        let mut chosen = block
-            .types
-            .iter()
-            .find(|(_, is_dst)| !*is_dst)
-            .or_else(|| block.types.first())
-            .copied()?;
-        for (index, transition) in block.transitions.iter().enumerate() {
-            if *transition > seconds {
-                break;
-            }
-            if let Some(kind) = block.transition_types.get(index) {
-                if let Some(entry) = block.types.get(*kind as usize) {
-                    chosen = *entry;
-                }
-            }
-        }
-        Some(chosen)
+fn parse_tzif(bytes: &[u8]) -> Option<TzifBlock> {
+    if bytes.len() < 44 || &bytes[..4] != b"TZif" {
+        return None;
     }
+    let first = parse_tzif_block(bytes, 0, 4)?;
+    if bytes[4] >= b'2' {
+        Some(parse_tzif_block(bytes, first.end, 8).unwrap_or(first))
+    } else {
+        Some(first)
+    }
+}
+
+fn resolve_tzif(block: &TzifBlock, seconds: i64) -> Option<(i64, bool)> {
+    // RFC 8536 §3.2 uses the first non-DST type before the first transition.
+    let initial = block
+        .types
+        .iter()
+        .find(|(_, is_dst)| !*is_dst)
+        .or_else(|| block.types.first())
+        .copied()?;
+    let count = block.transitions.partition_point(|transition| *transition <= seconds);
+    let Some(index) = count.checked_sub(1) else {
+        return Some(initial);
+    };
+    (0..=index)
+        .rev()
+        .find_map(|at| {
+            block
+                .transition_types
+                .get(at)
+                .and_then(|kind| block.types.get(*kind as usize))
+                .copied()
+        })
+        .or(Some(initial))
 }
 
 struct TzifBlock {
@@ -397,6 +407,25 @@ struct TzifBlock {
     transition_types: Vec<u8>,
     types: Vec<(i64, bool)>,
     end: usize,
+}
+
+#[cfg(test)]
+mod tzif_lookup_tests {
+    use super::{TzifBlock, resolve_tzif};
+
+    #[test]
+    fn lookup_respects_transition_boundaries_and_invalid_type_fallback() {
+        let block = TzifBlock {
+            transitions: vec![100, 200, 300],
+            transition_types: vec![1, 9, 0],
+            types: vec![(-18_000, false), (-14_400, true)],
+            end: 0,
+        };
+        assert_eq!(resolve_tzif(&block, 99), Some((-18_000, false)));
+        assert_eq!(resolve_tzif(&block, 100), Some((-14_400, true)));
+        assert_eq!(resolve_tzif(&block, 200), Some((-14_400, true)));
+        assert_eq!(resolve_tzif(&block, 300), Some((-18_000, false)));
+    }
 }
 
 /// Parse one TZif header + data block starting at `start`, where each

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::fs::{File, FileTimes, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -31,8 +31,68 @@ use vybe_runtime::{HostContext, VM, Value};
 
 #[derive(Debug)]
 pub(super) enum DescriptorKind {
-    File(PathBuf), // path retained for stat-at / open-at(child)
-    Directory(PathBuf),
+    File(DescriptorPath), // path retained for stat-at / open-at(child)
+    Directory(DescriptorPath),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DescriptorPath(Arc<PathBuf>);
+
+impl DescriptorPath {
+    fn new(path: PathBuf) -> Self {
+        Self(Arc::new(path))
+    }
+}
+
+impl std::ops::Deref for DescriptorPath {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &PathBuf {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for DescriptorPath {
+    fn as_ref(&self) -> &Path {
+        self.0.as_path()
+    }
+}
+
+#[cfg(test)]
+mod descriptor_path_tests {
+    use super::DescriptorPath;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    #[test]
+    fn descriptor_path_clones_share_immutable_storage() {
+        let original = DescriptorPath::new(PathBuf::from("root/child.txt"));
+        let clone = original.clone();
+        assert!(Arc::ptr_eq(&original.0, &clone.0));
+        assert_eq!(clone.as_ref(), std::path::Path::new("root/child.txt"));
+    }
+
+    #[test]
+    #[ignore = "local descriptor path clone benchmark"]
+    fn bench_shared_path_clone_against_owned_clone() {
+        use std::time::Instant;
+
+        let owned = PathBuf::from("root/subdirectory/a-repeatedly-accessed-file.txt");
+        let shared = DescriptorPath::new(owned.clone());
+        for _ in 0..3 {
+            let start = Instant::now();
+            for _ in 0..100_000 {
+                std::hint::black_box(owned.clone());
+            }
+            let owned_time = start.elapsed();
+
+            let start = Instant::now();
+            for _ in 0..100_000 {
+                std::hint::black_box(shared.clone());
+            }
+            eprintln!("descriptor path clone: owned {owned_time:?}, shared {:?}", start.elapsed());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -118,11 +178,12 @@ pub(super) fn err(code: &str) -> Value {
 /// it is built in one place rather than spelled out per call site. `failure`
 /// is `None` for a clean read; a `Some(code)` resolves the future with the
 /// `error-code` while still handing over the bytes that did arrive.
-fn stream_future_tuple(ctx: &mut HostContext, bytes: &[u8], failure: Option<&str>) -> Value {
-    let (stream_val, stream_id) = ctx.create_stream();
-    for byte in bytes {
-        ctx.stream_push(stream_id, Value::I32(*byte as i32));
-    }
+fn stream_future_tuple(
+    ctx: &mut HostContext,
+    stream_val: Value,
+    stream_id: u64,
+    failure: Option<&str>,
+) -> Value {
     // Closed, not left open: an open-but-empty end answers BLOCKED to
     // `canon stream.read`, which leaves it COPYING and traps the next read.
     ctx.stream_close(stream_id);
@@ -137,6 +198,148 @@ fn stream_future_tuple(ctx: &mut HostContext, bytes: &[u8], failure: Option<&str
     Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
         stream_val, future_val,
     ])))
+}
+
+fn read_stream_chunks(
+    input: &mut impl Read,
+    mut push: impl FnMut(Vec<u8>),
+) -> Option<&'static str> {
+    let mut first = [0u8; 8192];
+    loop {
+        match input.read(&mut first) {
+            Ok(0) => return None,
+            Ok(count) => {
+                push(first[..count].to_vec());
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Some(map_io_error(&error)),
+        }
+    }
+    // Most file reads fit in the first chunk. Probe EOF without allocating
+    // and zeroing a 64 KiB buffer on every small-file read.
+    loop {
+        match input.read(&mut first) {
+            Ok(0) => return None,
+            Ok(count) => {
+                push(first[..count].to_vec());
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Some(map_io_error(&error)),
+        }
+    }
+    loop {
+        let mut bytes = vec![0u8; 64 * 1024];
+        match input.read(&mut bytes) {
+            Ok(0) => return None,
+            Ok(count) => {
+                bytes.truncate(count);
+                push(bytes);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Some(map_io_error(&error)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod read_chunk_tests {
+    use super::read_stream_chunks;
+    use std::io::{self, Cursor, Read};
+
+    #[test]
+    fn chunked_read_preserves_binary_bytes() {
+        let input: Vec<u8> = (0..131073).map(|index| (index % 251) as u8).collect();
+        let mut chunks = Vec::new();
+        assert_eq!(
+            read_stream_chunks(&mut Cursor::new(&input), |bytes| chunks.push(bytes)),
+            None
+        );
+        assert_eq!(chunks.len(), 4);
+        assert!(chunks.iter().all(|chunk| chunk.len() <= 64 * 1024));
+        assert_eq!(chunks.concat(), input);
+    }
+
+    struct InterruptedThenPartialError(u8);
+
+    impl Read for InterruptedThenPartialError {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            self.0 += 1;
+            match self.0 {
+                1 => Err(io::ErrorKind::Interrupted.into()),
+                2 => {
+                    output[..3].copy_from_slice(b"abc");
+                    Ok(3)
+                }
+                _ => Err(io::ErrorKind::PermissionDenied.into()),
+            }
+        }
+    }
+
+    #[test]
+    fn read_error_keeps_the_partial_stream() {
+        let mut chunks = Vec::new();
+        assert_eq!(
+            read_stream_chunks(&mut InterruptedThenPartialError(0), |bytes| chunks
+                .push(bytes)),
+            Some("access")
+        );
+        assert_eq!(chunks, vec![b"abc".to_vec()]);
+    }
+
+    #[test]
+    fn second_read_error_keeps_the_first_chunk() {
+        struct FirstThenError(bool);
+
+        impl Read for FirstThenError {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                if std::mem::replace(&mut self.0, true) {
+                    Err(io::ErrorKind::PermissionDenied.into())
+                } else {
+                    output[..3].copy_from_slice(b"abc");
+                    Ok(3)
+                }
+            }
+        }
+
+        let mut chunks = Vec::new();
+        assert_eq!(
+            read_stream_chunks(&mut FirstThenError(false), |bytes| chunks.push(bytes)),
+            Some("access")
+        );
+        assert_eq!(chunks, vec![b"abc".to_vec()]);
+    }
+
+    #[test]
+    #[ignore = "local small-file EOF probe benchmark"]
+    fn bench_small_read_eof_probe() {
+        use std::time::Instant;
+
+        let input = [7u8; 128];
+        for _ in 0..3 {
+            let start = Instant::now();
+            for _ in 0..100_000 {
+                let mut chunks = Vec::new();
+                read_stream_chunks(&mut Cursor::new(input), |bytes| chunks.push(bytes));
+                std::hint::black_box(chunks);
+            }
+            let small_probe = start.elapsed();
+
+            let start = Instant::now();
+            for _ in 0..100_000 {
+                let mut source = Cursor::new(input);
+                let mut first = [0u8; 8192];
+                let mut chunks = Vec::new();
+                let read = source.read(&mut first).unwrap();
+                chunks.push(first[..read].to_vec());
+                let mut large = vec![0u8; 64 * 1024];
+                assert_eq!(source.read(&mut large).unwrap(), 0);
+                std::hint::black_box(chunks);
+            }
+            eprintln!("small-file read: stack EOF {small_probe:?}, heap EOF {:?}", start.elapsed());
+        }
+    }
 }
 
 fn resolved_write_future(ctx: &mut HostContext, outcome: std::io::Result<()>) -> Value {
@@ -307,9 +510,9 @@ const DESC_WRITE: i32 = 2;
 
 // ── Argument helpers ──────────────────────────────────────────────
 
-fn s_arg(args: &[Value], idx: usize) -> Option<String> {
+fn s_arg(args: &[Value], idx: usize) -> Option<&str> {
     match args.get(idx) {
-        Some(Value::String(text)) => Some(text.to_string()),
+        Some(Value::String(text)) => Some(text.as_ref()),
         Some(Value::F64(_)) | Some(Value::I32(_)) => None, // wrong type
         _ => None,
     }
@@ -374,7 +577,7 @@ fn register_preopens(vm: &mut VM) {
             let id = {
                 let mut reg = registry().lock().unwrap();
                 let id = alloc_id();
-                reg.descriptors.insert(id, DescriptorKind::Directory(cwd));
+                reg.descriptors.insert(id, DescriptorKind::Directory(DescriptorPath::new(cwd)));
                 id
             };
             let pair_elements = vec![
@@ -412,14 +615,15 @@ fn register_types(vm: &mut VM) {
             let truncate = (open_flags & OPEN_TRUNCATE) != 0;
             let directory = (open_flags & OPEN_DIRECTORY) != 0;
 
-            let exists = resolved.exists();
+            let metadata = std::fs::metadata(&resolved).ok();
+            let exists = metadata.is_some();
             if !exists && !create {
                 return err("no-entry");
             }
             if exists && create && exclusive {
                 return err("exist");
             }
-            if directory && exists && !resolved.is_dir() {
+            if directory && metadata.as_ref().is_some_and(|meta| !meta.is_dir()) {
                 return err("not-directory");
             }
 
@@ -438,7 +642,7 @@ fn register_types(vm: &mut VM) {
                 if let Err(e) = opts.open(&resolved) {
                     return err(map_io_error(&e));
                 }
-            } else if exists && truncate && resolved.is_file() {
+            } else if truncate && metadata.as_ref().is_some_and(|meta| meta.is_file()) {
                 if let Err(e) = OpenOptions::new()
                     .write(true)
                     .truncate(true)
@@ -448,10 +652,10 @@ fn register_types(vm: &mut VM) {
                 }
             }
 
-            let kind = if resolved.is_dir() {
-                DescriptorKind::Directory(resolved)
+            let kind = if metadata.as_ref().is_some_and(|meta| meta.is_dir()) {
+                DescriptorKind::Directory(DescriptorPath::new(resolved))
             } else {
-                DescriptorKind::File(resolved)
+                DescriptorKind::File(DescriptorPath::new(resolved))
             };
             let id = {
                 let mut reg = registry().lock().unwrap();
@@ -559,26 +763,20 @@ fn register_types(vm: &mut VM) {
                 }
             };
 
-            let mut entries = Vec::new();
+            let read_dir = match std::fs::read_dir(&path) {
+                Ok(read_dir) => read_dir,
+                Err(e) => return err(map_io_error(&e)),
+            };
+            let (stream_val, stream_id) = ctx.create_stream_of(Some(directory_entry_type()));
             let mut failure = Value::Null;
-            match std::fs::read_dir(&path) {
-                Ok(read_dir) => {
-                    for entry in read_dir {
-                        match entry {
-                            Ok(entry) => entries.push(directory_entry_value(&entry)),
-                            Err(e) => {
-                                failure = err(map_io_error(&e));
-                                break;
-                            }
-                        }
+            for entry in read_dir {
+                match entry {
+                    Ok(entry) => ctx.stream_push(stream_id, directory_entry_value(&entry)),
+                    Err(e) => {
+                        failure = err(map_io_error(&e));
+                        break;
                     }
                 }
-                Err(e) => return err(map_io_error(&e)),
-            }
-
-            let (stream_val, stream_id) = ctx.create_stream_of(Some(directory_entry_type()));
-            for entry in entries {
-                ctx.stream_push(stream_id, entry);
             }
             ctx.stream_close(stream_id);
             let (future_val, future_id) = ctx.create_future();
@@ -768,15 +966,13 @@ fn register_types(vm: &mut VM) {
                     return err(map_io_error(&e));
                 }
             }
-            let mut bytes = Vec::new();
             // A read that fails partway still hands over what it got, with the
             // failure carried by the future: the stream and the outcome are
             // two channels in 0.3.1 precisely so a partial read is expressible.
-            let failure = match file.read_to_end(&mut bytes) {
-                Ok(_) => None,
-                Err(e) => Some(map_io_error(&e)),
-            };
-            stream_future_tuple(ctx, &bytes, failure)
+            let (stream_val, stream_id) = ctx.create_stream();
+            let failure =
+                read_stream_chunks(&mut file, |bytes| ctx.stream_push_bytes(stream_id, bytes));
+            stream_future_tuple(ctx, stream_val, stream_id, failure)
         }),
     );
 
@@ -1297,7 +1493,7 @@ fn directory_entry_value(entry: &std::fs::DirEntry) -> Value {
     Value::Object(vybe_runtime::heap::alloc(object))
 }
 
-fn path_of(kind: &DescriptorKind) -> PathBuf {
+fn path_of(kind: &DescriptorKind) -> DescriptorPath {
     match kind {
         DescriptorKind::File(p) | DescriptorKind::Directory(p) => p.clone(),
     }

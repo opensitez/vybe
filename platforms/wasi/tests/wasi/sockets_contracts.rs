@@ -53,7 +53,7 @@ fn call_import(module: &str, name: &str, args: Vec<Value>) -> Value {
                 );
                 vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
-                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
             }
         }
     }

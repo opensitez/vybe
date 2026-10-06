@@ -98,9 +98,7 @@ fn transform_pair(ctx: &mut HostContext, source: Option<&Value>, connector_id: u
         None => Vec::new(),
     };
     let (stream_val, stream_id) = ctx.create_stream();
-    for byte in bytes {
-        ctx.stream_push(stream_id, Value::I32(byte as i32));
-    }
+    ctx.stream_push_bytes(stream_id, bytes);
     ctx.stream_close(stream_id);
 
     let (future_val, future_id) = ctx.create_future();

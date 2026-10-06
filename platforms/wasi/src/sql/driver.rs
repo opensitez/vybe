@@ -6,6 +6,12 @@ use vybe_runtime::Value;
 /// All methods are `&self` (internal Mutex per driver); `Send + Sync` so the
 /// handle can live inside `Arc` inside `Mutex<SqlState>` across threads.
 pub(super) trait SqlDriver: Send + Sync {
+    /// Provider descriptors and rows from the same execution, when available.
+    fn query_with_metadata(&self, sql: &str, params: &[String])
+        -> Result<(Vec<Value>, Vec<Value>), String>
+    {
+        self.query(sql, params).map(|rows| (rows, Vec::new()))
+    }
     fn query(&self, sql: &str, params: &[String]) -> Result<Vec<Value>, String>;
     fn query_columns(&self, sql: &str, params: &[String]) -> Result<Vec<String>, String>;
     fn exec(&self, sql: &str, params: &[String]) -> Result<u64, String>;

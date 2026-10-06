@@ -39,7 +39,7 @@ fn call(name: &str, args: Vec<Value>) -> Value {
                 );
                 vm.set_global_owned(global_name.clone(), other);
                 let ci = chunk.intern_string_constant(&global_name);
-                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
             }
         }
     }
@@ -88,6 +88,72 @@ fn new_request() -> Value {
     let request = call("[static]request.new", vec![new_fields()]);
     assert!(!is_error(&request), "request.new failed: {request:?}");
     request
+}
+
+#[test]
+fn outgoing_request_body_is_transferred_once() {
+    use vybe_runtime::value::ObjectKind;
+
+    let mut chunk = Chunk::new("<http-outgoing-request-body>");
+    let fields = chunk.add_import("wasi:http/types", "[constructor]fields");
+    let request_new = chunk.add_import("wasi:http/types", "[static]request.new");
+    let consume = chunk.add_import("wasi:http/types", "[static]request.consume-body");
+    let at = chunk.add_import("ecma:array", "at");
+    let push = chunk.add_import("ecma:array", "push");
+    let pair = chunk.add_import("ecma:array", "of");
+    let request_slot = chunk.alloc_scratch(1);
+    let bytes_slot = chunk.alloc_scratch(1);
+
+    chunk.emit_call(fields, 0, 0);
+    vybe_compiler::primitives::canon_marshal::emit_new_bytes(&mut chunk, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, 0);
+    for byte in [0, 127, 128, 255] {
+        chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, 0);
+        chunk.emit_i32_const(byte, 0);
+        chunk.emit_call(push, 2, 0);
+        chunk.emit_op(Op::DROP, 0);
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, 0);
+    vybe_compiler::primitives::io::emit_bytes_to_stream(&mut chunk, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_call(request_new, 4, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, request_slot, 0);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, request_slot, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_call(consume, 2, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_call(at, 2, 0);
+    vybe_compiler::primitives::io::emit_read_stream_to_bytes(&mut chunk, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, request_slot, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_call(consume, 2, 0);
+    chunk.emit_call(pair, 2, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    register_platforms(&mut vm, &Capabilities::all());
+    let result = vm.run(vec![chunk]).expect("request body round-trip");
+    let Value::Object(pair) = result else {
+        panic!("expected body and second-consume result");
+    };
+    let pair = pair.lock().unwrap();
+    let ObjectKind::Array(parts) = &pair.kind else {
+        panic!("expected result pair");
+    };
+    let Value::Object(bytes) = &parts[0] else {
+        panic!("expected byte array");
+    };
+    let bytes = bytes.lock().unwrap();
+    let ObjectKind::Array(bytes) = &bytes.kind else {
+        panic!("expected byte array");
+    };
+    assert_eq!(
+        bytes.iter().map(|byte| byte.as_i32() as u8).collect::<Vec<_>>(),
+        [0, 127, 128, 255]
+    );
+    assert!(is_error(&parts[1]), "second consume must fail: {:?}", parts[1]);
 }
 
 fn new_response() -> Value {

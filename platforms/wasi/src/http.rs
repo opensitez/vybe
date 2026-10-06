@@ -19,7 +19,7 @@
 //! `http_incoming_server.rs` is built on them.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -54,7 +54,8 @@ struct OutgoingRequestResource {
     /// The `contents` stream, drained at construction. 0.2 reached a request
     /// body through `outgoing-request.body` -> `outgoing-body.write`; 0.3.1
     /// deleted both, so the stream handed to `new` is the only body there is.
-    body: Vec<u8>,
+    body: Option<Arc<Vec<u8>>>,
+    consumed: bool,
     /// `trailers` from `request.new(headers, contents, trailers, options)`.
     ///
     /// Kept so `consume-body`'s `future<result<option<trailers>, …>>` can hand
@@ -80,6 +81,7 @@ struct OutgoingResponseResource {
     status: u16,
     headers_id: u32,
     body_id: Option<u32>,
+    consumed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -120,7 +122,8 @@ struct IncomingRequestResource {
 struct IncomingResponseResource {
     status: u16,
     headers_id: u32,
-    body: String,
+    body: Vec<u8>,
+    consumed: bool,
 }
 
 #[derive(Default)]
@@ -234,7 +237,7 @@ fn header_entries_array(entries: &[(String, Vec<u8>)]) -> Value {
 struct HttpResponseData {
     status: u16,
     headers: Vec<(String, Vec<u8>)>,
-    body: String,
+    body: Vec<u8>,
 }
 
 fn map_transport_error(message: &str) -> &'static str {
@@ -243,7 +246,7 @@ fn map_transport_error(message: &str) -> &'static str {
         "connection-refused"
     } else if lowercase.contains("timed out") {
         "connection-timeout"
-    } else if lowercase.contains("invalid") {
+    } else if lowercase.contains("invalid") && lowercase.contains("uri") {
         "HTTP-request-URI-invalid"
     } else {
         "internal-error"
@@ -256,7 +259,64 @@ fn map_transport_error(message: &str) -> &'static str {
 trait ReadWrite: Read + Write {}
 impl<T: Read + Write> ReadWrite for T {}
 
-fn http_request(method: &str, url: &str, body: Option<&str>) -> Result<HttpResponseData, String> {
+fn read_http_line<R: BufRead>(reader: &mut R, limit: usize) -> Result<Vec<u8>, String> {
+    let mut line = Vec::new();
+    reader
+        .take((limit + 2) as u64)
+        .read_until(b'\n', &mut line)
+        .map_err(|error| format!("Read failed: {error}"))?;
+    if !line.ends_with(b"\r\n") {
+        return Err("Invalid HTTP chunk framing".to_string());
+    }
+    line.truncate(line.len() - 2);
+    Ok(line)
+}
+
+fn read_chunked_body(prefix: Vec<u8>, stream: &mut dyn ReadWrite) -> Result<Vec<u8>, String> {
+    let mut reader = BufReader::new(Cursor::new(prefix).chain(stream));
+    let mut body = Vec::new();
+    loop {
+        let line = read_http_line(&mut reader, 8192)?;
+        let size_text = line.split(|byte| *byte == b';').next().unwrap_or(&[]);
+        let size_text = std::str::from_utf8(size_text)
+            .map_err(|_| "Invalid HTTP chunk size".to_string())?
+            .trim();
+        let size = usize::from_str_radix(size_text, 16)
+            .map_err(|_| "Invalid HTTP chunk size".to_string())?;
+        if size == 0 {
+            let mut trailer_bytes = 0usize;
+            loop {
+                let trailer = read_http_line(&mut reader, 8192)?;
+                trailer_bytes += trailer.len() + 2;
+                if trailer_bytes > 65536 {
+                    return Err("HTTP chunk trailers too large".to_string());
+                }
+                if trailer.is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+
+        let start = body.len();
+        reader
+            .by_ref()
+            .take(size as u64)
+            .read_to_end(&mut body)
+            .map_err(|error| format!("Read failed: {error}"))?;
+        if body.len() - start != size {
+            return Err("HTTP chunk ended before declared size".to_string());
+        }
+        let mut terminator = [0u8; 2];
+        reader
+            .read_exact(&mut terminator)
+            .map_err(|error| format!("Read failed: {error}"))?;
+        if terminator != *b"\r\n" {
+            return Err("Invalid HTTP chunk terminator".to_string());
+        }
+    }
+}
+
+fn http_request(method: &str, url: &str, body: &[u8]) -> Result<HttpResponseData, String> {
     // `https` is not a different protocol up here — it is the same HTTP/1.1
     // exchange over a TLS-wrapped socket. Only the transport and the default
     // port change, which is why the whole request/response body below is
@@ -301,32 +361,40 @@ fn http_request(method: &str, url: &str, body: Option<&str>) -> Result<HttpRespo
         Box::new(tcp)
     };
 
-    let content_length = body.map(|text| text.len()).unwrap_or(0);
-    let mut request = format!(
+    let request = format!(
         "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
-        method, path, host, content_length,
+        method, path, host, body.len(),
     );
-    if let Some(body) = body {
-        request.push_str(body);
-    }
-
     stream
         .write_all(request.as_bytes())
         .map_err(|error| format!("Write failed: {}", error))?;
+    if !body.is_empty() {
+        stream
+            .write_all(body)
+            .map_err(|error| format!("Write failed: {}", error))?;
+    }
 
-    let mut raw_response = String::new();
-    stream
-        .read_to_string(&mut raw_response)
-        .map_err(|error| format!("Read failed: {}", error))?;
-
-    let (head, body) = match raw_response.find("\r\n\r\n") {
-        Some(index) => (
-            &raw_response[..index],
-            raw_response[index + 4..].to_string(),
-        ),
-        None => (raw_response.as_str(), String::new()),
+    let mut raw_response = Vec::new();
+    let mut buffer = [0u8; 8192];
+    let separator = loop {
+        let previous = raw_response.len();
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| format!("Read failed: {}", error))?;
+        if read == 0 {
+            return Err("HTTP response missing header terminator".to_string());
+        }
+        raw_response.extend_from_slice(&buffer[..read]);
+        let start = previous.saturating_sub(3);
+        if let Some(found) = raw_response[start..]
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+        {
+            break start + found;
+        }
     };
-
+    let head = std::str::from_utf8(&raw_response[..separator])
+        .map_err(|error| format!("Invalid HTTP response headers: {}", error))?;
     let mut lines = head.lines();
     let status = lines
         .next()
@@ -338,12 +406,76 @@ fn http_request(method: &str, url: &str, body: Option<&str>) -> Result<HttpRespo
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_string(), value.trim().as_bytes().to_vec()))
         .collect::<Vec<_>>();
+    let chunked = headers.iter().any(|(name, value): &(String, Vec<u8>)| {
+        name.eq_ignore_ascii_case("transfer-encoding")
+            && std::str::from_utf8(value)
+                .map(|value| value.split(',').any(|part| part.trim().eq_ignore_ascii_case("chunked")))
+                .unwrap_or(false)
+    });
+    let declared_length = if chunked {
+        None
+    } else {
+        headers.iter().find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| std::str::from_utf8(value).ok()?.trim().parse::<usize>().ok())
+                .flatten()
+        })
+    };
+    let mut body = raw_response.split_off(separator + 4);
+    if method.eq_ignore_ascii_case("HEAD") || matches!(status, 204 | 304) {
+        body.clear();
+    } else if chunked {
+        body = read_chunked_body(body, stream.as_mut())?;
+    } else if let Some(length) = declared_length {
+        if body.len() > length {
+            body.truncate(length);
+        }
+        let mut remaining = length - body.len();
+        while remaining > 0 {
+            let to_read = remaining.min(buffer.len());
+            let read = stream
+                .read(&mut buffer[..to_read])
+                .map_err(|error| format!("Read failed: {}", error))?;
+            if read == 0 {
+                return Err("HTTP response body ended before Content-Length".to_string());
+            }
+            body.extend_from_slice(&buffer[..read]);
+            remaining -= read;
+        }
+    } else {
+        stream
+            .read_to_end(&mut body)
+            .map_err(|error| format!("Read failed: {}", error))?;
+    }
 
     Ok(HttpResponseData {
         status,
         headers,
         body,
     })
+}
+
+#[cfg(test)]
+mod setup_bench_tests {
+    #[test]
+    #[ignore = "local TLS connector setup diagnostic"]
+    fn bench_tls_connector_setup() {
+        use std::time::Instant;
+
+        let connector = native_tls::TlsConnector::new().unwrap();
+        for _ in 0..3 {
+            let start = Instant::now();
+            for _ in 0..100 {
+                std::hint::black_box(native_tls::TlsConnector::new().unwrap());
+            }
+            let create = start.elapsed();
+            let start = Instant::now();
+            for _ in 0..100 {
+                std::hint::black_box(connector.clone());
+            }
+            eprintln!("100 TLS connector creates: {create:?}; clones: {:?}", start.elapsed());
+        }
+    }
 }
 
 fn register_resource_types(vm: &mut VM) -> HttpTypeIds {
@@ -798,6 +930,7 @@ pub fn push_response() -> u32 {
             status: 200,
             headers_id,
             body_id: None,
+            consumed: false,
         },
     );
     id
@@ -826,8 +959,8 @@ pub type ResponseParts = (u16, Vec<(String, Vec<u8>)>, Vec<u8>);
 
 pub fn take_response(value: &Value) -> Option<ResponseParts> {
     let registry = registry().lock().unwrap();
-    let (status, headers_id, body) = if let Some(id) = resource_id(value, KIND_RESPONSE) {
-        let response = registry.outgoing_responses.get(&id)?;
+    let id = resource_id(value, KIND_RESPONSE)?;
+    let (status, headers_id, body) = if let Some(response) = registry.outgoing_responses.get(&id) {
         let body = response
             .body_id
             .and_then(|body_id| registry.outgoing_bodies.get(&body_id))
@@ -837,12 +970,11 @@ pub fn take_response(value: &Value) -> Option<ResponseParts> {
             .unwrap_or_default();
         (response.status, response.headers_id, body)
     } else {
-        let id = resource_id(value, KIND_RESPONSE)?;
         let response = registry.incoming_responses.get(&id)?;
         (
             response.status,
             response.headers_id,
-            response.body.as_bytes().to_vec(),
+            response.body.clone(),
         )
     };
     let headers = registry
@@ -1272,7 +1404,8 @@ fn register_wasi3_handler(vm: &mut VM, type_ids: HttpTypeIds) {
                 }
                 let url = format!("{}://{}{}", scheme, authority, path);
 
-                match http_request(&request.method, &url, None) {
+                let body = request.body.as_deref().map(Vec::as_slice).unwrap_or(&[]);
+                match http_request(&request.method, &url, body) {
                     Ok(response) => {
                         let mut registry = registry().lock().unwrap();
                         let headers_id = alloc_id();
@@ -1289,6 +1422,7 @@ fn register_wasi3_handler(vm: &mut VM, type_ids: HttpTypeIds) {
                                 status: response.status,
                                 headers_id,
                                 body: response.body,
+                                consumed: false,
                             },
                         );
                         drop(registry);
@@ -1360,7 +1494,8 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
                 OutgoingRequestResource {
                     options_id,
                     headers_id,
-                    body,
+                    body: (!body.is_empty()).then(|| Arc::new(body)),
+                    consumed: false,
                     trailers,
                     method: "GET".into(),
                     path_with_query: None,
@@ -1442,6 +1577,7 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
                     status: 200,
                     headers_id,
                     body_id,
+                    consumed: false,
                 },
             );
             make_resource(KIND_RESPONSE, id, type_ids.response)
@@ -1477,52 +1613,46 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
 /// kinds stay accepted for callers still holding a 0.2-shaped handle.
 fn consume_body_bytes(arg: &Value) -> Option<Vec<u8>> {
     if let Some(response_id) = resource_id(arg, KIND_RESPONSE) {
-        let found = {
-            let registry = registry().lock().unwrap();
-            registry
-                .incoming_responses
-                .get(&response_id)
-                .map(|r| r.body.as_bytes().to_vec())
-        };
-        if let Some(bytes) = found {
-            return Some(bytes);
+        let mut registry = registry().lock().unwrap();
+        if let Some(response) = registry.incoming_responses.get_mut(&response_id) {
+            if response.consumed {
+                return None;
+            }
+            response.consumed = true;
+            return Some(std::mem::take(&mut response.body));
         }
-    }
-    if let Some(response_id) = resource_id(arg, KIND_RESPONSE) {
-        let registry = registry().lock().unwrap();
-        let body_id = registry.outgoing_responses.get(&response_id)?.body_id;
-        return match body_id {
-            Some(id) => registry.outgoing_bodies.get(&id).map(|b| b.bytes.clone()),
-            // A response whose body was never opened has an empty body, which
-            // is a legal answer — not a missing resource.
+        let response = registry.outgoing_responses.get_mut(&response_id)?;
+        if response.consumed {
+            return None;
+        }
+        response.consumed = true;
+        return match response.body_id {
+            Some(id) => registry
+                .outgoing_bodies
+                .get_mut(&id)
+                .map(|body| std::mem::take(&mut body.bytes)),
             None => Some(Vec::new()),
         };
     }
     if let Some(request_id) = resource_id(arg, KIND_REQUEST) {
-        // §consume: "Will only return success at most once, and subsequent
-        // calls will return error." The flag is shared with the 0.2
-        // `incoming-request.consume`, so a program cannot take the body twice
-        // by mixing the two spellings.
         let mut registry = registry().lock().unwrap();
-        let request = registry.incoming_requests.get(&request_id)?;
+        if let Some(request) = registry.incoming_requests.get_mut(&request_id) {
+            if request.consumed {
+                return None;
+            }
+            request.consumed = true;
+            return Some(std::mem::take(&mut request.body));
+        }
+        let request = registry.outgoing_requests.get_mut(&request_id)?;
         if request.consumed {
             return None;
         }
-        let body = request.body.clone();
-        if let Some(request) = registry.incoming_requests.get_mut(&request_id) {
-            request.consumed = true;
-        }
-        return Some(body);
-    }
-    if let Some(request_id) = resource_id(arg, KIND_REQUEST) {
-        let registry = registry().lock().unwrap();
-        // A request built with no `contents` has an EMPTY body, which is a
-        // legal answer — not a missing resource.
+        request.consumed = true;
         return Some(
-            registry
-                .outgoing_requests
-                .get(&request_id)
-                .map(|request| request.body.clone())
+            request
+                .body
+                .take()
+                .map(|body| Arc::try_unwrap(body).unwrap_or_else(|shared| (*shared).clone()))
                 .unwrap_or_default(),
         );
     }
@@ -1540,9 +1670,7 @@ fn body_stream_tuple(
     headers_type_id: usize,
 ) -> Value {
     let (stream_val, stream_id) = ctx.create_stream();
-    for byte in &bytes {
-        ctx.stream_push(stream_id, Value::I32(*byte as i32));
-    }
+    ctx.stream_push_bytes(stream_id, bytes);
     ctx.stream_close(stream_id);
 
     // `option<trailers>`: a `fields` resource when there are any, `none`

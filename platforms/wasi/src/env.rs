@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::sync::Arc;
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
@@ -49,12 +50,15 @@ impl Drop for EnvironmentGuard {
 /// The whole environment: what the process inherited, with the instance's own
 /// variables layered on top.
 fn environment_pairs() -> Vec<(String, String)> {
-    let installed = INSTANCE_ENVIRONMENT.with(|slot| slot.borrow().clone());
-    let mut pairs: Vec<(String, String)> = std::env::vars()
-        .filter(|(key, _)| !installed.iter().any(|(name, _)| name == key))
-        .collect();
-    pairs.extend(installed);
-    pairs
+    INSTANCE_ENVIRONMENT.with(|slot| {
+        let installed = slot.borrow();
+        let shadowed: HashSet<&str> = installed.iter().map(|(name, _)| name.as_str()).collect();
+        let mut pairs: Vec<(String, String)> = std::env::vars()
+            .filter(|(key, _)| !shadowed.contains(key.as_str()))
+            .collect();
+        pairs.extend(installed.iter().cloned());
+        pairs
+    })
 }
 
 /// Declare a `wasi:cli/environment` function.

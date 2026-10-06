@@ -93,11 +93,17 @@ pub enum HashAlgorithm {
 impl HashAlgorithm {
     /// Digest of `data`.
     pub fn digest(self, data: &[u8]) -> Vec<u8> {
+        self.digest_parts(&[data])
+    }
+
+    fn digest_parts(self, parts: &[&[u8]]) -> Vec<u8> {
         use sha2::Digest;
         macro_rules! fixed {
             ($t:ty) => {{
                 let mut h = <$t>::new();
-                h.update(data);
+                for part in parts {
+                    h.update(part);
+                }
                 h.finalize().to_vec()
             }};
         }
@@ -105,7 +111,9 @@ impl HashAlgorithm {
             ($t:ty, $len:expr) => {{
                 use sha3::digest::{ExtendableOutput, Update, XofReader};
                 let mut h = <$t>::default();
-                h.update(data);
+                for part in parts {
+                    h.update(part);
+                }
                 let mut out = vec![0u8; $len];
                 h.finalize_xof().read(&mut out);
                 out
@@ -189,13 +197,11 @@ impl HashAlgorithm {
         };
         k.resize(block, 0);
 
-        let mut inner: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
-        inner.extend_from_slice(data);
-        let inner_digest = self.digest(&inner);
+        let inner: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+        let inner_digest = self.digest_parts(&[&inner, data]);
 
-        let mut outer: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
-        outer.extend_from_slice(&inner_digest);
-        Some(self.digest(&outer))
+        let outer: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+        Some(self.digest_parts(&[&outer, &inner_digest]))
     }
 
     /// Lowercase hex digest.
@@ -206,7 +212,13 @@ impl HashAlgorithm {
 
 /// Lowercase hex encoding.
 pub fn hex_of(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Vec::with_capacity(bytes.len().saturating_mul(2));
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize]);
+        out.push(HEX[(byte & 0x0f) as usize]);
+    }
+    String::from_utf8(out).expect("hex digits are ASCII")
 }
 
 /// SHA-256 hex digest. Named entry point: `node:crypto` and the
@@ -237,22 +249,91 @@ const KIND_SYMMETRIC_KEY: &str = "symmetric-key";
 const KIND_SYMMETRIC_STATE: &str = "symmetric-state";
 const KIND_SYMMETRIC_TAG: &str = "symmetric-tag";
 
-/// A `symmetric_state` handle's contents. `absorbed` is the transcript; the
-/// digest is computed from a copy at squeeze time, so the state is unchanged
-/// from the guest's perspective (spec: implementations "MUST duplicate the
-/// internal state and apply the finalization on the copy").
+/// Only the digest state is retained, not the entire absorbed transcript.
+#[derive(Clone)]
+enum DigestState {
+    Sha256(sha2::Sha256),
+    Sha512(sha2::Sha512),
+    Sha512_256(sha2::Sha512_256),
+}
+
+impl DigestState {
+    fn new(algorithm: HashAlgorithm) -> Option<Self> {
+        use sha2::Digest;
+        Some(match algorithm {
+            HashAlgorithm::Sha256 => Self::Sha256(sha2::Sha256::new()),
+            HashAlgorithm::Sha512 => Self::Sha512(sha2::Sha512::new()),
+            HashAlgorithm::Sha512_256 => Self::Sha512_256(sha2::Sha512_256::new()),
+            _ => return None,
+        })
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        use sha2::Digest;
+        match self {
+            Self::Sha256(state) => state.update(bytes),
+            Self::Sha512(state) => state.update(bytes),
+            Self::Sha512_256(state) => state.update(bytes),
+        }
+    }
+
+    fn finalized(&self) -> Vec<u8> {
+        use sha2::Digest;
+        match self.clone() {
+            Self::Sha256(state) => state.finalize().to_vec(),
+            Self::Sha512(state) => state.finalize().to_vec(),
+            Self::Sha512_256(state) => state.finalize().to_vec(),
+        }
+    }
+}
+
+/// Squeeze clones the digest state, so later absorbs still extend the same
+/// transcript without retaining or rehashing its previous bytes.
 #[derive(Clone)]
 struct SymmetricState {
     algorithm: String,
-    key: Option<Vec<u8>>,
-    absorbed: Vec<u8>,
+    inner: DigestState,
+    outer: Option<DigestState>,
+}
+
+impl SymmetricState {
+    fn new(algorithm: String, key: Option<&[u8]>) -> Option<Self> {
+        let hash = hash_named(&algorithm).or_else(|| mac_named(&algorithm))?;
+        let mut inner = DigestState::new(hash)?;
+        let outer = if let Some(block) = mac_named(&algorithm).and_then(HashAlgorithm::block_size) {
+            let key = key?;
+            let mut padded = if key.len() > block {
+                hash.digest(key)
+            } else {
+                key.to_vec()
+            };
+            padded.resize(block, 0);
+            let inner_pad: Vec<u8> = padded.iter().map(|byte| byte ^ 0x36).collect();
+            let outer_pad: Vec<u8> = padded.iter().map(|byte| byte ^ 0x5c).collect();
+            inner.update(&inner_pad);
+            let mut outer = DigestState::new(hash)?;
+            outer.update(&outer_pad);
+            Some(outer)
+        } else {
+            None
+        };
+        Some(Self {
+            algorithm,
+            inner,
+            outer,
+        })
+    }
+
+    fn absorb(&mut self, data: &[u8]) {
+        self.inner.update(data);
+    }
 }
 
 #[derive(Default)]
 struct Registry {
     array_outputs: HashMap<u64, Vec<u8>>,
     keys: HashMap<u64, (String, Vec<u8>)>,
-    states: HashMap<u64, SymmetricState>,
+    states: HashMap<u64, Arc<Mutex<SymmetricState>>>,
     tags: HashMap<u64, Vec<u8>>,
 }
 
@@ -271,6 +352,10 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// tenant's key by handle.
 fn registry() -> &'static Mutex<Registry> {
     vybe_runtime::resources::get::<Registry>()
+}
+
+fn state_by_id(id: u64) -> Option<Arc<Mutex<SymmetricState>>> {
+    registry().lock().unwrap().states.get(&id).cloned()
 }
 
 /// Takes no registry: the counter is not in it, and a `fresh_id()`
@@ -351,6 +436,29 @@ fn bytes_of(v: &Value) -> Vec<u8> {
     }
 }
 
+fn with_bytes_of<T>(value: &Value, use_bytes: impl FnOnce(&[u8]) -> T) -> T {
+    match value {
+        Value::String(text) => use_bytes(text.as_bytes()),
+        Value::Object(object) => {
+            let object = object.lock().unwrap();
+            if let ObjectKind::TypedArray(array) = &object.kind {
+                let buffer = array.buffer.lock().unwrap();
+                let start = array.byte_offset.min(buffer.len());
+                let end = start.saturating_add(array.length).min(buffer.len());
+                use_bytes(&buffer[start..end])
+            } else {
+                drop(object);
+                let bytes = bytes_of(value);
+                use_bytes(&bytes)
+            }
+        }
+        _ => {
+            let bytes = bytes_of(value);
+            use_bytes(&bytes)
+        }
+    }
+}
+
 fn bytes_to_value(bytes: &[u8]) -> Value {
     let elems: Vec<Value> = bytes.iter().map(|b| Value::I32(*b as i32)).collect();
     Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
@@ -396,10 +504,13 @@ fn is_known_algorithm(algorithm: &str) -> bool {
 /// Finalize a state's transcript: a digest for hash algorithms, a tag for
 /// MACs. Always computed from a copy, so the state is untouched.
 fn finalize(state: &SymmetricState) -> Option<Vec<u8>> {
-    if let Some(hash) = mac_named(&state.algorithm) {
-        hash.hmac(state.key.as_deref().unwrap_or(&[]), &state.absorbed)
+    let inner = state.inner.finalized();
+    if let Some(outer) = &state.outer {
+        let mut outer = outer.clone();
+        outer.update(&inner);
+        Some(outer.finalized())
     } else {
-        hash_named(&state.algorithm).map(|h| h.digest(&state.absorbed))
+        Some(inner)
     }
 }
 
@@ -693,31 +804,32 @@ fn register_symmetric(vm: &mut VM) {
             if !is_known_algorithm(&algorithm) {
                 return err("unsupported-algorithm");
             }
-            let mut reg = registry().lock().unwrap();
-            let key = match args.get(1).and_then(|v| handle_id(v, KIND_SYMMETRIC_KEY)) {
-                Some(key_id) => match reg.keys.get(&key_id) {
-                    // A key is bound to the algorithm it was imported for.
-                    Some((key_algo, _)) if key_algo != &algorithm => {
-                        return err("invalid-key");
-                    }
-                    Some((_, raw)) => Some(raw.clone()),
-                    None => return err("closed"),
-                },
-                None => None,
+            let key = {
+                let reg = registry().lock().unwrap();
+                match args.get(1).and_then(|v| handle_id(v, KIND_SYMMETRIC_KEY)) {
+                    Some(key_id) => match reg.keys.get(&key_id) {
+                        Some((key_algo, _)) if key_algo != &algorithm => {
+                            return err("invalid-key");
+                        }
+                        Some((_, raw)) => Some(raw.clone()),
+                        None => return err("closed"),
+                    },
+                    None => None,
+                }
             };
             // MACs cannot run keyless.
             if mac_named(&algorithm).is_some() && key.is_none() {
                 return err("key-required");
             }
             let id = fresh_id();
-            reg.states.insert(
-                id,
-                SymmetricState {
-                    algorithm,
-                    key,
-                    absorbed: Vec::new(),
-                },
-            );
+            let Some(state) = SymmetricState::new(algorithm, key.as_deref()) else {
+                return err("unsupported-algorithm");
+            };
+            registry()
+                .lock()
+                .unwrap()
+                .states
+                .insert(id, Arc::new(Mutex::new(state)));
             handle(KIND_SYMMETRIC_STATE, id)
         }),
     );
@@ -733,15 +845,13 @@ fn register_symmetric(vm: &mut VM) {
             else {
                 return err("invalid-handle");
             };
-            let data = args.get(1).map(bytes_of).unwrap_or_default();
-            let mut reg = registry().lock().unwrap();
-            match reg.states.get_mut(&id) {
-                Some(state) => {
-                    state.absorbed.extend_from_slice(&data);
-                    Value::Null
-                }
-                None => err("closed"),
+            let Some(state) = state_by_id(id) else {
+                return err("closed");
+            };
+            if let Some(data) = args.get(1) {
+                with_bytes_of(data, |bytes| state.lock().unwrap().absorb(bytes));
             }
+            Value::Null
         }),
     );
 
@@ -760,17 +870,18 @@ fn register_symmetric(vm: &mut VM) {
             else {
                 return err("invalid-handle");
             };
-            let reg = registry().lock().unwrap();
-            let Some(state) = reg.states.get(&id) else {
+            let Some(state) = state_by_id(id) else {
                 return err("closed");
             };
+            let state = state.lock().unwrap();
             // `squeeze` is the hash-function operation; MACs use squeeze_tag.
             if mac_named(&state.algorithm).is_some() {
                 return err("invalid-operation");
             }
-            let Some(digest) = finalize(state) else {
+            let Some(digest) = finalize(&state) else {
                 return err("unsupported-algorithm");
             };
+            drop(state);
             let want = usize_of(args.get(1)).unwrap_or(digest.len());
             if want > digest.len() {
                 return err("invalid-length");
@@ -790,18 +901,21 @@ fn register_symmetric(vm: &mut VM) {
             else {
                 return err("invalid-handle");
             };
-            let mut reg = registry().lock().unwrap();
-            let Some(state) = reg.states.get(&id).cloned() else {
+            let Some(state) = state_by_id(id) else {
                 return err("closed");
             };
-            if mac_named(&state.algorithm).is_none() {
-                return err("invalid-operation");
-            }
-            let Some(tag) = finalize(&state) else {
-                return err("unsupported-algorithm");
+            let tag = {
+                let state = state.lock().unwrap();
+                if mac_named(&state.algorithm).is_none() {
+                    return err("invalid-operation");
+                }
+                let Some(tag) = finalize(&state) else {
+                    return err("unsupported-algorithm");
+                };
+                tag
             };
             let tag_id = fresh_id();
-            reg.tags.insert(tag_id, tag);
+            registry().lock().unwrap().tags.insert(tag_id, tag);
             handle(KIND_SYMMETRIC_TAG, tag_id)
         }),
     );
@@ -817,10 +931,10 @@ fn register_symmetric(vm: &mut VM) {
             else {
                 return err("invalid-handle");
             };
-            let reg = registry().lock().unwrap();
-            let Some(state) = reg.states.get(&id) else {
+            let Some(state) = state_by_id(id) else {
                 return err("closed");
             };
+            let state = state.lock().unwrap();
             match mac_named(&state.algorithm) {
                 Some(hash) => Value::F64(hash.digest_len() as f64),
                 None => err("invalid-operation"),
@@ -839,12 +953,16 @@ fn register_symmetric(vm: &mut VM) {
             else {
                 return err("invalid-handle");
             };
-            let mut reg = registry().lock().unwrap();
-            let Some(state) = reg.states.get(&id).cloned() else {
+            let Some(state) = state_by_id(id) else {
                 return err("closed");
             };
+            let state = state.lock().unwrap().clone();
             let new_id = fresh_id();
-            reg.states.insert(new_id, state);
+            registry()
+                .lock()
+                .unwrap()
+                .states
+                .insert(new_id, Arc::new(Mutex::new(state)));
             handle(KIND_SYMMETRIC_STATE, new_id)
         }),
     );
@@ -859,7 +977,8 @@ fn register_symmetric(vm: &mut VM) {
             else {
                 return err("invalid-handle");
             };
-            registry().lock().unwrap().states.remove(&id);
+            let removed = registry().lock().unwrap().states.remove(&id);
+            drop(removed);
             Value::Null
         }),
     );
@@ -910,19 +1029,21 @@ fn register_symmetric(vm: &mut VM) {
             let Some(id) = args.first().and_then(|v| handle_id(v, KIND_SYMMETRIC_TAG)) else {
                 return err("invalid-handle");
             };
-            let reg = registry().lock().unwrap();
-            let Some(tag) = reg.tags.get(&id) else {
+            let tag = registry().lock().unwrap().tags.get(&id).cloned();
+            let Some(tag) = tag else {
                 return err("closed");
             };
-            let expected = args.get(1).map(bytes_of).unwrap_or_default();
-            if expected.len() != tag.len() {
-                return err("invalid-tag");
-            }
-            let diff = tag
-                .iter()
-                .zip(expected.iter())
-                .fold(0u8, |acc, (a, b)| acc | (a ^ b));
-            if diff == 0 {
+            let missing = Value::Null;
+            let expected = args.get(1).unwrap_or(&missing);
+            let valid = with_bytes_of(expected, |bytes| {
+                bytes.len() == tag.len()
+                    && tag
+                        .iter()
+                        .zip(bytes.iter())
+                        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                        == 0
+            });
+            if valid {
                 Value::Null
             } else {
                 err("invalid-tag")
@@ -1003,4 +1124,170 @@ fn register_hashes_shim(vm: &mut VM) {
             Value::String(Arc::from(md5_hex(&data).as_str()))
         }),
     );
+}
+
+#[cfg(test)]
+mod hex_tests {
+    use super::{
+        bytes_of, finalize, fresh_id, hex_of, registry, state_by_id, with_bytes_of,
+        HashAlgorithm, SymmetricState,
+    };
+    use std::sync::{Arc, Mutex};
+    use vybe_runtime::value::{Object, ObjectKind, TypedArrayState, TypedElemKind};
+    use vybe_runtime::Value;
+
+    #[test]
+    fn typed_byte_views_are_borrowed_without_copying() {
+        let buffer = Arc::new(Mutex::new(vec![0, 1, 2, 3, 4]));
+        let expected_ptr = buffer.lock().unwrap().as_ptr().wrapping_add(1);
+        let mut view = Object::new();
+        view.kind = ObjectKind::TypedArray(TypedArrayState {
+            elem: TypedElemKind::U8,
+            buffer: Arc::clone(&buffer),
+            buffer_obj: Arc::new(Mutex::new(Object::new())),
+            byte_offset: 1,
+            length: 3,
+        });
+        let view = Value::Object(vybe_runtime::heap::alloc(view));
+        with_bytes_of(&view, |bytes| {
+            assert_eq!(bytes, &[1, 2, 3]);
+            assert_eq!(bytes.as_ptr(), expected_ptr);
+        });
+        assert!(buffer.try_lock().is_ok());
+        assert_eq!(bytes_of(&view), vec![1, 2, 3]);
+
+        let boxed = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+            Value::I32(1), Value::I32(255), Value::I32(256),
+        ])));
+        with_bytes_of(&boxed, |bytes| assert_eq!(bytes, &[1, 255, 0]));
+    }
+
+    #[test]
+    fn closing_a_state_does_not_change_an_independent_clone() {
+        let id = fresh_id();
+        let mut state = SymmetricState::new("SHA-256".to_string(), None).unwrap();
+        state.absorb(b"first");
+        registry()
+            .lock()
+            .unwrap()
+            .states
+            .insert(id, Arc::new(Mutex::new(state)));
+        let held = state_by_id(id).unwrap();
+        let mut branch = held.lock().unwrap().clone();
+        branch.absorb(b"second");
+        registry().lock().unwrap().states.remove(&id);
+        assert!(state_by_id(id).is_none());
+        assert_eq!(finalize(&held.lock().unwrap()).unwrap(), HashAlgorithm::Sha256.digest(b"first"));
+        assert_eq!(finalize(&branch).unwrap(), HashAlgorithm::Sha256.digest(b"firstsecond"));
+    }
+
+    #[test]
+    fn lowercase_hex_preserves_all_byte_values() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(hex_of(&bytes), expected);
+        assert_eq!(hex_of(&[]), "");
+        assert_eq!(hex_of(&[0, 15, 16, 255]), "000f10ff");
+    }
+
+    #[test]
+    fn split_digest_updates_match_contiguous_input() {
+        let algorithms = [
+            HashAlgorithm::Md5,
+            HashAlgorithm::Sha1,
+            HashAlgorithm::Sha224,
+            HashAlgorithm::Sha256,
+            HashAlgorithm::Sha384,
+            HashAlgorithm::Sha512,
+            HashAlgorithm::Sha512_224,
+            HashAlgorithm::Sha512_256,
+            HashAlgorithm::Sha3_224,
+            HashAlgorithm::Sha3_256,
+            HashAlgorithm::Sha3_384,
+            HashAlgorithm::Sha3_512,
+            HashAlgorithm::Shake128,
+            HashAlgorithm::Shake256,
+            HashAlgorithm::Blake2b512,
+            HashAlgorithm::Blake2s256,
+            HashAlgorithm::Ripemd160,
+        ];
+        for algorithm in algorithms {
+            assert_eq!(
+                algorithm.digest_parts(&[b"ab", b"cd", b"ef"]),
+                algorithm.digest(b"abcdef"),
+                "{algorithm:?}"
+            );
+        }
+        assert_eq!(
+            hex_of(&HashAlgorithm::Sha256.hmac(b"key", b"The quick brown fox jumps over the lazy dog").unwrap()),
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+    }
+
+    #[test]
+    fn symmetric_hash_state_reuses_a_non_consuming_digest() {
+        let data: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
+        for (name, hash) in [
+            ("SHA-256", HashAlgorithm::Sha256),
+            ("SHA-512", HashAlgorithm::Sha512),
+            ("SHA-512/256", HashAlgorithm::Sha512_256),
+        ] {
+            let mut state = SymmetricState::new(name.to_string(), None).unwrap();
+            for chunk in data.chunks(32768) {
+                state.absorb(chunk);
+            }
+            assert_eq!(finalize(&state).unwrap(), hash.digest(&data), "{name}");
+            assert_eq!(finalize(&state).unwrap(), hash.digest(&data), "{name}");
+            let mut branch = state.clone();
+            branch.absorb(b"branch");
+            assert_eq!(
+                finalize(&branch).unwrap(),
+                hash.digest(&[data.as_slice(), b"branch"].concat())
+            );
+            assert_eq!(finalize(&state).unwrap(), hash.digest(&data), "{name}");
+        }
+    }
+
+    #[test]
+    fn symmetric_hmac_state_matches_one_shot_and_can_continue_after_squeeze() {
+        let key = vec![b'k'; 200];
+        for (name, hash) in [
+            ("HMAC/SHA-256", HashAlgorithm::Sha256),
+            ("HMAC/SHA-512", HashAlgorithm::Sha512),
+            ("HMAC/SHA-512/256", HashAlgorithm::Sha512_256),
+        ] {
+            let mut state = SymmetricState::new(name.to_string(), Some(&key)).unwrap();
+            state.absorb(b"first");
+            assert_eq!(finalize(&state), hash.hmac(&key, b"first"), "{name}");
+            state.absorb(b"second");
+            assert_eq!(finalize(&state), hash.hmac(&key, b"firstsecond"), "{name}");
+        }
+    }
+
+    #[test]
+    #[ignore = "local repeated-squeeze diagnostic"]
+    fn bench_incremental_squeeze_against_transcript_rehash() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let data = vec![0x5a; 4 * 1024 * 1024];
+        let mut state = SymmetricState::new("SHA-256".to_string(), None).unwrap();
+        state.absorb(&data);
+        let expected = HashAlgorithm::Sha256.digest(&data);
+        for _ in 0..3 {
+            let old_start = Instant::now();
+            for _ in 0..16 {
+                assert_eq!(black_box(HashAlgorithm::Sha256.digest(&data)), expected);
+            }
+            let old = old_start.elapsed();
+            let new_start = Instant::now();
+            for _ in 0..16 {
+                assert_eq!(black_box(finalize(&state).unwrap()), expected);
+            }
+            eprintln!(
+                "16 squeezes after 4 MiB: transcript {old:?}, incremental {:?}",
+                new_start.elapsed()
+            );
+        }
+    }
 }
