@@ -152,6 +152,8 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 // static call because the import tables are not built yet
                 // here; two externref locals are cheaper than threading them in.
                 need = need.max(2);
+            } else if op == Op::ARRAY_COPY {
+                need = need.max(5); // boxed destination, offsets, source, and count
             } else if op == Op::ARRAY_SET {
                 need = need.max(3); // value, index, and receiver for GC-vs-dynamic branch
             } else if op == Op::ARRAY_GET {
@@ -186,6 +188,7 @@ fn is_binary_typed_op(op: Op) -> bool {
     || op == Op::F64_MIN || op == Op::F64_MAX || op == Op::F64_COPYSIGN
     // f64 comparisons
     || op == Op::F64_LT || op == Op::F64_GT || op == Op::F64_LE || op == Op::F64_GE
+    || op == Op::F64_EQ || op == Op::F64_NE
     // i32 binary arithmetic
     || op == Op::I32_ADD || op == Op::I32_SUB || op == Op::I32_MUL
     || op == Op::I32_DIV_S || op == Op::I32_DIV_U
@@ -195,6 +198,10 @@ fn is_binary_typed_op(op: Op) -> bool {
     || op == Op::I32_ROTL || op == Op::I32_ROTR
     // i32 comparisons
     || op == Op::EQ || op == Op::NE
+    || op == Op::I32_LT_S || op == Op::I32_LT_U
+    || op == Op::I32_GT_S || op == Op::I32_GT_U
+    || op == Op::I32_LE_S || op == Op::I32_LE_U
+    || op == Op::I32_GE_S || op == Op::I32_GE_U
 }
 
 // (The 0xEE selector reader is deleted: memory.size/grow/fill/copy/init
@@ -751,6 +758,14 @@ pub fn encode_code_section(
                     temp_local_idx,
                     in_i32_block,
                 );
+            } else if op == Op::I32_TRUNC_SAT_F64_S || op == Op::I32_TRUNC_SAT_F64_U {
+                // Saturating conversion has the same boxed value boundary as
+                // ordinary f64-to-i32 truncation. Serializing only the 0xFC
+                // opcode would feed an externref to a raw f64 instruction.
+                emit_unbox_f64(&mut body, &rt_idx);
+                body.push(op.group() as u8);
+                write_leb128_u32(&mut body, op.sub() as u32);
+                box_i32_unless_condition(&mut body, &rt_idx, chunk, ip, in_i32_block);
             } else if op.group() == 0xFC {
                 // 0xFC-prefix ops per the bulk-memory / reference-types spec
                 // need specific trailing immediates that aren't captured by
@@ -1591,15 +1606,67 @@ fn emit_core_op(
             emit_box_i32(body, rt_idx);
         }
 
-        // ── Conversions: unbox source type → convert → rebox target type ──
-        _ if op == Op::I32_FROM_F64 => {
-            // externref → f64 → i32.trunc_f64_s → externref
+        // Exact adjacent compiler bit-cast pairs retain raw f32 between the
+        // standard operations. Promoting/re-demoting in between would alter
+        // signaling NaN bit patterns and add arithmetic absent from bytecode.
+        _ if op == Op::F32_DEMOTE_F64
+            && next_op(chunk, *ip) == Some(Op::I32_REINTERPRET_F32) =>
+        {
             emit_unbox_f64(body, rt_idx);
             body.push(op.sub() as u8);
-            emit_box_i32(body, rt_idx);
+            body.push(Op::I32_REINTERPRET_F32.sub() as u8);
+            *ip += 4; // paired no-immediate opcode header
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
-        _ if op == Op::F64_FROM_I32 => {
-            // externref → i32 → f64.convert_i32_s → externref
+        _ if op == Op::F32_REINTERPRET_I32
+            && next_op(chunk, *ip) == Some(Op::F64_PROMOTE_F32) =>
+        {
+            emit_unbox_i32(body, rt_idx);
+            body.push(op.sub() as u8);
+            body.push(Op::F64_PROMOTE_F32.sub() as u8);
+            *ip += 4;
+            emit_box_f64(body, rt_idx);
+        }
+        // Bit transport stays raw across adjacent, side-effect-free casts.
+        // JS Number boxing can quiet signaling NaNs before reinterpretation.
+        _ if op == Op::F64_CONST
+            && next_op(chunk, *ip + 8) == Some(Op::I64_REINTERPRET_F64) =>
+        {
+            body.push(op.sub() as u8);
+            body.extend_from_slice(&chunk.code[*ip..*ip + 8]);
+            body.push(Op::I64_REINTERPRET_F64.sub() as u8);
+            *ip += 8 + 4; // f64 bits + paired no-immediate opcode header
+        }
+        _ if op == Op::F64_REINTERPRET_I64
+            && next_op(chunk, *ip) == Some(Op::I64_REINTERPRET_F64) =>
+        {
+            body.push(op.sub() as u8);
+            body.push(Op::I64_REINTERPRET_F64.sub() as u8);
+            *ip += 4; // retain raw i64; no JS Number transport between casts
+        }
+        _ if op == Op::I64_REINTERPRET_F64 => {
+            emit_unbox_f64(body, rt_idx);
+            body.push(op.sub() as u8); // i64 remains raw
+        }
+        _ if op == Op::F64_REINTERPRET_I64 => {
+            body.push(op.sub() as u8);
+            emit_box_f64(body, rt_idx);
+        }
+        _ if op == Op::I64_EXTEND_I32_S || op == Op::I64_EXTEND_I32_U => {
+            emit_unbox_i32(body, rt_idx);
+            body.push(op.sub() as u8); // i64 remains raw
+        }
+
+        // ── Conversions: unbox source type → convert → rebox target type ──
+        _ if op == Op::I32_FROM_F64 || op == Op::I32_TRUNC_F64_U => {
+            // Both signed and unsigned truncation consume a raw f64. The
+            // unsigned form must not fall through onto the boxed value stack.
+            emit_unbox_f64(body, rt_idx);
+            body.push(op.sub() as u8);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+        }
+        _ if op == Op::F64_FROM_I32 || op == Op::F64_CONVERT_I32_U => {
+            // Signedness changes interpretation of the bits, not the ABI.
             emit_unbox_i32(body, rt_idx);
             body.push(op.sub() as u8);
             emit_box_f64(body, rt_idx);
@@ -2218,6 +2285,31 @@ fn void_boundary_value_producer(op: Op) -> bool {
 
 fn bundled_helper_chunk_for_global(name: &str) -> Option<&'static str> {
     match name {
+        "__vybe_encoding_base64_decode" => Some("__stdlib_encoding_base64_decode"),
+        "__vybe_encoding_bin2hex" => Some("__stdlib_encoding_bin2hex"),
+        "__vybe_csv_parse_line" => Some("__stdlib_csv_parse_line"),
+        "__vybe_csv_parse_document" => Some("__stdlib_csv_parse_document"),
+        "__vybe_csv_format_minimal" => Some("__stdlib_csv_format_minimal"),
+        "__vybe_csv_format_whitespace" => Some("__stdlib_csv_format_whitespace"),
+        "__vybe_bytes_to_binary_string" => Some("__stdlib_bytes_to_binary_string"),
+        "__vybe_bytes_to_binary_string_all" => Some("__stdlib_bytes_to_binary_string_all"),
+        "__vybe_binary_string_to_bytes" => Some("__stdlib_binary_string_to_bytes"),
+        "__vybe_encoding_hex2bin" => Some("__stdlib_encoding_hex2bin"),
+        "__vybe_encoding_str_rot13" => Some("__stdlib_encoding_str_rot13"),
+        "__vybe_encoding_quoted_printable_encode" => Some("__stdlib_encoding_quoted_printable_encode"),
+        "__vybe_encoding_quoted_printable_decode" => Some("__stdlib_encoding_quoted_printable_decode"),
+        "__vybe_encoding_convert_uuencode" => Some("__stdlib_encoding_convert_uuencode"),
+        "__vybe_encoding_convert_uudecode" => Some("__stdlib_encoding_convert_uudecode"),
+        "__vybe_encoding_base64_decode_lenient" => Some("__stdlib_encoding_base64_decode_lenient"),
+        "__vybe_sort_by_key" => Some("__stdlib_sort_by_key"),
+        "__vybe_sort_by_key_receiver" => Some("__stdlib_sort_by_key_receiver"),
+        "__vybe_heapify" => Some("__stdlib_heapify"),
+        "__vybe_nsmallest" => Some("__stdlib_nsmallest"),
+        "__vybe_nlargest" => Some("__stdlib_nlargest"),
+        "__vybe_nsmallest_key" => Some("__stdlib_nsmallest_key"),
+        "__vybe_nlargest_key" => Some("__stdlib_nlargest_key"),
+        "__vybe_nsmallest_key_receiver" => Some("__stdlib_nsmallest_key_receiver"),
+        "__vybe_nlargest_key_receiver" => Some("__stdlib_nlargest_key_receiver"),
         "__vybe_autoderef" => Some("__stdlib_autoderef"),
         "__vybe_dyneq" => Some("__stdlib_dyneq"),
         "__vybe_dynlt" => Some("__stdlib_dynlt"),
@@ -2823,6 +2915,7 @@ fn emit_gc_op(
         _ if op == Op::ARRAY_NEW_DEFAULT => {
             // Spec: `array.new_default $t` (0xFB 0x07), pops [length].
             let _typeidx = read_u16(&chunk.code, ip);
+            emit_unbox_i32(body, rt_idx);
             body.push(0xFB);
             write_leb128_u32(body, 0x07);
             write_leb128_u32(body, type_ctx.array_type_idx);
@@ -3203,16 +3296,27 @@ fn emit_gc_op(
             write_leb128_u32(body, type_ctx.array_type_idx);
         }
         _ if op == Op::ARRAY_COPY => {
+            // The value ABI boxes all five operands. Restore the spec stack
+            // [destination reference, i32 offset, source reference, i32 offset,
+            // i32 count] after spilling, including casts to the array type.
+            for offset in (0..5).rev() {
+                body.push(0x21);
+                write_leb128_u32(body, temp_idx + offset);
+            }
+            for offset in 0..5 {
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + offset);
+                if offset == 0 || offset == 2 {
+                    emit_internalize(body);
+                    emit_ref_cast_array(body, type_ctx.array_type_idx);
+                } else {
+                    emit_unbox_i32(body, rt_idx);
+                }
+            }
             body.push(0xFB);
             write_leb128_u32(body, 0x11);
             write_leb128_u32(body, type_ctx.array_type_idx);
             write_leb128_u32(body, type_ctx.array_type_idx);
-        }
-        _ if op == Op::ARRAY_NEW_DEFAULT => {
-            body.push(0xFB);
-            write_leb128_u32(body, 0x07);
-            write_leb128_u32(body, type_ctx.array_type_idx);
-            emit_externalize(body);
         }
         // ⛔⛔ EXACT CASTS ADD NO OPCODE. Custom Descriptors, Overview
         // "Instructions": *"All existing instructions that take heap type

@@ -241,7 +241,7 @@ impl WasmTypeContext {
             return None;
         }
         let ordinal = described_idx / 2;
-        if ordinal as usize >= self.struct_type_by_module_index.len() {
+        if ordinal >= self.array_type_idx / 2 {
             return None;
         }
         Some(base + ordinal)
@@ -254,11 +254,8 @@ impl WasmTypeContext {
     /// chunk, so a name lookup through `chunk.types` silently misses in every
     /// chunk but the first — which is where constructors live.
     pub fn desc_global_by_index(&self, module_index: u32) -> Option<u32> {
-        let base = self.desc_global_base?;
-        if module_index == 0 || module_index as usize > self.struct_type_by_module_index.len() {
-            return None;
-        }
-        Some(base + module_index - 1)
+        let described = self.struct_type_by_index(module_index)?;
+        self.desc_global_for_described(described)
     }
 
     /// Look up the field index for a field name within a struct type.
@@ -328,11 +325,10 @@ fn write_proposal_signature(out: &mut Vec<u8>, module: &str, name: &str) -> bool
         crate::writer::builtins::js_weakmap_builtins::write_weakmap_signature(out, name)
     } else if module == crate::writer::builtins::js_weakmap_builtins::WEAKSET_MODULE {
         crate::writer::builtins::js_weakmap_builtins::write_weakset_signature(out, name)
-    } else if let Some(variant) =
-        crate::writer::builtins::js_typedarray_builtins::VARIANTS
-            .iter()
-            .copied()
-            .find(|variant| variant.module() == module)
+    } else if let Some(variant) = crate::writer::builtins::js_typedarray_builtins::VARIANTS
+        .iter()
+        .copied()
+        .find(|variant| variant.module() == module)
     {
         crate::writer::builtins::js_typedarray_builtins::write_signature(out, variant, name)
     } else if crate::writer::builtins::web_builtins::write_signature(out, module, name) {
@@ -433,6 +429,74 @@ fn record_raw_params(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8], sig_s
     }
 }
 
+/// Order binary class pairs without changing the module's declared type IDs.
+/// Recursive field/descriptor links may point forward; superclass links may not.
+fn ordered_class_rows(rows: &[vybe_runtime::chunk::TypeEntry]) -> Result<Vec<usize>, String> {
+    let mut children = vec![Vec::new(); rows.len()];
+    let mut indegree = vec![0usize; rows.len()];
+    let mut ready = std::collections::BTreeSet::new();
+    let mut class_count = 0usize;
+    for (i, row) in rows.iter().enumerate() {
+        if row.describes_index != 0 {
+            let described = row.describes_index as usize - 1;
+            if rows.get(described).is_none_or(|r| r.describes_index != 0) {
+                return Err(format!(
+                    "descriptor type #{} '{}' describes invalid class #{}",
+                    i + 1,
+                    row.name,
+                    row.describes_index
+                ));
+            }
+            continue;
+        }
+        class_count += 1;
+        if row.parent_index == 0 {
+            ready.insert(i);
+        } else {
+            let parent = row.parent_index as usize - 1;
+            let Some(parent_row) = rows.get(parent) else {
+                return Err(format!(
+                    "class type #{} '{}' has out-of-range parent #{}",
+                    i + 1,
+                    row.name,
+                    row.parent_index
+                ));
+            };
+            if parent_row.describes_index != 0 {
+                return Err(format!(
+                    "class type #{} '{}' has descriptor parent #{}",
+                    i + 1,
+                    row.name,
+                    row.parent_index
+                ));
+            }
+            children[parent].push(i);
+            indegree[i] = 1;
+        }
+    }
+    let mut ordered = Vec::with_capacity(class_count);
+    while let Some(parent) = ready.pop_first() {
+        ordered.push(parent);
+        for &child in &children[parent] {
+            indegree[child] -= 1;
+            if indegree[child] == 0 {
+                ready.insert(child);
+            }
+        }
+    }
+    if ordered.len() != class_count {
+        let pending = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| r.describes_index == 0 && indegree[*i] != 0)
+            .map(|(i, r)| format!("#{} '{}'", i + 1, r.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("cycle in class supertypes: {pending}"));
+    }
+    Ok(ordered)
+}
+
 pub fn build_type_context(
     chunks: &[Chunk],
     host_imports: &[Import],
@@ -489,15 +553,15 @@ pub fn build_type_context(
     // real descriptor unreferenced. `describes_index` is a back-pointer (0 for
     // an ordinary class row), which is what makes the test exact rather than a
     // guess at the row's name.
-    let type_entries: Vec<&vybe_runtime::chunk::TypeEntry> = chunks
-        .first()
-        .map(|c| c.types.iter().filter(|t| t.describes_index == 0).collect())
-        .unwrap_or_default();
+    let all_rows = chunks.first().map(|c| c.types.as_slice()).unwrap_or(&[]);
+    let class_rows = ordered_class_rows(all_rows)
+        .unwrap_or_else(|error| panic!("invalid WASM type hierarchy: {error}"));
+    let type_entries: Vec<_> = class_rows.iter().map(|&row| &all_rows[row]).collect();
 
     // Layout:
     // One big rec group holding every described/descriptor pair so that
-    // parent/child subtype links and described↔descriptor back-pointers
-    // all resolve as forward references within a single recursive block.
+    // described↔descriptor back-pointers resolve recursively. Class pairs
+    // are ordered parent-first because supertype links cannot point forward.
     // Then: 3 array types (each its own implicit singleton rec group)
     // Then: function types for imports + chunks
     // Then: N multi-value block types (one per distinct block `result_count >= 2`)
@@ -580,8 +644,7 @@ pub fn build_type_context(
             }
         }
     }
-    let block_type_count =
-        block_result_counts.len() as u32 + block_i32_param_counts.len() as u32;
+    let block_type_count = block_result_counts.len() as u32 + block_i32_param_counts.len() as u32;
 
     // Pre-scan for stack-switching usage. Any CONT_NEW/SUSPEND/RESUME/
     // SWITCH opcode triggers the emission of:
@@ -636,9 +699,8 @@ pub fn build_type_context(
     }
     ctx.exception_type_idx = ss_base + stack_switching_type_count;
 
-    // Populate the name→typeidx maps up front so the supertype link in
-    // each subtype can resolve a parent that appears later in the same
-    // rec group.
+    // Populate maps from the binary parent-first order while retaining every
+    // original module type ID, including interleaved explicit descriptor rows.
     // ⚠ `struct_type_by_module_index` is keyed by MODULE index, and the module
     // index space includes the descriptor rows that `type_entries` filtered
     // out. Building it from the filtered list would shift every entry past the
@@ -646,16 +708,9 @@ pub fn build_type_context(
     // a class row answers with its described index, a descriptor row with its
     // paired `2i+1`, resolved through the `describes_index` back-pointer.
     {
-        let all_rows: &[vybe_runtime::chunk::TypeEntry] =
-            chunks.first().map(|c| c.types.as_slice()).unwrap_or(&[]);
-        // Module index (0-based here) → class ordinal, for class rows only.
         let mut class_ordinal: Vec<Option<u32>> = vec![None; all_rows.len()];
-        let mut next = 0u32;
-        for (i, t) in all_rows.iter().enumerate() {
-            if t.describes_index == 0 {
-                class_ordinal[i] = Some(next);
-                next += 1;
-            }
+        for (ordinal, &module_row) in class_rows.iter().enumerate() {
+            class_ordinal[module_row] = Some(ordinal as u32);
         }
         ctx.struct_type_by_module_index = all_rows
             .iter()
@@ -713,10 +768,10 @@ pub fn build_type_context(
     // `sub final` so their subtypes can extend them.
     // Keyed by the declared supertype INDEX, so two same-named-but-distinct
     // types can no longer be conflated into one "has children" answer.
-    let mut has_children: std::collections::HashSet<u16> = std::collections::HashSet::new();
+    let mut has_children: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for te in &type_entries {
         if te.parent_index != 0 {
-            has_children.insert(te.parent_index);
+            has_children.insert(te.parent_index as usize);
         }
     }
 
@@ -747,7 +802,7 @@ pub fn build_type_context(
 
             // Opening byte: `sub final` (0x4F) if no subtype extends this,
             // else `sub` (0x50) leaving the type open for extension.
-            let described_final = !has_children.contains(&(i as u16 + 1));
+            let described_final = !has_children.contains(&(class_rows[i] + 1));
             let sub_byte = if described_final { CD_SUB_FINAL } else { 0x50 };
 
             // Described struct subtype. Supertype count = 1 when parent
@@ -756,6 +811,10 @@ pub fn build_type_context(
             // by linking to the parent's descriptor).
             out.push(sub_byte);
             if let Some(parent_idx) = ctx.struct_type_by_index(te.parent_index as u32) {
+                assert!(
+                    parent_idx < described_idx,
+                    "WASM superclass must precede its subtype"
+                );
                 write_leb128_u32(&mut out, 1);
                 write_leb128_u32(&mut out, parent_idx);
             } else {
@@ -1094,7 +1153,10 @@ pub fn build_type_context(
         out.push(TYPE_EXTERNREF);
         // (cont $ft) — prefix + funcidx
         out.push(crate::writer::proposals::stack_switching::CONT_TYPE_PREFIX);
-        write_leb128_u32(&mut out, ctx.suspend_tag_type_idx);
+        // The continuation's function type is an s33, unlike instruction
+        // type-index immediates. Unsigned LEB interprets indices 64..127 as
+        // negative values when the decoder reads the required signed encoding.
+        write_leb128_i64(&mut out, ctx.suspend_tag_type_idx as i64);
     }
 
     for tag in &continuation_tags {
@@ -1113,4 +1175,155 @@ pub fn build_type_context(
     write_leb128_u32(&mut out, 0); // 0 results
 
     (out, ctx)
+}
+
+#[cfg(test)]
+mod superclass_order_tests {
+    use super::*;
+    use vybe_runtime::{Op, chunk::TypeEntry};
+
+    fn class(name: &str, parent: u16, fields: &[&str]) -> TypeEntry {
+        TypeEntry {
+            name: name.into(),
+            parent_index: parent,
+            fields: fields.iter().map(|s| (*s).into()).collect(),
+            ..Default::default()
+        }
+    }
+    fn chunks() -> Vec<Chunk> {
+        let mut root = Chunk::new("ordered-types");
+        let mut child = class("Child", 3, &["base", "leaf"]);
+        child.methods = vec![("inherited".into(), 1), ("local".into(), 2)];
+        let mut parent = class("Parent", 0, &["base"]);
+        parent.methods = vec![("inherited".into(), 1)];
+        let mut child_desc = class("#desc Child", 0, &[]);
+        child_desc.describes_index = 1;
+        let mut parent_desc = class("#desc Parent", 0, &[]);
+        parent_desc.describes_index = 3;
+        root.types = vec![child, child_desc, parent, parent_desc];
+        // Original module type 1 is Child. The allocation must use its new
+        // binary type and matching descriptor singleton, without changing ID 1.
+        root.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        root.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        // This is the compiler allocation producer: the writer supplies the
+        // exact descriptor singleton, then externalizes the allocated value.
+        // Raw STRUCT_NEW_DESC instead requires its descriptor on the stack.
+        root.emit_struct_new(1, 2, 0);
+        root.emit_op(Op::DROP, 0);
+        root.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        root.emit_op(Op::RETURN, 0);
+        let mut method = Chunk::new("inherited");
+        method.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        method.emit_op(Op::RETURN, 0);
+        let mut local = method.clone();
+        local.name = "local".into();
+        vec![root, method, local]
+    }
+    #[test]
+    fn forward_superclasses_remap_module_ids_descriptors_and_vtables_together() {
+        let chunks = chunks();
+        let before = format!("{:?}", chunks[0].types);
+        let (_, mut ctx) = build_type_context(&chunks, &[], 0, &[]);
+        assert_eq!(ctx.struct_type_by_module_index, vec![2, 3, 0, 1]);
+        assert_eq!(ctx.struct_type("Child"), Some(2));
+        assert_eq!(ctx.struct_type("Parent"), Some(0));
+        assert_eq!(ctx.desc_type("Child"), Some(3));
+        assert_eq!(ctx.desc_type("Parent"), Some(1));
+        ctx.desc_global_base = Some(20);
+        assert_eq!(ctx.desc_global_by_index(1), Some(21));
+        assert_eq!(ctx.desc_global_by_index(3), Some(20));
+        assert_eq!(ctx.desc_global_by_index(2), None);
+        assert_eq!(ctx.desc_global_by_index(4), None);
+        assert_eq!(ctx.desc_global("Child"), Some(21));
+        // Explicit descriptor rows enlarge the module table, not class pairs.
+        assert_eq!(ctx.desc_global_for_described(2), Some(21));
+        assert_eq!(ctx.desc_global_for_described(3), None);
+        assert_eq!(ctx.desc_global_for_described(4), None);
+        assert_eq!(ctx.desc_global_for_described(6), None);
+        assert_eq!(ctx.desc_vtable, vec![vec![Some(1)], vec![Some(1), Some(2)]]);
+        assert_eq!(ctx.field_index("Child", "leaf"), Some(1));
+        assert_eq!(format!("{:?}", chunks[0].types), before);
+    }
+    #[test]
+    fn ordered_native_binary_validates_all_superclass_and_descriptor_links() {
+        let chunks = chunks();
+        let bytes = crate::write_wasm(&chunks);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes)
+            .unwrap();
+        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+            if let wasmparser::Payload::TypeSection(types) = payload.unwrap() {
+                let group = types.into_iter().next().unwrap().unwrap();
+                let defs: Vec<_> = group.types().collect();
+                assert_eq!(defs.len(), 4);
+                let parent = |t: &wasmparser::SubType| {
+                    t.supertype_idx.map(|index| match index.unpack() {
+                        wasmparser::UnpackedIndex::Module(index) => index,
+                        other => panic!("unexpected superclass index {other:?}"),
+                    })
+                };
+                assert_eq!(
+                    defs.iter().map(|t| parent(t)).collect::<Vec<_>>(),
+                    vec![None, None, Some(0), Some(1)]
+                );
+                assert!(!defs[0].is_final);
+                assert!(!defs[1].is_final);
+                assert!(defs[2].is_final);
+                assert!(defs[3].is_final);
+            }
+        }
+    }
+    #[test]
+    fn ordering_is_deterministic_for_reversed_chains_siblings_and_case_distinct_names() {
+        let rows = vec![
+            class("Foo", 3, &[]),
+            class("FOO", 3, &[]),
+            class("Middle", 4, &[]),
+            class("Base", 0, &[]),
+        ];
+        assert_eq!(ordered_class_rows(&rows).unwrap(), vec![3, 2, 0, 1]);
+        let mut root = Chunk::new("case-types");
+        root.types = rows;
+        let (_, ctx) = build_type_context(&[root], &[], 0, &[]);
+        assert_eq!(ctx.struct_type("Foo"), Some(4));
+        assert_eq!(ctx.struct_type("FOO"), Some(6));
+    }
+    #[test]
+    fn invalid_parent_and_descriptor_indices_and_cycles_are_rejected() {
+        assert!(
+            ordered_class_rows(&[class("Self", 1, &[])])
+                .unwrap_err()
+                .contains("cycle")
+        );
+        assert!(
+            ordered_class_rows(&[class("A", 2, &[]), class("B", 1, &[])])
+                .unwrap_err()
+                .contains("cycle")
+        );
+        assert!(
+            ordered_class_rows(&[class("A", 2, &[])])
+                .unwrap_err()
+                .contains("out-of-range parent")
+        );
+        let mut desc = class("#desc A", 0, &[]);
+        desc.describes_index = 1;
+        assert!(
+            ordered_class_rows(&[class("A", 2, &[]), desc])
+                .unwrap_err()
+                .contains("descriptor parent")
+        );
+        let mut desc = class("#desc missing", 0, &[]);
+        desc.describes_index = 2;
+        assert!(
+            ordered_class_rows(&[desc])
+                .unwrap_err()
+                .contains("invalid class")
+        );
+        let mut root = Chunk::new("invalid");
+        root.types = vec![class("A", 1, &[])];
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::write_wasm(&[root])))
+                .is_err()
+        );
+    }
 }

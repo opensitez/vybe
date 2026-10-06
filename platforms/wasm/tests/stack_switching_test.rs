@@ -1073,7 +1073,7 @@ fn jspi_fulfilled_promise_suspend_unwraps_value() {
     let mut chunk = Chunk::new("<script>");
     // Host-built promise arrives as an imported global (spec `global.get`).
     let g = chunk.intern_string_constant("__jspi_fulfilled_promise");
-    chunk.emit_op_u16(Op::GLOBAL_GET, g, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, g, 0);
     {
         let aw = chunk.add_import("jspi", "await");
         chunk.emit_call(aw, 1, 0);
@@ -1095,7 +1095,7 @@ fn jspi_rejected_promise_suspend_enters_wasm_catch_handler() {
     let g = chunk.intern_string_constant("__jspi_rejected_promise");
 
     let off = emit_try_table_catch_all_start(&mut chunk);
-    chunk.emit_op_u16(Op::GLOBAL_GET, g, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, g, 0);
     {
         let aw = chunk.add_import("jspi", "await");
         chunk.emit_call(aw, 1, 0);
@@ -1319,4 +1319,31 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     // An empty/early result would mean the nested call's RETURN tripped the
     // host callback's stale floor and aborted the generator before the yield.
     assert_eq!(result.as_i32(), 99);
+}
+
+#[test]
+fn continuation_function_type_indices_validate_across_signed_leb_boundaries() {
+    for arities in [1, 64, 96, 128] {
+        let mut script = Chunk::new("<continuation-types>");
+        // An unreachable producer is valid for the typed cont.new operand;
+        // the test exercises exported type references without running a fiber.
+        script.emit_op(Op::UNREACHABLE, 0);
+        script.emit_op(Op::CONT_NEW, 0);
+        script.emit_op(Op::DROP, 0);
+        script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        script.emit_op(Op::RETURN, 0);
+        let mut chunks = vec![script];
+        for arity in 0..arities {
+            let mut function = Chunk::new(&format!("arity-{arity}"));
+            function.arity = arity;
+            function.local_count = arity as u16;
+            function.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+            function.emit_op(Op::RETURN, 0);
+            chunks.push(function);
+        }
+        let bytes = write_wasm(&chunks);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes)
+            .unwrap_or_else(|error| panic!("arity count {arities}: {error}"));
+    }
 }

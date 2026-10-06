@@ -81,3 +81,55 @@ fn boxed_local_conditions_are_unboxed_for_branches() {
         validate(&[script]);
     }
 }
+
+#[test]
+fn gc_array_allocation_and_copy_unbox_all_operands() {
+    let mut script = Chunk::new("<script>");
+    script.local_count = 2;
+    script.emit_i32_const(4, 0);
+    script.emit_op_u16(Op::ARRAY_NEW_DEFAULT, 0, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    for value in [10, 20, 30] {
+        script.emit_i32_const(value, 0);
+    }
+    script.emit_op_u16_u16(Op::ARRAY_NEW_FIXED, 0, 3, 0);
+    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    script.emit_i32_const(1, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    script.emit_i32_const(0, 0);
+    script.emit_i32_const(3, 0);
+    script.emit_op(Op::ARRAY_COPY, 0);
+    script.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    script.emit_i32_const(2, 0);
+    script.emit_op(Op::ARRAY_GET, 0);
+    script.emit_op(Op::RETURN, 0);
+    validate(&[script.clone()]);
+    assert_eq!(
+        vybe_runtime::VM::new().run(vec![script]).unwrap().as_i32(),
+        20
+    );
+}
+
+#[test]
+fn unsigned_numeric_conversions_survive_boxed_locals_and_conditions() {
+    for condition in [false, true] {
+        let mut script = Chunk::new("<unsigned-conversion>");
+        script.local_count = 1;
+        script.emit_f64_const(4294967295.0, 0);
+        script.emit_op(Op::I32_TRUNC_F64_U, 0);
+        script.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        script.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        script.emit_op(Op::F64_CONVERT_I32_U, 0);
+        script.emit_op(Op::I32_TRUNC_F64_U, 0);
+        if condition {
+            script.emit_if_value(0);
+            script.emit_f64_const(1.0, 0);
+            script.emit_else(0);
+            script.emit_f64_const(0.0, 0);
+            script.emit_end(0);
+        }
+        script.emit_op(Op::RETURN, 0);
+        validate(&[script]);
+    }
+}
