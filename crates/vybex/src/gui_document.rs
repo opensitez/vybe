@@ -203,13 +203,16 @@ pub fn engine_html() -> String {
 /// actually set. `GuiState.width`/`height` keep their defaults and a 280×400
 /// form opened at 800×600.
 pub fn viewport() -> Option<(u32, u32)> {
+    use vybe_platform_web::engine;
     // `window.innerWidth` / `innerHeight` come from the active engine.
     if !vybe_platform_web::present::has_content(active()) {
         return None;
     }
-    match vybe_platform_web::engine::window(
-        vybe_platform_web::engine::WindowOp::InnerSize(active()),
-    ) {
+    let vybe_platform_web::engine::WindowValue::Window(context) =
+        engine::window(engine::WindowOp::DefaultView(active())) else {
+            return None;
+        };
+    match engine::window(engine::WindowOp::InnerSize(context)) {
         vybe_platform_web::engine::WindowValue::Pair(w, h) if w >= 1.0 && h >= 1.0 => {
             Some((w.round() as u32, h.round() as u32))
         }

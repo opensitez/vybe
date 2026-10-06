@@ -1,126 +1,44 @@
-//! Guest callbacks for Webcore's own native browser shell.
+//! Guest callbacks for Webcore's browser-owned native context.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::time::Duration;
 
-use tiny_skia::{Color, Pixmap};
-use webcore::embedded_window::{self, EmbeddedPage};
-use webcore::ui_events::UiEvent;
+use webcore::browser::{Browser, BrowserChrome, BrowserGuest, BrowserOptions};
 
-use vybe_platform_web::engine::{self, DomOp, UiEventFields, WindowOp};
-
-struct Page {
-    vm: Rc<RefCell<vybe_runtime::VM>>,
-    loaded: bool,
+struct Guest {
+    vm: vybe_runtime::VM,
 }
 
-impl Page {
+impl Guest {
     fn dispatch_document_events(&mut self) -> bool {
         let pending = crate::gui_document::drain();
         let changed = !pending.is_empty();
         for dispatch in pending {
-            if let Err(error) = self.vm.borrow_mut().invoke(&dispatch.callback, &[dispatch.event]) {
+            if let Err(error) = self.vm.invoke(&dispatch.callback, &[dispatch.event]) {
                 eprintln!("Event handler error: {error}");
             }
         }
         changed
     }
+}
 
-    fn fire_load(&mut self) {
-        let node = engine::DOCUMENT;
+impl BrowserGuest for Guest {
+    fn context_closed(&mut self) {
+        use vybe_platform_web::engine::{self, WindowOp, WindowValue};
+        if let WindowValue::Window(context) = engine::window(WindowOp::DefaultView(crate::gui_document::active())) {
+            engine::window(WindowOp::Close(context));
+        }
+    }
+    fn context_ready(&mut self) {
+        let node = vybe_platform_web::engine::DOCUMENT;
         let event = crate::gui_document::event_object("load", node);
         for listener in crate::gui_document::listeners_for(node, "load") {
-            if let Err(error) = self.vm.borrow_mut().invoke(&listener, &[event.clone()]) {
+            if let Err(error) = self.vm.invoke(&listener, &[event.clone()]) {
                 eprintln!("Load handler error: {error}");
             }
         }
     }
-}
 
-impl EmbeddedPage for Page {
-    fn title(&self) -> String {
-        match engine::apply(crate::gui_document::active(), DomOp::Title) {
-            engine::DomValue::Text(title) => title,
-            _ => String::new(),
-        }
-    }
-
-    fn resize(&mut self, width: f32, height: f32) {
-        engine::window(WindowOp::ViewportChanged(
-            crate::gui_document::active(), f64::from(width), f64::from(height),
-        ));
-        if !self.loaded {
-            self.loaded = true;
-            self.fire_load();
-        }
-    }
-
-    fn paint(&mut self, pixmap: &mut Pixmap, scale: f32) {
-        pixmap.fill(Color::WHITE);
-        vybe_platform_web::present::render(crate::gui_document::active(), pixmap, scale);
-    }
-
-    fn input(&mut self, event: &UiEvent) {
-        match event.kind.as_str() {
-            "mousemove" | "mousedown" | "mouseup" => {
-                engine::apply(crate::gui_document::active(), DomOp::DispatchPointer {
-                    kind: event.kind.clone(),
-                    client_x: event.client_x as f32,
-                    client_y: event.client_y as f32,
-                    button: event.button,
-                },);
-            }
-            "keydown" | "keyup" | "keypress" => {
-                engine::apply(
-                    crate::gui_document::active(),
-                    DomOp::DispatchKeyboard(UiEventFields {
-                        kind: event.kind.clone(),
-                        key: event.key.clone(),
-                        code: event.code.clone(),
-                        key_code: event.key_code,
-                        ctrl_key: event.ctrl_key,
-                        shift_key: event.shift_key,
-                        alt_key: event.alt_key,
-                        meta_key: event.meta_key,
-                        ..UiEventFields::default()
-                    }),
-                );
-                if event.kind == "keydown"
-                    && !event.ctrl_key
-                    && !event.meta_key
-                    && event.key.chars().count() == 1
-                {
-                    engine::apply(
-                        crate::gui_document::active(),
-                        DomOp::DispatchKeyboard(UiEventFields {
-                            kind: "keypress".into(),
-                            key: event.key.clone(),
-                            code: event.code.clone(),
-                            key_code: event.key_code,
-                            ctrl_key: event.ctrl_key,
-                            shift_key: event.shift_key,
-                            alt_key: event.alt_key,
-                            meta_key: event.meta_key,
-                            ..UiEventFields::default()
-                        }),
-                    );
-                }
-            }
-            "wheel" => {
-                engine::apply(crate::gui_document::active(), DomOp::DispatchWheel(UiEventFields {
-                    kind: event.kind.clone(), client_x: event.client_x,
-                    client_y: event.client_y, delta_y: event.delta_y,
-                    ctrl_key: event.ctrl_key, shift_key: event.shift_key,
-                    alt_key: event.alt_key, meta_key: event.meta_key,
-                    ..UiEventFields::default()
-                }),);
-            }
-            _ => {}
-        }
-        self.dispatch_document_events();
-    }
-
-    fn tick(&mut self) -> bool {
+    fn dispatch_pending(&mut self) -> bool {
         use vybe_runtime::scheduler::DeferredSource;
         let clock = vybe_platform_web::animation::callbacks();
         let stamp = vybe_runtime::Value::F64(vybe_runtime::event_loop::monotonic_now_ms());
@@ -132,17 +50,65 @@ impl EmbeddedPage for Page {
             } else {
                 vec![stamp.clone()]
             };
-            if let Err(error) = self.vm.borrow_mut().invoke(&callback, &args) {
+            if let Err(error) = self.vm.invoke(&callback, &args) {
                 eprintln!("Animation callback error: {error}");
+            }
+        }
+        let frames: std::sync::Arc<dyn DeferredSource> = clock;
+        let callback = self.vm.deferred_sources.iter()
+            .filter(|source| !std::sync::Arc::ptr_eq(source, &frames))
+            .find_map(|source| source.pop_due());
+        if let Some(callback) = callback {
+            changed = true;
+            if let Err(error) = self.vm.invoke(&callback, &[]) {
+                eprintln!("Deferred callback error: {error}");
             }
         }
         self.dispatch_document_events() || changed
     }
+
+    fn next_wakeup(&self) -> Option<Duration> {
+        self.vm.deferred_sources.iter()
+            .filter(|source| source.has_pending())
+            .filter_map(|source| source.earliest_deadline_ms())
+            .reduce(f64::min).map(|deadline| {
+            Duration::from_secs_f64(
+                ((deadline - vybe_runtime::event_loop::monotonic_now_ms()) / 1000.0).max(0.0),
+            )
+        })
+    }
 }
 
 pub fn launch_gui(vm: vybe_runtime::VM) {
+    let Some(document) =
+        vybe_platform_web::engine_webcore::browser_document(crate::gui_document::active())
+    else {
+        eprintln!("Cannot open Webcore GUI: the active document is closed");
+        return;
+    };
     let (width, height) = crate::gui_document::viewport().unwrap_or((800, 600));
-    embedded_window::run(width, height, Page {
-        vm: Rc::new(RefCell::new(vm)), loaded: false,
-    },);
+    let title = document.read().title.clone();
+    let options = BrowserOptions {
+        title,
+        width: width as f32,
+        height: height as f32,
+        chrome: BrowserChrome::NONE,
+        debug: webcore::browser::BrowserDebugOptions {
+            port: std::env::var("VYBE_BROWSER_DEBUG_PORT").ok().and_then(|value| value.parse().ok()),
+            ..Default::default()
+        },
+        ..BrowserOptions::default()
+    };
+    let mut browser = match Browser::open(options) {
+        Ok(browser) => browser,
+        Err(error) => {
+            eprintln!("Cannot open Webcore browser: {error}");
+            return;
+        }
+    };
+    browser.attach_document(document);
+    browser.set_guest(Guest { vm });
+    if let Err(error) = browser.run() {
+        eprintln!("Webcore browser error: {error}");
+    }
 }

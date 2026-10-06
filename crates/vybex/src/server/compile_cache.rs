@@ -157,13 +157,14 @@ impl CompileCache {
     /// error it produced — if every file it was built from is unchanged.
     pub fn get(&self, key: &Path) -> Option<Result<DynamicCompilation, String>> {
         use std::sync::atomic::Ordering;
-        let entry = self.entries.get(key)?;
+        // Release the map's shard lock before filesystem checks and deep
+        // chunk cloning, so unrelated requests can publish their compilations.
+        let entry = Arc::clone(self.entries.get(key)?.value());
         if !entry.deps.iter().all(Dep::unchanged) {
-            drop(entry);
             // Drop it rather than leave it to be re-checked: a file being
             // edited will keep changing, and a stale entry that fails
             // validation on every request is pure cost.
-            self.entries.remove(key);
+            self.entries.remove_if(key, |_, current| Arc::ptr_eq(current, &entry));
             self.misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
@@ -179,6 +180,7 @@ impl CompileCache {
                 host_imports: host_imports.clone(),
                 entry_path: entry_path.clone(),
                 app_shell: *app_shell,
+                prepared_sources: None,
             }),
             Outcome::Failed(message) => Err(message.clone()),
         })
@@ -245,6 +247,7 @@ fn replay(outcome: &Outcome) -> Result<DynamicCompilation, String> {
             host_imports: host_imports.clone(),
             entry_path: entry_path.clone(),
             app_shell: *app_shell,
+            prepared_sources: None,
         }),
         Outcome::Failed(message) => Err(message.clone()),
     }
@@ -270,10 +273,10 @@ impl vybe_compiler::dynamic::IncludeCompileCache for CompileCache {
     fn get(&self, path: &Path, fingerprint: u64) -> Option<Result<DynamicCompilation, String>> {
         use std::sync::atomic::Ordering;
         let key = (path.to_path_buf(), fingerprint);
-        let entry = self.includes.get(&key)?;
+        let entry = Arc::clone(self.includes.get(&key)?.value());
         if !entry.deps.iter().all(Dep::unchanged) {
-            drop(entry);
-            self.includes.remove(&key);
+            // A concurrent store may have replaced the stale entry already.
+            self.includes.remove_if(&key, |_, current| Arc::ptr_eq(current, &entry));
             self.misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
@@ -350,6 +353,7 @@ mod tests {
             host_imports: HostImportMetadata::default(),
             entry_path: None,
             app_shell: None,
+            prepared_sources: None,
         }
     }
 
@@ -357,6 +361,24 @@ mod tests {
         let path = std::env::temp_dir().join(format!("vybe_cc_{name}"));
         std::fs::write(&path, body).unwrap();
         path
+    }
+
+    #[test]
+    fn runtime_include_cache_invalidates_on_edit_and_deletion() {
+        use vybe_compiler::dynamic::IncludeCompileCache;
+        let cache = CompileCache::new();
+        let source = temp_file("runtime_include.php", "<?php return 1;");
+        IncludeCompileCache::store(&cache, &source, 7,
+            Some(vec![source.clone()]), Ok(&empty_compilation()));
+        assert!(matches!(IncludeCompileCache::get(&cache, &source, 7), Some(Ok(_))));
+        assert!(IncludeCompileCache::get(&cache, &source, 8).is_none());
+        // Different length avoids depending on filesystem timestamp precision.
+        std::fs::write(&source, "<?php return 12345;").unwrap();
+        assert!(IncludeCompileCache::get(&cache, &source, 7).is_none());
+        IncludeCompileCache::store(&cache, &source, 7,
+            Some(vec![source.clone()]), Ok(&empty_compilation()));
+        std::fs::remove_file(&source).unwrap();
+        assert!(IncludeCompileCache::get(&cache, &source, 7).is_none());
     }
 
     #[test]

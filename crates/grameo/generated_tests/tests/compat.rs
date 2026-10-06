@@ -45,9 +45,22 @@ fn compatibility_positions_are_one_based_scalars_and_utf8_byte_spans() {
     let mut pairs = lua::Parser
         .parse_pairs(lua::Rule::string, "\"é😀\"")
         .unwrap();
-    let span = pairs.next().unwrap().as_span();
+    let pair = pairs.next().unwrap();
+    assert_eq!(pair.line_col(), (1, 1));
+    let span = pair.as_span();
+    assert_eq!(span.get_input(), "\"é😀\"");
     assert_eq!(span.end(), 8);
     assert_eq!(span.start_pos().pos(), 0);
     assert_eq!(span.start_pos().line_col(), (1, 1));
     assert_eq!(span.end_pos().line_col(), (1, 5));
+}
+
+#[test]
+fn generated_default_has_no_work_cutoff_but_explicit_limits_are_enforced() {
+    let source = "1".repeat(4_000_001);
+    let parser = expression::Parser;
+    assert_eq!(parser.parse(expression::Rule::number, &source).unwrap().consumed(), source.len());
+    assert_eq!(parser.recognize(expression::Rule::number, &source).unwrap().consumed, source.len());
+    let Err(error) = grameo::engine::parse_program(&parser, "number", &source, grameo::MatchOptions { max_steps: 10_000_000, ..grameo::MatchOptions::default() }) else { panic!("explicit engine limit must be enforced"); };
+    assert_eq!(error.kind, grameo::ParseErrorKind::WorkLimit);
 }

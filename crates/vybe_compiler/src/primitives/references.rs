@@ -30,6 +30,20 @@ fn emit_field_get(chunks: &mut [Chunk], current: usize, field: &str, line: u32) 
     );
 }
 
+/// Annotate a reference without changing its storage identity or lookup key.
+pub fn emit_byte_coordinate(chunks: &mut [Chunk], current: usize, offset: u64, line: u32) {
+    let chunk = &mut chunks[current];
+    chunk.emit_dup(line);
+    let key = class_slots::resolve_interned(
+        chunk,
+        &class_slots::ClassSlot::internal(super::pointers::REFERENCE_BYTE_OFFSET_KEY),
+        &class_slots::PlainNames,
+    );
+    chunk.emit_f64_const(offset as f64, line);
+    class_slots::emit_class_set(chunk, class_slots::ObjSource::Stack, &key,
+        class_slots::ValueSource::Stack, line);
+}
+
 fn emit_kind_eq(chunks: &mut [Chunk], current: usize, obj_slot: u16, kind_key: &str, line: u32) {
     lget(&mut chunks[current], obj_slot, line);
     emit_field_get(chunks, current, REF_KIND_KEY, line);
@@ -254,22 +268,20 @@ fn emit_autoderef_object_inline(
     emit_field_get(chunks, current, CARRAY_BASE_KEY, line);
     lset(&mut chunks[current], base_slot, line);
 
+    // A cell base supplies its value directly. All other bases share the
+    // indexed read below. Keep the kind getter guarded by the object test.
+    chunks[current].emit_block_typed(line, 1);
     lget(&mut chunks[current], base_slot, line);
     recipes::is_object(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-
+    chunks[current].emit_if(line);
     emit_kind_eq(chunks, current, base_slot, CELL_KIND, line);
-    chunks[current].emit_if_params(line, 0, 1);
+    chunks[current].emit_if(line);
     lget(&mut chunks[current], base_slot, line);
     emit_cell_load(chunks, current, line);
-    chunks[current].emit_else(line);
-    lget(&mut chunks[current], base_slot, line);
-    lget(&mut chunks[current], obj_slot, line);
-    emit_field_get(chunks, current, CARRAY_IDX_KEY, line);
-    crate::primitives::collections::emit_get(chunks, current, line);
+    chunks[current].emit_br(2, line); // value exits both guards and this block
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 
-    chunks[current].emit_else(line);
     lget(&mut chunks[current], base_slot, line);
     lget(&mut chunks[current], obj_slot, line);
     emit_field_get(chunks, current, CARRAY_IDX_KEY, line);

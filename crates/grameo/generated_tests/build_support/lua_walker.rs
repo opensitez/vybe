@@ -8,29 +8,15 @@ pub fn generate(out: &Path) {
     let walker_path = "../../../languages/lua/src/walker.rs";
     println!("cargo:rerun-if-changed={walker_path}");
     let walker = fs::read_to_string(walker_path).unwrap();
-    let walker = walker
-        .replace("#[cfg(not(feature = \"native-parser\"))]\n", "")
-        .replace(
-            "#[cfg(feature = \"native-parser\")]\nuse grameo::compat::Pair;\n",
-            "",
-        );
-    for marker in [
-        "use pest::Parser;",
-        "use pest::iterators::Pair;",
-        "    super::normalize::normalize_module(&mut module);",
-    ] {
-        assert_eq!(
-            walker.matches(marker).count(),
-            1,
-            "Lua walker harness marker changed: {marker}"
-        );
-    }
-    let raw_walker = walker
-        .replace("    super::normalize::normalize_module(&mut module);", "")
+    let marker = "    super::normalize::normalize_module(&mut module);";
+    assert_eq!(walker.matches(marker).count(), 1, "Lua normalization marker changed");
+    let native_walker = walker
+        .replace(marker, "")
         .replace("    let mut module = Module {", "    let module = Module {");
-    let native_walker = raw_walker.replace("use pest::Parser;", "").replace(
-        "use pest::iterators::Pair;",
+    // Pest is confined to the independent reference test harness.
+    let raw_walker = native_walker.replace(
         "use grameo::compat::Pair;",
+        "use pest::Parser;\nuse pest::iterators::Pair;",
     );
     let expression_adapter = "\n#[allow(dead_code)]\npub fn expression_for_conformance(source: &str) -> Result<(Expression, usize), String> {\n    let _index = vybe_ast::line_index::LineIndex::install(source);\n    let pair = super::LuaParser::parse(super::Rule::expr, source).map_err(|e| e.to_string())?.next().ok_or(\"missing expression\")?;\n    let end = pair.as_span().end();\n    Ok((walk_expression(pair)?, end))\n}\n";
     fs::write(

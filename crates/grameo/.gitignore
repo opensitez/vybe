@@ -1,0 +1,25 @@
+# Rust
+target/
+snapshot_cache
+benchmarks
+publishing.md
+# IDE
+.vscode/
+.idea/
+.github
+*.swp
+*.swo
+*~
+webroot
+# OS
+.DS_Store
+Thumbs.db
+tmp
+temp
+data
+# Project files
+*.vbp.user
+.claude
+tmp
+results
+.agents

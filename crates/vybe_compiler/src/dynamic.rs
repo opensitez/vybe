@@ -81,6 +81,8 @@ pub struct DynamicCompilation {
     pub chunks: Vec<Chunk>,
     pub host_imports: HostImportMetadata,
     pub entry_path: Option<PathBuf>,
+    /// Pending pure-source preparation, owned by this compilation's request.
+    pub prepared_sources: Option<Arc<crate::preparation::PreparedSources>>,
     /// What the entry module DECLARED about presenting a UI — see
     /// [`vybe_ast::Directives::app_shell`]. `None` states nothing, and the
     /// document answers instead.
@@ -199,6 +201,7 @@ struct PhpIncludeRuntime {
     active_resolved_imports: Vec<ImportTarget>,
     include_cache: Option<std::sync::Arc<dyn IncludeCompileCache>>,
     include_scope: Option<Value>,
+    preparing: HashMap<PathBuf, crate::preparation::PreparationTicket>,
     builtin_callables: HashMap<(String, usize), Value>,
     php_trait_declarations: HashMap<String, Statement>,
 }
@@ -260,12 +263,27 @@ impl<'vm> RuntimeCompilerService<'vm> {
         let _phase = DebugPhase::new(self.vm.debug_report(), "compile entry");
         ensure_php_runtime_registered(self.vm);
         ensure_js_runtime_registered(self.vm);
-        let compiled = bundle.compile_full_with_modules(&self.vm.modules)?;
+        let compiled = if bundle.language.name == "php" {
+            if let Some(source) = bundle.sources.first() {
+                self.php_runtime.prepare_php_source_hints(bundle, &source.path);
+            }
+            let mut module = bundle.prepared_module()?;
+            if let Some(source) = bundle.sources.first() {
+                self.php_runtime.prepare_known_php_includes(&mut module, bundle, &source.path);
+            }
+            bundle.compile_prepared_module(&module, &self.vm.modules)?
+        } else {
+            bundle.compile_full_with_modules(&self.vm.modules)?
+        };
+        let pending = std::mem::take(&mut self.php_runtime.preparing);
+        let prepared_sources = (!pending.is_empty()).then(||
+            Arc::new(crate::preparation::PreparedSources::new(pending)));
         Ok(DynamicCompilation {
             chunks: compiled.chunks,
             host_imports: compiled.host_imports,
             entry_path: bundle.sources.first().map(|source| source.path.clone()),
             app_shell: compiled.app_shell,
+            prepared_sources,
         })
     }
 
@@ -334,6 +352,13 @@ impl<'vm> RuntimeCompilerService<'vm> {
         compiled: DynamicCompilation,
         nested: bool,
     ) -> Result<Value, String> {
+        if let Some(prepared) = &compiled.prepared_sources {
+            for (path, ticket) in prepared.take() {
+                if self.php_runtime.preparing.len() < 4 {
+                    self.php_runtime.preparing.entry(path).or_insert(ticket);
+                }
+            }
+        }
         ensure_php_runtime_registered(self.vm);
         ensure_js_runtime_registered(self.vm);
         let base_chunk_index = self.vm.chunks.len();
@@ -900,6 +925,7 @@ pub fn into_dynamic_compilation(compiled: CompiledBundle) -> DynamicCompilation 
         host_imports: compiled.host_imports,
         entry_path: None,
         app_shell: compiled.app_shell,
+        prepared_sources: None,
     }
 }
 
@@ -943,6 +969,7 @@ impl PhpIncludeRuntime {
             active_imports: Vec::new(),
             active_resolved_imports: Vec::new(),
             include_scope: None,
+            preparing: HashMap::new(),
             builtin_callables: HashMap::new(),
             php_trait_declarations: HashMap::new(),
         }
@@ -1068,31 +1095,13 @@ impl PhpIncludeRuntime {
         };
         self.trace_include_event("load", &kind, &target, &resolved_path, &canonical_path);
 
-        let source = match fs::read_to_string(&resolved_path) {
-            Ok(source) => source,
-            Err(e) => {
-                if load_once || published_plain_resource {
-                    self.fail_once_resource(&canonical_path);
-                }
-                let detail = format!(
-                    "{kind}({}): failed to open stream: {e}",
-                    resolved_path.display()
-                );
-                if fatal_if_missing {
-                    return Err(detail);
-                }
-                eprintln!("Warning: {detail}");
-                return Ok(Value::Bool(false));
-            }
-        };
-
         let language = languages::find_by_name("php")
             .ok_or_else(|| "php language profile missing".to_string())?;
 
         // Reuse an earlier compilation of this exact file only where everything
         // the compile READ is still what it was — the file itself and whatever
-        // it statically pulls in (the dependency set), plus the VM's module map
-        // and the entry path (the fingerprint).
+        // it statically pulls in (the dependency set), plus the entry path
+        // (the fingerprint). Imports are relocated against the live VM.
         let cache = self.include_cache.clone();
         let fingerprint = cache
             .as_ref()
@@ -1100,6 +1109,7 @@ impl PhpIncludeRuntime {
             .unwrap_or(0);
         if let Some(cache) = cache.as_ref() {
             if let Some(hit) = cache.get(&canonical_path, fingerprint) {
+                self.preparing.remove(&canonical_path);
                 self.trace_include_cache_event("hit", &canonical_path, fingerprint);
                 // A cached compile FAILURE is still that file's answer; letting
                 // it fall through would recompile a broken include on every
@@ -1122,6 +1132,26 @@ impl PhpIncludeRuntime {
                 );
             }
         }
+
+        // A cache hit has already validated the source dependency set. Only
+        // open and allocate the source text when a fresh compilation is needed.
+        let source = match fs::read_to_string(&resolved_path) {
+            Ok(source) => source,
+            Err(e) => {
+                if load_once || published_plain_resource {
+                    self.fail_once_resource(&canonical_path);
+                }
+                let detail = format!(
+                    "{kind}({}): failed to open stream: {e}",
+                    resolved_path.display()
+                );
+                if fatal_if_missing {
+                    return Err(detail);
+                }
+                eprintln!("Warning: {detail}");
+                return Ok(Value::Bool(false));
+            }
+        };
 
         let bundle = bundle_from_source(source, language, resolved_path.clone());
         let compiled = match cache.as_ref() {
@@ -1391,6 +1421,67 @@ impl PhpIncludeRuntime {
         }
     }
 
+    fn prepare_php_source_hints(&mut self, bundle: &Bundle, entry: &Path) {
+        if !self.php_preparation_enabled() { return; }
+        let Some(source) = bundle.sources.first() else { return; };
+        let caller = absolutize_path(&source.path);
+        let paths = crate::php_include_hints::paths(&source.code, &caller)
+            .into_iter().map(|path| resolve_php_include_path(entry, &source.path, &path));
+        self.queue_php_preparation(paths, bundle);
+    }
+
+    fn php_preparation_enabled(&self) -> bool {
+        self.caps.has(Capability::DynamicCompile) && self.preparing.len() < 4
+            && !std::env::var_os("VYBE_PARALLEL_PREPARATION").is_some_and(|value| value == "0")
+    }
+
+    fn queue_php_preparation(&mut self, paths: impl IntoIterator<Item = PathBuf>, bundle: &Bundle) {
+        let Some(pool) = crate::preparation::PreparationPool::shared() else { return; };
+        for path in paths {
+            if self.preparing.len() >= 4 { break; }
+            let Ok(path) = path.canonicalize() else { continue; };
+            if self.preparing.contains_key(&path) || self.once_resources.contains_key(&path) { continue; }
+            if let Some(ticket) = pool.submit(path.clone(), bundle.language) {
+                self.preparing.insert(path, ticket);
+            }
+        }
+    }
+
+    fn prepare_known_php_includes(&mut self, module: &mut Module, bundle: &Bundle, entry: &Path) {
+        if !self.caps.has(Capability::DynamicCompile) || self.preparing.len() >= 4
+            || std::env::var_os("VYBE_PARALLEL_PREPARATION").is_some_and(|value| value == "0")
+            || !bundle.sources.iter().any(|source|
+                source.code.contains("include") || source.code.contains("require"))
+        {
+            return;
+        }
+        let Some(caller) = bundle.sources.first().map(|source| source.path.as_path()) else { return; };
+        fn literal_path(expr: &vybe_ast::Expression) -> Option<String> {
+            use vybe_ast::{ExprKind, Literal, BinOp};
+            match &expr.kind {
+                ExprKind::Lit(Literal::Str(path)) => Some(path.clone()),
+                ExprKind::Binary { op: BinOp::Concat, left, right } =>
+                    Some(literal_path(left)? + &literal_path(right)?),
+                _ => None,
+            }
+        }
+        let mut paths = Vec::new();
+        for statement in &mut module.body {
+            statement.walk_exprs_mut(&mut |expr| {
+                use vybe_ast::ExprKind;
+                if let ExprKind::Call { callee, args, .. } = &expr.kind {
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__php_dynamic_include") {
+                        if let Some(path) = args.get(1).and_then(|arg| literal_path(&arg.value)) {
+                            paths.push(resolve_php_include_path(entry, caller, &path));
+                        }
+                    }
+                }
+            });
+        }
+        if paths.is_empty() { return; }
+        self.queue_php_preparation(paths, bundle);
+    }
+
     fn compile_dynamic_php(
         &mut self,
         vm: &mut VM,
@@ -1402,10 +1493,30 @@ impl PhpIncludeRuntime {
             vm.debug_report(),
             format!("compile {}", bundle.sources.first().map_or("<unknown>", |s| s.path.to_str().unwrap_or("<path>"))),
         );
+        self.prepare_php_source_hints(bundle, entry_path);
         let mut module = {
             let _phase = DebugPhase::current("prepare source");
-            bundle.prepared_module_with_php_entry_override(Some(entry_path))?
+            let ready = bundle.sources.first().and_then(|source| {
+                let path = source.path.canonicalize().unwrap_or_else(|_| source.path.clone());
+                self.preparing.remove(&path).and_then(|ticket| ticket.wait())
+                    .filter(|prepared| {
+                        // Re-read at the actual include: speculative preparation
+                        // must never hide an edit or reuse an unknown dependency.
+                        prepared.matches_source(&source.path, &source.code)
+                    })
+            });
+            match ready {
+                Some(prepared) => {
+                    if let Some(report) = vm.debug_report() {
+                        report.lock().unwrap().completed.push((
+                            "parallel source preparation (worker wall)".to_string(), prepared.elapsed));
+                    }
+                    prepared.module?
+                },
+                None => bundle.prepared_module_with_php_entry_override(Some(entry_path))?,
+            }
         };
+        self.prepare_known_php_includes(&mut module, bundle, entry_path);
         fn collect_trait_names(body: &[Statement], out: &mut Vec<(String, String)>) {
             for statement in body {
                 match &statement.kind {
@@ -1498,6 +1609,7 @@ impl PhpIncludeRuntime {
             host_imports: compiled.host_imports,
             entry_path: bundle.sources.first().map(|source| source.path.clone()),
             app_shell: compiled.app_shell,
+            prepared_sources: None,
         })
     }
 }
@@ -3128,6 +3240,118 @@ mod tests {
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
             other => panic!("expected $result global, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn php_include_preparation_starts_before_parent_ast_preparation() {
+        let base = std::env::temp_dir().join(format!("vybe-prepare-early-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let main = base.join("main.php");
+        let child = base.join("child.php");
+        std::fs::write(&child, "<?php return 42;").unwrap();
+        // No parent parse or Module exists at this point. Invalid trailing
+        // syntax must not prevent discovery of an earlier literal include.
+        let bundle = bundle_from_source("<?php require __DIR__ . '/child.php'; function (",
+            crate::languages::find_by_name("php").unwrap(), &main);
+        let mut runtime = PhpIncludeRuntime::new(Capabilities::all());
+        runtime.prepare_php_source_hints(&bundle, &main);
+        let ticket = runtime.preparing.remove(&child.canonicalize().unwrap())
+            .expect("child preparation must start without a parent AST");
+        let prepared = ticket.wait().expect("child preparation completes");
+        assert!(prepared.module.is_ok());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn php_preparation_survives_compiler_service_handoff() {
+        let base = std::env::temp_dir().join(format!("vybe-prepare-handoff-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let main = base.join("main.php");
+        std::fs::write(&main, "<?php return include 'child.php';").unwrap();
+        std::fs::write(base.join("child.php"), "<?php return 42;").unwrap();
+        let mut vm = configured_vm();
+        let compiled = {
+            let mut service = RuntimeCompilerService::new(&mut vm);
+            service.compile_path(&main).unwrap()
+        };
+        assert!(compiled.prepared_sources.is_some(), "entry must carry its queued preparation");
+        let mut service = RuntimeCompilerService::new(&mut vm);
+        let value = service.run_compiled(compiled).unwrap();
+        assert_numeric_value(value, 42.0);
+        assert!(service.php_runtime.preparing.is_empty(), "included child must consume its preparation");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn php_parallel_preparation_rechecks_edits_and_defers_unreached_errors() {
+        let base = std::env::temp_dir().join(format!("vybe-prepare-php-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let main = base.join("main.php");
+        let child = base.join("child.php");
+        std::fs::write(&main,
+            "<?php if (false) { include 'broken.php'; } return include 'child.php';").unwrap();
+        std::fs::write(base.join("broken.php"), "<?php function (").unwrap();
+        std::fs::write(&child, "<?php return 1;").unwrap();
+        let mut vm = configured_vm();
+        let mut service = RuntimeCompilerService::new(&mut vm);
+        let compiled = service.compile_path(&main).expect("unreached include must not fail entry compilation");
+        // Use an owned queue so other concurrent tests cannot decline this job.
+        let pool = crate::preparation::PreparationPool::new(1, 2).unwrap();
+        let ticket = pool.submit(child.clone(), crate::languages::find_by_name("php").unwrap()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !ticket.is_ready() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(ticket.is_ready(), "prepare original child before editing it");
+        service.php_runtime.preparing.insert(child.canonicalize().unwrap(), ticket);
+        std::fs::write(&child, "<?php return 42;").unwrap();
+        let value = service.run_compiled(compiled).expect("edited child must prepare again; unreached error stays deferred");
+        assert_numeric_value(value, 42.0);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn php_cached_plain_includes_execute_again_and_once_state_resets_per_run() {
+        #[derive(Default)]
+        struct Cache {
+            compiled: Mutex<Option<super::DynamicCompilation>>,
+            hits: std::sync::atomic::AtomicUsize,
+            stores: std::sync::atomic::AtomicUsize,
+        }
+        impl super::IncludeCompileCache for Cache {
+            fn get(&self, _: &std::path::Path, _: u64)
+                -> Option<Result<super::DynamicCompilation, String>>
+            {
+                let compiled = self.compiled.lock().unwrap().clone()?;
+                self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(Ok(compiled))
+            }
+            fn store(&self, _: &std::path::Path, _: u64,
+                deps: Option<Vec<PathBuf>>,
+                result: Result<&super::DynamicCompilation, &str>)
+            {
+                assert!(deps.is_some());
+                *self.compiled.lock().unwrap() = Some(result.unwrap().clone());
+                self.stores.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let base = std::env::temp_dir().join(format!("vybe-include-cache-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let main = base.join("main.php");
+        std::fs::write(&main,
+            "<?php $a = include 'part.php'; $b = include 'part.php'; $c = include_once 'part.php'; return $a + $b + $c;").unwrap();
+        std::fs::write(base.join("part.php"), "<?php return 21;").unwrap();
+        let cache = Arc::new(Cache::default());
+        for _ in 0..2 {
+            let mut vm = configured_vm();
+            let mut service = RuntimeCompilerService::new(&mut vm);
+            service.set_include_cache(cache.clone());
+            let value = service.compile_and_run_path(&main).expect("run cached includes");
+            assert_numeric_value(value, 43.0);
+        }
+        assert_eq!(cache.stores.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(cache.hits.load(std::sync::atomic::Ordering::Relaxed), 3);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

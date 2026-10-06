@@ -3542,6 +3542,19 @@ pub(crate) enum LoopSuperop {
         len_slot: u16,
         i_slot: u16,
     },
+    CanonicalLinearToByteArrayBatch {
+        arr_slot: u16,
+        cursor_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+    },
+    CanonicalLinearToByteArrayTail {
+        arr_slot: u16,
+        cursor_slot: u16,
+        base_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+    },
     ManagedArrayToLinear {
         arr_slot: u16,
         dst_slot: u16,

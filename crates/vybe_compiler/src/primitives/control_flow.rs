@@ -995,8 +995,32 @@ impl Compiler {
         );
     }
 
+    /// Initialize global storage without detaching references created before
+    /// the declaration's initializer executes. Leave the reference on stack.
+    pub(super) fn emit_initialize_global_pointer_cell(&mut self, global_key: &str) {
+        let value = self.define_local("__ref_global_init_value");
+        let pointer = self.define_local("__ref_global_init_pointer");
+        self.emit_u16(Op::LOCAL_SET, value);
+        self.emit_global_read(global_key);
+        self.emit_u16(Op::LOCAL_SET, pointer);
+        self.emit_u16(Op::LOCAL_GET, pointer);
+        let line = self.line;
+        crate::primitives::references::emit_is_reference_to_stack(
+            &mut self.chunks, self.current, line,
+        );
+        self.chunk().emit_if_value(line);
+        self.emit_store_through_pointer(pointer, value);
+        self.emit_u16(Op::LOCAL_GET, pointer);
+        self.chunk().emit_else(line);
+        crate::primitives::references::emit_cell_new(
+            &mut self.chunks, self.current, value, line,
+        );
+        self.chunk().emit_end(line);
+    }
+
     pub(super) fn is_pointer_runtime_field(field: &str) -> bool {
-        matches!(field, "__ref_kind" | "__base" | "__idx" | "__value" | "__byte_backed")
+        matches!(field, "__ref_kind" | "__base" | "__idx" | "__value" | "__byte_backed"
+            | crate::primitives::pointers::REFERENCE_BYTE_OFFSET_KEY)
     }
 
     pub(super) fn emit_string_slot_eq_literal(&mut self, slot: u16, literal: &str) {
@@ -1092,20 +1116,38 @@ impl Compiler {
     /// with a local worked (§10d, pre-existing #2). One concept, two spellings,
     /// one resolution — the recurring failure this plan exists to end.
     pub(super) fn compile_ident_reference(&mut self, name: &str) {
+        let has_byte_layout = self.reference_record_byte_layout(&Expression::ident(name)).is_some();
         if let Some(binding) = self.static_local_binding(name) {
             let global_name = binding.global_name.clone();
             self.promote_global_storage_key_to_pointer_cell(&global_name, &global_name);
             self.emit_global_read(&global_name);
+            if has_byte_layout { self.annotate_reference_byte_coordinate(0); }
             return;
         }
         if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
             self.emit_u16(Op::LOCAL_GET, slot);
+            if has_byte_layout { self.annotate_reference_byte_coordinate(0); }
             return;
         }
         self.promote_global_binding_to_pointer_cell(name);
         // Same key the promotion wrote — see `variable_global_binding_key`.
         let global_key = self.variable_global_binding_key(name);
         self.emit_global_read(&global_key);
+        if has_byte_layout { self.annotate_reference_byte_coordinate(0); }
+    }
+
+    fn reference_record_byte_layout(&self, object: &Expression) -> Option<vybe_ast::RecordByteLayout> {
+        let hint = self.infer_expr_type_hint(object)?;
+        let hint = self.resolve_source_type_alias(&hint);
+        self.normalized_classes.get(&self.canon(&hint))
+            .or_else(|| self.normalized_classes.get(&Self::normalize_type_hint(&hint)))
+            .and_then(|class| class.semantics.byte_layout.clone())
+    }
+
+    fn annotate_reference_byte_coordinate(&mut self, offset: u64) {
+        crate::primitives::references::emit_byte_coordinate(
+            &mut self.chunks, self.current, offset, self.line,
+        );
     }
 
     /// `&container[key]` → `{__ref_kind:"carray", __base, __idx}`.
@@ -1152,7 +1194,11 @@ impl Compiler {
         object: &Expression,
         field: &str,
     ) -> Result<(), String> {
-        self.compile_index_reference(object, &Expression::string(field))
+        let offset = self.reference_record_byte_layout(object)
+            .and_then(|layout| layout.field(field).map(|field| field.offset));
+        self.compile_index_reference(object, &Expression::string(field))?;
+        if let Some(offset) = offset { self.annotate_reference_byte_coordinate(offset); }
+        Ok(())
     }
 
     pub(super) fn compile_deref_expr(&mut self, expr: &Expression) -> Result<(), String> {

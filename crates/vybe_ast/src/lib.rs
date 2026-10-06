@@ -2771,6 +2771,25 @@ pub enum IntOp {
     And,
     Or,
     Xor,
+    Eq,
+    Ne,
+    LtS,
+    LtU,
+    LeS,
+    LeU,
+    GtS,
+    GtU,
+    GeS,
+    GeU,
+}
+
+impl IntOp {
+    /// Integer comparisons produce an i32 predicate, independently of the
+    /// operands' lane. Arithmetic operations retain the operand lane.
+    pub fn is_comparison(self) -> bool {
+        matches!(self, Self::Eq | Self::Ne | Self::LtS | Self::LtU | Self::LeS
+            | Self::LeU | Self::GtS | Self::GtU | Self::GeS | Self::GeU)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -4349,6 +4368,52 @@ pub struct ValueSemantics {
     pub equality: ValueEquality,
     pub layout: FieldLayout,
     pub variant: Option<VariantPart>,
+    /// Resolved byte coordinates for addressable fields. This describes an
+    /// object representation, not whether the current backing is managed or
+    /// linear memory. Absence means no byte-addressability has been declared.
+    pub byte_layout: Option<RecordByteLayout>,
+}
+
+/// Explicit object-representation coordinates supplied by a frontend's ABI.
+/// Overlapping fields are permitted (unions); padding is not a field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordByteLayout {
+    pub bytes: u64,
+    pub align: u64,
+    pub fields: Vec<RecordByteField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordByteField {
+    pub name: String,
+    pub offset: u64,
+    pub bytes: u64,
+}
+
+impl RecordByteLayout {
+    /// Validate coordinates without deriving or changing the declared ABI.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.align.is_power_of_two() {
+            return Err("record byte alignment must be a nonzero power of two".into());
+        }
+        if self.bytes % self.align != 0 {
+            return Err("record byte extent must be a multiple of its alignment".into());
+        }
+        let mut names = std::collections::HashSet::new();
+        for field in &self.fields {
+            if !names.insert(field.name.as_str()) {
+                return Err(format!("duplicate byte-layout field {}", field.name));
+            }
+            if field.offset.checked_add(field.bytes).is_none_or(|end| end > self.bytes) {
+                return Err(format!("byte-layout field {} exceeds the record extent", field.name));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn field(&self, name: &str) -> Option<&RecordByteField> {
+        self.fields.iter().find(|field| field.name == name)
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════

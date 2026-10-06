@@ -1022,11 +1022,12 @@ fn print_response(resp: &DebugResponse) {
                 let name = s.name.as_deref().unwrap_or("-");
                 let dead = if s.live { "" } else { "  (beyond frame)" };
                 eprintln!(
-                    "  [{:>3}] {:<8} {:<28} = {}{}",
+                    "  [{:>3}] {:<8} {:<28} = {} [{}]{}",
                     s.index,
                     s.owner.tag(),
                     name,
                     one_line(&s.value),
+                    s.storage,
                     dead
                 );
             }

@@ -1,6 +1,6 @@
 //! Common AST targeting WASM bytecode.
 //!
-//! Every language parser (pest-based) produces this AST. One compiler consumes it.
+//! Every language parser (Grameo-based) produces this AST. One compiler consumes it.
 //! The AST represents semantic operations, not syntax — language-specific syntax
 //! is resolved by each language's tree walker before reaching this level.
 //!
@@ -41,6 +41,8 @@ pub mod platforms {
     //! this facade — go away entirely.
 }
 pub use vybe_runtime::profile;
+pub mod preparation;
+mod php_include_hints;
 pub mod projects;
 pub mod registry; // platform class-library registration (dotnet BCL, pascal plib)
 

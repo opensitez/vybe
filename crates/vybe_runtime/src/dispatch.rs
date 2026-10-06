@@ -2014,6 +2014,144 @@ impl VM {
         Some((arr_slot, dst_slot, len_slot, i_slot))
     }
 
+    fn match_canonical_linear_to_byte_array_batch(
+        code: &[u8],
+        imports: &[crate::chunk::Import],
+        mut ip: usize,
+    ) -> Option<(u16, u16, u16, u16)> {
+        const BATCH: i32 = 254;
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+            return None;
+        }
+        let i_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
+            || Self::decode_leb_i32_at(code, &mut ip)? != BATCH
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+        {
+            return None;
+        }
+        let len_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_GT_S
+            || Self::decode_op_at(code, &mut ip)? != Op::BR_IF
+            || Self::decode_leb_u32_at(code, &mut ip)? != 1
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+        {
+            return None;
+        }
+        let arr_slot = Self::decode_u16_at(code, &mut ip)?;
+        let mut cursor_slot = None;
+        for offset in 0..BATCH {
+            if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+                return None;
+            }
+            let slot = Self::decode_u16_at(code, &mut ip)?;
+            if cursor_slot.is_some_and(|existing| existing != slot) {
+                return None;
+            }
+            cursor_slot = Some(slot);
+            if Self::decode_op_at(code, &mut ip)? != Op::I32_LOAD8_U {
+                return None;
+            }
+            if offset == 0 {
+                if Op::I32_LOAD8_U.operand_format().size_in(code, ip) != 0 {
+                    return None;
+                }
+            } else if Self::decode_leb_u32_at(code, &mut ip)? != 0x80
+                || Self::decode_leb_u32_at(code, &mut ip)? != offset as u32
+            {
+                return None;
+            }
+        }
+        let cursor_slot = cursor_slot?;
+        Self::decode_call_import_named_at(code, imports, &mut ip, "ecma:array", "push", 255)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::DROP
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+            || Self::decode_u16_at(code, &mut ip)? != i_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
+            || Self::decode_leb_i32_at(code, &mut ip)? != BATCH
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_SET
+            || Self::decode_u16_at(code, &mut ip)? != i_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+            || Self::decode_u16_at(code, &mut ip)? != cursor_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
+            || Self::decode_leb_i32_at(code, &mut ip)? != BATCH
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_SET
+            || Self::decode_u16_at(code, &mut ip)? != cursor_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::BR
+            || Self::decode_leb_u32_at(code, &mut ip)? != 0
+            || Self::decode_op_at(code, &mut ip)? != Op::END
+        {
+            return None;
+        }
+        Some((arr_slot, cursor_slot, len_slot, i_slot))
+    }
+
+    fn match_canonical_linear_to_byte_array_tail(
+        code: &[u8],
+        imports: &[crate::chunk::Import],
+        mut ip: usize,
+    ) -> Option<(u16, u16, u16, u16, u16)> {
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+            return None;
+        }
+        let i_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+            return None;
+        }
+        let len_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_GE_S
+            || Self::decode_op_at(code, &mut ip)? != Op::BR_IF
+            || Self::decode_leb_u32_at(code, &mut ip)? != 1
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+        {
+            return None;
+        }
+        let arr_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+            return None;
+        }
+        let base_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+            || Self::decode_u16_at(code, &mut ip)? != i_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+        {
+            return None;
+        }
+        let cursor_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_LOAD8_U
+            || Op::I32_LOAD8_U.operand_format().size_in(code, ip) != 0
+        {
+            return None;
+        }
+        Self::decode_call_import_named_at(code, imports, &mut ip, "ecma:array", "set", 3)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::DROP
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+            || Self::decode_u16_at(code, &mut ip)? != i_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
+            || Self::decode_leb_i32_at(code, &mut ip)? != 1
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_SET
+            || Self::decode_u16_at(code, &mut ip)? != i_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+            || Self::decode_u16_at(code, &mut ip)? != cursor_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
+            || Self::decode_leb_i32_at(code, &mut ip)? != 1
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_SET
+            || Self::decode_u16_at(code, &mut ip)? != cursor_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::BR
+            || Self::decode_leb_u32_at(code, &mut ip)? != 0
+            || Self::decode_op_at(code, &mut ip)? != Op::END
+        {
+            return None;
+        }
+        Some((arr_slot, cursor_slot, base_slot, len_slot, i_slot))
+    }
+
     fn match_managed_array_to_linear_loop(
         code: &[u8],
         mut ip: usize,
@@ -5663,6 +5801,33 @@ impl VM {
                 len_slot,
                 i_slot,
             }
+        } else if let Some((arr_slot, cursor_slot, len_slot, i_slot)) =
+            Self::match_canonical_linear_to_byte_array_batch(
+                code,
+                &self.chunks[chunk_index].imports,
+                loop_body_start,
+            )
+        {
+            LoopSuperop::CanonicalLinearToByteArrayBatch {
+                arr_slot,
+                cursor_slot,
+                len_slot,
+                i_slot,
+            }
+        } else if let Some((arr_slot, cursor_slot, base_slot, len_slot, i_slot)) =
+            Self::match_canonical_linear_to_byte_array_tail(
+                code,
+                &self.chunks[chunk_index].imports,
+                loop_body_start,
+            )
+        {
+            LoopSuperop::CanonicalLinearToByteArrayTail {
+                arr_slot,
+                cursor_slot,
+                base_slot,
+                len_slot,
+                i_slot,
+            }
         } else if let Some((arr_slot, dst_slot, len_slot, i_slot, byte_slot, mask)) =
             Self::match_managed_array_to_linear_loop(code, loop_body_start)
         {
@@ -6774,6 +6939,123 @@ impl VM {
             counters.array_get = counters.array_get.saturating_add(n);
             counters.array_get_dense = counters.array_get_dense.saturating_add(n);
             counters.i32_store8 = counters.i32_store8.saturating_add(n);
+        }
+        self.branch_to_label(1, entry);
+        Ok(true)
+    }
+
+    fn try_canonical_linear_to_byte_array_batch(
+        &mut self,
+        arr_slot: u16,
+        cursor_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+    ) -> Result<bool, VMError> {
+        self.try_canonical_linear_to_byte_array_copy(
+            arr_slot, cursor_slot, None, len_slot, i_slot, 254,
+        )
+    }
+
+    fn try_canonical_linear_to_byte_array_tail(
+        &mut self,
+        arr_slot: u16,
+        cursor_slot: u16,
+        base_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+    ) -> Result<bool, VMError> {
+        self.try_canonical_linear_to_byte_array_copy(
+            arr_slot, cursor_slot, Some(base_slot), len_slot, i_slot, 1,
+        )
+    }
+
+    fn try_canonical_linear_to_byte_array_copy(
+        &mut self,
+        arr_slot: u16,
+        cursor_slot: u16,
+        base_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        step: usize,
+    ) -> Result<bool, VMError> {
+        let base = self.frame().base;
+        let (Some(Value::I32(i)), Some(Value::I32(len)), Some(Value::I32(cursor))) = (
+            self.stack.get(base + i_slot as usize),
+            self.stack.get(base + len_slot as usize),
+            self.stack.get(base + cursor_slot as usize),
+        ) else {
+            return Ok(false);
+        };
+        if *i < 0 || *len < 0 || *cursor < 0 {
+            return Ok(false);
+        }
+        let (i, len, cursor) = (*i as usize, *len as usize, *cursor as usize);
+        let expected_len = if let Some(slot) = base_slot {
+            let Some(Value::I32(initial_len)) = self.stack.get(base + slot as usize) else {
+                return Ok(false);
+            };
+            if *initial_len < 0 {
+                return Ok(false);
+            }
+            let Some(expected) = (*initial_len as usize).checked_add(i) else {
+                return Ok(false);
+            };
+            if expected > i32::MAX as usize {
+                return Ok(false);
+            }
+            Some(expected)
+        } else {
+            None
+        };
+        let count = len.saturating_sub(i) / step * step;
+        if count == 0
+            || i.checked_add(count).is_none_or(|end| end > i32::MAX as usize)
+            || cursor.checked_add(count).is_none_or(|end| end > i32::MAX as usize)
+        {
+            return Ok(false);
+        }
+        let Some(entry) = self.label_at_depth(1) else {
+            return Ok(false);
+        };
+        let Some(Value::Object(obj)) = self.stack.get(base + arr_slot as usize) else {
+            return Ok(false);
+        };
+        let obj = obj.clone();
+        let copied = self.memory.with_buffer(|memory| {
+            let Some(end) = cursor.checked_add(count).filter(|&end| end <= memory.len()) else {
+                return false;
+            };
+            let mut ob = obj.lock().unwrap();
+            if ob.type_id != 0
+                || ob.properties.len() != 2
+                || !ob.properties.contains_key("__proto__")
+                || !ob.properties.contains_key("length")
+            {
+                return false;
+            }
+            let ObjectKind::Array(values) = &mut ob.kind else {
+                return false;
+            };
+            let old_len = values.len();
+            if expected_len.is_some_and(|expected| expected != old_len) {
+                return false;
+            }
+            if old_len.checked_add(count).is_none_or(|new_len| new_len > i32::MAX as usize) {
+                return false;
+            }
+            values.extend(memory[cursor..end].iter().map(|byte| Value::I32(*byte as i32)));
+            let new_len = values.len();
+            ob.properties.insert("length".into(), Value::F64(new_len as f64));
+            true
+        });
+        if !copied {
+            return Ok(false);
+        }
+        self.stack[base + i_slot as usize] = Value::I32((i + count) as i32);
+        self.stack[base + cursor_slot as usize] = Value::I32((cursor + count) as i32);
+        if let Some(counters) = self.perf_counters.as_mut() {
+            counters.super_linear_to_managed = counters.super_linear_to_managed.saturating_add(1);
+            counters.i32_load8_u = counters.i32_load8_u.saturating_add(count as u64);
         }
         self.branch_to_label(1, entry);
         Ok(true)
@@ -22076,6 +22358,31 @@ impl VM {
                             } => {
                                 if self.try_canonical_byte_array_to_linear_loop(
                                     arr_slot, dst_slot, len_slot, i_slot,
+                                )? {
+                                    continue;
+                                }
+                            }
+                            LoopSuperop::CanonicalLinearToByteArrayBatch {
+                                arr_slot,
+                                cursor_slot,
+                                len_slot,
+                                i_slot,
+                            } => {
+                                if self.try_canonical_linear_to_byte_array_batch(
+                                    arr_slot, cursor_slot, len_slot, i_slot,
+                                )? {
+                                    continue;
+                                }
+                            }
+                            LoopSuperop::CanonicalLinearToByteArrayTail {
+                                arr_slot,
+                                cursor_slot,
+                                base_slot,
+                                len_slot,
+                                i_slot,
+                            } => {
+                                if self.try_canonical_linear_to_byte_array_tail(
+                                    arr_slot, cursor_slot, base_slot, len_slot, i_slot,
                                 )? {
                                     continue;
                                 }

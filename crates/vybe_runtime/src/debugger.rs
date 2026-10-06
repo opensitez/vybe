@@ -550,6 +550,8 @@ pub struct FrameSlot {
     pub name: Option<String>,
     pub owner: SlotOwner,
     pub value: String,
+    /// Physical storage, independent of Display or language coercion.
+    pub storage: String,
     /// False when the slot lies beyond the frame's live stack extent — the
     /// lazy-locals convention means an untouched slot may not exist yet.
     pub live: bool,
@@ -2041,6 +2043,32 @@ fn backtrace(vm: &VM) -> Vec<FrameInfo> {
 /// Unlike [`locals`] this filters NOTHING: a slot the compiler owns is the slot
 /// most likely to be wrong, and naming its owner is what makes a collision
 /// legible ("`__capture_0` holds a number") instead of invisible.
+fn frame_storage(value: &crate::Value) -> String {
+    use crate::value::ObjectKind;
+    let crate::Value::Object(object) = value else {
+        return value.tag().name().into();
+    };
+    let Ok(object) = object.try_lock() else {
+        return "Object (locked)".into();
+    };
+    let kind = match &object.kind {
+        ObjectKind::Ordinary => "Ordinary",
+        ObjectKind::Array(_) => "Array",
+        ObjectKind::Map(_) => "Map",
+        ObjectKind::Set(_) => "Set",
+        ObjectKind::ArrayBuffer(_) => "ArrayBuffer",
+        ObjectKind::TypedArray(_) => "TypedArray",
+        ObjectKind::Function(_) => "Function",
+        ObjectKind::HostFunction(_) => "HostFunction",
+        ObjectKind::ModuleNamespace => "ModuleNamespace",
+        ObjectKind::Continuation(_) => "Continuation",
+        ObjectKind::Future { .. } => "Future",
+        ObjectKind::Stream { .. } => "Stream",
+    };
+    format!("Object/{kind} type={} fields={} properties={}",
+        object.type_id, object.fields.len(), object.properties.len())
+}
+
 fn frame_shape(vm: &VM, frame_idx: usize) -> Result<FrameShape, String> {
     let n = vm.frames.len();
     if frame_idx >= n {
@@ -2094,6 +2122,11 @@ fn frame_shape(vm: &VM, frame_idx: usize) -> Result<FrameShape, String> {
                     render_value(&vm.stack[abs])
                 } else {
                     "<unset>".into()
+                },
+                storage: if live {
+                    frame_storage(&vm.stack[abs])
+                } else {
+                    "unset".into()
                 },
                 live,
             }

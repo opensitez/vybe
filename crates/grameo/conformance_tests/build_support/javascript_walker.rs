@@ -11,6 +11,7 @@ pub fn generate(out: &Path) {
     }
     let walker = fs::read_to_string("../../../languages/js/src/walker.rs")
         .unwrap()
+        .replace("use grameo::compat::Pair;", "use pest::Parser;\nuse pest::iterators::Pair;")
         .replace(
             "use vybe_compiler::primitives::class_slots;",
             "use crate::class_slots;",

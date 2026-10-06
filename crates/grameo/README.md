@@ -44,7 +44,7 @@ fn main() {
 }
 ```
 
-`parse_source` returns captures; `recognize` validates without allocating a capture tree. Grammar compilation and input parsing return errors when they fail.
+`parse_source` returns captures; `recognize` validates without allocating a capture tree. Grammar compilation and input parsing return errors when they fail. Input parsing has no default work cutoff; callers can set an explicit limit with `MatchOptions`.
 
 Generate a Rust parser with static grammar tables:
 

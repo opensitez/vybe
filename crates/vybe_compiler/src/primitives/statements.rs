@@ -5296,9 +5296,7 @@ impl Compiler {
                         .module_addr_taken_globals
                         .contains(&self.pointer_binding_key(name))
                     {
-                        // A wrap emitted inside another function need not have
-                        // executed yet. Establish global storage at its declaration.
-                        self.emit_wrap_top_of_stack_in_pointer_cell();
+                        self.emit_initialize_global_pointer_cell(&cn);
                         self.mark_promoted_global_cell(name);
                     }
                     self.emit_global_write(&cn);

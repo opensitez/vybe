@@ -12,8 +12,8 @@
 //! [`BitLane`], because the lane is a property of the operand's declared type
 //! and wasm spells the two lanes as different instructions.
 //!
-//! Values arrive and leave as f64 — the runtime's number representation — so
-//! each helper converts in, works in the integer lane, and converts back.
+//! Number-backed operands are converted into the declared integer lane.
+//! Arithmetic returns a number; comparisons return an i32 predicate.
 //!
 //! [`LeadingZeros`]: UnaryOp::LeadingZeros
 //! [`TrailingZeros`]: UnaryOp::TrailingZeros
@@ -43,6 +43,32 @@ fn widen(chunk: &mut Chunk, lane: BitLane, line: u32) {
     if lane == BitLane::W64 {
         chunk.emit_op(Op::F64_CONVERT_I64_S, line);
     }
+}
+
+fn narrow_comparison_word(chunk: &mut Chunk, lane: BitLane, line: u32) {
+    if lane == BitLane::W32 {
+        narrow(chunk, lane, line);
+        return;
+    }
+    // Number-backed unsigned words can occupy the upper half of u64. Both
+    // conversions produce the same i64 bit lane; signed ordering is selected
+    // by the comparison opcode, not by lossy conversion through i32.
+    let value = chunk.alloc_scratch(1);
+    let word = chunk.i64_scratch();
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_f64_const(9_223_372_036_854_775_808.0, line);
+    chunk.emit_op(Op::F64_GE, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op(Op::I64_TRUNC_F64_U, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, word, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op(Op::I64_TRUNC_F64_S, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, word, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, word, line);
 }
 
 pub fn emit_normalize_integer(chunk: &mut Chunk, lane: BitLane, line: u32) {
@@ -119,11 +145,47 @@ pub fn emit_integer_binary(chunk: &mut Chunk, lane: BitLane, op: IntOp, line: u3
 pub fn emit_integer_binary_with_normalized_operands(
     chunk: &mut Chunk, lane: BitLane, op: IntOp, normalized: (bool, bool), line: u32,
 ) {
-    let right = chunk.alloc_scratch(1);
-    if !normalized.1 { narrow(chunk, lane, line); }
-    chunk.emit_op_u16(Op::LOCAL_SET, right, line);
-    if !normalized.0 { narrow(chunk, lane, line); }
-    chunk.emit_op_u16(Op::LOCAL_GET, right, line);
+    let op = if lane == BitLane::W64 && op.is_comparison() {
+        let right_value = chunk.alloc_scratch(1);
+        let left_value = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, right_value, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, left_value, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, right_value, line);
+        narrow_comparison_word(chunk, lane, line);
+        // Keep the right word on the operand stack while the left conversion
+        // reuses the dedicated i64 scratch. No source expression runs between.
+        chunk.emit_op_u16(Op::LOCAL_GET, left_value, line);
+        narrow_comparison_word(chunk, lane, line);
+        match op {
+            IntOp::LtS => IntOp::GtS,
+            IntOp::LtU => IntOp::GtU,
+            IntOp::LeS => IntOp::GeS,
+            IntOp::LeU => IntOp::GeU,
+            IntOp::GtS => IntOp::LtS,
+            IntOp::GtU => IntOp::LtU,
+            IntOp::GeS => IntOp::LeS,
+            IntOp::GeU => IntOp::LeU,
+            _ => op,
+        }
+    } else {
+        let right = if lane == BitLane::W64 {
+            chunk.i64_scratch()
+        } else {
+            chunk.alloc_scratch(1)
+        };
+        let narrow_operand = |chunk: &mut Chunk| {
+            if op.is_comparison() {
+                narrow_comparison_word(chunk, lane, line);
+            } else {
+                narrow(chunk, lane, line);
+            }
+        };
+        if !normalized.1 { narrow_operand(chunk); }
+        chunk.emit_op_u16(Op::LOCAL_SET, right, line);
+        if !normalized.0 { narrow_operand(chunk); }
+        chunk.emit_op_u16(Op::LOCAL_GET, right, line);
+        op
+    };
     let opcode = match (lane, op) {
         (BitLane::W32, IntOp::Add) => Op::I32_ADD,
         (BitLane::W32, IntOp::Sub) => Op::I32_SUB,
@@ -138,6 +200,16 @@ pub fn emit_integer_binary_with_normalized_operands(
         (BitLane::W32, IntOp::And) => Op::I32_AND,
         (BitLane::W32, IntOp::Or) => Op::I32_OR,
         (BitLane::W32, IntOp::Xor) => Op::I32_XOR,
+        (BitLane::W32, IntOp::Eq) => Op::I32_EQ,
+        (BitLane::W32, IntOp::Ne) => Op::I32_NE,
+        (BitLane::W32, IntOp::LtS) => Op::I32_LT_S,
+        (BitLane::W32, IntOp::LtU) => Op::I32_LT_U,
+        (BitLane::W32, IntOp::LeS) => Op::I32_LE_S,
+        (BitLane::W32, IntOp::LeU) => Op::I32_LE_U,
+        (BitLane::W32, IntOp::GtS) => Op::I32_GT_S,
+        (BitLane::W32, IntOp::GtU) => Op::I32_GT_U,
+        (BitLane::W32, IntOp::GeS) => Op::I32_GE_S,
+        (BitLane::W32, IntOp::GeU) => Op::I32_GE_U,
         (BitLane::W64, IntOp::Add) => Op::I64_ADD,
         (BitLane::W64, IntOp::Sub) => Op::I64_SUB,
         (BitLane::W64, IntOp::Mul) => Op::I64_MUL,
@@ -151,9 +223,21 @@ pub fn emit_integer_binary_with_normalized_operands(
         (BitLane::W64, IntOp::And) => Op::I64_AND,
         (BitLane::W64, IntOp::Or) => Op::I64_OR,
         (BitLane::W64, IntOp::Xor) => Op::I64_XOR,
+        (BitLane::W64, IntOp::Eq) => Op::I64_EQ,
+        (BitLane::W64, IntOp::Ne) => Op::I64_NE,
+        (BitLane::W64, IntOp::LtS) => Op::I64_LT_S,
+        (BitLane::W64, IntOp::LtU) => Op::I64_LT_U,
+        (BitLane::W64, IntOp::LeS) => Op::I64_LE_S,
+        (BitLane::W64, IntOp::LeU) => Op::I64_LE_U,
+        (BitLane::W64, IntOp::GtS) => Op::I64_GT_S,
+        (BitLane::W64, IntOp::GtU) => Op::I64_GT_U,
+        (BitLane::W64, IntOp::GeS) => Op::I64_GE_S,
+        (BitLane::W64, IntOp::GeU) => Op::I64_GE_U,
     };
     chunk.emit_op(opcode, line);
-    widen(chunk, lane, line);
+    if !op.is_comparison() {
+        widen(chunk, lane, line);
+    }
 }
 
 /// Read a value's STORAGE as another type of the same width — a bit cast.

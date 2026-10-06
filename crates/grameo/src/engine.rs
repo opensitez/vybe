@@ -9,13 +9,14 @@ use std::fmt;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatchOptions {
+    /// Maximum parser operations. `usize::MAX` means no work cutoff.
     pub max_steps: usize,
     pub max_rule_depth: usize,
 }
 impl Default for MatchOptions {
     fn default() -> Self {
         Self {
-            max_steps: 10_000_000,
+            max_steps: usize::MAX,
             max_rule_depth: 4096,
         }
     }

@@ -1175,6 +1175,44 @@ impl Compiler {
             }
             return;
         }
+        // Only an actually emitted number literal establishes this fact.
+        // Both operand expressions already ran in their original order.
+        if self.profile.ecma_operator_coercion {
+            let (left_number, right_number) = operands.map_or((false, false), |(left, right)| (
+                Self::is_emitted_number_literal(left),
+                Self::is_emitted_number_literal(right),
+            ));
+            // Keep the existing string-literal/typeof specialization first.
+            let string_fact = |expr: &Expression| matches!(&expr.kind,
+                ExprKind::Lit(Literal::Str(_)) | ExprKind::TypeOf(_));
+            let existing_string_path = operands.is_some_and(|(left, right)|
+                string_fact(left) || string_fact(right));
+            if (left_number || right_number) && !existing_string_path {
+                let base = self.chunk().alloc_scratch(2);
+                let (right_slot, left_slot) = (base, base + 1);
+                self.emit_u16(Op::LOCAL_SET, right_slot);
+                self.emit_u16(Op::LOCAL_SET, left_slot);
+                if !(left_number && right_number) {
+                    self.emit_u16(Op::LOCAL_GET, if left_number { right_slot } else { left_slot });
+                    let test = self.import("wasm:js-number", "test");
+                    self.emit_host_call(test, 1);
+                    self.chunk().emit_if_i32(line);
+                }
+                self.emit_u16(Op::LOCAL_GET, left_slot);
+                self.emit_u16(Op::LOCAL_GET, right_slot);
+                self.emit(Op::F64_EQ);
+                if !(left_number && right_number) {
+                    self.chunk().emit_else(line);
+                    self.emit_u16(Op::LOCAL_GET, left_slot);
+                    self.emit_u16(Op::LOCAL_GET, right_slot);
+                    // Preserve the old native non-eqref fallback (including
+                    // its abstractEq coercion quirks), not a constant false.
+                    self.emit(Op::REF_EQ);
+                    self.chunk().emit_end(line);
+                }
+                return;
+            }
+        }
         let (left_string, right_string) = operands.map_or((false, false), |(left, right)| {
             (
                 matches!(
@@ -1252,6 +1290,9 @@ impl Compiler {
             crate::primitives::bits::emit_integer_binary_with_normalized_operands(
                 self.chunk(), *lane, *operation, proofs, line,
             );
+            if operation.is_comparison() && std::mem::take(&mut self.want_i32_condition) {
+                self.gave_i32_condition = true;
+            }
             return;
         }
         let (left_num_lit, right_num_lit) = match operands {

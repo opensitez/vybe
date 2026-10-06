@@ -940,6 +940,14 @@ impl Compiler {
         result
     }
 
+    fn finish_type_predicate(&mut self, want_i32_condition: bool, line: u32) {
+        if want_i32_condition {
+            self.gave_i32_condition = true;
+        } else {
+            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+        }
+    }
+
     fn compile_expr_requested(
         &mut self,
         expr: &Expression,
@@ -5707,6 +5715,27 @@ impl Compiler {
                 // where the frontend could const-fold the name to a literal.
                 self.emit_class_designator(class)?;
 
+                if args.iter().any(|arg| arg.spread || matches!(arg.value.kind, ExprKind::Spread(_))) {
+                    let ctor_slot = self.define_local("__dynamic_new_constructor");
+                    self.emit_u16(Op::LOCAL_SET, ctor_slot);
+                    // Some frontends carry spread on the argument, others on
+                    // its expression. Normalize that representation once and
+                    // reuse the ordinary call argument builder.
+                    let normalized_args: Vec<Argument> = args.iter().cloned().map(|mut arg| {
+                        if let ExprKind::Spread(value) = arg.value.kind {
+                            arg.value = *value;
+                            arg.spread = true;
+                        }
+                        arg
+                    }).collect();
+                    let (args_slot, _) = self.compile_call_args_array(&normalized_args, "dynamic_new")?;
+                    self.emit_u16(Op::LOCAL_GET, ctor_slot);
+                    self.emit_const(Value::Null);
+                    self.emit_u16(Op::LOCAL_GET, args_slot);
+                    let apply = self.import("ecma:function", "apply");
+                    self.emit_host_call(apply, 3);
+                    return Ok(());
+                }
                 for a in args {
                     self.compile_expr(&a.value)?;
                 }
@@ -6699,8 +6728,8 @@ impl Compiler {
                 let obj_slot = self.define_local("__is_type_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_slot);
 
-                // `IsType` always produces `Value::Bool` — the WASM `REF_IS_*`
-                // opcodes return `i32`, so wrap with `emit_i32_to_bool` here.
+                // Primitive type tests produce an i32 predicate. Keep it native
+                // for a condition; value positions still receive Value::Bool.
                 // This is language-agnostic: JS normalizes `typeof x === "string"`
                 // and `Array.isArray(x)` to `IsType` in the walker; Python uses
                 // `isinstance`; VB uses `TypeOf x Is T`. All share the same
@@ -6711,7 +6740,7 @@ impl Compiler {
                         "string" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-string", "test", 1);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            self.finish_type_predicate(want_i32_condition, line);
                             return Ok(());
                         }
                         // ⛔ THE .NET SPELLINGS BELONG HERE TOO. A value type's
@@ -6727,37 +6756,38 @@ impl Compiler {
                         | "uint64" | "byte" | "sbyte" | "short" | "ushort" | "uint" | "ulong" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-number", "test", 1);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            self.finish_type_predicate(want_i32_condition, line);
                             return Ok(());
                         }
                         "boolean" | "bool" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-boolean", "test", 1);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            self.finish_type_predicate(want_i32_condition, line);
                             return Ok(());
                         }
                         "array" | "list" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "ecma:array", "isArray", 1);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            self.finish_type_predicate(want_i32_condition, line);
                             return Ok(());
                         }
                         "function" | "callable" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            inst!(self, recipes::is_func);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            // Value-ABI callables are externrefs, not core funcrefs.
+                            common::reflection::emit_typeof_is(self.chunk(), "function", line);
+                            self.finish_type_predicate(want_i32_condition, line);
                             return Ok(());
                         }
                         "undefined" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-undefined", "test", 1);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            self.finish_type_predicate(want_i32_condition, line);
                             return Ok(());
                         }
                         "object" | "dict" | "map" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             inst!(self, recipes::is_object);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            self.finish_type_predicate(want_i32_condition, line);
                             return Ok(());
                         }
                         // ⛔ THESE TWO HAD NO ARM AND FELL THROUGH — and the
@@ -6782,13 +6812,13 @@ impl Compiler {
                         "bigint" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-bigint", "test", 1);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            self.finish_type_predicate(want_i32_condition, line);
                             return Ok(());
                         }
                         "symbol" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-symbol", "test", 1);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            self.finish_type_predicate(want_i32_condition, line);
                             return Ok(());
                         }
                         _ => {} // fall through to the general reflection path

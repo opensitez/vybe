@@ -273,8 +273,8 @@ pub fn emit_append_bytes(
     const PUSH_BATCH: i32 = 254;
     let i = chunk.alloc_scratch(1);
     let push = chunk.add_import("ecma:array", "push");
-    let length = chunk.add_import("ecma:array", "length");
     let set = chunk.add_import("ecma:array", "set");
+    let length = chunk.add_import("ecma:array", "length");
     let base = chunk.alloc_scratch(1);
     let cursor = chunk.alloc_scratch(1);
 

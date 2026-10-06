@@ -128,7 +128,7 @@ fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>)
         match parser(content) {
             Ok(module) => (extract::extract_symbols(&module), Vec::new()),
             Err(msg) => {
-                let (line, col) = parse_error_location(&msg);
+                let (line, col) = parse_error_location(&msg, content);
                 (
                     Vec::new(),
                     vec![LspDiagnostic {
@@ -146,8 +146,18 @@ fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>)
     }
 }
 
-fn parse_error_location(msg: &str) -> (u32, u32) {
-    // Try pest format: " --> LINE:COL"
+fn parse_error_location(msg: &str, source: &str) -> (u32, u32) {
+    // Grameo reports byte offsets. LSP positions use zero-based UTF-16 columns.
+    if let Some((_, after)) = msg.split_once(" at byte ") {
+        let byte = after.split(|c: char| !c.is_ascii_digit()).next()
+            .and_then(|n| n.parse::<usize>().ok());
+        if let Some(prefix) = byte.and_then(|byte| source.get(..byte)) {
+            let line = prefix.bytes().filter(|b| *b == b'\n').count() as u32;
+            let col = prefix.rsplit('\n').next().unwrap().encode_utf16().count() as u32;
+            return (line, col);
+        }
+    }
+    // Accept legacy diagnostic format: " --> LINE:COL"
     if let Some(arrow_pos) = msg.find(" --> ") {
         let after = &msg[arrow_pos + 4..];
         let parts: Vec<&str> = after.splitn(2, ':').collect();
@@ -256,5 +266,19 @@ fn analysis_loop(
                 pending = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod parser_location_tests {
+    use super::parse_error_location;
+    #[test]
+    fn native_byte_errors_use_utf16_columns_and_reject_invalid_offsets() {
+        let source = "x\r\né😀?";
+        assert_eq!(parse_error_location("Syntax at byte 9: expected value", source), (1, 3));
+        assert_eq!(parse_error_location("Syntax at byte 3: expected value", source), (1, 0));
+        assert_eq!(parse_error_location("Syntax at byte 4: expected value", source), (0, 0));
+        assert_eq!(parse_error_location("Syntax at byte 999: expected value", source), (0, 0));
+        assert_eq!(parse_error_location(" --> 2:4", source), (1, 3));
     }
 }

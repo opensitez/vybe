@@ -484,8 +484,7 @@ impl Bundle {
         add_shared_gui_namespace(&mut profile);
 
         let exports_started = Instant::now();
-        let module_exports = flatten_module_exports(modules);
-        let value_exports = flatten_module_value_exports(modules);
+        let (module_exports, value_exports) = flatten_module_exports_and_values(modules);
         if let Some(path) = timing.as_deref() {
             write_bundle_timing(path, "flatten_module_exports", exports_started.elapsed());
         }
@@ -1140,7 +1139,7 @@ fn split_mixed_php_include_source(source: &str) -> Vec<MixedPhpIncludeSegment<'_
     segments
 }
 
-fn skip_php_heredoc(bytes: &[u8], start: usize) -> Option<usize> {
+pub(crate) fn skip_php_heredoc(bytes: &[u8], start: usize) -> Option<usize> {
     if start + 3 >= bytes.len()
         || bytes[start] != b'<'
         || bytes[start + 1] != b'<'
@@ -3145,11 +3144,12 @@ fn should_resolve_source_import(path_str: &str, resolved: &Path) -> bool {
 pub fn flatten_module_exports(
     modules: &HashMap<String, ModuleRecord>,
 ) -> HashMap<String, HashMap<String, (String, String)>> {
-    let mut out: HashMap<String, HashMap<String, (String, String)>> = HashMap::new();
+    let mut out: HashMap<String, HashMap<String, (String, String)>> = HashMap::with_capacity(modules.len());
+    let mut visited: Vec<(&str, &str)> = Vec::new();
     for (specifier, record) in modules {
-        let mut resolved: HashMap<String, (String, String)> = HashMap::new();
+        let mut resolved: HashMap<String, (String, String)> = HashMap::with_capacity(record.exports.len());
         for (name, _) in &record.exports {
-            let mut visited: Vec<(String, String)> = Vec::new();
+            visited.clear();
             if let Some(target) = resolve_export(modules, specifier, name, &mut visited) {
                 resolved.insert(name.clone(), target);
             }
@@ -3172,22 +3172,23 @@ pub fn flatten_module_value_exports(
     modules: &HashMap<String, ModuleRecord>,
 ) -> HashMap<String, HashMap<String, vybe_runtime::Value>> {
     let mut out: HashMap<String, HashMap<String, vybe_runtime::Value>> = HashMap::new();
+    let mut visited: Vec<(&str, &str)> = Vec::new();
     for (specifier, record) in modules {
         for (name, _entry) in &record.exports {
             // Follow Indirect chains
             let terminal = {
-                let mut visited: Vec<(String, String)> = Vec::new();
+                visited.clear();
                 let mut cur_mod = specifier.as_str();
                 let mut cur_name = name.as_str();
                 let mut result = None;
                 loop {
-                    if visited.contains(&(cur_mod.to_string(), cur_name.to_string())) {
+                    if visited.contains(&(cur_mod, cur_name)) {
                         break;
                     }
-                    visited.push((cur_mod.to_string(), cur_name.to_string()));
+                    visited.push((cur_mod, cur_name));
                     match modules.get(cur_mod).and_then(|r| r.exports.get(cur_name)) {
                         Some(ExportEntry::Value(v)) => {
-                            result = Some((cur_mod.to_string(), cur_name.to_string(), v.clone()));
+                            result = Some(v.clone());
                             break;
                         }
                         Some(ExportEntry::Indirect { from, name: target }) => {
@@ -3199,7 +3200,7 @@ pub fn flatten_module_value_exports(
                 }
                 result
             };
-            if let Some((_final_mod, _final_name, value)) = terminal {
+            if let Some(value) = terminal {
                 out.entry(specifier.clone())
                     .or_default()
                     .insert(name.clone(), value);
@@ -3207,6 +3208,66 @@ pub fn flatten_module_value_exports(
         }
     }
     out
+}
+
+/// Resolve both compiler snapshots in one immutable graph walk per export.
+/// Value aliases retain their imported names and cloned terminal identity.
+fn flatten_module_exports_and_values(
+    modules: &HashMap<String, ModuleRecord>,
+) -> (
+    HashMap<String, HashMap<String, (String, String)>>,
+    HashMap<String, HashMap<String, vybe_runtime::Value>>,
+) {
+    let mut exports = HashMap::with_capacity(modules.len());
+    let mut values: HashMap<String, HashMap<String, vybe_runtime::Value>> = HashMap::new();
+    let mut visited = Vec::new();
+    for (specifier, record) in modules {
+        let mut resolved = HashMap::with_capacity(record.exports.len());
+        for (name, _) in &record.exports {
+            visited.clear();
+            if let Some((owner, terminal, entry)) =
+                resolve_entry(modules, specifier, name, &mut visited)
+            {
+                resolved.insert(name.clone(), (owner.to_string(), terminal.to_string()));
+                if let ExportEntry::Value(value) = entry {
+                    values
+                        .entry(specifier.clone())
+                        .or_default()
+                        .insert(name.clone(), value.clone());
+                }
+            }
+        }
+        if !resolved.is_empty() {
+            exports.insert(specifier.clone(), resolved);
+        }
+    }
+    (exports, values)
+}
+fn resolve_entry<'a>(
+    modules: &'a HashMap<String, ModuleRecord>,
+    specifier: &'a str,
+    name: &'a str,
+    visited: &mut Vec<(&'a str, &'a str)>,
+) -> Option<(&'a str, &'a str, &'a ExportEntry)> {
+    let (mut module, mut name) = (specifier, name);
+    loop {
+        let key = (module, name);
+        if visited.contains(&key) {
+            return None;
+        }
+        visited.push(key);
+        let entry = modules.get(module)?.exports.get(name)?;
+        match entry {
+            ExportEntry::Indirect { from, name: target } => {
+                module = from;
+                name = target;
+            }
+            ExportEntry::Function { .. }
+            | ExportEntry::Value(_)
+            | ExportEntry::ResourceType { .. }
+            | ExportEntry::Class { .. } => return Some((module, name, entry)),
+        }
+    }
 }
 
 /// Validate that every import in the compiled chunks resolves to a
@@ -3235,6 +3296,7 @@ pub fn validate_imports_against_modules(
         Some(c) => c,
         None => return unresolved,
     };
+    let mut visited: Vec<(&str, &str)> = Vec::new();
     for imp in &imports_chunk.imports {
         if imp.module == "*" || imp.module == "env" || imp.module == "wasm:string-constants" {
             continue;
@@ -3251,7 +3313,7 @@ pub fn validate_imports_against_modules(
         };
         // Walk the Indirect chain — same resolver as the Phase 6
         // adapter flattener.
-        let mut visited: Vec<(String, String)> = Vec::new();
+        visited.clear();
         if resolve_export(modules, &imp.module, &imp.name, &mut visited).is_none() {
             let _ = record;
             unresolved.push(format!("{}::{}", imp.module, imp.name));
@@ -3263,7 +3325,7 @@ pub fn validate_imports_against_modules(
             unresolved.push(format!("{}::{}", import.module, import.func));
             continue;
         };
-        let mut visited: Vec<(String, String)> = Vec::new();
+        visited.clear();
         if resolve_export(modules, &import.module, &import.func, &mut visited).is_none() {
             unresolved.push(format!("{}::{}", import.module, import.func));
         }
@@ -3277,13 +3339,13 @@ pub fn validate_imports_against_modules(
 /// Recursive resolver — the `ResolveExport(exportName, resolveSet)`
 /// abstract op from §16.2.1.6.2. Walks `Indirect` entries until it
 /// hits a terminal export or exhausts the chain.
-fn resolve_export(
-    modules: &HashMap<String, ModuleRecord>,
-    specifier: &str,
-    name: &str,
-    visited: &mut Vec<(String, String)>,
+fn resolve_export<'a>(
+    modules: &'a HashMap<String, ModuleRecord>,
+    specifier: &'a str,
+    name: &'a str,
+    visited: &mut Vec<(&'a str, &'a str)>,
 ) -> Option<(String, String)> {
-    let key = (specifier.to_string(), name.to_string());
+    let key = (specifier, name);
     if visited.contains(&key) {
         // Circular re-export — bail. Per spec this is a SyntaxError;
         // MVP drops the binding and lets the runtime surface it if

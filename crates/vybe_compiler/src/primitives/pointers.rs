@@ -23,6 +23,8 @@ pub const CELL_KIND: &str = "cell";
 pub const CARRAY_BASE_KEY: &str = "__base";
 pub const CARRAY_IDX_KEY: &str = "__idx";
 pub const CARRAY_KIND: &str = "carray";
+/// ABI byte coordinate, independent of the managed property's lookup key.
+pub const REFERENCE_BYTE_OFFSET_KEY: &str = "__byte_offset";
 /// A word in SHARED linear memory — the storage the WASM atomics
 /// (`i32.atomic.*`) act on. The third reference shape, and the first whose
 /// base is an ADDRESS rather than an object graph: `(base, key)` unification
@@ -634,29 +636,33 @@ pub fn hybrid_element_distance(
     a_is_array_base: bool,
     b_is_array_base: bool,
 ) -> Expression {
-    let is_number = |value: Expression| {
-        binary(
-            BinOp::Eq,
-            e(ExprKind::Unary {
-                op: UnaryOp::Typeof,
-                expr: Box::new(value),
-            }),
-            e(ExprKind::Lit(Literal::Str("number".to_string()))),
-        )
-    };
+    let is_number = |value: Expression| e(ExprKind::IsType {
+        expr: Box::new(value), type_name: "number".into(),
+    });
     let linear = binary(BinOp::Sub, a.clone(), b.clone());
     let linear = if stride == 1 {
         linear
     } else {
         binary(BinOp::Div, linear, e(ExprKind::Lit(Literal::Int(stride))))
     };
+    let a_coordinate = member(a.clone(), REFERENCE_BYTE_OFFSET_KEY);
+    let b_coordinate = member(b.clone(), REFERENCE_BYTE_OFFSET_KEY);
+    let byte_distance = binary(BinOp::Sub, a_coordinate.clone(), b_coordinate.clone());
+    let byte_distance = if stride == 1 { byte_distance } else {
+        binary(BinOp::Div, byte_distance, Expression::int(stride))
+    };
+    let managed = e(ExprKind::Ternary {
+        cond: Box::new(binary(BinOp::And, is_number(a_coordinate), is_number(b_coordinate))),
+        then: Box::new(byte_distance),
+        else_: Box::new(carray_diff(
+            if a_is_array_base { make_carray_ptr(a.clone(), Expression::int(0)) } else { a.clone() },
+            if b_is_array_base { make_carray_ptr(b.clone(), Expression::int(0)) } else { b.clone() },
+        )),
+    });
     e(ExprKind::Ternary {
         cond: Box::new(binary(BinOp::And, is_number(a.clone()), is_number(b.clone()),)),
         then: Box::new(linear),
-        else_: Box::new(carray_diff(
-            if a_is_array_base { make_carray_ptr(a, e(ExprKind::Lit(Literal::Int(0)))) } else { a },
-            if b_is_array_base { make_carray_ptr(b, e(ExprKind::Lit(Literal::Int(0)))) } else { b },
-        )),
+        else_: Box::new(managed),
     })
 }
 
@@ -685,6 +691,14 @@ pub fn carray_retreat_inplace(ptr_name: &str, n: Expression) -> Expression {
 }
 
 pub fn is_carray_ptr_kind(ptr: Expression) -> Expression {
+    is_managed_pointer_kind(ptr, CARRAY_KIND)
+}
+
+pub fn is_cell_ptr_kind(ptr: Expression) -> Expression {
+    is_managed_pointer_kind(ptr, CELL_KIND)
+}
+
+fn is_managed_pointer_kind(ptr: Expression, kind: &str) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(e(ExprKind::Binary {
             op: BinOp::Eq,
@@ -697,7 +711,7 @@ pub fn is_carray_ptr_kind(ptr: Expression) -> Expression {
         then: Box::new(e(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(member(ptr, REF_KIND_KEY)),
-            right: Box::new(e(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string())))),
+            right: Box::new(e(ExprKind::Lit(Literal::Str(kind.to_string())))),
         })),
         else_: Box::new(e(ExprKind::Lit(Literal::Bool(false)))),
     })

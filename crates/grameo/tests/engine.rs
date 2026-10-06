@@ -310,3 +310,15 @@ root = { bounded ~ EOI }
         }
     }
 }
+
+#[test]
+fn default_has_no_work_cutoff_but_explicit_limits_are_enforced() {
+    use grameo::{MatchOptions, ParseErrorKind};
+    assert_eq!(MatchOptions::default().max_steps, usize::MAX);
+    let grammar = grameo::compile("number = @{ SOI ~ ASCII_DIGIT+ ~ EOI }").unwrap();
+    let source = "1".repeat(4_000_001);
+    let Err(error) = grammar.parse_source_with_options("number", &source, MatchOptions { max_steps: 10_000_000, ..MatchOptions::default() }) else { panic!("explicit work limit must be enforced"); };
+    assert_eq!(error.kind, ParseErrorKind::WorkLimit);
+    assert_eq!(grammar.parse_source("number", &source).unwrap().consumed(), source.len());
+    assert_eq!(grammar.recognize("number", &source).unwrap().consumed, source.len());
+}

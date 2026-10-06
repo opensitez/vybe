@@ -50,6 +50,9 @@ impl<R> Clone for Pairs<'_, R> {
     }
 }
 impl<'i, R: RuleIdentity> Pair<'i, R> {
+    pub fn line_col(&self) -> (usize, usize) {
+        self.as_span().start_pos().line_col()
+    }
     pub fn as_rule(&self) -> R {
         R::from_capture(CaptureRule::decode(self.node.rule))
             .expect("capture rule missing from generated enum")
@@ -123,6 +126,9 @@ pub struct SourceSpan<'i> {
     span: Span,
 }
 impl<'i> SourceSpan<'i> {
+    pub fn get_input(self) -> &'i str {
+        self.source
+    }
     pub fn start(self) -> usize {
         self.span.start
     }
@@ -215,6 +221,8 @@ mod tests {
             let eof = children.peek().unwrap();
             assert_eq!(eof.as_rule(), Identity(CaptureRule::EndOfInput));
             assert_eq!(eof.as_str(), "");
+            assert_eq!(eof.as_span().get_input(), "a");
+            assert_eq!(eof.line_col(), (1, 2));
             assert_eq!((eof.as_span().start(), eof.as_span().end()), (1, 1));
             assert_eq!(children.next().unwrap().as_rule(), eof.as_rule());
             assert!(children.next().is_none());

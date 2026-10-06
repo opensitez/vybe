@@ -678,6 +678,9 @@ impl Compiler {
                 op: BinOp::Concat, ..
             } => Some("string".into()),
             ExprKind::Binary {
+                op: BinOp::Integer(operation, _), ..
+            } if operation.is_comparison() => Some("int32".into()),
+            ExprKind::Binary {
                 op: BinOp::Integer(_, vybe_ast::BitLane::W32),
                 ..
             } => Some("int32".into()),

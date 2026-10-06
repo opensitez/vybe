@@ -24,6 +24,23 @@ use crate::primitives::Compiler;
 use crate::primitives::class_normalize::{access_from_visibility, from_method_stmt};
 use vybe_ast::class_normalize::types::*;
 
+fn validate_byte_layout(
+    cname: &str,
+    members: &[ClassMember],
+    semantics: &vybe_ast::ValueSemantics,
+) -> Result<(), String> {
+    if let Some(layout) = &semantics.byte_layout {
+        layout.validate().map_err(|error| format!("{cname}: {error}"))?;
+        for field in &layout.fields {
+            if !members.iter().any(|member| matches!(member,
+                ClassMember::Field { name, .. } if name == &field.name)) {
+                return Err(format!("{cname}: byte layout names undeclared field {}", field.name));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Entry point from `compile_stmt`. Receives the raw AST fields from
 /// `StmtKind::ClassDecl`, normalises per language, then hands off to
 /// `emit_class`.
@@ -83,6 +100,7 @@ pub fn normalize_class_from_ast(
     modifiers: &ClassModifiers,
     semantics: vybe_ast::ValueSemantics,
 ) -> Result<NormalClass, String> {
+    validate_byte_layout(cname, members, &semantics)?;
     let mut nc = if compiler.profile.uses_normalize_class {
         normalize_for_profile(
             compiler.profile.name.as_str(),
@@ -146,6 +164,7 @@ pub fn emit_class_from_ast(
     modifiers: &ClassModifiers,
     semantics: vybe_ast::ValueSemantics,
 ) -> Result<(), String> {
+    validate_byte_layout(cname, members, &semantics)?;
     // Reuse the class normalized during the DECLARATION pass when it is
     // available. That copy has had its augmentations folded in (traits /
     // mixins / promoted fields), and re-normalizing from the AST here would
