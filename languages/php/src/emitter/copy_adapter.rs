@@ -149,7 +149,9 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
 
-    c.emit_bool_const(true, line);
+    // Keep the loop's control flag in the same i32 representation as its
+    // comparisons. Only the public/recursive return ABI is a boxed boolean.
+    c.emit_i32_const(1, line);
     lset(&mut c, result_slot, line);
     c.emit_i32_const(0, line);
     lset(&mut c, i_slot, line);
@@ -159,7 +161,6 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut c, len_slot, line);
     c.emit_op(Op::I32_LT_S, line);
     lget(&mut c, result_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
     c.emit_op(Op::I32_AND, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_br_if(1, line);
@@ -182,12 +183,11 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     vybe_compiler::primitives::ops::emit_js_strict_eq(&mut c, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if_i32(line);
-    c.emit_bool_const(false, line);
+    c.emit_i32_const(0, line);
     lset(&mut c, result_slot, line);
     c.emit_end(line);
 
     lget(&mut c, result_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
     c.emit_if_i32(line);
     ref_func(&mut c, helper_idx, line);
     lget(&mut c, pair_a_slot, line);
@@ -197,7 +197,8 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_i32_const(1, line);
     c.emit_op(Op::ARRAY_GET, line);
     call_ref(&mut c, 2, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+    // This recursive helper always returns a boolean, not a PHP truthy value.
+    call_import(&mut c, "wasm:js-boolean", "cast", 1, line);
     lset(&mut c, result_slot, line);
     c.emit_end(line);
 
@@ -205,7 +206,6 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     helper_loop_end(&mut c, loop_state, line);
 
     lget(&mut c, result_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut c, line);
     c.emit_op(Op::RETURN, line);
 

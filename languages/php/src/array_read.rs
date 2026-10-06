@@ -11,6 +11,25 @@ fn is_array_object(object: &Object) -> bool {
     )
 }
 
+fn indexed_value(object: &Object, key: &Value) -> Value {
+    match &object.kind {
+        ObjectKind::Map(map) => map
+            .get(key)
+            .cloned()
+            .or_else(|| match key {
+                Value::String(s) => s
+                    .parse::<i32>()
+                    .ok()
+                    .and_then(|n| map.get(&Value::I32(n)))
+                    .cloned(),
+                Value::I32(n) => map.get(&Value::String(Arc::from(n.to_string()))).cloned(),
+                _ => None,
+            })
+            .unwrap_or(Value::Null),
+        _ => object.get(&format!("{key}")),
+    }
+}
+
 fn numeric_sort_value(value: &Value) -> Option<f64> {
     match value {
         Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) => {
@@ -61,6 +80,45 @@ fn sort_numeric_values_in_place(value: &Value, descending: bool) -> bool {
         }
         _ => false,
     }
+}
+
+/// Numeric PHP keys can be sorted without coercion callbacks or a temporary
+/// object-key string array. Decline other flags/key types before mutating.
+fn sort_numeric_keys_in_place(value: &Value, flags: &Value, descending: bool) -> bool {
+    let numeric_mode = match flags {
+        Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) => {
+            matches!(flags.as_f64(), 0.0 | 1.0)
+        }
+        _ => false,
+    };
+    if !numeric_mode {
+        return false;
+    }
+    let Value::Object(object) = value else {
+        return false;
+    };
+    let mut object = object.lock().unwrap();
+    let ObjectKind::Map(entries) = &mut object.kind else {
+        return false;
+    };
+    if !entries.keys().all(|key| numeric_sort_value(key).is_some()) {
+        return false;
+    }
+    let mut sorted: Vec<_> = std::mem::take(entries).into_iter().collect();
+    sorted.sort_by(|left, right| {
+        let order = match (&left.0, &right.0) {
+            (Value::I64(left), Value::I64(right)) => left.cmp(right),
+            (Value::I32(left), Value::I32(right)) => left.cmp(right),
+            (Value::I64(left), Value::I32(right)) => left.cmp(&i64::from(*right)),
+            (Value::I32(left), Value::I64(right)) => i64::from(*left).cmp(right),
+            _ => numeric_sort_value(&left.0)
+                .unwrap()
+                .total_cmp(&numeric_sort_value(&right.0).unwrap()),
+        };
+        if descending { order.reverse() } else { order }
+    });
+    entries.extend(sorted);
+    true
 }
 
 fn export_scalar(value: &Value) -> String {
@@ -797,6 +855,16 @@ pub fn register(fw: &mut Framework<'_>) {
     );
     fw.register_host_fn(
         "php:array",
+        "sortNumericKeys",
+        Box::new(|_, args| {
+            let value = args.first().unwrap_or(&Value::Null);
+            let flags = args.get(1).unwrap_or(&Value::Null);
+            let descending = matches!(args.get(2), Some(Value::Bool(true)));
+            Value::Bool(sort_numeric_keys_in_place(value, flags, descending))
+        }),
+    );
+    fw.register_host_fn(
+        "php:array",
         "addDeclaredFields",
         Box::new(|ctx, args| {
             let [source, Value::Object(result), ..] = args else {
@@ -1020,6 +1088,13 @@ pub fn register(fw: &mut Framework<'_>) {
                 Value::Object(cell) => {
                     let method = {
                         let object = cell.lock().unwrap();
+                        // PHP arrays have no methods. Avoid property/prototype
+                        // lookup and a second lock for their indexed reads.
+                        if matches!(&object.kind, ObjectKind::Array(_) | ObjectKind::Map(_))
+                            && !is_array_object(&object)
+                        {
+                            return indexed_value(&object, &key);
+                        }
                         let method = object.get("offsetGet");
                         match &method {
                             Value::Object(f)
@@ -1037,23 +1112,7 @@ pub fn register(fw: &mut Framework<'_>) {
                         return ctx.invoke_with_receiver(&method, object, &[key]);
                     }
                     let data = cell.lock().unwrap();
-                    match &data.kind {
-                        ObjectKind::Map(map) => {
-                            let direct = map.get(&key).cloned().or_else(|| match &key {
-                                Value::String(s) => s
-                                    .parse::<i32>()
-                                    .ok()
-                                    .and_then(|n| map.get(&Value::I32(n)))
-                                    .cloned(),
-                                Value::I32(n) => {
-                                    map.get(&Value::String(Arc::from(n.to_string()))).cloned()
-                                }
-                                _ => None,
-                            });
-                            direct.unwrap_or(Value::Null)
-                        }
-                        _ => data.get(&format!("{key}")),
-                    }
+                    indexed_value(&data, &key)
                 }
                 Value::String(s) => {
                     let len = s.len() as i64;

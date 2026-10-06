@@ -17,7 +17,9 @@
 
 // ── Whitespace and comments ──────────────────────────────────────────────────
 
-WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+// Pest repeats this rule between tokens. Consume a complete whitespace run
+// per invocation instead of re-entering the rule for each character.
+WHITESPACE = _{ (" " | "\t" | "\r" | "\n")+ }
 COMMENT = _{ line_comment | hash_comment | block_comment }
 line_comment  = _{ "//" ~ (!("\n" | "\r") ~ ANY)* }
 hash_comment  = _{ "#" ~ !"[" ~ (!("\n" | "\r") ~ ANY)* }
@@ -179,30 +181,48 @@ cast_kw = @{
 // `readonly(…)` a parse error, reported confusingly as "expected kw_class or
 // class_modifier" because pest surfaces the furthest failure.
 reserved = _{
-    kw_if | kw_elseif | kw_else_if | kw_else | kw_while | kw_do | kw_for
-    | kw_foreach | kw_as | kw_switch | kw_case | kw_default | kw_break
-    | kw_continue | kw_return | kw_goto | kw_declare | kw_function | kw_class | kw_extends
-    | kw_implements | kw_interface | kw_trait | kw_enum | kw_new | kw_clone
-    | kw_echo | kw_print | kw_null | kw_true | kw_false | kw_instanceof
-    | kw_include | kw_include_once | kw_require | kw_require_once
-    | kw_throw | kw_try | kw_catch | kw_finally | kw_static | kw_public
-    | kw_private | kw_protected | kw_abstract | kw_final | kw_const
-    | kw_match | kw_fn | kw_use | kw_namespace | kw_yield_from | kw_yield
-    | kw_list | kw_global | kw_and | kw_or | kw_xor
-    | kw_self | kw_parent | kw_isset | kw_empty | kw_unset | kw_insteadof
-    | kw_endif | kw_endwhile | kw_endfor | kw_endforeach | kw_endswitch
+    // Identifier lookahead needs only recognition, not keyword pairs. Consume
+    // the shared initial once and check the word boundary once. Long spellings
+    // precede their prefixes because PEG choices do not backtrack after success.
+    // "else if" and "yield from" are already rejected by "else" and "yield".
+    (
+        ^"a" ~ (^"bstract" | ^"nd" | ^"s")
+        | ^"b" ~ ^"reak"
+        | ^"c" ~ (^"ontinue" | ^"atch" | ^"lass" | ^"lone" | ^"onst" | ^"ase")
+        | ^"d" ~ (^"efault" | ^"eclare" | ^"o")
+        | ^"e" ~ (^"ndforeach" | ^"ndswitch" | ^"ndwhile" | ^"xtends"
+            | ^"lseif" | ^"ndfor" | ^"ndif" | ^"mpty" | ^"cho" | ^"num" | ^"lse")
+        | ^"f" ~ (^"unction" | ^"oreach" | ^"inally" | ^"alse" | ^"inal" | ^"or" | ^"n")
+        | ^"g" ~ (^"lobal" | ^"oto")
+        | ^"i" ~ (^"nclude_once" | ^"nstanceof" | ^"mplements" | ^"nterface"
+            | ^"nsteadof" | ^"nclude" | ^"sset" | ^"f")
+        | ^"l" ~ ^"ist"
+        | ^"m" ~ ^"atch"
+        | ^"n" ~ (^"amespace" | ^"ull" | ^"ew")
+        | ^"o" ~ ^"r"
+        | ^"p" ~ (^"rotected" | ^"rivate" | ^"ublic" | ^"arent" | ^"rint")
+        | ^"r" ~ (^"equire_once" | ^"equire" | ^"eturn")
+        | ^"s" ~ (^"witch" | ^"tatic" | ^"elf")
+        | ^"t" ~ (^"rait" | ^"hrow" | ^"rue" | ^"ry")
+        | ^"u" ~ (^"nset" | ^"se")
+        | ^"w" ~ ^"hile"
+        | ^"x" ~ ^"or"
+        | ^"y" ~ ^"ield"
+    ) ~ !ident_cont
 }
 
 // ── Identifiers, variables, literals ─────────────────────────────────────────
 
-identifier = @{ !reserved ~ (ASCII_ALPHA | "_") ~ ident_cont* }
+// Underscore-prefixed names cannot be keywords. Reject other invalid starts
+// before trying the reserved-word alternatives, without changing pair shape.
+identifier = @{ "_" ~ ident_cont* | &ASCII_ALPHA ~ !reserved ~ ASCII_ALPHA ~ ident_cont* }
 
 // `$varname`, `$$name`, `${expr}`, and the nested forms `$$$name` / `$${expr}`.
 // The recursion is what makes a `$` prefix stackable; it cannot be left-recursive
 // because the `"$"` is consumed before `dynamic_variable` is re-entered.
 simple_variable = @{ "$" ~ (ASCII_ALPHA | "_") ~ ident_cont* }
-dynamic_variable = { "$" ~ (dynamic_variable | simple_variable | "{" ~ expression ~ "}") }
-variable = { dynamic_variable | simple_variable }
+dynamic_variable = { "$" ~ (simple_variable | dynamic_variable | "{" ~ expression ~ "}") }
+variable = { simple_variable | dynamic_variable }
 
 // PHP allows backslash-qualified names: \Foo\Bar\Baz, Foo\Bar
 //
@@ -212,7 +232,7 @@ variable = { dynamic_variable | simple_variable }
 // bare segments while a lone name still goes through `identifier`, which keeps every
 // reserved word reserved when it stands alone.
 name_segment = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
-qualified_name = @{ "\\"* ~ (name_segment ~ ("\\"+ ~ name_segment)+ | identifier) }
+qualified_name = @{ "\\"* ~ (identifier ~ ("\\"+ ~ name_segment)* | name_segment ~ ("\\"+ ~ name_segment)+) }
 
 // PHP 7.4 numeric separators: 1_000_000, 0xFF_FF, etc. The walker
 // strips underscores before parsing.
@@ -248,7 +268,11 @@ string_lit = { sq_string | dq_string | heredoc_str }
 // ── Statements ───────────────────────────────────────────────────────────────
 
 statement = _{
-    empty_statement
+    &"$" ~ expression_statement
+    | return_statement
+    | if_statement
+    | foreach_statement
+    | empty_statement
     | template_break_stmt
     | template_echo_stmt
     | block_statement
@@ -262,16 +286,13 @@ statement = _{
     | interface_declaration
     | trait_declaration
     | enum_declaration
-    | if_statement
     | while_statement
     | do_while_statement
     | for_statement
-    | foreach_statement
     | goto_statement
     | label_statement
     | declare_statement
     | switch_statement
-    | return_statement
     | break_statement
     | continue_statement
     | throw_statement
@@ -423,8 +444,8 @@ trait_declaration = {
 class_member = _{
     use_trait
     | class_constant
-    | property_declaration
     | method_declaration
+    | property_declaration
     | empty_statement
 }
 
@@ -444,8 +465,10 @@ use_trait = {
 }
 
 trait_adaptation = {
-    trait_method_ref ~ kw_insteadof ~ qualified_name ~ ("," ~ qualified_name)* ~ ";"
-    | trait_method_ref ~ kw_as ~ trait_visibility? ~ method_ident? ~ ";"
+    trait_method_ref
+    ~ (kw_insteadof ~ qualified_name ~ ("," ~ qualified_name)*
+       | kw_as ~ trait_visibility? ~ method_ident?)
+    ~ ";"
 }
 
 // `MyTrait::method` or just `method` (when unambiguous).
@@ -466,15 +489,19 @@ class_constant = {
 
 property_declaration = {
     attribute_group* ~ (asymmetric_set_modifier | member_modifier)* ~ type_annotation?
+    // Parse the first property and its initializer once. Hook-backed properties
+    // share this prefix with ordinary declarations; replaying it can reparse
+    // an entire nested initializer before discovering the hook block.
+    ~ simple_variable ~ ("=" ~ expression)?
     ~ (
-        simple_variable ~ ("=" ~ expression)? ~ ("," ~ simple_variable ~ ("=" ~ expression)?)* ~ ";"
+        ("," ~ simple_variable ~ ("=" ~ expression)?)* ~ ";"
         // PHP 8.4 BACKED property: a default AND hooks. `$field` inside a hook
         // reads this property's backing storage, which is what makes the
         // initializer meaningful — a virtual property has nothing to initialize.
         // Without the optional default here neither alternative matched
         // (`= 0` fails the first at the missing `;`, and fails the second
         // outright), so every backed hook was a parse error.
-        | simple_variable ~ ("=" ~ expression)? ~ property_hook_block
+        | property_hook_block
     )
 }
 
@@ -593,8 +620,10 @@ foreach_alt_block = {
 
 // `as $value` or `as $key => $value`
 foreach_target = {
-    postfix_expression ~ "=>" ~ "&"? ~ (postfix_expression | list_expression | short_array_expression)
-    | "&"? ~ (postfix_expression | list_expression | short_array_expression)
+    "&" ~ (postfix_expression | list_expression | short_array_expression)
+    | postfix_expression ~ ("=>" ~ "&"? ~ (postfix_expression | list_expression | short_array_expression))?
+    | list_expression
+    | short_array_expression
 }
 
 switch_statement = {
@@ -856,8 +885,8 @@ arg_name = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
 // ── Primary expressions ──────────────────────────────────────────────────────
 
 primary_expression = {
-    literal
-    | variable
+    &"$" ~ variable
+    | literal
     | new_expression
     | clone_expression
     | throw_expression
@@ -895,6 +924,7 @@ literal = {
 new_expression = {
     kw_new ~ (anonymous_class | kw_static | kw_self | kw_parent
               | qualified_name | method_ident | variable | "(" ~ expression ~ ")")
+        ~ (static_access_op | property_access_op | array_index_op)*
         ~ ("(" ~ arg_list? ~ ")")?
 }
 
@@ -941,8 +971,9 @@ list_expression = {
 }
 
 list_element = {
-    expression ~ "=>" ~ "&"? ~ expression
-    | "&"? ~ expression?
+    &"&" ~ (expression ~ "=>" ~ "&"? ~ expression | "&" ~ expression?)
+    | expression ~ ("=>" ~ "&"? ~ expression)?
+    | ""
 }
 
 // `array(1, 2, 'key' => $val, ...$rest)` — PHP keyword, case-insensitive
@@ -957,8 +988,11 @@ short_array_expression = {
 
 array_element = {
     "..." ~ expression
-    | expression ~ "=>" ~ "&"? ~ expression
-    | "&"? ~ expression
+    // Keep the reference-prefixed alternatives' existing pair shapes. Plain
+    // elements share their expression prefix with keyed elements, so a nested
+    // array is not parsed again merely because no key arrow follows it.
+    | &"&" ~ (expression ~ "=>" ~ "&"? ~ expression | "&" ~ expression)
+    | expression ~ ("=>" ~ "&"? ~ expression)?
 }
 
 closure_expression = {

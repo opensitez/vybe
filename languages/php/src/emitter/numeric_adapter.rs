@@ -174,7 +174,8 @@ pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 
     lget(chunk, v_slot, line);
     chunk.emit_call(number_is_integer, 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    let boolean_cast = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(boolean_cast, 1, line);
     chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
     chunk.emit_call(to_f64, 1, line);

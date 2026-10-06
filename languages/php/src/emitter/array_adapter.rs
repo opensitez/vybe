@@ -280,7 +280,7 @@ fn emit_is_array(chunks: &mut [Chunk], current: usize, arr_slot: u16, line: u32)
     lget(chunk, arr_slot, line);
     let _ = chunk;
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    call_import(chunks, current, "wasm:js-boolean", "cast", 1, line);
 }
 
 fn emit_json_stringify_slots(
@@ -414,7 +414,7 @@ fn emit_php_array_has_key_from_slots(
     lset(&mut chunks[current], key_slot, line);
     lget(&mut chunks[current], arr_slot, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    call_import(chunks, current, "wasm:js-boolean", "cast", 1, line);
     chunks[current].emit_if_value(line);
     // Packed PHP arrays have numeric entries, not JS's named `length` property.
     lget(&mut chunks[current], key_slot, line);
@@ -1048,11 +1048,33 @@ pub fn emit_php_is_object(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_php_is_array(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_php_is_array_result(chunks, current, line, false);
+}
+
+pub(super) fn emit_php_is_array_condition(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    emit_php_is_array_result(chunks, current, line, true);
+}
+
+fn emit_php_is_array_result(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+    raw_condition: bool,
+) {
     let chunk = &mut chunks[current];
     let v_slot = alloc_local(chunk);
     lset(chunk, v_slot, line);
 
     super::copy_adapter::emit_php_arrayish_slot(chunk, v_slot, line);
+    if raw_condition {
+        // The adapter already returns the raw condition representation.
+        return;
+    }
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
@@ -3861,7 +3883,7 @@ pub fn emit_array_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 
         {
             let chunk = &mut chunks[current];
-            push_const(chunk, Value::F64(0.0), line);
+            chunk.emit_i32_const(0, line);
             lset(chunk, i_slot, line);
             lget(chunk, keys_slot, line);
             chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -3872,9 +3894,9 @@ pub fn emit_array_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line:
             let chunk = &mut chunks[current];
             lget(chunk, i_slot, line);
             lget(chunk, len_slot, line);
-            vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+            chunk.emit_op(Op::I32_LT_U, line);
         }
-        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
         {
             let chunk = &mut chunks[current];
 
@@ -3891,8 +3913,8 @@ pub fn emit_array_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line:
             chunk.emit_op(Op::ARRAY_SET, line);
 
             lget(chunk, i_slot, line);
-            push_const(chunk, Value::F64(1.0), line);
-            chunk.emit_op(Op::F64_ADD, line);
+            chunk.emit_i32_const(1, line);
+            chunk.emit_op(Op::I32_ADD, line);
             lset(chunk, i_slot, line);
         }
         vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
@@ -4029,7 +4051,7 @@ fn emit_copy_object_entries(
 
     {
         let chunk = &mut chunks[current];
-        push_const(chunk, Value::F64(0.0), line);
+        chunk.emit_i32_const(0, line);
         lset(chunk, i_slot, line);
         lget(chunk, keys_slot, line);
         chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -4041,9 +4063,9 @@ fn emit_copy_object_entries(
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+        chunk.emit_op(Op::I32_LT_U, line);
     }
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     {
         let chunk = &mut chunks[current];
 
@@ -4062,8 +4084,8 @@ fn emit_copy_object_entries(
             chunk.emit_op(Op::ARRAY_SET, line);
 
             lget(chunk, i_slot, line);
-            push_const(chunk, Value::F64(1.0), line);
-            chunk.emit_op(Op::F64_ADD, line);
+            chunk.emit_i32_const(1, line);
+            chunk.emit_op(Op::I32_ADD, line);
             lset(chunk, i_slot, line);
         }
     }
@@ -4382,7 +4404,7 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
     {
         let chunk = &mut chunks[current];
-        push_const(chunk, Value::F64(0.0), line);
+        chunk.emit_i32_const(0, line);
         lset(chunk, i_slot, line);
         lget(chunk, keys_slot, line);
         chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -4394,9 +4416,9 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+        chunk.emit_op(Op::I32_LT_U, line);
     }
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, keys_slot, line);
@@ -4412,8 +4434,8 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line);
         lget(chunk, i_slot, line);
-        push_const(chunk, Value::F64(1.0), line);
-        chunk.emit_op(Op::F64_ADD, line);
+        chunk.emit_i32_const(1, line);
+        chunk.emit_op(Op::I32_ADD, line);
         lset(chunk, i_slot, line);
     }
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
@@ -5985,11 +6007,36 @@ fn emit_numeric_assoc_sort_or_fallback(chunks: &mut [Chunk], current: usize, mod
     emit_assoc_sort_impl(chunks, current, mode, None, line);
     chunks[current].emit_end(line);
 }
-pub fn emit_php_ksort(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_assoc_sort_impl(chunks, current, 2, None, line);
+pub fn emit_php_ksort(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_numeric_key_sort_or_fallback(chunks, current, argc, false, line);
 }
-pub fn emit_php_krsort(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_assoc_sort_impl(chunks, current, 3, None, line);
+pub fn emit_php_krsort(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_numeric_key_sort_or_fallback(chunks, current, argc, true, line);
+}
+
+fn emit_numeric_key_sort_or_fallback(
+    chunks: &mut [Chunk], current: usize, argc: u8, descending: bool, line: u32,
+) {
+    let flags_slot = alloc_local(&mut chunks[current]);
+    let obj_slot = alloc_local(&mut chunks[current]);
+    if argc < 2 {
+        push_const(&mut chunks[current], Value::I32(0), line);
+    }
+    // Consume flags BEFORE the array. The old emitter treated the optional
+    // flag itself as the collection, silently leaving the caller unsorted.
+    lset(&mut chunks[current], flags_slot, line);
+    lset(&mut chunks[current], obj_slot, line);
+    lget(&mut chunks[current], obj_slot, line);
+    lget(&mut chunks[current], flags_slot, line);
+    push_const(&mut chunks[current], Value::Bool(descending), line);
+    call_import(chunks, current, "php:array", "sortNumericKeys", 3, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    push_const(&mut chunks[current], Value::Bool(true), line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], obj_slot, line);
+    emit_assoc_sort_impl(chunks, current, if descending { 3 } else { 2 }, None, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_php_uasort(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -6926,7 +6973,7 @@ pub fn emit_php_implode(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lget(chunk, arr_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     lset(chunk, n_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_i32_const(0, line);
     lset(chunk, i_slot, line);
 
     let _ = chunk;
@@ -6935,9 +6982,9 @@ pub fn emit_php_implode(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         let c = &mut chunks[current];
         lget(c, i_slot, line);
         lget(c, n_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
+        c.emit_op(Op::I32_LT_U, line);
     }
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     {
         let c = &mut chunks[current];
         lget(c, arr_slot, line);
@@ -6980,8 +7027,8 @@ pub fn emit_php_implode(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         c.emit_op(Op::DROP, line);
         // i++
         lget(c, i_slot, line);
-        push_const(c, Value::F64(1.0), line);
-        c.emit_op(Op::F64_ADD, line);
+        c.emit_i32_const(1, line);
+        c.emit_op(Op::I32_ADD, line);
         lset(c, i_slot, line);
     }
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, lp, line);

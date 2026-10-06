@@ -9,6 +9,48 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+pub(crate) fn register_typed_results() {
+    use vybe_runtime::registry::emitter_results::{self, TypedEmitterDef};
+    emitter_results::register(TypedEmitterDef {
+        namespace: "php",
+        legacy_dispatch: dispatch,
+        dispatch: dispatch_typed,
+    })
+    .expect("PHP typed emitter registration must be unique");
+}
+
+fn dispatch_typed(
+    name: &str,
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+    request: vybe_runtime::registry::emitter_results::EmitRequest,
+) -> vybe_runtime::registry::emitter_results::EmitOutcome {
+    use vybe_runtime::registry::emitter_results::{
+        EmitOutcome, EmitRequest, ResultRepresentation,
+    };
+    // This provider owns only these resolved adapter keys. Other operations
+    // remain legacy emissions, with their existing result contracts.
+    if !matches!(name, "php.empty" | "php.is_array") {
+        return EmitOutcome::Unhandled;
+    }
+    if request == EmitRequest::I32Condition {
+        match name {
+            "php.empty" => super::empty_adapter::emit_php_empty_condition(chunks, current, line),
+            "php.is_array" => {
+                super::array_adapter::emit_php_is_array_condition(chunks, current, argc, line)
+            }
+            _ => unreachable!(),
+        }
+        return EmitOutcome::Handled(ResultRepresentation::RawI32Boolean);
+    }
+    if !dispatch(name, chunks, current, argc, line) {
+        return EmitOutcome::Unhandled;
+    }
+    EmitOutcome::Handled(ResultRepresentation::BoxedBoolean)
+}
+
 /// PHP `isset($a, $b, ...)` — true iff every arg is non-null. Variadic, so it
 /// can't be a fixed-arity stdlib chunk.
 fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
@@ -685,6 +727,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.int_min" => {
             crate::emitter::numeric_adapter::emit_php_int_min(chunks, current, argc, line)
+        }
+        "php.randmax" => {
+            chunks[current].emit_i32_const(i32::MAX, line);
         }
         "php.is_int" => {
             crate::emitter::numeric_adapter::emit_php_is_int(chunks, current, argc, line)
@@ -1831,6 +1876,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.mysqli_fetch_field" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_field(chunks, current, argc, line)
+        }
+        "php.mysqli_fetch_fields" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_fields(chunks, current, argc, line)
         }
         "php.mysqli_free_result" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_free_result(chunks, current, argc, line)

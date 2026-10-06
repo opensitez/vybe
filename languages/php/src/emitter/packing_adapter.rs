@@ -33,9 +33,97 @@ fn call_import(
 
 fn emit_slot_eq_str(chunk: &mut Chunk, slot: u16, value: &str, line: u32) {
     lget(chunk, slot, line);
+    let test = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(test, 1, line);
+    chunk.emit_if_i32(line);
+    lget(chunk, slot, line);
+    chunk.emit_string_const(value, line);
+    let equals = chunk.add_import("wasm:js-string", "equals");
+    chunk.emit_call(equals, 2, line);
+    chunk.emit_else(line);
+    lget(chunk, slot, line);
     chunk.emit_string_const(value, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_end(line);
+}
+
+// PHP integer packing retains low bits; the shared checked f64 primitive
+// deliberately does not own PHP casts. Keep exact integers exact until bounded.
+fn emit_pack_integer(
+    chunks: &mut [Chunk],
+    current: usize,
+    input: u16,
+    width: usize,
+    endian: vybe_compiler::primitives::packing::Endian,
+    line: u32,
+) {
+    let number = alloc_local(&mut chunks[current]);
+    lget(&mut chunks[current], input, line);
+    call_import(chunks, current, "wasm:js-bigint", "test", 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(32, line);
+    lget(&mut chunks[current], input, line);
+    call_import(chunks, current, "ecma:bigint", "asUintN", 2, line);
+    call_import(chunks, current, "ecma:bigint", "toString", 1, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], input, line);
+    call_import(chunks, current, "wasm:js-number", "test", 1, line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], input, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], input, line);
+    super::numeric_adapter::emit_php_floatval(chunks, current, 1, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    lset(&mut chunks[current], number, line);
+
+    // Already-bounded numeric producers go straight to the shared checked
+    // primitive; only values outside its range need modulo arithmetic.
+    lget(&mut chunks[current], number, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    lget(&mut chunks[current], number, line);
+    chunks[current].emit_f64_const(4_294_967_296.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], number, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], number, line);
+    chunks[current].emit_op(Op::F64_ABS, line);
+    chunks[current].emit_f64_const(f64::INFINITY, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], number, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+    lset(&mut chunks[current], number, line);
+    lget(&mut chunks[current], number, line);
+    lget(&mut chunks[current], number, line);
+    chunks[current].emit_f64_const(4_294_967_296.0, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+    chunks[current].emit_f64_const(4_294_967_296.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_else(line);
+    // PHP's non-finite integer cast yields zero; warning policy remains separate.
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    lset(&mut chunks[current], number, line);
+    match width {
+        1 => vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(
+            chunks, current, number, line,
+        ),
+        2 => vybe_compiler::primitives::packing::emit_pack_u16_from_f64_slot(
+            chunks, current, number, endian, line,
+        ),
+        4 => vybe_compiler::primitives::packing::emit_pack_u32_from_f64_slot(
+            chunks, current, number, endian, line,
+        ),
+        _ => unreachable!("unsupported PHP integer pack width"),
+    }
 }
 
 fn emit_concat_top(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -181,19 +269,58 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
         chunks[current].emit_string_const("", line);
         return;
     }
+    emit_shared_call(chunks, current, argc, line, "pack", emit_php_pack_body);
+}
 
+fn emit_shared_call(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+    operation: &str,
+    emit_body: fn(&mut Vec<Chunk>, usize, u8, u32),
+) {
+    let name = format!("<vybe:php:{operation}:{argc}>");
+    let helper = if let Some(index) = chunks
+        .iter()
+        .position(|c| c.name == name && c.arity == argc)
+    {
+        index
+    } else {
+        let index = chunks.len();
+        let mut body = vybe_compiler::primitives::functions::create_function_chunk(&name, argc);
+        body.local_count = argc as u16;
+        chunks.push(body);
+        emit_body(chunks, index, argc, line);
+        chunks[index].emit_op(Op::RETURN, line);
+        index
+    };
     let base = chunks[current].alloc_scratch(argc as u16);
     for i in (0..argc).rev() {
         lset(&mut chunks[current], base + i as u16, line);
     }
-    let fmt = base;
-    let first = base + 1;
+    chunks[current].emit_op_u16(Op::REF_FUNC, helper as u16, line);
+    chunks[current].emit(0, line);
+    for i in 0..argc {
+        lget(&mut chunks[current], base + i as u16, line);
+    }
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], argc, line);
+}
+
+fn emit_php_pack_body(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let fmt = 0;
+    let first = 1;
 
     emit_slot_eq_str(&mut chunks[current], fmt, "C", line);
     chunks[current].emit_if_value(line);
     if argc >= 2 {
-        vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(
-            chunks, current, first, line,
+        emit_pack_integer(
+            chunks,
+            current,
+            first,
+            1,
+            vybe_compiler::primitives::packing::Endian::Little,
+            line,
         );
     } else {
         chunks[current].emit_string_const("", line);
@@ -203,20 +330,29 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     emit_slot_eq_str(&mut chunks[current], fmt, "CCC", line);
     chunks[current].emit_if_value(line);
     if argc >= 4 {
-        vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(
-            chunks, current, first, line,
+        emit_pack_integer(
+            chunks,
+            current,
+            first,
+            1,
+            vybe_compiler::primitives::packing::Endian::Little,
+            line,
         );
-        vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(
+        emit_pack_integer(
             chunks,
             current,
             first + 1,
+            1,
+            vybe_compiler::primitives::packing::Endian::Little,
             line,
         );
         emit_concat_top(chunks, current, line);
-        vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(
+        emit_pack_integer(
             chunks,
             current,
             first + 2,
+            1,
+            vybe_compiler::primitives::packing::Endian::Little,
             line,
         );
         emit_concat_top(chunks, current, line);
@@ -228,13 +364,20 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     emit_slot_eq_str(&mut chunks[current], fmt, "C2", line);
     chunks[current].emit_if_value(line);
     if argc >= 3 {
-        vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(
-            chunks, current, first, line,
+        emit_pack_integer(
+            chunks,
+            current,
+            first,
+            1,
+            vybe_compiler::primitives::packing::Endian::Little,
+            line,
         );
-        vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(
+        emit_pack_integer(
             chunks,
             current,
             first + 1,
+            1,
+            vybe_compiler::primitives::packing::Endian::Little,
             line,
         );
         emit_concat_top(chunks, current, line);
@@ -246,10 +389,11 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     emit_slot_eq_str(&mut chunks[current], fmt, "n", line);
     chunks[current].emit_if_value(line);
     if argc >= 2 {
-        vybe_compiler::primitives::packing::emit_pack_u16_from_f64_slot(
+        emit_pack_integer(
             chunks,
             current,
             first,
+            2,
             vybe_compiler::primitives::packing::Endian::Big,
             line,
         );
@@ -261,10 +405,11 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     emit_slot_eq_str(&mut chunks[current], fmt, "v", line);
     chunks[current].emit_if_value(line);
     if argc >= 2 {
-        vybe_compiler::primitives::packing::emit_pack_u16_from_f64_slot(
+        emit_pack_integer(
             chunks,
             current,
             first,
+            2,
             vybe_compiler::primitives::packing::Endian::Little,
             line,
         );
@@ -276,10 +421,11 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     emit_slot_eq_str(&mut chunks[current], fmt, "N", line);
     chunks[current].emit_if_value(line);
     if argc >= 2 {
-        vybe_compiler::primitives::packing::emit_pack_u32_from_f64_slot(
+        emit_pack_integer(
             chunks,
             current,
             first,
+            4,
             vybe_compiler::primitives::packing::Endian::Big,
             line,
         );
@@ -291,10 +437,11 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     emit_slot_eq_str(&mut chunks[current], fmt, "V", line);
     chunks[current].emit_if_value(line);
     if argc >= 2 {
-        vybe_compiler::primitives::packing::emit_pack_u32_from_f64_slot(
+        emit_pack_integer(
             chunks,
             current,
             first,
+            4,
             vybe_compiler::primitives::packing::Endian::Little,
             line,
         );
@@ -340,12 +487,12 @@ pub fn emit_php_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         return;
     }
 
-    let base = chunks[current].alloc_scratch(argc as u16);
-    for i in (0..argc).rev() {
-        lset(&mut chunks[current], base + i as u16, line);
-    }
-    let fmt = base;
-    let string_slot = base + 1;
+    emit_shared_call(chunks, current, argc, line, "unpack", emit_php_unpack_body);
+}
+
+fn emit_php_unpack_body(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let fmt = 0;
+    let string_slot = 1;
     let value_slot = alloc_local(&mut chunks[current]);
 
     emit_slot_eq_str(&mut chunks[current], fmt, "N", line);

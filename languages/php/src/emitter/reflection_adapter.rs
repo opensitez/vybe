@@ -84,6 +84,29 @@ fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     chunks.len() - 1
 }
 
+/// ReflectionProperty::setRawValue bypasses property hooks, unlike setValue.
+/// The declared backing slot is written through the shared class owner.
+fn build_reflect_set_raw(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__refl_setrawvalue");
+    c.arity = 3;
+    let prop = sconst(&mut c, "prop");
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &prop, Dest::Local(3), line);
+    let slot = class_slots::resolve(&ClassSlot::Dynamic(ValueSource::Local(3)), &PlainNames);
+    class_slots::emit_class_set(
+        &mut c,
+        ObjSource::Local(1),
+        &slot,
+        ValueSource::Local(2),
+        line,
+    );
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    c.emit_op(Op::RETURN, line);
+    c.local_count = c.local_count.max(4);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
 /// `invoke($obj, $arg)` → `Reflect.get($obj, this.method)($obj, $arg)`.
 fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_invoke");
@@ -260,8 +283,10 @@ fn finish(
 
 /// `new ReflectionClass($name, $is_abstract, $parent, $interfaces, $methods, $fields)`.
 pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let getname = build_field_getter(chunks, "__refl_class_name", "name", line);
     let isabstract = build_bool_getter(chunks, "__refl_isabstract", "__is_abstract", line);
+    let isinstantiable = build_bool_getter(chunks, "__refl_isinstantiable", "__is_instantiable", line);
     let implements = build_implements_interface(chunks, line);
     let get_methods = build_get_methods(chunks, line);
     let get_properties = build_get_properties(chunks, line);
@@ -289,6 +314,13 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let name_slot = chunk.alloc_scratch(1);
     let this_slot = chunk.alloc_scratch(1);
     let ctor_ref_slot = chunk.alloc_scratch(1);
+    let instantiable_slot = chunk.alloc_scratch(1);
+    if argc >= 11 {
+        chunk.emit_op_u16(Op::LOCAL_SET, instantiable_slot, line);
+    } else {
+        chunk.emit_bool_const(false, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, instantiable_slot, line);
+    }
 
     if argc >= 10 {
         chunk.emit_op_u16(Op::LOCAL_SET, ctor_params_slot, line);
@@ -348,6 +380,69 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     }
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
+    if argc == 1 {
+        // A runtime-selected class cannot use the metadata of the class
+        // containing the ReflectionClass expression. Resolve its live class
+        // binding through the existing PHP host interface, then read ordinary
+        // class slots with the shared Wasm-emitting reflection primitives.
+        chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+        let class_name = chunk.add_import("php:environment", "reflectionClassName");
+        chunk.emit_call(class_name, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+        let lookup = chunk.add_import("php:dynamic", "globalByName");
+        chunk.emit_call(lookup, 1, line);
+        let live_class_slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, live_class_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, live_class_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, live_class_slot, line);
+        let undefined_test = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(undefined_test, 1, line);
+        chunk.emit_op(Op::I32_OR, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+        let autoload_name = chunk.add_import("php:dynamic", "autoloadName");
+        chunk.emit_call(autoload_name, 1, line);
+        vybe_compiler::primitives::dynamic_symbols::emit_resolver_stack_invoke(
+            chunk,
+            abi,
+            vybe_compiler::primitives::dynamic_symbols::ResolverStack {
+                stack_global: "__php_autoload_stack",
+                invoke_member: Some("__invoke"),
+            },
+            None,
+            line,
+        );
+        chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+        chunk.emit_call(lookup, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, live_class_slot, line);
+        chunk.emit_end(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, live_class_slot, line);
+        vybe_compiler::primitives::dynamic_symbols::emit_throw_if_unresolved(
+            chunk, "ReflectionException", "Class does not exist", line,
+        );
+        let metadata_key = sconst(chunk, "__php_reflection_metadata");
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &metadata_key, Dest::Stack, line);
+        let metadata_slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, metadata_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, metadata_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        for (index, slot) in [
+            abstract_slot, parent_slot, ifaces_slot, methods_slot, fields_slot,
+            methods_pub_slot, fields_pub_slot, attrs_slot, ctor_params_slot,
+            instantiable_slot,
+        ].into_iter().enumerate() {
+            chunk.emit_op_u16(Op::LOCAL_GET, metadata_slot, line);
+            chunk.emit_f64_const(index as f64, line);
+            chunk.emit_op(Op::ARRAY_GET, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        }
+        chunk.emit_end(line);
+    }
+
     // The constructor is a ReflectionMethod, so it must expose the same
     // callable surface as other reflected methods, including getAttributes().
     let ctor_attrs_slot = chunk.alloc_scratch(1);
@@ -373,6 +468,7 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         &[
             ("name", name_slot),
             ("__is_abstract", abstract_slot),
+            ("__is_instantiable", instantiable_slot),
             ("__parent_name", parent_slot),
             ("__interfaces", ifaces_slot),
             ("__methods", methods_slot),
@@ -385,6 +481,7 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         &[
             ("getname", getname),
             ("isabstract", isabstract),
+            ("isinstantiable", isinstantiable),
             ("implementsinterface", implements),
             ("getmethods", get_methods),
             ("getproperties", get_properties),
@@ -559,6 +656,7 @@ pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     let getname = build_field_getter(chunks, "__refl_prop_name", "prop", line);
     let getvalue = build_reflect_get(chunks, "__refl_getvalue", "prop", line);
     let setvalue = build_reflect_set(chunks, "__refl_setvalue", "prop", line);
+    let setrawvalue = build_reflect_set_raw(chunks, line);
     let get_attrs = build_get_attributes(chunks, line);
     let chunk = &mut chunks[current];
     let attrs_slot = chunk.alloc_scratch(1);
@@ -586,6 +684,7 @@ pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
             ("getname", getname),
             ("getvalue", getvalue),
             ("setvalue", setvalue),
+            ("setrawvalue", setrawvalue),
             ("getattributes", get_attrs),
         ],
         line,

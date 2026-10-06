@@ -213,7 +213,7 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     lget(chunk, v_slot, line);
     let test_bool_echo = chunk.add_import("wasm:js-boolean", "test");
     chunk.emit_call(test_bool_echo, 1, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
     let cast_bool_echo = chunk.add_import("wasm:js-boolean", "cast");
     chunk.emit_call(cast_bool_echo, 1, line);
@@ -227,7 +227,7 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     // they retain all 64-bit digits; stringify them through ECMA BigInt.
     lget(chunk, v_slot, line);
     chunk.emit_call(test_bigint, 1, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
     chunk.emit_call(bigint_to_string, 1, line);
     chunk.emit_else(line);
@@ -955,15 +955,53 @@ pub fn emit_htmlspecialchars(chunks: &mut [Chunk], current: usize, argc: u8, lin
 
 pub fn emit_htmlentities(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_htmlspecialchars(chunks, current, argc, line);
-    // Encode common non-ASCII characters to named HTML entities
-    let chunk = &mut chunks[current];
+    let chunk = &chunks[current];
+    let missing = [("ecma:regexp", "test"), ("wasm:js-boolean", "cast")]
+        .into_iter()
+        .filter(|(module, name)| {
+            !chunk
+                .imports
+                .iter()
+                .any(|i| i.module == *module && i.name == *name)
+        })
+        .count();
+    // Initial coercion/basic passes are identical; select the legacy named chain
+    // before adding guard imports, code, or scratch if the old frame is full.
+    if chunk.local_count == u16::MAX || chunk.imports.len() + missing > usize::from(u16::MAX) + 1 {
+        emit_htmlentities_named(&mut chunks[current], line);
+        return;
+    }
+    emit_htmlentities_named_guard(&mut chunks[current], line);
+}
+
+fn emit_htmlentities_named_guard(chunk: &mut Chunk, line: u32) {
+    let string = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, string, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, string, line);
+    chunk.emit_string_const("[^\\x00-\\x7f]", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, string, line);
+    let test = chunk.add_import("ecma:regexp", "test");
+    chunk.emit_call(test, 2, line);
+    // Keep the result String as an explicit native block operand, then release
+    // the scratch reference before the old74-pass chain. The pure regex precedes
+    // release; its checked Bool cast remains adjacent to IF afterward.
+    vybe_compiler::primitives::instructions::core_wasm::null(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, string, line);
+    // Keep the checked i32 producer adjacent to its condition consumer.
+    let cast = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast, 1, line);
+    chunk.emit_if_params(line, 1, 1);
+    emit_htmlentities_named(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_end(line);
+}
+
+fn emit_htmlentities_named(chunk: &mut Chunk, line: u32) {
     for (ch, entity) in HTML_NAMED_ENTITIES_ENCODE {
         push_str(chunk, ch, line);
         push_str(chunk, entity, line);
-        {
-            let idx = chunk.add_import("ecma:string", "replaceAll");
-            chunk.emit_call(idx, 3, line);
-        }
+        let replace = chunk.add_import("ecma:string", "replaceAll");
+        chunk.emit_call(replace, 3, line);
     }
 }
 
@@ -1248,7 +1286,10 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     }
     lget(chunk, thousep_slot, line);
     lget(chunk, decsep_slot, line);
-    strings::emit_group_digits(chunks, current, line);
+    // toFixed produces ASCII (including NaN/Infinity/exponents), and
+    // the only reattached sign is the ASCII literal "-". This producer
+    // permits three-unit grouping; arbitrary/Python strings stay generic.
+    strings::emit_group_digits_ascii_numeric(chunks, current, line);
 }
 
 // ── substr_replace ─────────────────────────────────────────────────
@@ -1864,7 +1905,16 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 
     // count += substr_count(subj, needle) before subject is mutated.
     let _ = chunk;
-    emit_str_replace_count_occurrences(chunks, current, subj_slot, needle_slot, count_slot, line);
+    if has_count {
+        emit_str_replace_count_occurrences(
+            chunks,
+            current,
+            subj_slot,
+            needle_slot,
+            count_slot,
+            line,
+        );
+    }
     let chunk = &mut chunks[current];
 
     // subj = ecma:string.replaceAll(subj, needle, rep)
@@ -1911,17 +1961,19 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     push_const(chunk, Value::F64(0.0), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if(line); // Updates the private subject slot; produces no stack result.
 
     let _ = chunk;
-    emit_str_replace_count_occurrences(
-        chunks,
-        current,
-        subj_slot,
-        scalar_needle_slot,
-        count_slot,
-        line,
-    );
+    if has_count {
+        emit_str_replace_count_occurrences(
+            chunks,
+            current,
+            subj_slot,
+            scalar_needle_slot,
+            count_slot,
+            line,
+        );
+    }
     let chunk = &mut chunks[current];
 
     lget(chunk, subj_slot, line);
@@ -1945,7 +1997,6 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         lget(chunk, subj_slot, line);
     }
 }
-
 // ── wordwrap ───────────────────────────────────────────────────────
 
 /// PHP `wordwrap(s, width=75, break_str="\n", cut=false)`.
@@ -2257,9 +2308,22 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         lset(chunk, sep_slot, line);
     }
     coerce_to_str(chunk, line);
-    lget(chunk, sep_slot, line);
-    lget(chunk, enc_slot, line);
+    let text_slot = alloc_local(chunk);
+    lset(chunk, text_slot, line);
+    lget(chunk, text_slot, line);
+    strings::emit_length(chunk, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    // PHP distinguishes empty input from an empty CSV field: [null].
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 1, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], text_slot, line);
+    lget(&mut chunks[current], sep_slot, line);
+    lget(&mut chunks[current], enc_slot, line);
     vybe_compiler::primitives::csv::emit_parse_line(chunks, current, line);
+    chunks[current].emit_end(line);
 }
 
 // ── soundex ────────────────────────────────────────────────────────
@@ -3899,7 +3963,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "substring");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    strings::emit_str_concat(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, n_slot, line);
     lset(chunk, i_slot, line);
@@ -3978,7 +4042,8 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_OR, line);
-    chunk.emit_if_value(line);
+    // Both arms only update locals; the block has no result.
+    chunk.emit_if(line);
     // alnum: name += s.charAt(k); k += 1
     lget(chunk, name_slot, line);
     lget(chunk, s_slot, line);
@@ -3987,7 +4052,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    strings::emit_str_concat(chunk, line);
     lset(chunk, name_slot, line);
     lget(chunk, k_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -4010,9 +4075,9 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "toLowerCase");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    strings::emit_str_concat(chunk, line);
     push_str(chunk, ">", line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    strings::emit_str_concat(chunk, line);
     {
         let idx = chunk.add_import("ecma:string", "indexOf");
         chunk.emit_call(idx, 2, line);
@@ -4032,7 +4097,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "substring");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    strings::emit_str_concat(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
     // i = j + 1
@@ -4051,7 +4116,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    strings::emit_str_concat(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -5250,7 +5315,8 @@ pub fn emit_strtok_init(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     // argument, so seed it before the call rather than passing a literal.
     push_const(chunk, Value::F64(0.0), line);
     vybe_compiler::primitives::globals::emit_write(chunk, STRTOK_CURSOR, line);
-    chunk.emit_op(Op::DROP, line);
+    // GLOBAL_SET consumes the cursor. Do not drop the caller's pending
+    // expression operand (for example an associative array literal's key).
     emit_strtok_call(chunks, current, s_slot, delim_slot, line);
 }
 

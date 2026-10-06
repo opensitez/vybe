@@ -115,11 +115,14 @@ pub fn emit_throw_const(
 fn push_is_collection(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     vybe_compiler::primitives::instructions::recipes::is_object(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    // REF_TEST already leaves an i32 Boolean. isArray has a Boolean result
+    // contract, so unbox that result directly rather than emitting the
+    // general dynamic truthiness ladder for either predicate.
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     let idx = chunk.add_import("ecma:array", "isArray");
     chunk.emit_call(idx, 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    let cast = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast, 1, line);
     chunk.emit_op(Op::I32_OR, line);
 }
 

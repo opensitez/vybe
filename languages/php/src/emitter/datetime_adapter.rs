@@ -1066,7 +1066,7 @@ pub fn emit_datetime_immutable_create_from_format(
 /// `format_php_literal_to_ast` (compile-time ECMA-262 §21.4 calls).
 /// This adapter is the runtime path for *dynamic* format strings —
 /// pure bytecode loop + `ecma:date.*` getter `emit_call`s.
-pub fn emit_datetime_format(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_datetime_format(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let fmt_slot = alloc_local(chunk);
     let dt_slot = alloc_local(chunk);
@@ -1571,7 +1571,10 @@ fn emit_code_arm(
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
         push_str(chunk, code, line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        // c_slot is populated by charAt; the code is a string literal. Neither
+        // operand needs the generic numeric/object equality dispatch.
+        let equals = chunk.add_import("wasm:js-string", "equals");
+        chunk.emit_call(equals, 2, line);
         chunk.emit_if(line);
     }
     body(chunks, current);
@@ -2414,6 +2417,41 @@ fn emit_indexed_name(
 /// escapes the next char (PHP date() convention) when not in strftime
 /// mode; `%` precedes a code in strftime mode.
 fn emit_format_dt_runtime(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    dt_slot: u16,
+    fmt_slot: u16,
+    mode_strftime: bool,
+    line: u32,
+) {
+    let name = if mode_strftime {
+        "__php_strftime_runtime"
+    } else {
+        "__php_datetime_format_runtime"
+    };
+    let helper = if let Some(index) = chunks.iter().position(|chunk| chunk.name == name) {
+        index
+    } else {
+        // The formatter only uses its arguments, scratch locals, and imports.
+        // Emit its large dispatch body once instead of expanding it into every
+        // caller. No guest state or caller-local slots are shared by the helper.
+        let mut body = vec![vybe_compiler::primitives::functions::create_function_chunk(name, 2)];
+        body[0].local_count = body[0].local_count.max(2);
+        emit_format_dt_runtime_body(&mut body, 0, 0, 1, mode_strftime, line);
+        body[0].emit_op(Op::RETURN, line);
+        let index = chunks.len();
+        chunks.push(body.pop().unwrap());
+        index
+    };
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::REF_FUNC, helper as u16, line);
+    chunk.emit(0, line);
+    local_get(chunk, dt_slot, line);
+    local_get(chunk, fmt_slot, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+}
+
+fn emit_format_dt_runtime_body(
     chunks: &mut [Chunk],
     current: usize,
     dt_slot: u16,
@@ -2574,7 +2612,7 @@ fn emit_format_dt_runtime(
 ///
 /// Builds a transient `{__type:Date, __time:ts*1000}` Object so the
 /// `ecma:date.*` getters apply, then runs the runtime format loop.
-pub fn emit_php_date(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_php_date(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let ts_slot = alloc_local(chunk);
     let fmt_slot = alloc_local(chunk);
@@ -2609,7 +2647,7 @@ pub fn emit_php_date(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 /// PHP `strftime($fmt, $ts)` adapter — POSIX `%`-codes.
 ///
 /// Stack: `[fmt, ts]` or `[fmt]` → `[string]`.
-pub fn emit_php_strftime(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_php_strftime(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let ts_slot = alloc_local(chunk);
     let fmt_slot = alloc_local(chunk);

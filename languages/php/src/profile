@@ -14,7 +14,6 @@ extensions = ["php", "phtml"]
 # default is `true`, and inheriting it silently gave Python coercive semantics
 # it never chose.
 coerces_value_to_type_hint = true
-separate_property_method_namespace = true   # $o->foo (property) and $o->foo() (method) coexist
 # namespaceplan.md (PHP phase): namespace-shaped entry points (package-root
 # `\Vybe\...` chains, wildcard namespace member access) resolve through the
 # common resolver instead of the legacy hardcoded arms. PHP's vybe/wasi/wasm
@@ -367,6 +366,8 @@ log2                = { emit = "host:ecma:math:log2",        min_args = 1, max_a
 log10               = { emit = "host:ecma:math:log10",       min_args = 1, max_args = 1 }
 rand                = { emit = "common:php.rand",             min_args = 0, max_args = 2 }
 mt_rand             = { emit = "common:php.rand",             min_args = 0, max_args = 2 }
+getrandmax          = { emit = "common:php.randmax",           min_args = 0, max_args = 0 }
+mt_getrandmax       = { emit = "common:php.randmax",           min_args = 0, max_args = 0 }
 random_int          = { emit = "common:php.rand",             min_args = 2, max_args = 2 }
 random_bytes        = { emit = "host:php:random:bytes",        min_args = 1, max_args = 1 }
 sodium_crypto_secretbox_keygen = { emit = "host:php:sodium:keygen", min_args = 0, max_args = 0 }
@@ -965,6 +966,7 @@ mysqli_affected_rows = { emit = "common:php.mysqli_affected_rows", min_args = 1,
 mysqli_insert_id    = { emit = "common:php.mysqli_insert_id",    min_args = 1, max_args = 1 }
 mysqli_num_fields   = { emit = "common:php.mysqli_num_fields",   min_args = 1, max_args = 1 }
 mysqli_fetch_field  = { emit = "common:php.mysqli_fetch_field",  min_args = 1, max_args = 1 }
+mysqli_fetch_fields = { emit = "common:php.mysqli_fetch_fields", min_args = 1, max_args = 1 }
 mysqli_free_result  = { emit = "common:php.mysqli_free_result",  min_args = 1, max_args = 1 }
 mysqli_more_results = { emit = "common:php.mysqli_more_results", min_args = 1, max_args = 1 }
 mysqli_next_result  = { emit = "common:php.mysqli_next_result",  min_args = 1, max_args = 1 }
@@ -1134,6 +1136,8 @@ PDO = ["common", "php.pdo_new"]
 mysqli = ["common", "php.mysqli_init"]
 
 [value_methods]
+fetch_field = { emit = "common:php.mysqli_fetch_field", min_args = 0, max_args = 0 }
+fetch_fields = { emit = "common:php.mysqli_fetch_fields", min_args = 0, max_args = 0 }
 
 toFixed          = { emit = "host:ecma:number:toFixed",           min_args = 0, max_args = 1 }
 # The walker lowers `array_shift($a)` to `$a.shift()`, so this entry — not

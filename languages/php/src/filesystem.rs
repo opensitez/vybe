@@ -8,6 +8,36 @@ static UMASK_LOCK: Mutex<()> = Mutex::new(());
 pub fn register(fw: &mut Framework<'_>) {
     fw.register_host_fn(
         "php:filesystem",
+        "realpath",
+        Box::new(|_, args| {
+            let Some(Value::String(path)) = args.first() else {
+                return Value::Bool(false);
+            };
+            // PHP's empty path denotes the current working directory. Resolve
+            // through the filesystem, not lexical normalization: symlinks and
+            // missing intermediate components must affect the result.
+            let path = if path.is_empty() { "." } else { path.as_ref() };
+            let Ok(resolved) = std::fs::canonicalize(path) else {
+                return Value::Bool(false);
+            };
+            let resolved = resolved.to_string_lossy();
+            #[cfg(windows)]
+            let resolved = {
+                // Rust uses extended-length Win32 paths; PHP exposes ordinary
+                // drive/UNC spelling. Keep this adaptation out of shared APIs.
+                if let Some(rest) = resolved.strip_prefix(r"\\?\UNC\") {
+                    std::borrow::Cow::Owned(format!(r"\\{rest}"))
+                } else if let Some(rest) = resolved.strip_prefix(r"\\?\") {
+                    std::borrow::Cow::Borrowed(rest)
+                } else {
+                    std::borrow::Cow::Borrowed(resolved.as_ref())
+                }
+            };
+            Value::String(resolved.as_ref().into())
+        }),
+    );
+    fw.register_host_fn(
+        "php:filesystem",
         "umask",
         Box::new(|_, args| {
             let _guard = UMASK_LOCK.lock().unwrap();

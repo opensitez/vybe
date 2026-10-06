@@ -163,120 +163,17 @@ fn emit_mysqli_result_fields(
     rows_slot: u16,
     line: u32,
 ) -> u16 {
+    lget(&mut chunks[current], rows_slot, line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__sql_columns"), line);
     let fields_slot = alloc_local(&mut chunks[current]);
-
-    {
-        let chunk = &mut chunks[current];
-        lget(chunk, rows_slot, line);
-        let idx = chunk.add_import("ecma:array", "isArray");
-        chunk.emit_call(idx, 1, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
-        lget(chunk, rows_slot, line);
-    }
-    collections::emit_len(chunks, current, line);
-    {
-        let chunk = &mut chunks[current];
-        push_const(chunk, Value::F64(0.0), line);
-        vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-        chunk.emit_if(line);
-
-        lget(chunk, rows_slot, line);
-        push_const(chunk, Value::F64(0.0), line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        // SQL rows carry both numeric and named keys. Field metadata must
-        // count each selected column once, using the associative view.
-        push_const(chunk, Value::F64(2.0), line);
-    }
-    call_import(chunks, current, "php:pdo", "fetchRow", 2, line);
-    call_import(chunks, current, "ecma:object", "keys", 1, line);
-    {
-        let chunk = &mut chunks[current];
-        lset(chunk, fields_slot, line);
-        chunk.emit_else(line);
-    }
-    collections::emit_array_new(chunks, current, 0, line);
-    {
-        let chunk = &mut chunks[current];
-        lset(chunk, fields_slot, line);
-        chunk.emit_end(line);
-        chunk.emit_else(line);
-    }
-    collections::emit_array_new(chunks, current, 0, line);
-    {
-        let chunk = &mut chunks[current];
-        lset(chunk, fields_slot, line);
-        chunk.emit_end(line);
-    }
-
+    lset(&mut chunks[current], fields_slot, line);
+    lget(&mut chunks[current], fields_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    lset(&mut chunks[current], fields_slot, line);
+    chunks[current].emit_end(line);
     fields_slot
-}
-
-fn emit_mysqli_field_object(
-    chunks: &mut [Chunk],
-    current: usize,
-    field_name_slot: u16,
-    line: u32,
-) -> u16 {
-    call_import(chunks, current, "ecma:object", "new", 0, line);
-    let field_slot = alloc_local(&mut chunks[current]);
-    let chunk = &mut chunks[current];
-    lset(chunk, field_slot, line);
-
-    lget(chunk, field_slot, line);
-    lget(chunk, field_name_slot, line);
-    struct_set_key(chunk, &ClassSlot::internal("name"), line);
-
-    lget(chunk, field_slot, line);
-    push_str(chunk, "", line);
-    struct_set_key(chunk, &ClassSlot::internal("table"), line);
-
-    lget(chunk, field_slot, line);
-    push_str(chunk, "", line);
-    struct_set_key(chunk, &ClassSlot::internal("def"), line);
-
-    lget(chunk, field_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    struct_set_key(chunk, &ClassSlot::internal("max_length"), line);
-
-    lget(chunk, field_slot, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, &ClassSlot::internal("not_null"), line);
-
-    lget(chunk, field_slot, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, &ClassSlot::internal("primary_key"), line);
-
-    lget(chunk, field_slot, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, &ClassSlot::internal("multiple_key"), line);
-
-    lget(chunk, field_slot, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, &ClassSlot::internal("unique_key"), line);
-
-    lget(chunk, field_slot, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, &ClassSlot::internal("numeric"), line);
-
-    lget(chunk, field_slot, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, &ClassSlot::internal("blob"), line);
-
-    lget(chunk, field_slot, line);
-    push_str(chunk, "string", line);
-    struct_set_key(chunk, &ClassSlot::internal("type"), line);
-
-    lget(chunk, field_slot, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, &ClassSlot::internal("unsigned"), line);
-
-    lget(chunk, field_slot, line);
-    push_const(chunk, Value::Bool(false), line);
-    struct_set_key(chunk, &ClassSlot::internal("zerofill"), line);
-
-    lget(chunk, field_slot, line);
-    field_slot
 }
 
 fn emit_mysqli_result_object(
@@ -792,7 +689,7 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, argc: u8, lin
 
     lget(chunk, conn_slot, line);
     lget(chunk, sql_slot, line);
-    call_import(chunks, current, "wasi:sql", "query", 2, line);
+    call_import(chunks, current, "wasi:sql", "queryWithMetadata", 2, line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
@@ -1041,12 +938,14 @@ pub fn emit_php_mysqli_fetch_field(chunks: &mut [Chunk], current: usize, _argc: 
         struct_set_key(chunk, &ClassSlot::internal("__field_cursor"), line);
     }
 
-    let field_slot = emit_mysqli_field_object(chunks, current, field_name_slot, line);
-    {
-        let chunk = &mut chunks[current];
-        lget(chunk, field_slot, line);
-        chunk.emit_end(line);
-    }
+    lget(&mut chunks[current], field_name_slot, line);
+    chunks[current].emit_end(line);
+
+}
+
+pub fn emit_php_mysqli_fetch_fields(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__fields"), line);
 }
 
 pub fn emit_php_mysqli_free_result(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {

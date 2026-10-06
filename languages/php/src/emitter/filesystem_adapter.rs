@@ -667,9 +667,11 @@ pub fn emit_sys_get_temp_dir(chunks: &mut [Chunk], current: usize, _argc: u8, li
     paths::emit_temp_path(&mut chunks[current], line);
 }
 
-/// PHP `realpath($path)` — canonical absolute path.
+/// PHP `realpath($path)` — filesystem canonicalization, or false on failure.
 pub fn emit_realpath(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    paths::emit_full_path(&mut chunks[current], line);
+    // PHP-specific failure, empty-path and Windows spelling semantics are
+    // handled at the host boundary, with no duplicated call-site branches.
+    call_import(chunks, current, "php:filesystem", "realpath", 1, line);
 }
 
 /// PHP `copy($src, $dst, $context = null)` — drops the optional context.

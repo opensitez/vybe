@@ -195,7 +195,7 @@ fn build_iter_next_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut c, 0, line);
     lget(&mut c, idx_slot, line);
     c.emit_f64_const(1.0, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(&mut c, line);
+    vybe_compiler::primitives::ops::emit_dyn_add_known(&mut c, line, false, true);
     let k = idx_key(&mut c);
     class_slots::emit_class_set(&mut c, ObjSource::Stack, &k, ValueSource::Stack, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -267,6 +267,21 @@ fn build_iter_valid_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let k = idx_key(&mut c);
     class_slots::emit_class_get(&mut c, ObjSource::Stack, &k, Dest::Stack, line);
     lset(&mut c, idx_slot, line);
+    // Native cursors start as numbers and remain numeric under next/prev.
+    // Keep the full fallback for values supplied by seek or dynamic writes.
+    lget(&mut c, idx_slot, line);
+    let number_test = c.add_import("wasm:js-number", "test");
+    c.emit_call(number_test, 1, line);
+    c.emit_if_i32(line);
+    lget(&mut c, idx_slot, line);
+    c.emit_f64_const(0.0, line);
+    c.emit_op(Op::F64_GE, line);
+    lget(&mut c, idx_slot, line);
+    lget(&mut c, 0, line);
+    c.emit_op(Op::ARRAY_LENGTH, line);
+    c.emit_op(Op::F64_LT, line);
+    c.emit_op(Op::I32_AND, line);
+    c.emit_else(line);
     lget(&mut c, idx_slot, line);
     c.emit_f64_const(0.0, line);
     vybe_compiler::primitives::ops::emit_dyn_ge(&mut c, line);
@@ -277,6 +292,7 @@ fn build_iter_valid_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut c, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
     c.emit_op(Op::I32_AND, line);
+    c.emit_end(line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -902,7 +918,7 @@ fn build_map_add_all_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let c = &mut chunks[current];
         lget(c, index_slot, line);
         lget(c, len_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
+        c.emit_op(Op::F64_LT, line);
     }
     vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     {
@@ -927,7 +943,7 @@ fn build_map_add_all_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_op(Op::DROP, line);
         lget(c, index_slot, line);
         c.emit_f64_const(1.0, line);
-        vybe_compiler::primitives::ops::emit_dyn_add(c, line);
+        c.emit_op(Op::F64_ADD, line);
         lset(c, index_slot, line);
     }
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
@@ -968,7 +984,7 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
         let c = &mut chunks[current];
         lget(c, index_slot, line);
         lget(c, len_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
+        c.emit_op(Op::F64_LT, line);
     }
     vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     {
@@ -997,7 +1013,7 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
         c.emit_end(line);
         lget(c, index_slot, line);
         c.emit_f64_const(1.0, line);
-        vybe_compiler::primitives::ops::emit_dyn_add(c, line);
+        c.emit_op(Op::F64_ADD, line);
         lset(c, index_slot, line);
     }
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
@@ -1336,6 +1352,17 @@ pub fn emit_spl_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, argc: u
         ("setiteratormode", build_iter_set_mode_method(chunks, line)),
     ];
     finish_array_instance(chunks, current, argc, binds, line);
+    let this_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    vybe_compiler::primitives::reflection::emit_stamp_type(&mut chunks[current], this_slot, kind, line);
+    vybe_compiler::primitives::reflection::emit_stamp_type_name(&mut chunks[current], this_slot, kind, line);
+    vybe_compiler::primitives::reflection::emit_stamp_kind(&mut chunks[current], this_slot, vybe_compiler::primitives::reflection::ReflectKind::Object, line);
+    for class_name in [kind, "SplDoublyLinkedList", "Iterator", "Traversable", "Countable", "ArrayAccess"] {
+        if class_name != "SplDoublyLinkedList" || kind != "SplDoublyLinkedList" {
+            vybe_compiler::primitives::reflection::emit_instanceof_chain(chunks, current, this_slot, class_name, line);
+        }
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
 
 /// Create a plain `[]` array, bind `(name, chunk_idx)` methods as named
