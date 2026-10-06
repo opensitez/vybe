@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["crates/webcore","crates/widgets","crates/webcanvas","crates/webmedia","crates/vybe_parser"]
+exclude = ["crates/webcore","crates/widgets","crates/webcanvas","crates/webmedia","crates/grameo"]
 members = [
     "crates/code_editor",
     "crates/osbrowser",
@@ -41,7 +41,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.2"
+version = "0.7.0"
 edition = "2024"
 authors = ["Opensitez Vybe Team"]
 license = "GPLv3"
@@ -49,8 +49,6 @@ license = "GPLv3"
 [workspace.dependencies]
 native-tls = "0.2"
 # Parser dependencies
-pest = "2.7"
-pest_derive = "2.7"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -165,6 +163,9 @@ vybex = { path = "crates/vybex" }
 opt-level = 2
 
 [profile.dev.package.vybe_language_php]
+opt-level = 2
+
+[profile.dev.package.grameo]
 opt-level = 2
 
 [profile.dev.package.vybe_runtime]
