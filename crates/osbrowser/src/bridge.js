@@ -5,6 +5,7 @@
   const nodeIds = new WeakMap();
   const trackedDocuments = new WeakSet();
   const documentIds = new WeakMap();
+  let connected = true;
   let nextNode = 1;
   let activeDocument = 0;
   let nextSchedule = 1;
@@ -44,6 +45,7 @@
       'mousedown', 'mouseup', 'mousemove', 'wheel', 'close', 'load'
     ]) {
       doc.addEventListener(kind, event => {
+        if (!connected) return;
         if ('clientX' in event) {
           Object.assign(pointer, { client_x: event.clientX, client_y: event.clientY,
             buttons: event.buttons, ctrl_key: event.ctrlKey,
@@ -70,6 +72,14 @@
         }).catch(() => {});
       }, true);
     }
+  };
+
+  const disconnect = () => {
+    connected = false;
+    for (const entry of timers.values()) clearTimeout(entry.handle);
+    for (const handle of frames.values()) cancelAnimationFrame(handle);
+    timers.clear(); frames.clear(); dueTimers.length = 0; dueFrames.length = 0;
+    console.warn('Vybe browser bridge disconnected; reload after restarting the app.');
   };
 
   function execute(command) {
@@ -180,6 +190,8 @@
       case 'ElementsByTag': return nodesResult(doc.getElementsByTagName(a));
       case 'QuerySelector': return nodeResult(first(a));
       case 'QuerySelectorAll': return nodesResult(all(a));
+      case 'QuerySelectorWithin': return nodeResult(first(a.selector, n(a.root)));
+      case 'QuerySelectorAllWithin': return nodesResult(all(a.selector, n(a.root)));
       case 'Title': return text(doc.title);
       case 'SetTitle': doc.title = a; return 'None';
       case 'AppendChild': n(a.parent)?.appendChild(n(a.child)); return 'None';
@@ -262,9 +274,14 @@
   }
 
   async function pump() {
+    let failures = 0;
     for (;;) {
       try {
         const response = await fetch('next', { cache: 'no-store' });
+        if (!response.ok && response.status !== 204) {
+          throw new Error(`browser bridge returned ${response.status}`);
+        }
+        failures = 0;
         if (response.status === 204) {
           await new Promise(resolve => setTimeout(resolve, 20));
           continue;
@@ -294,7 +311,11 @@
             body: JSON.stringify(replies) });
         }
       } catch (_) {
-        await new Promise(resolve => setTimeout(resolve, 250));
+        if (++failures >= 3) {
+          disconnect();
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 250 * failures));
       }
     }
   }
