@@ -49,22 +49,194 @@ pub fn shared_text_decoder_prototype() -> Value {
 fn make_uint8_array(bytes: Vec<u8>) -> Value {
     let array = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, bytes.len());
     if let Value::Object(obj) = &array {
-        obj.lock()
-            .unwrap()
+        let mut locked = obj.lock().unwrap();
+        locked
             .properties
             .insert("__type".into(), Value::String(Arc::from("Uint8Array")));
-        let locked = obj.lock().unwrap();
         if let ObjectKind::TypedArray(ref typed) = locked.kind {
-            for (index, byte) in bytes.iter().enumerate() {
-                vybe_platform_ecma::typedarray::write_element(
-                    typed,
-                    index,
-                    &Value::I32(*byte as i32),
-                );
+            let mut buffer = typed.buffer.lock().unwrap();
+            if let Some(end) = typed.byte_offset.checked_add(bytes.len()) {
+                if let Some(destination) = buffer.get_mut(typed.byte_offset..end) {
+                    destination.copy_from_slice(&bytes);
+                }
             }
         }
     }
     array
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encode_into(vm: &mut VM, source: &str, destination: Value) -> Result<Value, String> {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(
+            vm.resolve_host_function_index("web:encoding", "encodeInto")
+                .unwrap(),
+        );
+        vm.invoke(
+            &Value::Object(vybe_runtime::heap::alloc(function)),
+            &[
+                Value::Undefined,
+                Value::String(Arc::from(source)),
+                destination,
+            ],
+        )
+        .map_err(|error| format!("{error:?}"))
+    }
+
+    fn counts(result: Value) -> (usize, usize) {
+        let Value::Object(result) = result else {
+            panic!("encodeInto must return an object");
+        };
+        let result = result.lock().unwrap();
+        (
+            result.properties["read"].as_i32() as usize,
+            result.properties["written"].as_i32() as usize,
+        )
+    }
+
+    #[test]
+    fn encoder_uint8_array_preserves_utf8_bytes() {
+        for expected in [Vec::new(), "Aé🦀".as_bytes().to_vec()] {
+            let array = make_uint8_array(expected.clone());
+            let Value::Object(object) = array else {
+                panic!("TextEncoder must return an object");
+            };
+            let locked = object.lock().unwrap();
+            let ObjectKind::TypedArray(typed) = &locked.kind else {
+                panic!("TextEncoder must return a typed array");
+            };
+            assert_eq!(typed.elem, TypedElemKind::U8);
+            assert_eq!(typed.length, expected.len());
+            let buffer = typed.buffer.lock().unwrap();
+            assert_eq!(
+                &buffer[typed.byte_offset..typed.byte_offset + expected.len()],
+                expected.as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn encode_into_respects_view_offset_and_utf8_boundaries() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let backing = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, 6);
+        let Value::Object(backing) = backing else {
+            panic!("typed array")
+        };
+        let buffer_obj = {
+            let backing = backing.lock().unwrap();
+            let ObjectKind::TypedArray(ref typed) = backing.kind else {
+                panic!("typed array")
+            };
+            typed.buffer.lock().unwrap().fill(0x7f);
+            typed.buffer_obj.clone()
+        };
+        let view = vybe_platform_ecma::typedarray::new_view_over_buffer(
+            TypedElemKind::U8,
+            buffer_obj,
+            1,
+            3,
+        );
+        assert_eq!(counts(encode_into(&mut vm, "éA🦀", view).unwrap()), (2, 3));
+        let backing = backing.lock().unwrap();
+        let ObjectKind::TypedArray(ref typed) = backing.kind else {
+            panic!("typed array")
+        };
+        assert_eq!(
+            *typed.buffer.lock().unwrap(),
+            vec![0x7f, 0xc3, 0xa9, b'A', 0x7f, 0x7f]
+        );
+    }
+
+    #[test]
+    fn encode_into_does_not_write_partial_code_point() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let short = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, 1);
+        assert_eq!(counts(encode_into(&mut vm, "é", short).unwrap()), (0, 0));
+        let four = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, 4);
+        assert_eq!(
+            counts(encode_into(&mut vm, "🦀A", four.clone()).unwrap()),
+            (2, 4)
+        );
+        let Value::Object(four) = four else {
+            panic!("typed array")
+        };
+        let four = four.lock().unwrap();
+        let ObjectKind::TypedArray(ref typed) = four.kind else {
+            panic!("typed array")
+        };
+        assert_eq!(*typed.buffer.lock().unwrap(), "🦀".as_bytes());
+    }
+
+    #[test]
+    fn encode_into_rejects_non_uint8_destination() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let wrong = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::I16, 2);
+        assert!(encode_into(&mut vm, "A", wrong).is_err());
+    }
+
+    #[test]
+    fn encode_into_detached_destination_writes_nothing() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let dest = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, 4);
+        let Value::Object(ref obj) = dest else {
+            panic!("typed array")
+        };
+        let buffer_obj = {
+            let obj = obj.lock().unwrap();
+            let ObjectKind::TypedArray(ref typed) = obj.kind else {
+                panic!("typed array")
+            };
+            typed.buffer_obj.clone()
+        };
+        {
+            let mut backing = buffer_obj.lock().unwrap();
+            let ObjectKind::ArrayBuffer(ref mut state) = backing.kind else {
+                panic!("array buffer")
+            };
+            state.detached = true;
+        }
+        assert_eq!(counts(encode_into(&mut vm, "A", dest).unwrap()), (0, 0));
+    }
+
+    #[test]
+    fn encode_into_shared_destination_preserves_bytes() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let dest = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, 4);
+        let Value::Object(ref obj) = dest else {
+            panic!("typed array")
+        };
+        let buffer_obj = {
+            let obj = obj.lock().unwrap();
+            let ObjectKind::TypedArray(ref typed) = obj.kind else {
+                panic!("typed array")
+            };
+            typed.buffer_obj.clone()
+        };
+        {
+            let mut backing = buffer_obj.lock().unwrap();
+            let ObjectKind::ArrayBuffer(ref mut state) = backing.kind else {
+                panic!("array buffer")
+            };
+            state.shared = true;
+        }
+        assert_eq!(
+            counts(encode_into(&mut vm, "éA", dest.clone()).unwrap()),
+            (2, 3)
+        );
+        let obj = obj.lock().unwrap();
+        let ObjectKind::TypedArray(ref typed) = obj.kind else {
+            panic!("typed array")
+        };
+        assert_eq!(*typed.buffer.lock().unwrap(), vec![0xc3, 0xa9, b'A', 0]);
+    }
 }
 
 fn bytes_from_arg(arg: Option<&Value>) -> Vec<u8> {
@@ -188,32 +360,66 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "web:encoding",
         "encodeInto",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let s = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-            let mut encoded_bytes = Vec::with_capacity(s.len());
             let mut read = 0usize;
             let mut written = 0usize;
-            if let Some(Value::Object(dest)) = args.get(2) {
-                let dest_o = dest.lock().unwrap();
-                if let ObjectKind::TypedArray(ref ta) = dest_o.kind {
-                    let cap = vybe_platform_ecma::typedarray::ta_live_length(ta);
-                    for ch in s.chars() {
-                        let mut buf = [0u8; 4];
-                        let bytes = ch.encode_utf8(&mut buf).as_bytes();
-                        if written + bytes.len() > cap {
-                            break;
-                        }
-                        for byte in bytes {
-                            vybe_platform_ecma::typedarray::write_element(
-                                ta,
-                                written,
-                                &Value::I32(*byte as i32),
-                            );
-                            encoded_bytes.push(*byte);
-                            written += 1;
-                        }
-                        read += ch.len_utf16();
+            let Some(Value::Object(dest)) = args.get(2) else {
+                throw_type_error(
+                    ctx,
+                    "TextEncoder.encodeInto requires a Uint8Array destination",
+                );
+                return Value::Undefined;
+            };
+            let dest_o = dest.lock().unwrap();
+            let ObjectKind::TypedArray(ref ta) = dest_o.kind else {
+                throw_type_error(
+                    ctx,
+                    "TextEncoder.encodeInto requires a Uint8Array destination",
+                );
+                return Value::Undefined;
+            };
+            if ta.elem != TypedElemKind::U8 {
+                throw_type_error(
+                    ctx,
+                    "TextEncoder.encodeInto requires a Uint8Array destination",
+                );
+                return Value::Undefined;
+            }
+            let (detached, shared) = {
+                let backing = ta.buffer_obj.lock().unwrap();
+                match &backing.kind {
+                    ObjectKind::ArrayBuffer(state) => (state.detached, state.shared),
+                    _ => (true, false),
+                }
+            };
+            let mut buffer = ta.buffer.lock().unwrap();
+            let cap = if detached || ta.byte_offset >= buffer.len() {
+                0
+            } else {
+                ta.length.min(buffer.len() - ta.byte_offset)
+            };
+            for ch in s.chars() {
+                let width = ch.len_utf8();
+                if width > cap - written {
+                    break;
+                }
+                written += width;
+                read += ch.len_utf16();
+            }
+            if written != 0 {
+                if shared {
+                    drop(buffer);
+                    for (index, byte) in s.as_bytes()[..written].iter().enumerate() {
+                        vybe_platform_ecma::typedarray::write_element(
+                            ta,
+                            index,
+                            &Value::I32(*byte as i32),
+                        );
                     }
+                } else {
+                    buffer[ta.byte_offset..ta.byte_offset + written]
+                        .copy_from_slice(&s.as_bytes()[..written]);
                 }
             }
             let mut result = Object::new();
