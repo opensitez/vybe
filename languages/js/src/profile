@@ -600,7 +600,7 @@ map_size = "dict_keys, array_length"
 # ────────────────────────────────────────────────────────────────────────────
 
 # Component-Model package roots (namespaceplan.md Phase 1): literal host
-# prefix chains (`vybe.gui.setProperty(...)`, `wasi.cli.log(...)`) resolve
+# prefix chains (for example `wasi.cli.log(...)`) resolve
 # through the common resolver's package-root step — the same data the
 # hardcoded `vybe|wasi|wasm` prefix arm used to embody in code.
 

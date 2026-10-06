@@ -66,17 +66,26 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // textual position. Reorder so they come first in the body. This mirrors
     // what the JS engine does at parse time — function decls are hoisted to
     // the top of their enclosing scope.
-    let mut hoisted = Vec::new();
-    let mut rest = Vec::new();
-    for stmt in body {
-        if matches!(stmt.kind, StmtKind::FunctionDecl { .. }) {
-            hoisted.push(stmt);
-        } else {
-            rest.push(stmt);
+    // Most small scripts have no declarations to move. Keep their body
+    // allocation rather than copying every statement through two new vectors.
+    let mut body = if body
+        .iter()
+        .any(|stmt| matches!(stmt.kind, StmtKind::FunctionDecl { .. }))
+    {
+        let mut hoisted = Vec::new();
+        let mut rest = Vec::new();
+        for stmt in body {
+            if matches!(stmt.kind, StmtKind::FunctionDecl { .. }) {
+                hoisted.push(stmt);
+            } else {
+                rest.push(stmt);
+            }
         }
-    }
-    hoisted.append(&mut rest);
-    let mut body = hoisted;
+        hoisted.append(&mut rest);
+        hoisted
+    } else {
+        body
+    };
 
     // Const-folding pass for computed method/property names that
     // reference a top-level string constant: `const X = "greet"` makes
@@ -104,7 +113,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         stmt.walk_exprs_mut(&mut normalize_promise_statics);
     }
 
-    let presents_ui = references_document(&body);
+    let presents_ui = references_document(&mut body);
 
     Ok(Module {
         canon: Default::default(),
@@ -185,10 +194,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
 }
 
 /// Whether the program names `document` anywhere.
-fn references_document(body: &[Statement]) -> bool {
+fn references_document(body: &mut [Statement]) -> bool {
     let mut found = false;
     for stmt in body {
-        let mut stmt = stmt.clone();
         stmt.walk_exprs_mut(&mut |expr: &mut Expression| {
             if let ExprKind::Ident(name) = &expr.kind {
                 if name == "document" {

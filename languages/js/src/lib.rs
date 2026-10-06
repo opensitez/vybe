@@ -120,14 +120,15 @@ if (!globalThis.__vybe_js_prelude_done) {
 
 }
 "#;
-/// Parsed AST of [`JS_PRELUDE`], built once per PROCESS and cloned per call.
+/// Parsed AST of [`JS_PRELUDE`], built once per process and borrowed per call.
 /// The prelude is identical for every program, so re-parsing its ~284 lines
 /// on every `parse` (7000× in the test suite) was pure waste — the dominant
 /// per-test cost. A process-global cache is essential: the test harness
 /// spawns a fresh thread per test, so a thread-local cache would be cold on
 /// every test and re-parse anyway. Cloning the cached AST is far cheaper
-/// than re-parsing.
-fn prelude_body() -> Vec<vybe_ast::Statement> {
+/// than re-parsing. Entries are cloned directly into the final module body
+/// to avoid allocating an intermediate prelude vector on each call.
+fn prelude_body() -> &'static [vybe_ast::Statement] {
     // NOT on `vybe_compiler::primitives::prelude` like php/python/go: this
     // crate depends on `vybe_compiler` only as a DEV-dependency, and promoting
     // that to a real one would drag every JS build behind a compiler rebuild.
@@ -139,13 +140,11 @@ fn prelude_body() -> Vec<vybe_ast::Statement> {
     // hoisted before any user declaration stamps its metadata. Gating it is a
     // separate, measured change.
     static CACHE: std::sync::OnceLock<Vec<vybe_ast::Statement>> = std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            walker::parse(JS_PRELUDE)
-                .expect("JS prelude must parse")
-                .body
-        })
-        .clone()
+    CACHE.get_or_init(|| {
+        walker::parse(JS_PRELUDE)
+            .expect("JS prelude must parse")
+            .body
+    })
 }
 
 pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
@@ -176,13 +175,14 @@ pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
     // the constant prelude every call.
     let mut module = walker::parse(source)?;
     let prelude = prelude_body();
-    let mut body = Vec::with_capacity(prelude.len() + module.body.len() + 1);
+    let mut body =
+        Vec::with_capacity(prelude.len() + module.body.len() + 1 + usize::from(user_is_strict));
     if user_is_strict {
         body.push(vybe_ast::Statement::new(vybe_ast::StmtKind::Expr(
             vybe_ast::Expression::string("use strict"),
         )));
     }
-    body.extend(prelude);
+    body.extend(prelude.iter().cloned());
     // Boundary marker so the step debugger can skip the runtime prelude and
     // land the first pause in the user's own code. The shared compiler
     // recognizes this sentinel string-expression, records the `<script>`

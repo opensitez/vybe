@@ -462,14 +462,13 @@ dynamic_import = { "import" ~ "(" ~ argument_list? ~ ")" }
 chain_lead = _{ NEWLINE* }
 
 call_chain = {
-    chain_lead ~ "?." ~ "(" ~ argument_list? ~ ")"          // optional call: obj?.()
-    | chain_lead ~ "?." ~ "[" ~ expression ~ "]"            // optional computed: obj?.[expr]
-    | chain_lead ~ "?." ~ ident_or_keyword                   // optional member: obj?.prop
-    | "(" ~ argument_list? ~ ")"                              // call: f(args)
-    | chain_lead ~ "." ~ private_name                         // private member: this.#x
-    | chain_lead ~ "." ~ ident_or_keyword                     // member: obj.prop
-    | "[" ~ expression ~ "]"                                  // computed: obj[expr]
-    | template_literal                                         // tagged template: tag`...`
+    chain_lead ~ (
+        "?." ~ ("(" ~ argument_list? ~ ")" | "[" ~ expression ~ "]" | ident_or_keyword)
+        | "." ~ (private_name | ident_or_keyword)
+    )
+    | "(" ~ argument_list? ~ ")"
+    | "[" ~ expression ~ "]"
+    | template_literal
 }
 
 argument_list = { eat_nl ~ argument ~ ("," ~ eat_nl ~ argument)* ~ ","? ~ eat_nl }
