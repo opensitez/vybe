@@ -2,7 +2,7 @@
 //! Translates internal bytecode to WASM binary format.
 //!
 //! Type strategy: externref is the universal value representation.
-//! All locals, params, and function results are externref.
+//! Ordinary values use externref; explicitly typed i64 temporaries stay native.
 //! Typed WASM ops (f64.add, i32.mul, etc.) require unboxing via
 //! wasm:js-number builtins (toF64/toI32) before the op and reboxing
 //! (fromF64/fromI32) after. Binary ops need a temp externref local
@@ -56,8 +56,17 @@ fn leb128_u32_size(v: u32) -> u32 {
 /// They were two constants agreeing by luck while every local was externref;
 /// `i64_locals` makes the shape depend on the chunk, and two readers of one
 /// fact is the exact split that has cost this session all day.
+fn wasm_param_count(chunk: &Chunk) -> u32 {
+    chunk
+        .func_sig
+        .as_ref()
+        .map_or(chunk.arity as u32, |(params, _)| {
+            params.split(',').filter(|ty| !ty.trim().is_empty()).count() as u32
+        })
+}
+
 fn locals_groups(chunk: &Chunk) -> Vec<(u32, u8)> {
-    let wasm_params = chunk.arity as u32;
+    let wasm_params = wasm_param_count(chunk);
     let extra_locals = (chunk.local_count as u32).saturating_sub(wasm_params);
     let temp_count = count_temp_locals(chunk);
     let mut groups: Vec<(u32, u8)> = Vec::new();
@@ -66,7 +75,7 @@ fn locals_groups(chunk: &Chunk) -> Vec<(u32, u8)> {
         _ => groups.push((1, ty)),
     };
     // Declared locals are indices `wasm_params .. wasm_params+extra_locals`,
-    // and slot k IS local index k (slots below arity are the params).
+    // and slot k IS local index k (slots below the declared count are params).
     for i in 0..extra_locals {
         let slot = wasm_params + i;
         let ty = if u16::try_from(slot).is_ok_and(|s| chunk.i64_locals.contains(&s)) {
@@ -486,8 +495,8 @@ pub fn encode_code_section(
         // Check how many temp locals we need for stack manipulation
         let temp_count = count_temp_locals(chunk);
         let has_temp = temp_count > 0;
-        // WASM convention: params = arity (slot 0 = first arg, no callee slot).
-        let wasm_params = chunk.arity as u32;
+        // WAST chunks can have a declared signature different from internal arity.
+        let wasm_params = wasm_param_count(chunk);
         // Extra locals beyond params
         let extra_locals = if chunk.local_count as u32 > wasm_params {
             chunk.local_count as u32 - wasm_params
@@ -641,9 +650,8 @@ pub fn encode_code_section(
                             .or(drop_carried_after_bytecode_drop);
                 }
             }
-            if let Some((trace_start, trace_end)) = std::env::var("VYBE_WASM_TRACE_BODY")
-                .ok()
-                .and_then(|raw| {
+            if let Some((trace_start, trace_end)) =
+                std::env::var("VYBE_WASM_TRACE_BODY").ok().and_then(|raw| {
                     let (start, end) = raw.split_once(':')?;
                     Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
                 })
@@ -677,11 +685,7 @@ pub fn encode_code_section(
                     } else {
                         eprintln!(
                             "[wasm-body] body_index={} chunk={} ip={} body={} op={:?}",
-                            ci,
-                            chunk.name,
-                            op_start,
-                            body_at,
-                            op
+                            ci, chunk.name, op_start, body_at, op
                         );
                     }
                 }
@@ -1237,9 +1241,8 @@ fn emit_core_op(
         _ if op == Op::ELSE => {
             body.push(0x05); // else
         }
-        // `i32.wrap_i64` is the ONLY way an i64 leaves the raw world here, and
-        // its i32 result goes straight into an externref local. It had no arm,
-        // so it fell to the default and stayed raw.
+        // Native integer results rejoin the value ABI unless consumed as a
+        // control-flow predicate.
         _ if op == Op::I32_WRAP_I64 => {
             body.push(op.sub() as u8);
             box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
@@ -1609,18 +1612,14 @@ fn emit_core_op(
         // Exact adjacent compiler bit-cast pairs retain raw f32 between the
         // standard operations. Promoting/re-demoting in between would alter
         // signaling NaN bit patterns and add arithmetic absent from bytecode.
-        _ if op == Op::F32_DEMOTE_F64
-            && next_op(chunk, *ip) == Some(Op::I32_REINTERPRET_F32) =>
-        {
+        _ if op == Op::F32_DEMOTE_F64 && next_op(chunk, *ip) == Some(Op::I32_REINTERPRET_F32) => {
             emit_unbox_f64(body, rt_idx);
             body.push(op.sub() as u8);
             body.push(Op::I32_REINTERPRET_F32.sub() as u8);
             *ip += 4; // paired no-immediate opcode header
             box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
-        _ if op == Op::F32_REINTERPRET_I32
-            && next_op(chunk, *ip) == Some(Op::F64_PROMOTE_F32) =>
-        {
+        _ if op == Op::F32_REINTERPRET_I32 && next_op(chunk, *ip) == Some(Op::F64_PROMOTE_F32) => {
             emit_unbox_i32(body, rt_idx);
             body.push(op.sub() as u8);
             body.push(Op::F64_PROMOTE_F32.sub() as u8);
@@ -1629,9 +1628,7 @@ fn emit_core_op(
         }
         // Bit transport stays raw across adjacent, side-effect-free casts.
         // JS Number boxing can quiet signaling NaNs before reinterpretation.
-        _ if op == Op::F64_CONST
-            && next_op(chunk, *ip + 8) == Some(Op::I64_REINTERPRET_F64) =>
-        {
+        _ if op == Op::F64_CONST && next_op(chunk, *ip + 8) == Some(Op::I64_REINTERPRET_F64) => {
             body.push(op.sub() as u8);
             body.extend_from_slice(&chunk.code[*ip..*ip + 8]);
             body.push(Op::I64_REINTERPRET_F64.sub() as u8);
@@ -1655,6 +1652,23 @@ fn emit_core_op(
         _ if op == Op::I64_EXTEND_I32_S || op == Op::I64_EXTEND_I32_U => {
             emit_unbox_i32(body, rt_idx);
             body.push(op.sub() as u8); // i64 remains raw
+        }
+        _ if op == Op::I64_TRUNC_F64_S || op == Op::I64_TRUNC_F64_U => {
+            emit_unbox_f64(body, rt_idx);
+            body.push(op.sub() as u8);
+        }
+        _ if op == Op::F64_CONVERT_I64_S || op == Op::F64_CONVERT_I64_U => {
+            body.push(op.sub() as u8);
+            emit_box_f64(body, rt_idx);
+        }
+        _ if matches!(
+            op,
+            Op::I64_EQZ | Op::I64_EQ | Op::I64_NE
+                | Op::I64_LT_S | Op::I64_LT_U | Op::I64_LE_S | Op::I64_LE_U
+                | Op::I64_GT_S | Op::I64_GT_U | Op::I64_GE_S | Op::I64_GE_U
+        ) => {
+            body.push(op.sub() as u8);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
 
         // ── Conversions: unbox source type → convert → rebox target type ──
@@ -2174,6 +2188,12 @@ fn heaptype_is_internal(ht_bytes: &[u8]) -> bool {
 /// producer at the very end of a chunk has no successor to read.
 fn i32_condition_follows(chunk: &Chunk, ip: usize) -> bool {
     matches!(next_op(chunk, ip), Some(next) if next == Op::IF || next == Op::BR_IF)
+        || native_i32_return_follows(chunk, ip)
+}
+
+fn native_i32_return_follows(chunk: &Chunk, ip: usize) -> bool {
+    next_op(chunk, ip) == Some(Op::RETURN)
+        && chunk.func_sig.as_ref().is_some_and(|(_, result)| result.trim() == "i32")
 }
 
 /// True when the NEXT bytecode instruction can consume a raw i32 operand at
@@ -2188,11 +2208,13 @@ fn i32_condition_follows(chunk: &Chunk, ip: usize) -> bool {
 /// boxing a raw host result only so the next instruction can discard it is both
 /// wasteful and, for call sites that already emitted an explicit drop, can
 /// leave the real drop with nothing to consume.
+/// A return declared as native i32 is also a raw consumer.
 fn i32_raw_consumer_follows(chunk: &Chunk, ip: usize) -> bool {
     matches!(
         next_op(chunk, ip),
         Some(next) if next == Op::IF || next == Op::BR_IF || next == Op::DROP
     )
+        || native_i32_return_follows(chunk, ip)
 }
 
 fn void_boundary_value_producer(op: Op) -> bool {
@@ -2296,8 +2318,12 @@ fn bundled_helper_chunk_for_global(name: &str) -> Option<&'static str> {
         "__vybe_binary_string_to_bytes" => Some("__stdlib_binary_string_to_bytes"),
         "__vybe_encoding_hex2bin" => Some("__stdlib_encoding_hex2bin"),
         "__vybe_encoding_str_rot13" => Some("__stdlib_encoding_str_rot13"),
-        "__vybe_encoding_quoted_printable_encode" => Some("__stdlib_encoding_quoted_printable_encode"),
-        "__vybe_encoding_quoted_printable_decode" => Some("__stdlib_encoding_quoted_printable_decode"),
+        "__vybe_encoding_quoted_printable_encode" => {
+            Some("__stdlib_encoding_quoted_printable_encode")
+        }
+        "__vybe_encoding_quoted_printable_decode" => {
+            Some("__stdlib_encoding_quoted_printable_decode")
+        }
         "__vybe_encoding_convert_uuencode" => Some("__stdlib_encoding_convert_uuencode"),
         "__vybe_encoding_convert_uudecode" => Some("__stdlib_encoding_convert_uudecode"),
         "__vybe_encoding_base64_decode_lenient" => Some("__stdlib_encoding_base64_decode_lenient"),
@@ -2441,7 +2467,11 @@ fn dup_drop_before_void_boundary(chunk: &Chunk, ip: usize, slot: u16) -> Option<
     }
 }
 
-fn key_registration_drop_before_void_boundary(chunk: &Chunk, ip: usize, slot: u16) -> Option<usize> {
+fn key_registration_drop_before_void_boundary(
+    chunk: &Chunk,
+    ip: usize,
+    slot: u16,
+) -> Option<usize> {
     if !matches!(next_op(chunk, ip), Some(next) if next == Op::LOCAL_GET) {
         return None;
     }
