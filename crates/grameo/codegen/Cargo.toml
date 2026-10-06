@@ -1,0 +1,18 @@
+[package]
+name = "grameo_codegen"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Opensitez Vybe Team"]
+repository = "https://github.com/opensitez/irys"
+homepage = "https://opensitez.com/"
+license-file = "LICENSE.md"
+description = "Build-time Rust parser generation for grameo PEG grammars"
+readme = "README.md"
+documentation = "https://docs.rs/grameo_codegen"
+keywords = ["parser", "grammar", "peg", "codegen"]
+categories = ["parsing", "compilers", "development-tools::build-utils"]
+include = ["src/**", "tests/**", "!tests/repository_grammars.rs", "Cargo.toml", "README.md", "LICENSE.md", "LICENSE-GPL-3.0.txt"]
+
+[dependencies]
+grameo = { version = "0.1.0", path = ".." }

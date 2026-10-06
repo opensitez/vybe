@@ -1,0 +1,6 @@
+root = { SOI ~ !keyword ~ ANY* ~ EOI }
+positive = { SOI ~ &keyword ~ ANY* ~ EOI }
+visible = { SOI ~ keyword ~ EOI }
+keyword = _{ "if" | "ifdef" | ^"IF" | "while" | "for" | "local" | "true" | "false" | "nil" | "é" | "中" }
+
+speculate = { ("abc" ~ "z" | keyword) ~ EOI }

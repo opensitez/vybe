@@ -1,0 +1,642 @@
+// JavaScript Grammar for pest parser
+// Covers ES2025 — full syntax supported by Vybe's JS walker.
+//
+// ASI: NEWLINE is a visible token (not whitespace). Statements terminate on
+// ";" or NEWLINE or before "}" or at EOI. return/break/continue/throw
+// restrict expression to same line via !NEWLINE lookahead.
+//
+// Regex: grammar structure disambiguates — regex only in primary (expression
+// start), division only in multiplicative (between expressions).
+
+WHITESPACE = _{ " " | "\t" | "\r" }
+COMMENT = _{ line_comment | block_comment }
+line_comment = _{ "//" ~ (!("\n" | "\r") ~ ANY)* }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+NEWLINE = { "\n" | "\r\n" }
+
+// ── Statement terminators (ASI) ──────────────────────────────────────────────
+// A statement ends with ";" or NEWLINE or before "}" or at EOI.
+// Newlines inside parens/brackets/braces don't terminate (handled by pest's
+// WHITESPACE consuming spaces/tabs but not newlines — so NEWLINE is explicit).
+
+terminator = _{ ";" | NEWLINE | &"}" | &EOI }
+// Consume optional terminators (semicolons and newlines)
+eat_terminators = _{ (";" | NEWLINE)* }
+// Truly-silent newline eater: uses literal chars (not the NEWLINE rule) so no
+// NEWLINE parse-tree nodes bubble up into parent rules. Use this in expression
+// contexts (arrow body, argument lists, ternary) where NEWLINE nodes would
+// confuse the walker.
+eat_nl = _{ ("\n" | "\r\n" | ";")* }
+
+// Silent newline continuation used right AFTER a binary/assignment operator: the
+// right operand is required there, so a newline is never a statement terminator
+// (ASI never applies mid-expression). Newline-only — unlike `eat_nl` it does NOT
+// swallow `;`, so `a +; b` still fails as it should. Fixes `a +⏎b` (operator at
+// end of line), which is valid JS and pervasive (e.g. test262's assert.js).
+op_nl = _{ ("\n" | "\r\n")* }
+
+// ── Program ─────────────────────────────────────────────────────────────────
+// ES2023 §12.5: optional hashbang comment on line 1 (e.g. #!/usr/bin/env node)
+
+hashbang_comment = _{ "#!" ~ (!NEWLINE ~ ANY)* }
+program = { SOI ~ hashbang_comment? ~ eat_terminators ~ (statement ~ eat_terminators)* ~ EOI }
+
+// ── Statements ──────────────────────────────────────────────────────────────
+
+statement = _{
+    empty_statement
+    | block_statement
+    | await_using_declaration
+    | using_declaration
+    | variable_declaration
+    | async_function_declaration
+    | function_declaration
+    | class_declaration
+    | if_statement
+    | for_statement
+    | while_statement
+    | do_while_statement
+    | switch_statement
+    | debugger_statement
+    | return_statement
+    | break_statement
+    | continue_statement
+    | throw_statement
+    | try_statement
+    | import_statement
+    | export_statement
+    | labeled_statement
+    | expression_statement
+}
+
+empty_statement = { ";" | NEWLINE }
+
+block_statement = { "{" ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}" }
+
+// ── Variable declarations ───────────────────────────────────────────────────
+
+variable_declaration = {
+    var_kind ~ var_declarator ~ ("," ~ var_declarator)* ~ terminator
+}
+
+var_kind = { "var" | "let" | "const" }
+
+var_declarator = { binding_pattern ~ ("=" ~ assignment_expression)? }
+
+binding_pattern = { object_pattern | array_pattern | ident_name }
+
+object_pattern = {
+    "{" ~ (object_pattern_prop ~ ("," ~ object_pattern_prop)*)? ~ ","? ~ "}"
+}
+
+object_pattern_prop = {
+    "..." ~ ident_name                                             // rest: { ...rest }
+    | "[" ~ assignment_expression ~ "]" ~ ":" ~ binding_pattern ~ ("=" ~ assignment_expression)?  // computed: { [key]: val }
+    | ident_name ~ ":" ~ binding_pattern ~ ("=" ~ assignment_expression)?  // rename: { a: b }
+    | ident_name ~ ("=" ~ assignment_expression)?                  // shorthand: { a } or { a = default }
+}
+
+array_pattern = {
+    "[" ~ (array_pattern_elem ~ ("," ~ array_pattern_elem)*)? ~ ","? ~ "]"
+}
+
+array_pattern_elem = {
+    "..." ~ ident_name           // rest: [...rest]
+    | array_hole                 // hole: skip
+    | binding_pattern ~ ("=" ~ assignment_expression)?
+}
+
+array_hole = { &"," }   // empty slot before comma
+
+// ── Explicit resource management (ES2025) ───────────────────────────────────
+// `using x = expr` — scoped resource bound to block lifetime.
+// `await using x = expr` — async resource (only valid inside async functions).
+// `using` is a contextual keyword (not reserved): if not followed by an
+// identifier start, the rule fails and expression_statement handles it.
+
+using_declarator = { binding_pattern ~ "=" ~ assignment_expression }
+
+using_declaration = {
+    "using" ~ using_declarator ~ ("," ~ using_declarator)* ~ terminator
+}
+
+await_using_declaration = {
+    await_kw ~ "using" ~ using_declarator ~ ("," ~ using_declarator)* ~ terminator
+}
+
+// ── Function declaration ────────────────────────────────────────────────────
+
+function_declaration = {
+    "function" ~ generator_marker? ~ ident_name ~ "(" ~ param_list? ~ ")" ~ function_body
+}
+
+async_function_declaration = {
+    "async" ~ "function" ~ generator_marker? ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+}
+
+/// `function*` marks a generator declaration — the walker uses the
+/// presence of this token plus `yield` inside the body to set
+/// `is_generator = true`.
+generator_marker = { "*" }
+
+function_body = { "{" ~ statement* ~ "}" }
+
+param_list = { param ~ ("," ~ param)* ~ ","? }
+
+param = { "..."? ~ binding_pattern ~ ("=" ~ assignment_expression)? }
+
+// ── Class declaration ───────────────────────────────────────────────────────
+
+// TC39 stage-3 decorators: @name, @name.method, @name(args), @name.method(args).
+// eat_terminators inside decorator consumes the trailing newline so that
+// `decorator* ~ eat_terminators ~ "class"` works for multi-decorator stacks.
+decorator = { "@" ~ ident_name ~ ("." ~ ident_or_keyword)* ~ ("(" ~ argument_list? ~ ")")? ~ eat_nl }
+
+class_declaration = {
+    decorator* ~ "class" ~ ident_name? ~ ("extends" ~ assignment_expression)? ~ class_body
+}
+
+class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
+
+// TC39 accessor keyword for auto-accessor fields (@decorator + accessor field).
+accessor_kw = @{ "accessor" ~ !(ASCII_ALPHANUMERIC | "_") }
+accessor_property = { accessor_kw ~ property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
+
+class_member = {
+    decorator* ~ eat_nl ~ (static_block | static_kw? ~ (getter_method | setter_method | accessor_property | class_method | class_property))
+}
+
+static_kw = { "static" }
+
+// ES2022 static block: `static { ...statements... }` runs when class is defined
+static_block = { static_kw ~ "{" ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}" }
+
+// JS getters/setters: `get propName() { ... }` / `set propName(val) { ... }`
+// The keyword `get`/`set` must be a standalone word (not part of `getX`).
+// We use an atomic rule for the keyword check so WHITESPACE isn't consumed
+// before the word-boundary lookahead.
+get_keyword = @{ "get" ~ !(ASCII_ALPHANUMERIC | "_") }
+set_keyword = @{ "set" ~ !(ASCII_ALPHANUMERIC | "_") }
+getter_method = { get_keyword ~ property_name ~ "(" ~ ")" ~ function_body }
+setter_method = { set_keyword ~ property_name ~ "(" ~ param ~ ")" ~ function_body }
+// ES2015 generator methods (`*name()`) and async generator methods (`async *name()`).
+class_method = { async_kw? ~ generator_marker? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body }
+class_property = { property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
+
+property_name = { computed_property_name | string_literal | numeric_literal | private_name | ident_or_keyword }
+computed_property_name = { "[" ~ assignment_expression ~ "]" }
+// PHP/JS class private fields: #name. Lexed as a single token so the
+// "#" cannot be eaten as a comment marker (JS has no `#` comment).
+private_name = @{ "#" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// ── If ──────────────────────────────────────────────────────────────────────
+
+if_statement = {
+    "if" ~ "(" ~ expression ~ ")" ~ statement ~ eat_terminators ~ ("else" ~ statement)?
+}
+
+// ── For / For-in / For-of ───────────────────────────────────────────────────
+
+for_statement = {
+    "for" ~ for_await_marker? ~ "(" ~ for_header ~ ")" ~ statement
+}
+
+for_await_marker = @{ "await" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// Ordered choice: try for-in/of first (they're more specific), then fall back to C-style
+for_header = {
+    for_in_header | for_of_header | for_c_header
+}
+
+// ES2025: left-hand side of for-in/of may be a full LeftHandSideExpression
+// (e.g. `for (obj.x in items)`, `for (arr[0] of iter)`) or a var declaration.
+// `for_lhs_expr` covers member/computed access that `binding_pattern` cannot.
+for_lhs_expr = { postfix }
+
+for_in_header = {
+    var_kind ~ binding_pattern ~ "in" ~ expression
+    | for_lhs_expr ~ "in" ~ expression
+}
+
+for_of_header = {
+    var_kind ~ binding_pattern ~ "of" ~ expression
+    | "using" ~ binding_pattern ~ "of" ~ expression
+    | for_lhs_expr ~ "of" ~ expression
+}
+
+for_c_header = {
+    for_c_init? ~ ";" ~ expression? ~ ";" ~ expression?
+}
+
+for_c_init = { variable_declaration_no_semi | expression }
+
+variable_declaration_no_semi = {
+    var_kind ~ var_declarator ~ ("," ~ var_declarator)*
+}
+
+// ── While / Do-while ────────────────────────────────────────────────────────
+
+while_statement = { "while" ~ "(" ~ expression ~ ")" ~ statement }
+
+do_while_statement = { "do" ~ statement ~ eat_terminators ~ "while" ~ "(" ~ expression ~ ")" ~ terminator }
+
+// ── Switch ──────────────────────────────────────────────────────────────────
+
+switch_statement = {
+    "switch" ~ "(" ~ expression ~ ")" ~ "{" ~ eat_terminators ~ switch_case* ~ eat_terminators ~ "}"
+}
+
+switch_case = {
+    ("case" ~ expression | "default") ~ ":" ~ eat_terminators ~ (statement ~ eat_terminators)*
+}
+
+// ── Debugger statement (ECMA-262 §14.16) ────────────────────────────────────
+
+debugger_statement = { "debugger" ~ terminator }
+
+// ── Jump statements ─────────────────────────────────────────────────────────
+// Note: ASI — break/continue/return/throw treat newline as terminator.
+// In pest we approximate with optional ";" since we can't check newlines in rules.
+
+// ASI: return/break/continue/throw — expression must be on same line.
+// If NEWLINE follows the keyword, no expression is consumed.
+//
+// Each keyword is matched via an atomic rule with a trailing word-boundary
+// check (`!(ASCII_ALPHANUMERIC | "_")`) so identifiers that merely START with
+// the keyword (`returnCalled`, `throwError`, `breakpoint`) are NOT mis-lexed
+// as the keyword + a following expression. The boundary must live inside an
+// atomic rule: an inline `~ !(...)` in these non-atomic rules would consume
+// the whitespace after the keyword first, breaking `return x`.
+return_kw = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
+break_kw = @{ "break" ~ !(ASCII_ALPHANUMERIC | "_") }
+continue_kw = @{ "continue" ~ !(ASCII_ALPHANUMERIC | "_") }
+throw_kw = @{ "throw" ~ !(ASCII_ALPHANUMERIC | "_") }
+return_statement = { return_kw ~ (!NEWLINE ~ expression)? ~ terminator }
+break_statement = { break_kw ~ (!NEWLINE ~ ident_name)? ~ terminator }
+continue_statement = { continue_kw ~ (!NEWLINE ~ ident_name)? ~ terminator }
+// throw REQUIRES an expression (no ASI between throw and expression in spec,
+// but we still don't consume across newline for safety)
+throw_statement = { throw_kw ~ !NEWLINE ~ expression ~ terminator }
+
+// ── Try / Catch / Finally ───────────────────────────────────────────────────
+
+try_statement = {
+    "try" ~ block_statement ~ eat_terminators ~ catch_clause? ~ eat_terminators ~ finally_clause?
+}
+
+// ES2019: catch binding is optional; ES2019+ allows destructuring patterns.
+catch_clause = { "catch" ~ ("(" ~ binding_pattern ~ ")")? ~ block_statement }
+finally_clause = { "finally" ~ block_statement }
+
+// ── Import / Export ─────────────────────────────────────────────────────────
+
+import_statement = {
+    "import" ~ (import_clause ~ "from")? ~ string_literal ~ import_with? ~ terminator
+}
+
+import_clause = {
+    namespace_import
+    | named_imports
+    | default_import ~ ("," ~ named_imports)?
+}
+
+namespace_import = { "*" ~ "as" ~ ident_name }
+named_imports = { "{" ~ (import_specifier ~ ("," ~ import_specifier)*)? ~ ","? ~ "}" }
+default_import = { ident_name }
+// ES2022: import specifier names may be string literals: import { "old-name" as newName }
+import_specifier = { (ident_or_keyword | string_literal) ~ ("as" ~ ident_name)? }
+
+// ES2025 import attributes: `with { type: "json" }` (replaces ES2023 `assert`)
+import_with = { "with" ~ "{" ~ (import_attribute ~ ("," ~ import_attribute)*)? ~ ","? ~ "}" }
+import_attribute = { (ident_or_keyword | string_literal) ~ ":" ~ string_literal }
+
+export_statement = {
+    "export" ~ "default" ~ (async_function_declaration | function_declaration | class_declaration | assignment_expression) ~ terminator
+    | "export" ~ "*" ~ ("as" ~ ident_name)? ~ "from" ~ string_literal ~ import_with? ~ terminator
+    | "export" ~ "{" ~ (export_specifier ~ ("," ~ export_specifier)*)? ~ ","? ~ "}" ~ ("from" ~ string_literal ~ import_with?)? ~ terminator
+    | "export" ~ (async_function_declaration | function_declaration | class_declaration | variable_declaration)
+}
+
+// ES2022: export specifier names may be string literals: export { foo as "foo-bar" }
+export_specifier = { (ident_name | string_literal) ~ ("as" ~ (ident_name | string_literal))? }
+
+// ── Labeled statement ───────────────────────────────────────────────────────
+// Must come before expression_statement. pest tries labeled first; if ":" is not
+// found after identifier, backtracks to expression_statement.
+
+labeled_statement = { ident_name ~ ":" ~ statement }
+
+// ── Expression statement ────────────────────────────────────────────────────
+
+expression_statement = { expression ~ terminator }
+
+// ── Expressions ─────────────────────────────────────────────────────────────
+
+expression = { assignment_expression ~ ("," ~ assignment_expression)* }
+
+assignment_expression = {
+    yield_expression
+    | arrow_function
+    | async_arrow_function
+    | conditional_expression ~ (assignment_op ~ assignment_expression)?
+}
+
+assignment_op = {
+    ">>>=" | ">>=" | "<<=" |
+    "**=" | "&&=" | "||=" | "??=" |
+    "+=" | "-=" | "*=" | "/=" | "%=" |
+    "&=" | "|=" | "^=" |
+    "="
+}
+
+conditional_expression = {
+    logical_expr ~ (eat_nl ~ "?" ~ eat_nl ~ assignment_expression ~ eat_nl ~ ":" ~ eat_nl ~ assignment_expression)?
+}
+
+// Flattened to minimize recursion depth.
+// All logical/bitwise operators in one level (precedence handled by walker via op type).
+logical_expr = { comparison ~ (logical_op ~ op_nl ~ comparison)* }
+logical_op = {
+    nullish_op | or_op | and_op | bitor_op | bitxor_op | bitand_op
+}
+nullish_op = { "??" }
+or_op = { "||" ~ !"=" }
+and_op = { "&&" ~ !"=" }
+bitor_op = { "|" ~ !("=" | "|") }
+bitxor_op = { "^" ~ !"=" }
+bitand_op = { "&" ~ !("=" | "&") }
+
+// Equality, relational, shift all in one level.
+comparison = { additive ~ (comparison_op ~ op_nl ~ additive)* }
+comparison_op = {
+    equality_op | shift_op | relational_op
+}
+equality_op = { "===" | "!==" | "==" | "!=" }
+instanceof_kw = @{ "instanceof" ~ !(ASCII_ALPHANUMERIC | "_") }
+in_kw = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+relational_op = { "<=" | ">=" | "<" ~ !"<" | ">" ~ !">" | instanceof_kw | in_kw }
+shift_op = { ">>>" ~ !"=" | ">>" ~ !(">" | "=") | "<<" ~ !"=" }
+
+additive = { multiplicative ~ (additive_op ~ op_nl ~ multiplicative)* }
+additive_op = { "+" ~ !("+" | "=") | "-" ~ !("-" | "=") }
+
+// §13.6/§13.7: `**` is its OWN level — it binds TIGHTER than `*`/`/`/`%` and
+// is RIGHT-associative, where every other binary operator here is left-
+// associative. Both lived in one left-associative level, which got
+// `2 ** 3 ** 2` = 64 (node: 512) and `2 * 3 ** 2` = 36 (node: 18).
+// Right-associativity is the rule recursing on its own RIGHT side.
+multiplicative = { exponentiation ~ (multiplicative_op ~ op_nl ~ exponentiation)* }
+multiplicative_op = { mul_op }
+exponentiation = { unary ~ (exp_op ~ op_nl ~ exponentiation)? }
+mul_op = { "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
+exp_op = { "**" ~ !"=" }
+
+unary = {
+    unary_op ~ unary
+    | postfix
+}
+
+// Keyword operators/literals must be atomic to prevent pest's auto-whitespace
+// from breaking the word boundary check.
+this_kw = @{ "this" ~ !(ASCII_ALPHANUMERIC | "_") }
+super_kw = @{ "super" ~ !(ASCII_ALPHANUMERIC | "_") }
+true_kw = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
+false_kw = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
+null_kw = @{ "null" ~ !(ASCII_ALPHANUMERIC | "_") }
+undefined_kw = @{ "undefined" ~ !(ASCII_ALPHANUMERIC | "_") }
+typeof_kw = @{ "typeof" ~ !(ASCII_ALPHANUMERIC | "_") }
+void_kw = @{ "void" ~ !(ASCII_ALPHANUMERIC | "_") }
+delete_kw = @{ "delete" ~ !(ASCII_ALPHANUMERIC | "_") }
+await_kw = @{ "await" ~ !(ASCII_ALPHANUMERIC | "_") }
+async_kw = @{ "async" ~ !(ASCII_ALPHANUMERIC | "_") }
+yield_kw = @{ "yield" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+/// `yield expr` (legal only inside a `function*`). The walker folds
+/// this into `ExprKind::Yield`, which the compiler lowers to
+/// `Op::SUSPEND` at the bytecode level.
+yield_expression = {
+    yield_kw ~ yield_delegate? ~ assignment_expression?
+}
+yield_delegate = { "*" }
+
+unary_op = {
+    "-" ~ !("-" | "=")
+    | "+" ~ !("+" | "=")
+    | "!" ~ !"="
+    | "~"
+    | typeof_kw
+    | void_kw
+    | delete_kw
+    | "++"
+    | "--"
+    | await_kw
+}
+
+postfix = { call_expression ~ postfix_op? }
+postfix_op = { "++" | "--" }
+
+// ── Call / Member / Index chain ─────────────────────────────────────────────
+
+// Try `new <primary>` only when `new` is followed by a non-word
+// character — otherwise fall through to `primary` so identifiers
+// like `new_elem` / `newPerson` aren't mis-tokenised. The
+// `new_keyword_lookahead` rule is atomic so the boundary check
+// sits flush with `"new"` (no implicit whitespace gap).
+new_keyword_lookahead = @{ "new" ~ !(ASCII_ALPHANUMERIC | "_" | "$") }
+call_expression = {
+    (&new_keyword_lookahead ~ new_expression | primary) ~ call_chain*
+}
+
+new_expression = { "new" ~ primary ~ call_chain* }
+
+import_meta = { "import" ~ "." ~ "meta" }
+new_target = { "new" ~ "." ~ "target" }
+dynamic_import = { "import" ~ "(" ~ argument_list? ~ ")" }
+
+// `chain_lead` lets a method/property access continue across newlines:
+//   arr
+//     .filter(x => ...)
+//     .map(x => ...)
+// JS practice: if a line begins with `.` or `?.`, the parser absorbs the
+// preceding newline into the chain instead of triggering ASI.
+chain_lead = _{ NEWLINE* }
+
+call_chain = {
+    chain_lead ~ (
+        "?." ~ ("(" ~ argument_list? ~ ")" | "[" ~ expression ~ "]" | ident_or_keyword)
+        | "." ~ (private_name | ident_or_keyword)
+    )
+    | "(" ~ argument_list? ~ ")"
+    | "[" ~ expression ~ "]"
+    | template_literal
+}
+
+argument_list = { eat_nl ~ argument ~ ("," ~ eat_nl ~ argument)* ~ ","? ~ eat_nl }
+argument = { "..." ~ assignment_expression | assignment_expression }
+
+// ── Primary expressions ─────────────────────────────────────────────────────
+// Arrow functions tried BEFORE grouped expression (ordered choice with backtracking)
+
+primary = {
+    "(" ~ expression ~ ")"
+    | async_function_expression
+    | function_expression
+    | class_expression
+    | dynamic_import
+    | import_meta
+    | new_target
+    | array_literal
+    | object_literal
+    | template_literal
+    | this_kw
+    | super_kw
+    | private_name
+    | true_kw
+    | false_kw
+    | null_kw
+    | undefined_kw
+    | "..." ~ assignment_expression
+    | bigint_literal
+    | numeric_literal
+    | string_literal
+    | regex_literal
+    | ident_name
+}
+
+// ── Arrow functions ─────────────────────────────────────────────────────────
+// pest tries these first due to ordered choice. If "=>" is not found, backtracks.
+
+arrow_function = {
+    ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ arrow_body
+}
+
+async_arrow_function = {
+    async_kw ~ ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ arrow_body
+}
+
+arrow_body = { eat_nl ~ (function_body | assignment_expression) }
+
+// ── Function / Class expressions ────────────────────────────────────────────
+
+function_expression = {
+    "function" ~ generator_marker? ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+}
+
+async_function_expression = {
+    async_kw ~ "function" ~ generator_marker? ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+}
+
+class_expression = {
+    "class" ~ ident_name? ~ ("extends" ~ assignment_expression)? ~ class_body
+}
+
+// ── Array literal ───────────────────────────────────────────────────────────
+
+array_literal = {
+    "[" ~ eat_terminators ~ (array_slot ~ eat_terminators ~ ("," ~ eat_terminators ~ array_slot ~ eat_terminators)*)? ~ ","? ~ eat_terminators ~ "]"
+}
+
+array_slot = { array_element | array_elision }
+array_elision = { &"," }
+array_element = { "..." ~ assignment_expression | assignment_expression }
+
+// ── Object literal ──────────────────────────────────────────────────────────
+
+object_literal = {
+    "{" ~ eat_terminators ~ (object_property ~ eat_terminators ~ ("," ~ eat_terminators ~ object_property ~ eat_terminators)*)? ~ ","? ~ eat_terminators ~ "}"
+}
+
+object_property = {
+    "..." ~ assignment_expression                                     // spread
+    | computed_property_name ~ ":" ~ assignment_expression             // computed key
+    | async_kw? ~ generator_marker? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body // method shorthand (before get/set to avoid get/set prefix match)
+    | "get" ~ (property_name | computed_property_name) ~ "(" ~ ")" ~ function_body               // getter
+    | "set" ~ (property_name | computed_property_name) ~ "(" ~ param ~ ")" ~ function_body       // setter
+    | property_name ~ ":" ~ assignment_expression                      // key: value
+    | ident_name                                                       // shorthand { x }
+}
+
+// ── Template literals ───────────────────────────────────────────────────────
+
+template_literal = {
+    template_full
+    | template_head ~ expression ~ (template_middle ~ expression)* ~ template_tail
+}
+
+template_full = @{ "`" ~ template_chars* ~ "`" }
+template_head = @{ "`" ~ template_chars* ~ "${" }
+template_middle = @{ "}" ~ template_chars* ~ "${" }
+template_tail = @{ "}" ~ template_chars* ~ "`" }
+template_chars = _{ "\\`" | "\\\\" | (!( "`" | "${") ~ ANY) }
+
+// ── Regex literal ───────────────────────────────────────────────────────────
+// NOTE: regex vs division ambiguity cannot be fully resolved in PEG.
+// The walker uses lexer context to disambiguate. This rule is a best-effort
+// pattern that works when regex appears in primary position.
+
+regex_literal = @{
+    "/" ~ regex_body ~ "/" ~ regex_flags?
+}
+regex_body = @{ (regex_char | regex_class)+ }
+regex_char = @{ "\\" ~ ANY | !("/" | "[" | NEWLINE) ~ ANY }
+regex_class = @{ "[" ~ ("\\" ~ ANY | !"]" ~ ANY)* ~ "]" }
+regex_flags = @{ ('a'..'z' | 'A'..'Z')* }
+
+// ── Literals ────────────────────────────────────────────────────────────────
+
+// ES2021 numeric separator: digits may contain `_` between them (1_000_000, 0xFF_FF)
+hex_digits = _{ ASCII_HEX_DIGIT ~ (ASCII_HEX_DIGIT | "_" ~ ASCII_HEX_DIGIT)* }
+oct_digits = _{ ('0'..'7') ~ (('0'..'7') | "_" ~ ('0'..'7'))* }
+bin_digits = _{ ('0'..'1') ~ (('0'..'1') | "_" ~ ('0'..'1'))* }
+dec_digits = _{ ASCII_DIGIT ~ (ASCII_DIGIT | "_" ~ ASCII_DIGIT)* }
+
+bigint_literal = @{
+    ("0x" | "0X") ~ hex_digits ~ "n"
+    | ("0o" | "0O") ~ oct_digits ~ "n"
+    | ("0b" | "0B") ~ bin_digits ~ "n"
+    | dec_digits ~ "n"
+}
+
+numeric_literal = @{
+    ("0x" | "0X") ~ hex_digits ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0o" | "0O") ~ oct_digits ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0b" | "0B") ~ bin_digits ~ !(ASCII_ALPHANUMERIC | "_")
+    | dec_digits ~ "." ~ dec_digits? ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digits)? ~ !(ASCII_ALPHANUMERIC | "_")
+    | "." ~ dec_digits ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digits)? ~ !(ASCII_ALPHANUMERIC | "_")
+    | dec_digits ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digits)? ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+string_literal = @{
+    "'" ~ ("\\'" | "\\\\" | (!"'" ~ !NEWLINE ~ ANY))* ~ "'"
+    | "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ !NEWLINE ~ ANY))* ~ "\""
+}
+
+// ── Identifiers ─────────────────────────────────────────────────────────────
+// ident_name: any identifier including contextual keywords (get, set, from, of, as, async)
+// Used in most positions. The strict `identifier` from the old grammar excluded
+// too many contextual keywords that JS allows as identifiers.
+
+// §12.7 IdentifierName: ID_Start (plus $ _) then ID_Continue (plus $) —
+// unicode identifiers (π, café, …) are legal JS.
+ident_name = @{
+    !strict_keyword ~ (XID_START | "_" | "$") ~ (XID_CONTINUE | "$")*
+}
+
+// ident_or_keyword: any word — used after "." for property access and in property names
+// where ALL keywords are valid (obj.class, obj.return, etc.)
+ident_or_keyword = @{
+    (XID_START | "_" | "$") ~ (XID_CONTINUE | "$")*
+}
+
+// Only truly reserved words that can NEVER be identifiers in any context.
+// Contextual keywords (get, set, from, of, as, async, await, yield, let, using) are NOT here
+// because JS allows them as identifiers in non-keyword positions.
+strict_keyword = _{
+    ("var" | "const" | "function" | "return" | "if" | "else" |
+     "for" | "while" | "do" | "break" | "continue" | "switch" | "case" |
+     "default" | "new" | "delete" | "typeof" | "void" | "instanceof" |
+     "in" | "this" | "super" | "class" | "extends" | "static" |
+     "throw" | "try" | "catch" | "finally" | "debugger" | "true" |
+     "false" | "null" | "undefined" | "import" | "export")
+    ~ !(ASCII_ALPHANUMERIC | "_" | "$")
+}

@@ -1,0 +1,21 @@
+//! Frozen Pest/before/after native CPU with parity outside timing.
+//! Every backend uses the same per-control batch count to avoid calibration confounds.
+use std::{env,fs,hint::black_box,io::{BufReader,Read}};
+use pest::Parser as _;
+include!(env!("VYBE_CPU_DISPATCH"));
+unsafe extern "C" {fn js_thread_cpu_ns()->u64;}
+fn cpu()->u64{let n=unsafe{js_thread_cpu_ns()};assert_ne!(n,u64::MAX);n}
+fn number(r:&mut impl Read)->u64{let mut b=[0;8];r.read_exact(&mut b).unwrap();u64::from_le_bytes(b)}
+fn string(r:&mut impl Read)->String{let n=number(r);let mut b=vec![0;n as usize];r.read_exact(&mut b).unwrap();String::from_utf8(b).unwrap()}
+type Shape=(usize,Vec<(String,usize,usize,usize)>);
+fn pest_shape<R:pest::RuleType>(pairs:pest::iterators::Pairs<'_,R>)->Shape{fn visit<R:pest::RuleType>(p:pest::iterators::Pair<'_,R>,d:usize,s:&mut Vec<(String,usize,usize,usize)>){s.push((format!("{:?}",p.as_rule()),p.as_span().start(),p.as_span().end(),d));for c in p.into_inner(){visit(c,d+1,s)}}let mut end=0;let mut s=vec![];for p in pairs{end=p.as_span().end();visit(p,0,&mut s)}(end,s)}
+macro_rules! shape{($name:ident,$core:ident)=>{fn $name(tree:$core::ParseTree<'_,'_>)->Shape{fn visit(p:$core::Pair<'_,'_,'_>,d:usize,s:&mut Vec<(String,usize,usize,usize)>){let span=p.as_span();s.push((p.rule_name().into(),span.start,span.end,d));for c in p.into_inner(){visit(c,d+1,s)}}let mut s=vec![];for p in tree.pairs(){visit(p,0,&mut s)}(tree.consumed(),s)}}}
+shape!(old_shape,before);shape!(new_shape,after);
+fn timed(mut f:impl FnMut(),n:usize)->f64{let t=cpu();for _ in 0..n{f();}(cpu()-t)as f64/n as f64}
+fn iterations(mut f:impl FnMut())->usize{for _ in 0..4{f();}let t=timed(&mut f,4);(250_000./t.max(1.)).clamp(1.,128.)as usize}
+fn run<R:pest::RuleType,A:before::program::Program,B:after::program::Program>(lang:&str,rule:R,pest:impl for<'a> Fn(R,&'a str)->Result<pest::iterators::Pairs<'a,R>,pest::error::Error<R>>,old:&A,new:&B,entry:&str,args:&[String]){
+let mut reader=BufReader::new(fs::File::open(format!("{}/{lang}.inputs",args[1])).unwrap());let mut cases=vec![];let a=before::MatchOptions::default();let b=after::MatchOptions::default();
+for _ in 0..number(&mut reader){let label=string(&mut reader);let source=string(&mut reader);let accepted=number(&mut reader)!=0;let reference=pest(rule,&source).map(pest_shape);let x=before::engine::parse_program(old,entry,&source,a).map(old_shape).map_err(|e|format!("{e:?}"));let y=after::engine::parse_program(new,entry,&source,b).map(new_shape).map_err(|e|format!("{e:?}"));assert_eq!(reference.is_ok(),accepted,"{lang}:{label}");assert_eq!(x.is_ok(),accepted);assert_eq!(x,y,"{lang}:{label}");if let Ok(shape)=reference{assert_eq!(x.unwrap(),shape);}let rec_a=before::engine::recognize_program(old,entry,&source,a);let rec_b=after::engine::recognize_program(new,entry,&source,b);assert_eq!(format!("{rec_a:?}"),format!("{rec_b:?}"));println!("PARITY\t{lang}\t{label}\t{}\t{accepted}",source.len());cases.push((label,source));}
+let mut counts=vec![];for(label,s)in &cases{let calibrated=[iterations(||drop(black_box(pest(rule,black_box(s))))),iterations(||drop(black_box(before::engine::parse_program(old,entry,black_box(s),a)))),iterations(||drop(black_box(after::engine::parse_program(new,entry,black_box(s),b))))];let common=*calibrated.iter().max().unwrap();println!("BATCH\t{lang}\t{label}\t{}\t{}\t{}\t{common}",calibrated[0],calibrated[1],calibrated[2]);counts.push([common;3]);}
+for round in 0..args[2].parse::<usize>().unwrap(){for(i,(label,source))in cases.iter().enumerate(){for j in 0..3{let backend=(round+i+j)%3;let n=counts[i][backend];let value=match backend{0=>timed(||drop(black_box(pest(rule,black_box(source)))),n),1=>timed(||drop(black_box(before::engine::parse_program(old,entry,black_box(source),a))),n),_=>timed(||drop(black_box(after::engine::parse_program(new,entry,black_box(source),b))),n)};println!("TIME\t{lang}\t{label}\t{round}\t{backend}\t{n}\t{value:.3}");}}}}
+fn main(){std::thread::Builder::new().stack_size(64*1024*1024).spawn(||{let args=env::args().collect::<Vec<_>>();assert_eq!(args.len(),3);run_selected(&args)}).unwrap().join().unwrap();}

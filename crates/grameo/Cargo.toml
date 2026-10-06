@@ -1,0 +1,26 @@
+[package]
+name = "grameo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Opensitez Vybe Team"]
+repository = "https://github.com/opensitez/irys"
+homepage = "https://opensitez.com/"
+license-file = "LICENSE.md"
+description = "PEG grammar compiler and parser with capture trees, transactional builders, and Rust code generation"
+readme = "README.md"
+documentation = "https://docs.rs/grameo"
+keywords = ["parser", "grammar", "peg", "compiler", "parsing"]
+categories = ["parsing", "compilers"]
+include = ["src/**", "tests/**", "!tests/repository_grammars.rs", "examples/**", "Cargo.toml", "README.md", "LICENSE.md", "LICENSE-GPL-3.0.txt"]
+
+# Deliberately independent: core development must not resolve/build the
+# compiler, runtime, language plugins, pest, or a JS toolchain.
+[workspace]
+resolver = "2"
+members = [".", "codegen"]
+default-members = ["."]
+exclude = ["conformance_tests", "generated_tests"]
+
+[dependencies]
+unicode-ident = "=1.0.24"

@@ -1,0 +1,49 @@
+[package]
+name = "conformance_tests"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+# Separate lock/build boundary: ordinary core tests never build pest/derive.
+[workspace]
+resolver = "2"
+
+[dependencies]
+grameo = { path = ".." }
+pest = "=2.8.6"
+pest_derive = "=2.8.6"
+
+[build-dependencies]
+grameo_codegen = { path = "../codegen" }
+
+[dev-dependencies]
+vybe_parser_generated_tests = { path = "../generated_tests" }
+vybe_ast = { path = "../../vybe_ast" }
+
+# Compile reference parsers in small explicit batches; default conformance stays light.
+[features]
+javascript-benchmark = []
+corpus-scripting = ["vybe_parser_generated_tests/all-grammars"]
+corpus-c-family = ["vybe_parser_generated_tests/all-grammars"]
+corpus-jvm-go-dart = ["vybe_parser_generated_tests/all-grammars"]
+corpus-dynamic = ["vybe_parser_generated_tests/all-grammars"]
+corpus-business = ["vybe_parser_generated_tests/all-grammars"]
+corpus-vb-shell-wast = ["vybe_parser_generated_tests/all-grammars"]
+corpus-all = ["corpus-scripting", "corpus-c-family", "corpus-jvm-go-dart", "corpus-dynamic", "corpus-business", "corpus-vb-shell-wast"]
+
+[[example]]
+name = "javascript_baseline"
+required-features = ["javascript-benchmark"]
+
+[[example]]
+name = "javascript_ast_parity"
+required-features = ["javascript-benchmark"]
+
+[[example]]
+name = "javascript_profile"
+required-features = ["javascript-benchmark"]
+
+[[example]]
+name = "javascript_factoring"
+required-features = ["javascript-benchmark"]

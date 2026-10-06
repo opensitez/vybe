@@ -1,0 +1,240 @@
+// Lua 5.x grammar (subset) for vybe_compiler — grow incrementally with tests.
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" | COMMENT }
+COMMENT = _{
+    "--[===[" ~ (!"]===]" ~ ANY)* ~ "]===]"
+  | "--[==[" ~ (!"]==]" ~ ANY)* ~ "]==]"
+  | "--[=[" ~ (!"]=]" ~ ANY)* ~ "]=]"
+  | "--[[" ~ (!"]]" ~ ANY)* ~ "]]"
+  | "--" ~ (!"\n" ~ ANY)*
+}
+
+// Identifiers — keywords are reserved (Python-style `!keyword` guard).
+keyword = _{
+    ("and" | "break" | "do" | "else" | "elseif" | "end" | "false" | "for" | "function"
+    | "goto" | "if" | "in" | "local" | "nil" | "not" | "or" | "repeat" | "return" | "then"
+    | "true" | "until" | "while")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
+name = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+KW_AND = @{ "and" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_BREAK = @{ "break" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_DO = @{ "do" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_ELSE = @{ "else" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_ELSEIF = @{ "elseif" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_END = @{ "end" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_FALSE = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_FOR = @{ "for" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_FUNCTION = @{ "function" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_GOTO = @{ "goto" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_IF = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_IN = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_LOCAL = @{ "local" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_NIL = @{ "nil" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_NOT = @{ "not" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_OR = @{ "or" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_REPEAT = @{ "repeat" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_RETURN = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_THEN = @{ "then" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_TRUE = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_UNTIL = @{ "until" ~ !(ASCII_ALPHANUMERIC | "_") }
+KW_WHILE = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+nil_literal = { KW_NIL }
+boolean = { KW_TRUE | KW_FALSE }
+hex_digits = @{ ASCII_HEX_DIGIT+ }
+// ⛔ Lua has NO binary literals and NO `_` digit separators. Both were
+// accepted here, and corpus tests certified them green — `0b1010`, `0B11` and
+// `1_000` are a syntax error in every real Lua, so those tests could only ever
+// pass against vybex.
+number = @{
+    ("0" ~ ("x" | "X") ~ ASCII_HEX_DIGIT+)                                          // hex: 0xFF
+    | ("." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?)            // leading dot: .5
+    | (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?)  // 1.5, 1.
+    | (ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+))                   // 1e2
+    | (ASCII_DIGIT+)                                                                 // integer: 42
+}
+
+// String escape sequences
+escape_seq = @{
+    "\\" ~ ("n" | "t" | "r" | "a" | "b" | "f" | "v" | "\\" | "'" | "\"" | "\n"   // simple escapes
+    | "x" ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT                                       // \xNN
+    | "u" ~ "{" ~ ASCII_HEX_DIGIT+ ~ "}"                                            // \u{NNNN}
+    | "z" ~ WHITESPACE*                                                               // \z skip whitespace
+    | ASCII_DIGIT ~ ASCII_DIGIT? ~ ASCII_DIGIT?)                                     // \DDD decimal
+}
+dq_str_char = { escape_seq | (!"\"" ~ !"\\" ~ ANY) }
+sq_str_char = { escape_seq | (!("'") ~ !"\\" ~ ANY) }
+string = @{ "\"" ~ dq_str_char* ~ "\"" | "'" ~ sq_str_char* ~ "'" }
+
+// Long bracket strings: [[...]], [=[...]=], [==[...]==] etc.
+long_string_open_0  = _{ "[[" }
+long_string_close_0 = _{ "]]" }
+long_string_body_0  = @{ (!"]]" ~ ANY)* }
+long_string_0       =  { "[[" ~ long_string_body_0 ~ "]]" }
+
+long_string_open_1  = _{ "[==[" }
+long_string_body_1  = @{ (!"]==]" ~ ANY)* }
+long_string_eq1     =  { "[=[" ~ (!"]=]" ~ ANY)* ~ "]=]" }
+long_string_eq2     =  { "[==[" ~ (!"]==]" ~ ANY)* ~ "]==]" }
+long_string_eq3     =  { "[===[" ~ (!"]===]" ~ ANY)* ~ "]===]" }
+long_string         =  { long_string_eq3 | long_string_eq2 | long_string_eq1 | long_string_0 }
+
+lparen = { "(" }
+rparen = { ")" }
+lbracket = { "[" }
+rbracket = { "]" }
+lbrace = { "{" }
+rbrace = { "}" }
+comma = { "," }
+assign = { "=" }
+dot = { "." }
+stmt_sep = _{ ";" }
+
+HASH = { "#" }
+MINUS = { "-" }
+TILDE = { "~" }
+LT = { "<" }
+GT = { ">" }
+LE = { "<=" }
+GE = { ">=" }
+NE = { "~=" }
+EQ = { "==" }
+CONCAT = { ".." }
+PLUS = { "+" }
+STAR = { "*" }
+SLASH = { "/" }
+DOUBLESLASH = { "//" }
+PERCENT = { "%" }
+CARET = { "^" }
+AMP = { "&" }
+PIPE = { "|" }
+LSHIFT = { "<<" }
+RSHIFT = { ">>" }
+ELLIPSIS = { "..." }
+
+unop = { KW_NOT | HASH | MINUS | TILDE }
+
+// Table constructor — `{ }`, `{1,2}`, `{a = 1}`, `{...t}`.
+table_field = {
+    lbracket ~ expr ~ rbracket ~ assign ~ expr
+    | name ~ assign ~ expr
+    | ELLIPSIS ~ expr
+    | expr
+}
+table_sep = { "," | ";" }
+table_constructor = {
+    lbrace ~ (table_field ~ (table_sep ~ table_field)*)? ~ table_sep? ~ rbrace
+}
+
+param = { ELLIPSIS | name }
+param_list = { param ~ (comma ~ param)* }
+
+func_body = { stmt_not_end* }
+func_expr = { KW_FUNCTION ~ lparen ~ param_list? ~ rparen ~ func_body ~ KW_END }
+
+// JS-shaped precedence chain with Lua 5.3 bitwise operators.
+primary = {
+    KW_TRUE | KW_FALSE | KW_NIL
+    | number | long_string | string
+    | table_constructor
+    | func_expr
+    | ELLIPSIS
+    | name
+    | lparen ~ expr ~ rparen
+}
+
+postfix = { call_expression }
+call_expression = { primary ~ call_chain* }
+colon = { ":" }
+call_chain = {
+    "(" ~ (expr ~ (comma ~ expr)*)? ~ ")"
+    | colon ~ name ~ "(" ~ (expr ~ (comma ~ expr)*)? ~ ")"
+    | "." ~ name
+    | "[" ~ expr ~ "]"
+}
+
+pow_expr = { postfix ~ (pow_op ~ unary)* }
+pow_op = { CARET }
+unary = { unop ~ unary | pow_expr }
+multiplicative = { unary ~ (mul_op ~ unary)* }
+mul_op = { DOUBLESLASH | STAR | SLASH | PERCENT }
+additive = { multiplicative ~ (additive_op ~ multiplicative)* }
+additive_op = { PLUS | MINUS }
+concat_expr = { additive ~ (CONCAT ~ additive)* }
+shift_expr = { concat_expr ~ (shift_op ~ concat_expr)* }
+shift_op = { LSHIFT | RSHIFT }
+band_expr = { shift_expr ~ (AMP ~ shift_expr)* }
+bxor_expr = { band_expr ~ (TILDE ~ band_expr)* }
+bor_expr = { bxor_expr ~ (PIPE ~ bxor_expr)* }
+compare_expr = { bor_expr ~ (compare_op ~ bor_expr)* }
+compare_op = { LE | GE | NE | EQ | LT | GT }
+and_expr = { compare_expr ~ (KW_AND ~ compare_expr)* }
+or_expr = { and_expr ~ (KW_OR ~ and_expr)* }
+expr = { or_expr }
+
+assign_lhs = { postfix ~ (comma ~ postfix)* }
+assign_rhs = { expr ~ (comma ~ expr)* }
+assign_stmt = { assign_lhs ~ assign ~ assign_rhs }
+
+stmt_not_else = { !(KW_ELSEIF | KW_ELSE | KW_END) ~ statement ~ stmt_sep? }
+stmt_not_end = { !KW_END ~ statement ~ stmt_sep? }
+then_block = { stmt_not_else* }
+else_block = { stmt_not_end* }
+
+statement = _{
+    local_function
+    | local_var
+    | function_decl
+    | for_numeric
+    | for_generic
+    | do_statement
+    | if_statement
+    | while_statement
+    | repeat_statement
+    | return_statement
+    | break_statement
+    | label_statement
+    | goto_statement
+    | assign_stmt
+    | expr
+}
+
+// `::name::` marks a jump target; `goto name` jumps to it. Both must precede
+// `assign_stmt`/`expr` — a bare `goto x` would otherwise parse as a call.
+label_statement = { "::" ~ name ~ "::" }
+goto_statement = { KW_GOTO ~ name }
+
+local_function = {
+    KW_LOCAL ~ KW_FUNCTION ~ name ~ lparen ~ param_list? ~ rparen ~ func_body ~ KW_END
+}
+local_var = { KW_LOCAL ~ name ~ (comma ~ name)* ~ (assign ~ expr ~ (comma ~ expr)*)? }
+// `function t.add()` / `function Dog:speak()` — Lua method / namespace declarations.
+func_name_suffix = { (colon ~ name) | (dot ~ name) }
+func_name = { name ~ func_name_suffix* }
+function_decl = {
+    KW_FUNCTION ~ func_name ~ lparen ~ param_list? ~ rparen ~ func_body ~ KW_END
+}
+if_statement = {
+    KW_IF ~ expr ~ KW_THEN ~ then_block
+    ~ (KW_ELSEIF ~ expr ~ KW_THEN ~ then_block)*
+    ~ (KW_ELSE ~ else_block)?
+    ~ KW_END
+}
+for_numeric = {
+    KW_FOR ~ name ~ assign ~ expr ~ comma ~ expr ~ (comma ~ expr)? ~ KW_DO ~ body_block ~ KW_END
+}
+for_varlist = { name ~ (comma ~ name)* }
+for_generic = {
+    KW_FOR ~ for_varlist ~ KW_IN ~ expr ~ (comma ~ expr)* ~ KW_DO ~ body_block ~ KW_END
+}
+do_statement = { KW_DO ~ body_block ~ KW_END }
+while_statement = { KW_WHILE ~ expr ~ KW_DO ~ body_block ~ KW_END }
+body_block = { stmt_not_end* }
+repeat_statement = { KW_REPEAT ~ body_block ~ KW_UNTIL ~ expr }
+return_statement = { KW_RETURN ~ (expr ~ (comma ~ expr)*)? }
+break_statement = { KW_BREAK }
+
+block = { (statement ~ stmt_sep?)* }
+chunk = { SOI ~ block ~ EOI }

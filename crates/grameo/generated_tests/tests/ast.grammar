@@ -1,0 +1,10 @@
+WHITESPACE = { " " | "\n" }
+number = @{ ASCII_DIGIT+ }
+return_stmt = { "return" ~ number ~ ";" }
+// First branch completes a semantic statement, then fails. Its AST must vanish.
+statement = { (return_stmt ~ "x") | return_stmt }
+program = { SOI ~ (&return_stmt ~ statement)* ~ EOI }
+// A complete module is built before the first branch fails; its owned body
+// must be split back into children, then discarded before the retry.
+module_fallback = { (program ~ "x") | (&program ~ program) }
+module_failure = { program ~ "x" }
