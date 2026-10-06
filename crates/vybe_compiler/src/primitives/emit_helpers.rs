@@ -90,8 +90,8 @@ impl Compiler {
         }
 
         // namespaceplan.md: the global namespace tree is the PRIMARY
-        // resolver — it mounts every host export (`vybe.gui.*` next to
-        // `ecma.*` and `wasi.*`), so a backslash chain resolves exactly
+        // resolver — it mounts host exports (`web.*`, `ecma.*`, and
+        // `wasi.*`), so a backslash chain resolves exactly
         // like the dotted chains other languages emit. The manual
         // module-string build below remains the fallback for name shapes
         // the tree doesn't key (e.g. CamelCase segments of kebab-case

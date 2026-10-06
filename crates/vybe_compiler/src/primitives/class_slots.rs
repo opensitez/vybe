@@ -203,6 +203,10 @@ impl ClassSlot {
 /// lets adapter code share the owner without depending on the compiler.
 pub trait SlotNames {
     fn storage_name(&self, class: Option<&str>, field: &str) -> String;
+
+    fn static_storage_name(&self, class: Option<&str>, field: &str) -> String {
+        self.storage_name(class, field)
+    }
 }
 
 /// Identity resolution, for internal and adapter-private state that is never
@@ -216,6 +220,12 @@ impl SlotNames for PlainNames {
 }
 
 impl SlotNames for crate::Compiler {
+    fn static_storage_name(&self, class: Option<&str>, field: &str) -> String {
+        match class {
+            Some(class) => self.js_member_storage_name_for_static(class, field),
+            None => self.storage_name(None, field),
+        }
+    }
     /// The compiler's resolution: private members mangle against their
     /// DECLARING class, everything else takes the canonical spelling.
     fn storage_name(&self, class: Option<&str>, field: &str) -> String {
@@ -223,6 +233,57 @@ impl SlotNames for crate::Compiler {
             Some(class) => self.js_member_storage_name_for_class(class, field),
             None => self.js_member_storage_name(field),
         }
+    }
+}
+
+/// A slot that has already become a storage key.
+impl crate::Compiler {
+    /// Resolve a runtime static property name through the class's declared
+    /// storage mapping, without treating a method with that name as data.
+    pub(crate) fn emit_static_property_key(
+        &mut self,
+        class_local: u16,
+        member: &Expression,
+    ) -> Result<(), String> {
+        self.compile_expr(member)?;
+        if !self.separate_property_method_namespace() {
+            return Ok(());
+        }
+        let source_key = self.define_local("__static_property_source_key");
+        self.emit_u16(Op::LOCAL_SET, source_key);
+        self.emit_u16(Op::LOCAL_GET, class_local);
+        let metadata_key = match &member.kind {
+            ExprKind::Lit(vybe_ast::Literal::Str(name)) => {
+                Expression::string(&format!("__static_property${name}"))
+            }
+            _ => Expression::new(ExprKind::Binary {
+                op: vybe_ast::BinOp::Concat,
+                left: Box::new(Expression::string("__static_property$")),
+                right: Box::new(member.clone()),
+            }),
+        };
+        // Use the saved key: computed property expressions run exactly once.
+        if matches!(member.kind, ExprKind::Lit(vybe_ast::Literal::Str(_))) {
+            self.compile_expr(&metadata_key)?;
+        } else {
+            self.emit_const(Value::String(Arc::from("__static_property$")));
+            self.emit_u16(Op::LOCAL_GET, source_key);
+            let concat = self.import("ecma:string", "concat");
+            self.emit_host_call(concat, 2);
+        }
+        let get = self.import("ecma:object", "get");
+        self.emit_host_call(get, 2);
+        let mapped_key = self.define_local("__static_property_storage_key");
+        self.emit_u16(Op::LOCAL_SET, mapped_key);
+        self.emit_u16(Op::LOCAL_GET, mapped_key);
+        self.emit(Op::REF_IS_NULL);
+        let line = self.line;
+        self.chunk().emit_if_value(line);
+        self.emit_u16(Op::LOCAL_GET, source_key);
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, mapped_key);
+        self.chunk().emit_end(line);
+        Ok(())
     }
 }
 
@@ -326,8 +387,11 @@ pub fn setter_name(key: impl AsRef<str>) -> String {
 /// place a slot becomes a field INDEX, and no caller changes.
 pub fn storage_key(slot: &ClassSlot, names: &dyn SlotNames) -> Option<String> {
     Some(match slot {
-        ClassSlot::InstanceField { class, field } | ClassSlot::StaticField { class, field } => {
+        ClassSlot::InstanceField { class, field } => {
             names.storage_name(class.as_deref(), field)
+        }
+        ClassSlot::StaticField { class, field } => {
+            names.static_storage_name(class.as_deref(), field)
         }
         ClassSlot::PrivateField { class, field } => names.storage_name(Some(class), field),
         ClassSlot::Getter(key) => getter_name(key),

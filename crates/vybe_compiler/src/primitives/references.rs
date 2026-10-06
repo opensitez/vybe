@@ -144,6 +144,61 @@ pub fn build_autoderef() -> Chunk {
     chunks.pop().unwrap()
 }
 
+/// Build the module-local read operation for a value already proven to be an
+/// aggregate by its caller. This is a primitive body, not a polyfill or prelude.
+/// The tag must still be read and type-tested here: the caller's earlier tag
+/// read may have invoked a getter that returns a different value next time.
+pub fn build_guarded_reference_read() -> Chunk {
+    let mut chunk = Chunk::new("primitive.reference_read".to_string());
+    chunk.arity = 1;
+    chunk.local_count = 1;
+    let mut chunks = vec![chunk];
+    emit_guarded_reference_read_body(&mut chunks, 0, 0, 0);
+    chunks[0].emit_op(Op::RETURN, 0);
+    crate::primitives::bundle::mark_private_helper_body(&mut chunks[0]);
+    chunks.pop().unwrap()
+}
+
+/// Emit the guarded operation from an existing local argument slot. The
+/// direct-helper linker uses this form for its wide-function-index fallback.
+pub fn emit_guarded_reference_read_body(
+    chunks: &mut [Chunk], current: usize, object: u16, line: u32,
+) {
+    emit_autoderef_object_inline(chunks, current, object, line);
+}
+
+/// Inline fallback for the same operation when the module cannot address
+/// another local function. Consumes one aggregate and leaves its read value.
+/// No observable operation may intervene between the caller's aggregate proof
+/// and this operation; the property reads themselves deliberately remain fresh.
+pub fn emit_guarded_reference_read_inline(chunks: &mut [Chunk], current: usize, line: u32) {
+    let first_temporary = chunks[current].local_count;
+    let object = chunks[current].alloc_scratch(1);
+    lset(&mut chunks[current], object, line);
+    emit_guarded_reference_read_body(chunks, current, object, line);
+    clear_guarded_read_temporaries(&mut chunks[current], first_temporary, line);
+}
+
+/// Wide-index fallback using the caller's existing aggregate slot. Its tag
+/// and base temporaries have the same lifetime as a separate helper frame,
+/// rather than retaining getter-produced objects until the caller returns.
+pub fn emit_guarded_reference_read_inline_from_slot(
+    chunks: &mut [Chunk], current: usize, object: u16, line: u32,
+) {
+    let first_temporary = chunks[current].local_count;
+    emit_guarded_reference_read_body(chunks, current, object, line);
+    clear_guarded_read_temporaries(&mut chunks[current], first_temporary, line);
+}
+
+fn clear_guarded_read_temporaries(chunk: &mut Chunk, first: u16, line: u32) {
+    // The result stays on the operand stack while these stores discard only
+    // private temporary roots. Never clear the caller's existing argument.
+    for slot in first..chunk.local_count {
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        lset(chunk, slot, line);
+    }
+}
+
 fn emit_autoderef_inline(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj_slot = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], obj_slot, line);
@@ -151,6 +206,20 @@ fn emit_autoderef_inline(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], obj_slot, line);
     recipes::is_object(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
+
+    emit_autoderef_object_inline(chunks, current, obj_slot, line);
+
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], obj_slot, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_autoderef_object_inline(
+    chunks: &mut [Chunk],
+    current: usize,
+    obj_slot: u16,
+    line: u32,
+) {
 
     // Ordinary objects have no reference tag. Return them without walking
     // the cell/carray/shared dispatch ladder at every variable read.
@@ -227,9 +296,6 @@ fn emit_autoderef_inline(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], obj_slot, line);
     chunks[current].emit_end(line);
 
-    chunks[current].emit_else(line);
-    lget(&mut chunks[current], obj_slot, line);
-    chunks[current].emit_end(line);
 }
 
 /// `{__ref_kind:"shared", __addr}` — a word in SHARED linear memory, the

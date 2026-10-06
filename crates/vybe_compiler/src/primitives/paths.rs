@@ -33,34 +33,22 @@ use crate::primitives::{ops, strings};
 /// against a POSIX preopen.
 const SEP: &str = "/";
 
-/// Index one past the last separator, or 0. Stack: `[]` → `[f64]`.
+/// Index of the last separator, or -1. Stored as a numeric UTF-16 index.
 ///
 /// Both separators are searched and the later one wins, so a mixed path
 /// (`C:\dir/file`) splits at the true last component rather than at whichever
 /// flavour happened to be looked for first.
 fn emit_last_sep(chunk: &mut Chunk, s: u16, line: u32) -> u16 {
-    let fwd = chunk.alloc_scratch(1);
-    let back = chunk.alloc_scratch(1);
     let cut = chunk.alloc_scratch(1);
-
+    // Both ECMA searches return numeric UTF-16 indices (or -1), never NaN.
+    // Keep the first result on the stack while obtaining the second one.
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
     chunk.emit_string_const("/", line);
     strings::emit_last_index_of(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, fwd, line);
-
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
     chunk.emit_string_const("\\", line);
     strings::emit_last_index_of(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, back, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, fwd, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, back, line);
-    ops::emit_dyn_lt(chunk, line);
-    chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, back, line);
-    chunk.emit_else(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, fwd, line);
-    chunk.emit_end(line);
+    chunk.emit_op(Op::F64_MAX, line);
     chunk.emit_op_u16(Op::LOCAL_SET, cut, line);
     cut
 }
@@ -74,7 +62,7 @@ pub fn emit_file_name(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, cut, line);
     chunk.emit_f64_const(0.0, line);
-    ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if_value(line);
     // No separator: the whole string IS the file name.
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
@@ -83,7 +71,7 @@ pub fn emit_file_name(chunk: &mut Chunk, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, s, line);
         chunk.emit_op_u16(Op::LOCAL_GET, cut, line);
         chunk.emit_f64_const(1.0, line);
-        ops::emit_dyn_add(chunk, line);
+        chunk.emit_op(Op::F64_ADD, line);
         chunk.emit_op_u16(Op::LOCAL_GET, s, line);
         strings::emit_length(chunk, line);
         strings::emit_substring(chunk, line);
@@ -101,7 +89,7 @@ pub fn emit_directory(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, cut, line);
     chunk.emit_f64_const(0.0, line);
-    ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if_value(line);
     chunk.emit_string_const("", line);
     chunk.emit_else(line);
@@ -130,7 +118,7 @@ fn emit_ext_dot(chunk: &mut Chunk, s: u16, line: u32) -> u16 {
     // A dot at or before the last separator belongs to a DIRECTORY name.
     chunk.emit_op_u16(Op::LOCAL_GET, dot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, cut, line);
-    ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if(line);
     chunk.emit_f64_const(-1.0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, dot, line);
@@ -148,7 +136,7 @@ pub fn emit_extension(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, dot, line);
     chunk.emit_f64_const(0.0, line);
-    ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if_value(line);
     chunk.emit_string_const("", line);
     chunk.emit_else(line);
@@ -167,11 +155,15 @@ pub fn emit_file_stem(chunk: &mut Chunk, line: u32) {
     emit_file_name(chunk, line);
     let name = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, name, line);
-    let dot = emit_ext_dot(chunk, name, line);
+    let dot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    chunk.emit_string_const(".", line);
+    strings::emit_last_index_of(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, dot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, dot, line);
     chunk.emit_f64_const(0.0, line);
-    ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, name, line);
     chunk.emit_else(line);
@@ -186,10 +178,12 @@ pub fn emit_file_stem(chunk: &mut Chunk, line: u32) {
 
 /// `Path.HasExtension(p)`. Stack: `[path]` → `[bool]`.
 pub fn emit_has_extension(chunk: &mut Chunk, line: u32) {
+    // Keep extension's existing strict string length/substring behavior for
+    // non-string callers, rather than inferring a result solely from a dot.
     emit_extension(chunk, line);
     strings::emit_length(chunk, line);
     chunk.emit_f64_const(0.0, line);
-    ops::emit_dyn_gt(chunk, line);
+    chunk.emit_op(Op::F64_GT, line);
     ops::emit_i32_to_bool(chunk, line);
 }
 
@@ -207,7 +201,7 @@ pub fn emit_change_extension(chunk: &mut Chunk, line: u32) {
     // base = path with any existing extension removed
     chunk.emit_op_u16(Op::LOCAL_GET, dot, line);
     chunk.emit_f64_const(0.0, line);
-    ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
     chunk.emit_else(line);
@@ -224,7 +218,7 @@ pub fn emit_change_extension(chunk: &mut Chunk, line: u32) {
     chunk.emit_string_const(".", line);
     strings::emit_index_of(chunk, line);
     chunk.emit_f64_const(0.0, line);
-    ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ext, line);
     chunk.emit_else(line);
@@ -248,18 +242,18 @@ pub fn emit_is_rooted(chunk: &mut Chunk, line: u32) {
     chunk.emit_string_const("/", line);
     strings::emit_index_of(chunk, line);
     chunk.emit_f64_const(0.0, line);
-    ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
     chunk.emit_string_const("\\", line);
     strings::emit_index_of(chunk, line);
     chunk.emit_f64_const(0.0, line);
-    ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
     chunk.emit_string_const(":", line);
     strings::emit_index_of(chunk, line);
     chunk.emit_f64_const(1.0, line);
-    ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_op(Op::I32_OR, line);
     ops::emit_i32_to_bool(chunk, line);
 }
@@ -271,7 +265,7 @@ pub fn emit_is_rooted(chunk: &mut Chunk, line: u32) {
 /// POSIX's: `Path.Combine("/tmp", "/etc")` is `/etc`, not `/tmp/etc`. Getting
 /// that wrong is how a program that means to write to an absolute path quietly
 /// writes inside a scratch directory instead.
-pub fn emit_combine(chunk: &mut Chunk, argc: u8, line: u32) {
+fn emit_combine_small(chunk: &mut Chunk, argc: u8, line: u32) {
     let n = argc as u16;
     let base = chunk.alloc_scratch(n.max(1));
     for offset in (0..n).rev() {
@@ -287,7 +281,7 @@ pub fn emit_combine(chunk: &mut Chunk, argc: u8, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
         strings::emit_length(chunk, line);
         chunk.emit_f64_const(0.0, line);
-        ops::emit_dyn_gt(chunk, line);
+        chunk.emit_op(Op::F64_GT, line);
         chunk.emit_if(line);
         {
             chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
@@ -296,7 +290,7 @@ pub fn emit_combine(chunk: &mut Chunk, argc: u8, line: u32) {
             chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
             strings::emit_length(chunk, line);
             chunk.emit_f64_const(0.0, line);
-            ops::emit_dyn_eq(chunk, line);
+            chunk.emit_op(Op::F64_EQ, line);
             chunk.emit_op(Op::I32_OR, line);
             chunk.emit_if_value(line);
             // rooted, or nothing accumulated yet: this segment replaces
@@ -320,10 +314,10 @@ pub fn emit_combine(chunk: &mut Chunk, argc: u8, line: u32) {
                 chunk.emit_string_const(SEP, line);
                 strings::emit_last_index_of(chunk, line);
                 chunk.emit_f64_const(1.0, line);
-                ops::emit_dyn_add(chunk, line);
+                chunk.emit_op(Op::F64_ADD, line);
                 chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
                 strings::emit_length(chunk, line);
-                ops::emit_dyn_eq(chunk, line);
+                chunk.emit_op(Op::F64_EQ, line);
                 chunk.emit_if_value(line);
                 chunk.emit_string_const("", line);
                 chunk.emit_else(line);
@@ -338,6 +332,295 @@ pub fn emit_combine(chunk: &mut Chunk, argc: u8, line: u32) {
         chunk.emit_end(line);
     }
     chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
+}
+
+const COMBINE_LONG_LOCAL_BUDGET: u16 = 15;
+fn combine_get(c: &mut Chunk, s: u16, l: u32) {
+    c.emit_op_u16(Op::LOCAL_GET, s, l);
+}
+fn combine_set(c: &mut Chunk, s: u16, l: u32) {
+    c.emit_op_u16(Op::LOCAL_SET, s, l);
+}
+fn combine_int(c: &mut Chunk, n: i32, l: u32) {
+    c.emit_i32_const(n, l);
+}
+fn combine_init(c: &mut Chunk, slot: u16, n: i32, l: u32) {
+    combine_int(c, n, l);
+    combine_set(c, slot, l);
+}
+fn combine_step(c: &mut Chunk, slot: u16, n: i32, l: u32) {
+    combine_get(c, slot, l);
+    combine_int(c, n, l);
+    c.emit_op(Op::I32_ADD, l);
+    combine_set(c, slot, l);
+}
+fn combine_read(c: &mut Chunk, buf: u16, idx: u16, dst: u16, l: u32) {
+    combine_get(c, buf, l);
+    combine_get(c, idx, l);
+    c.emit_op(Op::ARRAY_GET, l);
+    combine_set(c, dst, l);
+}
+fn combine_write(c: &mut Chunk, buf: u16, idx: u16, src: u16, l: u32) {
+    combine_get(c, buf, l);
+    combine_get(c, idx, l);
+    combine_get(c, src, l);
+    c.emit_op(Op::ARRAY_SET, l);
+}
+fn combine_positive(c: &mut Chunk, seg: u16, l: u32) {
+    combine_get(c, seg, l);
+    strings::emit_length(c, l);
+    c.emit_f64_const(0.0, l);
+    c.emit_op(Op::F64_GT, l);
+}
+fn combine_trailing(c: &mut Chunk, seg: u16, length: Option<u16>, l: u32) {
+    combine_get(c, seg, l);
+    c.emit_string_const("/", l);
+    strings::emit_last_index_of(c, l);
+    c.emit_f64_const(1.0, l);
+    c.emit_op(Op::F64_ADD, l);
+    if let Some(length) = length {
+        combine_get(c, length, l);
+    } else {
+        combine_get(c, seg, l);
+        strings::emit_length(c, l);
+    }
+    c.emit_op(Op::F64_EQ, l);
+}
+fn combine_finish_loop(c: &mut Chunk, done: usize, again: usize, l: u32) {
+    c.emit_br(0, l);
+    c.emit_end(l);
+    c.patch_loop(again);
+    c.emit_end(l);
+    c.patch_block(done);
+}
+pub fn emit_combine(c: &mut Chunk, argc: u8, l: u32) {
+    if argc < 16 {
+        emit_combine_small(c, argc, l);
+        return;
+    }
+    let before = c.local_count;
+    let end = before
+        .checked_add(COMBINE_LONG_LOCAL_BUDGET)
+        .expect("path local slot overflow");
+    let base = c.alloc_scratch(12);
+    let buf = base;
+    let idx = base + 1;
+    let seg = base + 2;
+    let total = base + 3;
+    let full = base + 4;
+    let tail = base + 5;
+    let first = base + 6;
+    let safe = base + 7;
+    let acc = base + 8;
+    let count = base + 9;
+    let out = base + 10;
+    let right = base + 11;
+    // Existing GC value-array type zero; no escape or callback route. Keep all
+    // evaluated original arguments intact until the fast path is selected.
+    c.emit_array_new_fixed(0, argc as u16, l);
+    combine_set(c, buf, l);
+    combine_init(c, idx, 0, l);
+    combine_init(c, tail, 0, l);
+    combine_init(c, first, 0, l);
+    combine_init(c, safe, 1, l);
+    c.emit_f64_const(0.0, l);
+    combine_set(c, total, l);
+    let done = c.emit_block(l);
+    let (again, _) = c.emit_loop_s(l);
+    combine_get(c, idx, l);
+    combine_int(c, argc as i32, l);
+    c.emit_op(Op::I32_GE_S, l);
+    c.emit_br_if(1, l);
+    combine_read(c, buf, idx, seg, l);
+    combine_positive(c, seg, l);
+    c.emit_if(l); // Exact strict String gate first.
+    combine_get(c, seg, l);
+    let length = c.add_import("ecma:string", "length");
+    c.emit_call(length, 1, l);
+    combine_set(c, full, l);
+    combine_init(c, safe, 0, l);
+    combine_get(c, full, l);
+    c.emit_f64_const(i32::MAX as f64, l);
+    c.emit_op(Op::F64_GT, l);
+    c.emit_br_if(2, l);
+    combine_init(c, safe, 1, l);
+    combine_get(c, seg, l);
+    emit_is_rooted(c, l);
+    ops::emit_dyn_to_bool(c, l);
+    combine_get(c, total, l);
+    c.emit_f64_const(0.0, l);
+    c.emit_op(Op::F64_EQ, l);
+    c.emit_op(Op::I32_OR, l);
+    c.emit_if_value(l);
+    combine_get(c, idx, l);
+    combine_set(c, first, l);
+    combine_get(c, full, l);
+    c.emit_else(l);
+    combine_get(c, total, l);
+    combine_get(c, tail, l);
+    c.emit_if_value(l);
+    c.emit_f64_const(0.0, l);
+    c.emit_else(l);
+    c.emit_f64_const(1.0, l);
+    c.emit_end(l);
+    c.emit_op(Op::F64_ADD, l);
+    combine_get(c, full, l);
+    c.emit_op(Op::F64_ADD, l);
+    c.emit_end(l);
+    combine_set(c, total, l);
+    combine_init(c, safe, 0, l);
+    combine_get(c, total, l);
+    c.emit_f64_const(i32::MAX as f64, l);
+    c.emit_op(Op::F64_GT, l);
+    c.emit_br_if(2, l);
+    combine_init(c, safe, 1, l);
+    combine_trailing(c, seg, Some(full), l);
+    combine_set(c, tail, l);
+    c.emit_end(l);
+    combine_step(c, idx, 1, l);
+    combine_finish_loop(c, done, again, l);
+    combine_get(c, safe, l);
+    c.emit_if_value(l);
+    // Validation complete: reuse the private buffer slots as String pieces.
+    combine_get(c, first, l);
+    combine_set(c, idx, l);
+    combine_get(c, first, l);
+    combine_set(c, out, l);
+    combine_init(c, total, 0, l);
+    combine_init(c, tail, 0, l);
+    let done = c.emit_block(l);
+    let (again, _) = c.emit_loop_s(l);
+    combine_get(c, idx, l);
+    combine_int(c, argc as i32, l);
+    c.emit_op(Op::I32_GE_S, l);
+    c.emit_br_if(1, l);
+    combine_read(c, buf, idx, seg, l);
+    combine_positive(c, seg, l);
+    c.emit_if(l);
+    combine_get(c, total, l);
+    c.emit_if(l);
+    combine_get(c, tail, l);
+    c.emit_if_value(l);
+    c.emit_string_const("", l);
+    c.emit_else(l);
+    c.emit_string_const("/", l);
+    c.emit_end(l);
+    combine_get(c, seg, l);
+    strings::emit_concat(c, 2, l);
+    combine_set(c, seg, l);
+    c.emit_end(l);
+    combine_trailing(c, seg, None, l);
+    combine_set(c, tail, l);
+    combine_init(c, total, 1, l);
+    // Keep ONLY positive pieces. The output cursor cannot overtake the read
+    // cursor, and skipping empty strings preserves the single-input Arc.
+    combine_write(c, buf, out, seg, l);
+    combine_step(c, out, 1, l);
+    c.emit_end(l);
+    combine_step(c, idx, 1, l);
+    combine_finish_loop(c, done, again, l);
+    // Merge adjacent pieces in-place, one balanced level per outer iteration.
+    combine_get(c, out, l);
+    combine_get(c, first, l);
+    c.emit_op(Op::I32_SUB, l);
+    combine_set(c, count, l);
+    let levels = c.emit_block(l);
+    let (level_again, _) = c.emit_loop_s(l);
+    combine_get(c, count, l);
+    combine_int(c, 1, l);
+    c.emit_op(Op::I32_LE_S, l);
+    c.emit_br_if(1, l);
+    combine_get(c, first, l);
+    combine_set(c, idx, l);
+    combine_get(c, first, l);
+    combine_set(c, out, l);
+    let pairs = c.emit_block(l);
+    let (pair_again, _) = c.emit_loop_s(l);
+    combine_get(c, idx, l);
+    combine_get(c, first, l);
+    combine_get(c, count, l);
+    c.emit_op(Op::I32_ADD, l);
+    c.emit_op(Op::I32_GE_S, l);
+    c.emit_br_if(1, l);
+    combine_read(c, buf, idx, acc, l);
+    combine_get(c, idx, l);
+    combine_int(c, 1, l);
+    c.emit_op(Op::I32_ADD, l);
+    combine_set(c, right, l);
+    combine_get(c, right, l);
+    combine_get(c, first, l);
+    combine_get(c, count, l);
+    c.emit_op(Op::I32_ADD, l);
+    c.emit_op(Op::I32_LT_S, l);
+    c.emit_if(l);
+    combine_get(c, acc, l);
+    combine_get(c, buf, l);
+    combine_get(c, right, l);
+    c.emit_op(Op::ARRAY_GET, l);
+    strings::emit_concat(c, 2, l);
+    combine_set(c, acc, l);
+    c.emit_end(l);
+    combine_write(c, buf, out, acc, l);
+    combine_step(c, out, 1, l);
+    combine_step(c, idx, 2, l);
+    combine_finish_loop(c, pairs, pair_again, l);
+    combine_get(c, out, l);
+    combine_get(c, first, l);
+    c.emit_op(Op::I32_SUB, l);
+    combine_set(c, count, l);
+    combine_finish_loop(c, levels, level_again, l);
+    combine_get(c, count, l);
+    c.emit_if_value(l);
+    combine_get(c, buf, l);
+    combine_get(c, first, l);
+    c.emit_op(Op::ARRAY_GET, l);
+    c.emit_else(l);
+    // Same imported empty constant as the frozen accumulator's initial value.
+    c.emit_string_const("", l);
+    c.emit_end(l);
+    c.emit_else(l);
+    // Rare signed-length-wrap fallback: original string-operation order over
+    // the untouched evaluated argument buffer, now a compact runtime loop.
+    combine_init(c, idx, 0, l);
+    c.emit_string_const("", l);
+    combine_set(c, acc, l);
+    let done = c.emit_block(l);
+    let (again, _) = c.emit_loop_s(l);
+    combine_get(c, idx, l);
+    combine_int(c, argc as i32, l);
+    c.emit_op(Op::I32_GE_S, l);
+    c.emit_br_if(1, l);
+    combine_read(c, buf, idx, seg, l);
+    combine_positive(c, seg, l);
+    c.emit_if(l);
+    combine_get(c, seg, l);
+    emit_is_rooted(c, l);
+    ops::emit_dyn_to_bool(c, l);
+    combine_get(c, acc, l);
+    strings::emit_length(c, l);
+    c.emit_f64_const(0.0, l);
+    c.emit_op(Op::F64_EQ, l);
+    c.emit_op(Op::I32_OR, l);
+    c.emit_if_value(l);
+    combine_get(c, seg, l);
+    c.emit_else(l);
+    combine_get(c, acc, l);
+    combine_trailing(c, acc, None, l);
+    c.emit_if_value(l);
+    c.emit_string_const("", l);
+    c.emit_else(l);
+    c.emit_string_const("/", l);
+    c.emit_end(l);
+    combine_get(c, seg, l);
+    strings::emit_concat(c, 3, l);
+    c.emit_end(l);
+    combine_set(c, acc, l);
+    c.emit_end(l);
+    combine_step(c, idx, 1, l);
+    combine_finish_loop(c, done, again, l);
+    combine_get(c, acc, l);
+    c.emit_end(l);
+    assert_eq!(c.local_count, end, "complete compact body budget");
 }
 
 // ── The two that are capability reads, not string manipulation ────────────

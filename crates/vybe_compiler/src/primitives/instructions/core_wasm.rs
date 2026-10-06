@@ -42,10 +42,14 @@ pub fn emit_value(c: &mut Chunk, line: u32, val: &Value) {
         Value::Null => c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::Undefined => undefined(c, line),
         Value::String(s) => c.emit_string_const(s, line),
-        // ToBigInt64 wrap at the wasm boundary (i64.const is 64-bit).
-        // Oversize BigInt literals never reach here — the compiler
-        // lowers them through the string→BigInt() constructor path.
-        Value::BigInt(v) => c.emit_i64_const(v.to_i64_wrapping(), line),
+        // Language BigInts belong to the boxed value ABI. A raw i64.const
+        // cannot feed externref consumers, and wrapping loses larger values.
+        // Explicit Wasm i64 constants still use i64_const above.
+        Value::BigInt(v) => {
+            c.emit_string_const(&v.to_string(), line);
+            let ctor = c.add_import("ecma:bigint", "BigInt");
+            c.emit_call(ctor, 1, line);
+        }
         Value::V128(v) => {
             c.emit_op(Op::V128_CONST, line);
             for b in v {

@@ -145,7 +145,7 @@ fn emit_snapshot_render(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     call_host(chunks, current, "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("object", line);
-    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    call_host(chunks, current, "wasm:js-string", "equals", 2, line);
     chunks[current].emit_if_value(line);
     // A Set ELEMENT keys by its sorted values — `AbstractSet.equals` is
     // order-independent, so `setOf(1,2)` and `setOf(2,1)` must collide.
@@ -163,9 +163,9 @@ fn emit_snapshot_render(chunks: &mut [Chunk], current: usize, line: u32) {
     // value equality, so the key is structural without an `Eq` slot.
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     crate::primitives::tuples::emit_is_tuple(chunks, current, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_bool_const(true, line);
+    // Both arms produce an i32 condition consumed by the following branch.
+    chunks[current].emit_if_i32(line);
+    chunks[current].emit_i32_const(1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     chunks[current].emit_string_const(
@@ -325,6 +325,8 @@ pub fn emit_resync_snapshot_keys(chunks: &mut [Chunk], current: usize, line: u32
     let values = chunks[current].alloc_scratch(1);
     let index = chunks[current].alloc_scratch(1);
     let len = chunks[current].alloc_scratch(1);
+    let private_array = chunks[current].alloc_scratch(1);
+    let element = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
     emit_snapshot_keys_map(chunks, current, set_slot, keys, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
@@ -333,6 +335,12 @@ pub fn emit_resync_snapshot_keys(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
     emit_values_array(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, values, line);
+    // iterForOf returns a fresh dense array, except generator continuations.
+    // Only array materializations may reuse an element across rendering.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
+    call_host(chunks, current, "ecma:array", "isArray", 1, line);
+    call_host(chunks, current, "wasm:js-boolean", "cast", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, private_array, line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
@@ -349,15 +357,21 @@ pub fn emit_resync_snapshot_keys(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     crate::primitives::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, element, line);
     emit_snapshot_render(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, private_array, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, element, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     crate::primitives::collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
     call_host(chunks, current, "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     chunks[current].emit_i32_const(1, line);
-    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::F64_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -395,7 +409,7 @@ pub fn emit_from_iterable_snapshot(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     chunks[current].emit_i32_const(1, line);
-    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::F64_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);

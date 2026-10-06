@@ -508,7 +508,8 @@ impl Compiler {
 
         let ns = self.scope().next_slot;
         self.chunks[ci].finalize_local_count(ns);
-        self.chunks[ci].local_names = self.scope().defined_names.clone();
+        let local_names = self.scope().defined_names.clone();
+        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[ci], &local_names);
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         // Resolve upvalue names BEFORE popping the inner scope
         let inner_scope_idx = self.scopes.len() - 1;

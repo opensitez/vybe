@@ -1362,6 +1362,20 @@ impl Compiler {
         owner_class: &str,
         field: &str,
     ) -> String {
+        if self.separate_property_method_namespace() {
+            if let Some(class) = self.normalized_classes.get(&self.canon(owner_class)) {
+                let key = self.canon(field);
+                let is_constant = class.raw_extra_members.iter().any(|member| {
+                    matches!(member, vybe_ast::ClassMember::Const { name, .. }
+                        if self.canon(name) == key)
+                });
+                if !is_constant && class.static_methods.iter().any(|method| {
+                    self.canon(&method.source_name) == key
+                }) {
+                    return format!("__prop${key}");
+                }
+            }
+        }
         if self.declares_private_both_ways(owner_class, field) {
             if let Some(name) = self.js_private_member_storage_name_for_class(owner_class, field) {
                 return name.replace("__js_private_", "__js_private_static_");

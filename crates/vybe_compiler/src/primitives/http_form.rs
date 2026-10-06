@@ -77,8 +77,8 @@ pub fn emit_parse_urlencoded(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
-    emit_decode_slice(chunks, current, pair, 0, Some(eq), line);
-    emit_decode_slice(chunks, current, pair, 1, None, line);
+    emit_decode_slice(chunks, current, pair, 0, eq, line);
+    emit_decode_slice(chunks, current, pair, 1, eq, line);
     super::collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -104,20 +104,17 @@ fn emit_decode_slice(
     current: usize,
     pair: u16,
     part: u8,
-    eq: Option<u16>,
+    eq: u16,
     line: u32,
 ) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, pair, line);
     if part == 0 {
         chunks[current].emit_i32_const(0, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, eq.expect("name slice needs eq"), line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, eq, line);
     } else {
-        // The `=` index is recomputed here so the caller need not keep it live
-        // across the name push.
-        chunks[current].emit_op_u16(Op::LOCAL_GET, pair, line);
-        chunks[current].emit_string_const("=", line);
-        let index_of = chunks[current].add_import("ecma:string", "indexOf");
-        chunks[current].emit_call(index_of, 2, line);
+        // `pair` is a private string from split and cannot change while its
+        // name is decoded. Its separator index is already live in a local.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, eq, line);
         chunks[current].emit_i32_const(1, line);
         chunks[current].emit_op(Op::I32_ADD, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, pair, line);

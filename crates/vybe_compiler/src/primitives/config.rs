@@ -113,7 +113,7 @@ pub fn emit_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], n, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     get(&mut chunks[current], lines, line);
     get(&mut chunks[current], i, line);

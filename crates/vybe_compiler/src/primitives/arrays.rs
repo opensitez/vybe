@@ -168,16 +168,14 @@ impl Compiler {
 
     pub(super) fn lookup_var_type_hint(&self, name: &str) -> Option<&str> {
         if let Some(binding) = self.static_local_binding(name) {
-            if let Some(type_hint) = binding.type_hint.as_deref() {
-                return Some(type_hint);
-            }
+            return binding.type_hint.as_deref();
         }
-        if let Some(type_hint) = self.scope().resolve_type(name) {
-            return Some(type_hint);
-        }
-        for scope in self.scopes.iter().rev().skip(1) {
+        for scope in self.scopes.iter().rev() {
             if let Some(type_hint) = scope.resolve_type(name) {
                 return Some(type_hint);
+            }
+            if scope.resolve(name).is_some() {
+                return None;
             }
         }
         if let Some(type_hint) = self.lookup_implicit_self_field_type_hint(name) {
@@ -678,7 +676,7 @@ impl Compiler {
                 } else {
                     false
                 };
-                if !skip_c_coerce {
+                if !skip_c_coerce && decl.type_hint.as_ref().is_none_or(|hint| hint.converts()) {
                     self.bind_value_to_declared_type(effective_type_hint, Some(init_expr))?;
                 }
                 self.maybe_promote_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
@@ -1012,7 +1010,7 @@ pub fn build_array_remove_at(_imports: &mut Chunk) -> Chunk {
 
 // ── array_remove_value(arr, value) → bool ───────────────────────────────
 // indexOf(arr, value) → if >= 0: splice(arr, idx, 1); return true; else return false.
-pub fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
+pub fn build_array_remove_value(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_array_remove_value");
     c.arity = 2; // arr, value
     c.local_count = 3;
@@ -1030,7 +1028,7 @@ pub fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
     // if idx >= 0: splice + return true
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, idx, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_GE_S, 0);
     c.emit_if(0);
 
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, arr, 0);
@@ -1077,7 +1075,7 @@ pub fn build_array_insert_range(imports: &mut Chunk) -> Chunk {
     // if i >= src_len break
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, i, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, src_len, 0);
-    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_GE_S, 0);
     c.emit_br_if(1, 0);
     // splice(arr, index+i, 0, src[i])
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, arr, 0);
@@ -1093,7 +1091,7 @@ pub fn build_array_insert_range(imports: &mut Chunk) -> Chunk {
     // i++
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, i, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_ADD, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, i, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -1131,7 +1129,7 @@ pub fn build_array_set_range(imports: &mut Chunk) -> Chunk {
     let (lp, _) = c.emit_loop_s(0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, i, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, src_len, 0);
-    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_GE_S, 0);
     c.emit_br_if(1, 0);
     // set(arr, index+i, get(src, i))
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, arr, 0);
@@ -1145,7 +1143,7 @@ pub fn build_array_set_range(imports: &mut Chunk) -> Chunk {
     c.emit_op(vybe_runtime::opcode::Op::DROP, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, i, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_ADD, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, i, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
@@ -1195,8 +1193,8 @@ pub fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, index, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, count, 0);
     crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    crate::primitives::ops::emit_dyn_neg_into(imports, &mut c, 0);
+    // The previous constant negation produces precisely boxed F64(-1).
+    c.emit_f64_const(-1.0, 0);
     crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, hi, 0);
 
@@ -1233,8 +1231,8 @@ pub fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, lo, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, hi, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    crate::primitives::ops::emit_dyn_neg_into(imports, &mut c, 0);
+    // The previous constant negation produces precisely boxed F64(-1).
+    c.emit_f64_const(-1.0, 0);
     crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, hi, 0);
     c.emit_br(0, 0);

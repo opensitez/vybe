@@ -2387,7 +2387,8 @@ impl Compiler {
 
         let ns = self.scope().next_slot;
         self.chunks[func_idx].finalize_local_count(ns);
-        self.chunks[func_idx].local_names = self.scope().defined_names.clone();
+        let local_names = self.scope().defined_names.clone();
+        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[func_idx], &local_names);
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         let inner_scope_idx = self.scopes.len() - 1;
         let uv_names: Vec<Option<String>> = (0..uvs.len())
@@ -3667,7 +3668,8 @@ impl Compiler {
 
             let ns = cc.scope().next_slot;
             cc.chunks[ci].finalize_local_count(ns);
-            cc.chunks[ci].local_names = cc.scope().defined_names.clone();
+            let local_names = cc.scope().defined_names.clone();
+            crate::primitives::bundle::finalize_source_local_names(&mut cc.chunks[ci], &local_names);
             let method_scope_idx = cc.scopes.len() - 1;
             let mut capture_names: Vec<String> = cc.scopes[method_scope_idx]
                 .upvalues
@@ -3939,7 +3941,8 @@ impl Compiler {
                 {
                     let ns = self.scope().next_slot;
                     self.chunks[ci].finalize_local_count(ns);
-                    self.chunks[ci].local_names = self.scope().defined_names.clone();
+                    let local_names = self.scope().defined_names.clone();
+                    crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[ci], &local_names);
                 }
                 self.scopes.pop();
                 self.current = saved;
@@ -3996,7 +3999,8 @@ impl Compiler {
                 {
                     let ns = self.scope().next_slot;
                     self.chunks[ci].finalize_local_count(ns);
-                    self.chunks[ci].local_names = self.scope().defined_names.clone();
+                    let local_names = self.scope().defined_names.clone();
+                    crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[ci], &local_names);
                 }
                 self.scopes.pop();
                 self.current = saved;
@@ -4057,7 +4061,8 @@ impl Compiler {
             self.emit(Op::RETURN);
             let ns = self.scope().next_slot;
             self.chunks[helper_idx].finalize_local_count(ns);
-            self.chunks[helper_idx].local_names = self.scope().defined_names.clone();
+            let local_names = self.scope().defined_names.clone();
+            crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[helper_idx], &local_names);
             self.scopes.pop();
             self.current = saved_cur;
             self.current_class = saved_class;
@@ -4106,15 +4111,15 @@ impl Compiler {
         // class with a `constructor` and an empty `constructors` cannot be
         // produced. The arm that handled that case is gone.
         // The emitter sees one parent-call shape: a head-of-body `SuperCall`.
-        let lowered_ctors: Vec<NormalConstructor> = class
+        let lowered_ctors: Vec<std::borrow::Cow<'_, NormalConstructor>> = class
             .constructors
             .iter()
-            .map(NormalConstructor::with_base_call_lowered)
+            .map(NormalConstructor::base_call_lowered)
             .collect();
         let ctor_variants: Vec<Option<&NormalConstructor>> = if lowered_ctors.is_empty() {
             vec![None]
         } else {
-            lowered_ctors.iter().map(Some).collect()
+            lowered_ctors.iter().map(|ctor| Some(ctor.as_ref())).collect()
         };
         let ctor_global_prefix = self.canon(name);
         let should_stamp_form_identity = self.class_requires_form_identity_stamp(parent);
@@ -4262,6 +4267,10 @@ impl Compiler {
                 .unwrap_or_default();
             for p in &user_params {
                 self.define_source_local(p);
+            }
+            if let Some((_, params)) = ctor_body {
+                let skip = usize::from(class.explicit_self_param);
+                self.bind_alias_params(params.iter().skip(skip));
             }
             if synthesized_forward_args {
                 for i in 0..IMPLICIT_CTOR_FORWARD_ARGS {
@@ -5088,7 +5097,8 @@ impl Compiler {
             {
                 let ns = self.scope().next_slot;
                 self.chunks[helper_idx].finalize_local_count(ns);
-                self.chunks[helper_idx].local_names = self.scope().defined_names.clone();
+                let local_names = self.scope().defined_names.clone();
+                crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[helper_idx], &local_names);
             }
             // Names, not slot coordinates — see `emit_helper_ref`. Resolved
             // while the helper's scope is still on the stack, since
@@ -5227,7 +5237,8 @@ impl Compiler {
         {
             let ns = self.scope().next_slot;
             self.chunks[ctor_idx].finalize_local_count(ns);
-            self.chunks[ctor_idx].local_names = self.scope().defined_names.clone();
+            let local_names = self.scope().defined_names.clone();
+            crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[ctor_idx], &local_names);
         }
         let ctor_upvalues = self.scope().upvalues.clone();
         self.scopes.pop();
@@ -8609,6 +8620,16 @@ impl crate::Compiler {
             // agree on the key or the static slot is written under one name and
             // read under another.
             let fname = self.js_member_storage_name_for_static(&class.name, &f.name);
+            if self.separate_property_method_namespace() && fname.starts_with("__prop$") {
+                // The mapping is itself an inherited static slot. A caller
+                // compiling before this class is loaded can resolve it too.
+                static_field_inits.push((
+                    format!("__static_property${}", self.canon(&f.name)),
+                    None,
+                    Some(Expression::string(&fname)),
+                    None,
+                ));
+            }
             static_field_inits.push((
                 fname,
                 f.type_hint.clone(),

@@ -2891,7 +2891,7 @@ pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "wasm:js-undefined", "test", 1, line);
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_op(Op::I32_EQZ, line); // 1 when __types is present
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, types_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, klass_s, line);
     crate::primitives::collections::emit_contains(chunks, current, line);
@@ -2959,20 +2959,11 @@ pub fn emit_is_instance_of(
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let ht = crate::primitives::classes::heaptype_for_name(chunks, type_name);
     chunks[current].emit_ref_type_op(Op::REF_TEST, ht, line);
-    chunks[current].emit_if_value(line);
-    // ⛔ BOTH BRANCHES MUST YIELD THE SAME TYPE, and the conversion belongs
-    // AFTER the merge, not inside each arm.
-    //
-    // The cause of `1`/`0` was the CONVERSION HELPER, not this block: the old
-    // code finished with `emit_dyn_to_bool`, which returns an **i32** (see its
-    // doc — it is ToBoolean, not the inverse of `emit_i32_to_bool`), so
-    // `typeof (c instanceof C)` reported `"number"`.
-    //
-    // Converting once after the merge is kept because it is cleaner than
-    // converting in both arms, and it satisfies the same-type-out-of-both-arms
-    // invariant with one instruction sequence instead of two. It was NOT
-    // measured to be load-bearing on its own — `emit_i32_to_bool` inside both
-    // arms was never tried, so do not cite this position as the fix.
+    chunks[current].emit_if_i32(line);
+    // Both native arms produce i32: the RTT arm is an i32 constant and
+    // emit_instanceof uses an i32 result join over native includes and checked
+    // dynamic equality. VM metadata preserves its original Bool/I32 payloads.
+    // Materialize the canonical ValueBool once after this typed native merge.
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);

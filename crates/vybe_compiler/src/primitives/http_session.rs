@@ -146,6 +146,8 @@ pub fn emit_new_id(chunks: &mut [Chunk], current: usize, line: u32) {
     let out = chunks[current].alloc_scratch(1);
     let i = chunks[current].alloc_scratch(1);
     let n = chunks[current].alloc_scratch(1);
+    let byte = chunks[current].alloc_scratch(1);
+    let nibble = chunks[current].alloc_scratch(1);
 
     chunks[current].emit_i32_const(16, line);
     let get_bytes = chunks[current].add_import("wasi:random/random", "get-random-bytes");
@@ -170,8 +172,8 @@ pub fn emit_new_id(chunks: &mut [Chunk], current: usize, line: u32) {
     // Two hex digits per byte, zero-padded — a 31-char id would be a subtly
     // different credential each time a byte happened to be < 16.
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
-    emit_hex_nibble(chunks, current, bytes, i, true, line);
-    emit_hex_nibble(chunks, current, bytes, i, false, line);
+    emit_hex_nibble(chunks, current, bytes, i, byte, nibble, true, line);
+    emit_hex_nibble(chunks, current, bytes, i, byte, nibble, false, line);
     super::strings::emit_concat(&mut chunks[current], 3, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
 
@@ -195,17 +197,22 @@ fn emit_hex_nibble(
     current: usize,
     bytes: u16,
     i: u16,
+    byte: u16,
+    nibble: u16,
     high: bool,
     line: u32,
 ) {
-    let nibble = chunks[current].alloc_scratch(1);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
-    chunks[current].emit_op(Op::ARRAY_GET, line);
     if high {
+        // The spec random-byte producer returns a private list<u8>. Retain
+        // this byte for its low nibble instead of reading the buffer twice.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, bytes, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        chunks[current].emit_op_u16(Op::LOCAL_TEE, byte, line);
         chunks[current].emit_i32_const(4, line);
         chunks[current].emit_op(Op::I32_SHR_U, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, byte, line);
     }
     chunks[current].emit_i32_const(15, line);
     chunks[current].emit_op(Op::I32_AND, line);

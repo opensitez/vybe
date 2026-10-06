@@ -45,6 +45,11 @@ fn widen(chunk: &mut Chunk, lane: BitLane, line: u32) {
     }
 }
 
+pub fn emit_normalize_integer(chunk: &mut Chunk, lane: BitLane, line: u32) {
+    narrow(chunk, lane, line);
+    widen(chunk, lane, line);
+}
+
 /// One unary bit-count instruction, wrapped in the lane's conversions.
 fn emit_count(chunk: &mut Chunk, lane: BitLane, w32: Op, w64: Op, line: u32) {
     narrow(chunk, lane, line);
@@ -88,13 +93,36 @@ pub fn emit_rotate(chunk: &mut Chunk, lane: BitLane, left: bool, line: u32) {
     widen(chunk, lane, line);
 }
 
+/// Compare numeric word operands after preserving their complete 32-bit lanes.
+pub fn emit_word_comparison(chunk: &mut Chunk, opcode: Op, line: u32) {
+    emit_word_comparison_with_normalized_operands(chunk, opcode, (false, false), line);
+}
+
+pub fn emit_word_comparison_with_normalized_operands(
+    chunk: &mut Chunk, opcode: Op, normalized: (bool, bool), line: u32,
+) {
+    let right = chunk.alloc_scratch(1);
+    if !normalized.1 { narrow(chunk, BitLane::W32, line); }
+    chunk.emit_op_u16(Op::LOCAL_SET, right, line);
+    if !normalized.0 { narrow(chunk, BitLane::W32, line); }
+    chunk.emit_op_u16(Op::LOCAL_GET, right, line);
+    chunk.emit_op(opcode, line);
+}
+
 /// Stack `[left, right]` -> one numeric result, using the declared integer
 /// lane instead of the profile's default arithmetic slot.
 pub fn emit_integer_binary(chunk: &mut Chunk, lane: BitLane, op: IntOp, line: u32) {
+    emit_integer_binary_with_normalized_operands(chunk, lane, op, (false, false), line);
+}
+
+/// Operand proofs come from explicit integer-lane expressions, not type names.
+pub fn emit_integer_binary_with_normalized_operands(
+    chunk: &mut Chunk, lane: BitLane, op: IntOp, normalized: (bool, bool), line: u32,
+) {
     let right = chunk.alloc_scratch(1);
-    narrow(chunk, lane, line);
+    if !normalized.1 { narrow(chunk, lane, line); }
     chunk.emit_op_u16(Op::LOCAL_SET, right, line);
-    narrow(chunk, lane, line);
+    if !normalized.0 { narrow(chunk, lane, line); }
     chunk.emit_op_u16(Op::LOCAL_GET, right, line);
     let opcode = match (lane, op) {
         (BitLane::W32, IntOp::Add) => Op::I32_ADD,

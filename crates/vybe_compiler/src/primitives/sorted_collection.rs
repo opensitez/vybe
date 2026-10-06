@@ -59,8 +59,9 @@ pub fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, li
     get(&mut chunks[current], comparator, line);
     host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("function", line);
-    ops::emit_dyn_eq(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    let equals = chunks[current].add_import("wasm:js-string", "equals");
+    chunks[current].emit_call(equals, 2, line);
+    chunks[current].emit_if(line);
     get(&mut chunks[current], value, line);
     get(&mut chunks[current], comparator, line);
     collections::emit_sort_with_comparator(chunks, current, line);
@@ -74,7 +75,7 @@ pub fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, li
     chunks[current].emit_string_const(DESCENDING_SET_KEY, line);
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     get(&mut chunks[current], value, line);
     collections::emit_reverse(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -142,7 +143,7 @@ pub fn emit_sorted_add(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], value, line);
     collections::emit_contains(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "wasm:js-boolean", "cast", 1, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_bool_const(false, line);
     chunks[current].emit_else(line);
@@ -218,7 +219,6 @@ fn emit_upper_condition(
             // key < upper
             ops::emit_dyn_lt(&mut chunks[current], line);
         }
-        ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if_value(line);
         chunks[current].emit_bool_const(true, line);
         chunks[current].emit_else(line);
@@ -300,16 +300,15 @@ pub fn emit_sorted_set_range_view(
     let (loop_id, _) = chunks[current].emit_loop_s(line);
     get(&mut chunks[current], index, line);
     get(&mut chunks[current], len, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], index, line);
     collections::emit_get(chunks, current, line);
     set(&mut chunks[current], value, line);
     emit_range_condition(chunks, current, value, lower, upper, upper_inclusive, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    host::emit(&mut chunks[current], "wasm:js-boolean", "cast", 1, line);
+    chunks[current].emit_if(line);
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], value, line);
     collections::emit_push(chunks, current, line);
@@ -317,7 +316,7 @@ pub fn emit_sorted_set_range_view(
     chunks[current].emit_end(line);
     get(&mut chunks[current], index, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_ADD, line);
     set(&mut chunks[current], index, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -339,7 +338,7 @@ pub fn emit_sorted_map_key_set(chunks: &mut [Chunk], current: usize, line: u32) 
     set(&mut chunks[current], keys, line);
     emit_comparator(chunks, current, map, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     get(&mut chunks[current], keys, line);
     collections::emit_sort(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -353,7 +352,7 @@ pub fn emit_sorted_map_key_set(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_string_const(DESCENDING_MAP_KEY, line);
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     get(&mut chunks[current], keys, line);
     collections::emit_reverse(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -385,8 +384,7 @@ pub fn emit_sorted_map_values(chunks: &mut [Chunk], current: usize, line: u32) {
     let (loop_id, _) = chunks[current].emit_loop_s(line);
     get(&mut chunks[current], index, line);
     get(&mut chunks[current], len, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], map, line);
@@ -398,7 +396,7 @@ pub fn emit_sorted_map_values(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], index, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_ADD, line);
     set(&mut chunks[current], index, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -433,8 +431,7 @@ pub fn emit_sorted_map_entries(chunks: &mut [Chunk], current: usize, line: u32) 
     let (loop_id, _) = chunks[current].emit_loop_s(line);
     get(&mut chunks[current], index, line);
     get(&mut chunks[current], len, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], keys, line);
     get(&mut chunks[current], index, line);
@@ -451,7 +448,7 @@ pub fn emit_sorted_map_entries(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], index, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_ADD, line);
     set(&mut chunks[current], index, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);

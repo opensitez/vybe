@@ -91,7 +91,8 @@ pub fn emit_contiguous(chunks: &mut [Chunk], current: usize, line: u32) {
     get(chunks, current, obj, line);
     let is_view = chunks[current].add_import("ecma:arraybuffer", "isView");
     chunks[current].emit_call(is_view, 1, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    let cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast, 1, line);
     chunks[current].emit_if_value(line);
     get(chunks, current, obj, line);
     get(chunks, current, start, line);
@@ -378,7 +379,7 @@ pub fn emit_stepped(chunks: &mut [Chunk], current: usize, line: u32, opts: Optio
     set(chunks, current, cond, line);
     chunks[current].emit_end(line);
     get(chunks, current, cond, line);
-    loops::emit_loop_cond(chunks, current, line); // break when false
+    loops::emit_loop_cond_from_i32(chunks, current, line); // break when false
 
     // result.push( is_string(obj) ? charAt(obj,i) : obj[i] )
     get(chunks, current, result, line);
@@ -421,7 +422,7 @@ pub fn emit_stepped(chunks: &mut [Chunk], current: usize, line: u32, opts: Optio
     tuples::emit_propagate_tag(chunks, current, line);
 }
 
-/// Push the loop condition `(step>0 ? i<hi : i>hi)` as a dyn bool. Stack: `-> [bool]`.
+/// Push `(step>0 ? i<hi : i>hi)` as i32: both comparison branches produce i32.
 fn emit_stride_cond(chunks: &mut [Chunk], current: usize, step_n: u16, i: u16, hi: u16, line: u32) {
     get(chunks, current, step_n, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -531,7 +532,7 @@ pub fn emit_strided_assign(chunks: &mut [Chunk], current: usize, line: u32, opts
 
     let st = loops::emit_loop_start(chunks, current, line);
     emit_stride_cond(chunks, current, step_n, i, hi, line);
-    loops::emit_loop_cond(chunks, current, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
     // obj[i] = value[m]
     get(chunks, current, obj, line);
     get(chunks, current, i, line);
@@ -543,7 +544,7 @@ pub fn emit_strided_assign(chunks: &mut [Chunk], current: usize, line: u32, opts
     // m += 1; i += step
     get(chunks, current, m, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::F64_ADD, line);
     set(chunks, current, m, line);
     get(chunks, current, i, line);
     get(chunks, current, step_n, line);
@@ -589,7 +590,7 @@ pub fn emit_strided_del(chunks: &mut [Chunk], current: usize, line: u32, opts: O
 
     let st = loops::emit_loop_start(chunks, current, line);
     emit_stride_cond(chunks, current, step_n, i, hi, line);
-    loops::emit_loop_cond(chunks, current, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
     // target = (step > 0) ? i - removed : i  (ascending removals shift positions)
     get(chunks, current, step_n, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -612,7 +613,7 @@ pub fn emit_strided_del(chunks: &mut [Chunk], current: usize, line: u32, opts: O
     // removed += 1; i += step
     get(chunks, current, removed, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::F64_ADD, line);
     set(chunks, current, removed, line);
     get(chunks, current, i, line);
     get(chunks, current, step_n, line);
@@ -646,7 +647,7 @@ pub fn build_slice(imports: &mut Chunk) -> Chunk {
     let str_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, obj, 0);
     crate::primitives::reflection::emit_is_string(&mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0); // skip string branch if NOT string
 
     // String branch: [obj, start, end] → str_substring
@@ -774,7 +775,7 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
 
     // Check condition — exit if false
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(1, 0); // exit loop (depth 1 = outer block)
 
     // bounds check: skip push if i < 0 or i >= arr.length
@@ -790,7 +791,7 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(0, 0); // skip push if i >= length
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     crate::primitives::reflection::emit_is_string(&mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    // wasm:js-string.test already returns a raw i32 predicate.
     c.emit_if(0);
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -826,7 +827,7 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
     let string_branch = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     crate::primitives::reflection::emit_is_string(&mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     let empty = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("")));

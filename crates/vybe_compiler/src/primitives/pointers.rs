@@ -165,22 +165,46 @@ pub fn carray_byte_offset_write(
     })
 }
 
+/// Address a memory32 byte range. Memory64 callers must select W64 explicitly.
 pub fn linear_addr_offset(ptr: Expression, offset: Expression) -> Expression {
-    if is_zero(&offset) {
-        return ptr;
-    }
-    binary(BinOp::Add, ptr, offset)
+    linear_addr_offset_in_lane(ptr, offset, vybe_ast::BitLane::W32)
 }
 
 pub fn linear_scaled_offset(index: Expression, stride: i64) -> Expression {
     if stride <= 1 {
         return index;
     }
-    binary(BinOp::Mul, index, Expression::int(stride))
+    binary(BinOp::Integer(vybe_ast::IntOp::Mul, vybe_ast::BitLane::W32), index, Expression::int(stride))
 }
 
 pub fn linear_index_addr(ptr: Expression, index: Expression, stride: i64) -> Expression {
     linear_addr_offset(ptr, linear_scaled_offset(index, stride))
+}
+
+/// Address arithmetic in an explicitly selected WASM integer lane.
+pub fn linear_addr_offset_in_lane(
+    ptr: Expression,
+    offset: Expression,
+    lane: vybe_ast::BitLane,
+) -> Expression {
+    if is_zero(&offset) {
+        return ptr;
+    }
+    binary(BinOp::Integer(vybe_ast::IntOp::Add, lane), ptr, offset)
+}
+
+pub fn linear_index_addr_in_lane(
+    ptr: Expression,
+    index: Expression,
+    stride: i64,
+    lane: vybe_ast::BitLane,
+) -> Expression {
+    let offset = if stride <= 1 {
+        index
+    } else {
+        binary(BinOp::Integer(vybe_ast::IntOp::Mul, lane), index, Expression::int(stride))
+    };
+    linear_addr_offset_in_lane(ptr, offset, lane)
 }
 
 /// Offset a pointer whose runtime representation can be either a carray object
@@ -207,6 +231,13 @@ fn emit_value_preserving_store(chunk: &mut Chunk, op: Op, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, addr, line);
     chunk.emit_op_u16(Op::LOCAL_GET, addr, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    if matches!(op, Op::I32_STORE | Op::I32_STORE8 | Op::I32_STORE16) {
+        // Number-backed operands can contain the unsigned half of an i32.
+        // Preserve those bits without saturating, and retain the source value
+        // below for the assignment expression's result.
+        chunk.emit_op(Op::I64_TRUNC_F64_S, line);
+        chunk.emit_op(Op::I32_WRAP_I64, line);
+    }
     chunk.emit_op(op, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
 }
@@ -411,9 +442,10 @@ pub fn emit_byte_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     get(c, tmp, line);
     c.emit_op(Op::I32_ADD, line);
     get(c, byte, line);
-    emit_linear_i32_store8(chunks, current, line);
+    // The copy does not consume an assignment result. Keep the transfer body
+    // as a plain Wasm store, without value-preserving scratch locals.
+    chunks[current].emit_op(Op::I32_STORE8, line);
     let c = &mut chunks[current];
-    c.emit_op(Op::DROP, line);
     get(c, tmp, line);
     c.emit_i32_const(1, line);
     c.emit_op(Op::I32_ADD, line);

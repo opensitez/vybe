@@ -872,13 +872,22 @@ impl Compiler {
         // error in every language concerned, and the languages reject it
         // before reaching here.
         let order = self.augmentation_fold_order();
-        let mut available = self.normalized_classes.clone();
         for name in order {
+            // These entries are already present in the registry, and neither
+            // folding helper changes a class with no augmentations. Avoid
+            // copying its complete method AST out and back into that table.
+            if self
+                .normalized_classes
+                .get(&name)
+                .is_some_and(|nc| nc.augmentations.is_empty())
+            {
+                continue;
+            }
             let Some(mut nc) = self.normalized_classes.get(&name).cloned() else {
                 continue;
             };
             // Bind each augmentation to the class it actually names BEFORE
-            // folding. `available` is keyed by `canon(name)` — lowercased for a
+            // folding. The registry is keyed by `canon(name)` — lowercased for a
             // case-insensitive language, fully qualified for a namespaced one —
             // while `aug.from` carries the source spelling, so an exact lookup
             // inside the fold misses every PHP trait.
@@ -887,7 +896,13 @@ impl Compiler {
                     aug.from = resolved;
                 }
             }
-            let mut errors = super::class_augmentation::apply_augmentations(&mut nc, &available);
+            // Keep the original entry in the registry until this fold finishes.
+            // Sources therefore see the same snapshot as before, including the
+            // current class if a rejected upstream cycle reaches this pass.
+            let mut errors = super::class_augmentation::apply_augmentations(
+                &mut nc,
+                &self.normalized_classes,
+            );
             // `NextInOrder` augmentations contribute no members; they become
             // link classes spliced into the parent chain, so that `super`
             // inside a contributed method resolves through the ordinary
@@ -895,7 +910,7 @@ impl Compiler {
             // registered here so `predeclare_class_surfaces` — which runs next
             // and iterates this very map — records their member surface too.
             let (links, chain_errors) =
-                super::class_augmentation::build_super_chain(&mut nc, &available);
+                super::class_augmentation::build_super_chain(&mut nc, &self.normalized_classes);
             errors.extend(chain_errors);
             for link in links {
                 let key = self.canon(&link.name);
@@ -907,7 +922,6 @@ impl Compiler {
                 // real base's field initializers never run and every inherited
                 // field reads `undefined`.
                 self.declare_class_identity(&key);
-                available.insert(key.clone(), link.clone());
                 self.normalized_classes.insert(key, link);
             }
             if let Some(first) = errors.first() {
@@ -927,7 +941,6 @@ impl Compiler {
             {
                 self.program_has_callmissing = true;
             }
-            available.insert(name.clone(), nc.clone());
             self.normalized_classes.insert(name, nc);
         }
         Ok(())
@@ -965,28 +978,32 @@ impl Compiler {
     fn augmentation_fold_order(&self) -> Vec<String> {
         let mut ordered: Vec<String> = Vec::with_capacity(self.normalized_classes.len());
         let mut placed: HashSet<String> = HashSet::new();
+        // Resolution does not change during this pass. In particular, suffix
+        // resolution scans class names, so repeating it on every dependency
+        // sweep multiplies that work by the depth of a trait/mixin chain.
+        let dependencies: HashMap<&str, Vec<String>> = self
+            .normalized_classes
+            .iter()
+            .map(|(name, nc)| {
+                let sources = nc
+                    .augmentations
+                    .iter()
+                    .filter_map(|aug| self.resolve_augmentation_source(&aug.from))
+                    .collect();
+                (name.as_str(), sources)
+            })
+            .collect();
         // Repeat until a full sweep places nothing new: anything still missing
         // is in a cycle, and is appended as-is.
         loop {
             let mut progressed = false;
-            for (name, nc) in &self.normalized_classes {
+            for name in self.normalized_classes.keys() {
                 if placed.contains(name) {
                     continue;
                 }
-                let ready = nc.augmentations.iter().all(|aug| {
-                    // Resolved the same way the fold will resolve it. Testing
-                    // the RAW name here reports "ready" for every augmentation
-                    // whose spelling differs from its key — which is all of
-                    // them in a case-insensitive or namespaced language — so
-                    // every class places on the first sweep, in hash order, and
-                    // a trait that uses a trait folds a pre-augmentation
-                    // snapshot. That is the exact bug this ordering exists to
-                    // prevent.
-                    match self.resolve_augmentation_source(&aug.from) {
-                        Some(key) => placed.contains(&key),
-                        None => true,
-                    }
-                });
+                let ready = dependencies[name.as_str()]
+                    .iter()
+                    .all(|source| placed.contains(source));
                 if ready {
                     ordered.push(name.clone());
                     placed.insert(name.clone());
@@ -1085,7 +1102,9 @@ impl Compiler {
         // (`predeclare_struct_surface`, `compile_normal_class`, each language's
         // normalizer); adding a fourth to fix an ordering bug would have been
         // the same shortcut this work removes.
-        let Some(nc) = self.normalized_classes.get(name).cloned() else {
+        // Surface registration reads metadata only. Borrow the normalized
+        // class rather than duplicating every method body in its AST.
+        let Some(nc) = self.normalized_classes.get(name) else {
             return;
         };
 
@@ -1418,8 +1437,8 @@ impl Compiler {
     /// Runs before any bytecode is emitted.
     pub(super) fn link(&mut self, module: &crate::ast::Module) {
         // Phase A.1: ambient profile defaults.
-        let defaults = self.profile.esm_defaults.clone();
-        for d in &defaults {
+        let defaults = &self.profile.esm_defaults;
+        for d in defaults {
             match d {
                 crate::profile::EsmDefault::Named {
                     local,
@@ -1536,7 +1555,7 @@ impl Compiler {
                                     .insert(key, (path.clone(), n.name.clone()));
                             }
                         }
-                    } else if let Some(adapter_exports) = self.module_exports.get(&path).cloned() {
+                    } else if let Some(adapter_exports) = self.module_exports.get(&path) {
                         // Adapter module: each name is a pre-resolved
                         // `(final_module, final_name)` pair courtesy
                         // of the Indirect chain walker in the Bundle.

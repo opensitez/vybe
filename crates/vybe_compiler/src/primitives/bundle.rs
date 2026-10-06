@@ -9,18 +9,574 @@
 //! On any other runtime, the globals hold the bundled helper function refs.
 //! One binary, works everywhere, no unresolvable imports.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::OnceLock;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
+// Private algorithm calls are compile-time references, not writable language
+// globals. The existing u16 function operand is fixed up before execution;
+// only an exact compiler-origin offset record authorizes that fixup.
+const PRIVATE_HELPERS: &[(&str, u8)] = &[
+    ("__stdlib_erf", 1),
+    ("__stdlib_random_next_unit", 0),
+    ("__stdlib_levenshtein", 2),
+    ("__stdlib_similar_text", 2),
+    ("__stdlib_csv_parse_line", 3),
+    ("__stdlib_csv_parse_document", 3),
+    ("__stdlib_csv_format_minimal", 3),
+    ("__stdlib_csv_format_whitespace", 3),
+    ("primitive.reference_read", 1),
+    ("primitive.generator_yield_value", 1),
+    ("primitive.generator_start_valid", 1),
+    ("primitive.generator_start_current", 1),
+    ("primitive.generator_start_value", 1),
+];
+const PRIVATE_REF_PREFIX: &str = "<private-helper-ref:";
+const PRIVATE_BODY_PREFIX: &str = "<private-helper-body:";
+const UNRESOLVED_PRIVATE_REF: u16 = u16::MAX;
+
+fn private_helper_arity(export: &str) -> Option<u8> {
+    PRIVATE_HELPERS
+        .iter()
+        .find_map(|&(name, arity)| (name == export).then_some(arity))
+}
+
+// Module-local algorithm bodies come directly from their primitive emitters.
+// They are ordinary Wasm functions, with no polyfill compilation, prelude or
+// writable language-global registration.
+fn build_private_primitive(export: &str) -> Option<Chunk> {
+    Some(match export {
+        "__stdlib_erf" => crate::primitives::math::build_erf(),
+        "__stdlib_random_next_unit" => crate::primitives::random::build_next_unit(),
+        "__stdlib_levenshtein" => crate::primitives::string_similarity::build_levenshtein(),
+        "__stdlib_similar_text" => crate::primitives::string_similarity::build_similar_text(),
+        "__stdlib_csv_parse_line" | "__stdlib_csv_parse_document"
+        | "__stdlib_csv_format_minimal" | "__stdlib_csv_format_whitespace" => {
+            crate::primitives::csv::build_shared_helper(export)
+        }
+        "primitive.reference_read" => crate::primitives::references::build_guarded_reference_read(),
+        "primitive.generator_yield_value" => crate::primitives::generators::build_generator_yield_value(),
+        "primitive.generator_start_valid" | "primitive.generator_start_current"
+        | "primitive.generator_start_value" => {
+            crate::primitives::generators::build_buffered_generator_start(export)
+        }
+        _ => return None,
+    })
+}
+
+fn private_ref_marker(name: &str) -> Option<(&'static str, usize)> {
+    let value = name.strip_prefix(PRIVATE_REF_PREFIX)?.strip_suffix('>')?;
+    let (export, offset) = value.rsplit_once('@')?;
+    let export = PRIVATE_HELPERS
+        .iter()
+        .find_map(|&(name, _)| (name == export).then_some(name))?;
+    Some((export, offset.parse().ok()?))
+}
+
+fn private_body_marker(export: &str) -> String {
+    format!("{PRIVATE_BODY_PREFIX}{export}>")
+}
+
+pub(crate) fn mark_private_helper_body(chunk: &mut Chunk) {
+    use vybe_runtime::chunk::{LocalName, LocalOrigin};
+    assert_eq!(private_helper_arity(&chunk.name), Some(chunk.arity));
+    chunk.local_names.push(LocalName::new(
+        0,
+        private_body_marker(&chunk.name),
+        LocalOrigin::Compiler,
+    ));
+}
+
+fn private_helper_index(chunks: &[Chunk], export: &str) -> Option<usize> {
+    use vybe_runtime::chunk::LocalOrigin;
+    let arity = private_helper_arity(export)?;
+    let marker = private_body_marker(export);
+    chunks.iter().position(|chunk| {
+        chunk.name == export
+            && chunk.arity == arity
+            && chunk.local_names.iter().any(|local| {
+                local.slot == 0 && local.origin == LocalOrigin::Compiler && local.name == marker
+            })
+    })
+}
+
+/// Preserve only pending generated reference records while exporting a source
+/// scope's debugger names. Source records stay intact and come last, so they
+/// retain normal debugger precedence even when a scratch slot was reused.
+pub(crate) fn finalize_source_local_names(
+    chunk: &mut Chunk,
+    names: &[vybe_runtime::chunk::LocalName],
+) {
+    use vybe_runtime::chunk::LocalOrigin;
+    let mut seen = BTreeSet::new();
+    let mut pending: Vec<_> = chunk
+        .local_names
+        .iter()
+        .filter(|local| {
+            local.origin == LocalOrigin::Compiler
+                && private_ref_marker(&local.name).is_some()
+                && seen.insert((local.slot, local.name.clone()))
+        })
+        .cloned()
+        .collect();
+    pending.extend_from_slice(names);
+    chunk.local_names = pending;
+}
+
+/// Outline one registered private algorithm without publishing a language
+/// binding. Evaluated arguments are spilled in their original stack order.
+pub(crate) fn emit_private_helper_call(chunk: &mut Chunk, export: &str, argc: u8, line: u32) {
+    assert_eq!(private_helper_arity(export), Some(argc));
+    // A zero-argument caller needs only a valid debugger record slot. Reuse
+    // slot zero when available; otherwise reserve it once, without stack ops.
+    let base = if argc == 0 {
+        if chunk.local_count == 0 {
+            chunk.alloc_scratch(1);
+        }
+        0
+    } else {
+        chunk.alloc_scratch(argc as u16)
+    };
+    for arg in (0..argc).rev() {
+        chunk.emit_op_u16(Op::LOCAL_SET, base + arg as u16, line);
+    }
+    emit_private_helper_call_from_slots(chunk, export, base, argc, line);
+}
+
+/// Call a module-local primitive using values already retained in caller slots.
+/// Avoid extra Object spills, which could extend observable reference lifetimes.
+pub(crate) fn emit_private_helper_call_from_slots(
+    chunk: &mut Chunk, export: &str, base: u16, argc: u8, line: u32,
+) {
+    use vybe_runtime::chunk::{LocalName, LocalOrigin};
+    assert_eq!(private_helper_arity(export), Some(argc));
+    assert!((base as usize) + (argc as usize) <= chunk.local_count as usize);
+    assert!(base < chunk.local_count);
+    // This one registered helper keeps strict String errors in the caller.
+    // Evaluated arguments are already spilled exactly once above. Intrinsic
+    // lengths are pure for validated Strings; do not expose a generic callback.
+    if export == "__stdlib_similar_text" {
+        for arg in 0..2 {
+            chunk.emit_op_u16(Op::LOCAL_GET, base + arg, line);
+            let length = chunk.add_import("wasm:js-string", "length");
+            chunk.emit_call(length, 1, line);
+            chunk.emit_op(Op::DROP, line);
+        }
+    }
+    let offset = chunk.code.len();
+    crate::primitives::functions::emit_ref_func(chunk, UNRESOLVED_PRIVATE_REF as usize, 0, line);
+    chunk.local_names.push(LocalName::new(
+        base,
+        format!("{PRIVATE_REF_PREFIX}{export}@{offset}>"),
+        LocalOrigin::Compiler,
+    ));
+    for arg in 0..argc {
+        chunk.emit_op_u16(Op::LOCAL_GET, base + arg as u16, line);
+    }
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, argc, line);
+}
+
+fn instruction_boundaries(chunk: &Chunk) -> BTreeSet<usize> {
+    let mut boundaries = BTreeSet::new();
+    let mut offset = 0;
+    while offset < chunk.code.len() {
+        boundaries.insert(offset);
+        assert!(
+            offset + 4 <= chunk.code.len(),
+            "truncated instruction before private fixup"
+        );
+        let op = Op::decode(chunk.read_u16(offset), chunk.read_u16(offset + 2))
+            .expect("unknown instruction before private fixup");
+        offset = offset
+            .checked_add(4 + op.operand_format().size_in(&chunk.code, offset + 4))
+            .expect("instruction size overflow before private fixup");
+        assert!(
+            offset <= chunk.code.len(),
+            "truncated operand before private fixup"
+        );
+    }
+    boundaries.insert(offset);
+    boundaries
+}
+
+fn remap_offset(offset: usize, start: usize, end: usize, replacement_len: usize) -> usize {
+    assert!(
+        offset < start || offset >= end,
+        "offset metadata overlaps a private call"
+    );
+    if offset < end {
+        offset
+    } else {
+        offset
+            .checked_sub(end - start)
+            .and_then(|offset| offset.checked_add(replacement_len))
+            .expect("offset metadata overflow during private inlining")
+    }
+}
+
+fn inline_private_call(chunk: &mut Chunk, export: &str, offset: usize, slot: u16) {
+    let argc = private_helper_arity(export).expect("registered private helper");
+    let boundaries = instruction_boundaries(chunk);
+    assert!(
+        boundaries.contains(&offset),
+        "private reference is not an instruction boundary"
+    );
+    let call = offset + 7 + argc as usize * 6;
+    let end = call + 6;
+    assert!(
+        end <= chunk.code.len() && boundaries.contains(&end),
+        "truncated private call sequence"
+    );
+    for arg in 0..argc {
+        let load = offset + 7 + arg as usize * 6;
+        assert_eq!(
+            Op::decode(chunk.read_u16(load), chunk.read_u16(load + 2)),
+            Some(Op::LOCAL_GET)
+        );
+        assert_eq!(chunk.read_u16(load + 4), slot + arg as u16);
+    }
+    assert_eq!(
+        Op::decode(chunk.read_u16(call), chunk.read_u16(call + 2)),
+        Some(Op::CALL_REF)
+    );
+    assert_eq!(
+        &chunk.code[call + 4..end],
+        &[argc, 1],
+        "private call ABI was modified"
+    );
+    let line = chunk.lines[offset];
+    let original_len = chunk.code.len();
+    let original_i32_blocks = chunk.block_i32_results.clone();
+    let original_private_refs: Vec<_> = chunk
+        .local_names
+        .iter()
+        .filter(|local| private_ref_marker(&local.name).is_some())
+        .map(|local| (local.slot, local.name.clone()))
+        .collect();
+    let metadata_sizes = (
+        chunk.call_indirect_sigs.len(),
+        chunk.call_indirect_canon.len(),
+        chunk.stack_switch_handlers.len(),
+    );
+    // Append against the actual caller so constants/imports and scratch slots
+    // remain in its existing index spaces, then move only the emitted bytes.
+    match export {
+        "__stdlib_erf" => crate::primitives::math::emit_erf_body(chunk, slot, line),
+        "__stdlib_similar_text" => crate::primitives::string_similarity::emit_similar_text_body(
+            std::slice::from_mut(chunk), 0, slot, slot + 1, line,
+        ),
+        "__stdlib_levenshtein" => crate::primitives::string_similarity::emit_levenshtein_body(
+            std::slice::from_mut(chunk),
+            0,
+            slot,
+            slot + 1,
+            line,
+        ),
+        "__stdlib_random_next_unit" => {
+            crate::primitives::random::emit_next_unit_body(std::slice::from_mut(chunk), 0, line)
+        }
+        "__stdlib_csv_parse_line" => crate::primitives::csv::emit_parse_line_body(
+            std::slice::from_mut(chunk),
+            0,
+            slot,
+            slot + 1,
+            slot + 2,
+            line,
+        ),
+        "__stdlib_csv_parse_document" => crate::primitives::csv::emit_parse_document_body(
+            std::slice::from_mut(chunk),
+            0,
+            slot,
+            slot + 1,
+            slot + 2,
+            line,
+        ),
+        "__stdlib_csv_format_minimal" | "__stdlib_csv_format_whitespace" => {
+            crate::primitives::csv::emit_format_row_body(
+                std::slice::from_mut(chunk),
+                0,
+                slot,
+                slot + 1,
+                slot + 2,
+                crate::primitives::csv::FormatOptions {
+                    quote_whitespace: export == "__stdlib_csv_format_whitespace",
+                },
+                line,
+            )
+        }
+        _ => unreachable!("private inline body was not registered"),
+    }
+    assert_eq!(
+        metadata_sizes,
+        (
+            chunk.call_indirect_sigs.len(),
+            chunk.call_indirect_canon.len(),
+            chunk.stack_switch_handlers.len()
+        ),
+        "private inline body added offset metadata requiring relocation"
+    );
+    assert_eq!(
+        original_private_refs,
+        chunk
+            .local_names
+            .iter()
+            .filter(|local| private_ref_marker(&local.name).is_some())
+            .map(|local| (local.slot, local.name.clone()))
+            .collect::<Vec<_>>(),
+        "private inline body introduced pending private calls"
+    );
+    assert!(
+        original_i32_blocks.is_subset(&chunk.block_i32_results),
+        "private inline body modified existing I32 block metadata"
+    );
+    let appended_i32_blocks: Vec<_> = chunk
+        .block_i32_results
+        .difference(&original_i32_blocks)
+        .copied()
+        .collect();
+    if export == "__stdlib_csv_parse_document" {
+        assert_eq!(
+            appended_i32_blocks.len(),
+            1,
+            "CSV Document must add exactly its trailing I32 IF"
+        );
+    } else {
+        assert!(
+            appended_i32_blocks.is_empty(),
+            "private inline body added unexpected I32 block metadata"
+        );
+    }
+    let appended_boundaries = instruction_boundaries(chunk);
+    for &key in &appended_i32_blocks {
+        assert!(
+            key >= original_len && key < chunk.code.len() && appended_boundaries.contains(&key),
+            "appended I32 block is not an instruction boundary"
+        );
+        assert_eq!(
+            Op::decode(chunk.read_u16(key), chunk.read_u16(key + 2)),
+            Some(Op::IF)
+        );
+        assert_eq!(
+            &chunk.code[key + 4..key + 6],
+            &[0, 1],
+            "appended CSV predicate must be a zero-param single-result IF"
+        );
+    }
+    let replacement = chunk.code.split_off(original_len);
+    let replacement_lines = chunk.lines.split_off(original_len);
+    assert_eq!(replacement.len(), replacement_lines.len());
+    let replacement_len = replacement.len();
+    chunk.block_i32_results = original_i32_blocks
+        .into_iter()
+        .map(|key| remap_offset(key, offset, end, replacement_len))
+        .collect();
+    for key in appended_i32_blocks {
+        let relocated = offset
+            .checked_add(key - original_len)
+            .expect("appended I32 block offset overflow");
+        assert!(
+            chunk.block_i32_results.insert(relocated),
+            "duplicate relocated I32 block metadata"
+        );
+    }
+    chunk.call_indirect_sigs = std::mem::take(&mut chunk.call_indirect_sigs)
+        .into_iter()
+        .map(|(key, value)| (remap_offset(key, offset, end, replacement_len), value))
+        .collect();
+    chunk.call_indirect_canon = std::mem::take(&mut chunk.call_indirect_canon)
+        .into_iter()
+        .map(|(key, value)| (remap_offset(key, offset, end, replacement_len), value))
+        .collect();
+    chunk.stack_switch_handlers = std::mem::take(&mut chunk.stack_switch_handlers)
+        .into_iter()
+        .map(|(key, mut handlers)| {
+            for handler in &mut handlers {
+                // The sole source compiler producer (generators::emit_next)
+                // emits a forward absolute byte offset. Standard WASM readers
+                // emit label depths, which cannot exceed the opcode offset.
+                // Preserve those depths; relocate only proven forward targets.
+                if handler.kind == 0 && handler.label_index as usize > key {
+                    let target = handler.label_index as usize;
+                    assert!(
+                        boundaries.contains(&target),
+                        "forward generator handler is not an instruction boundary"
+                    );
+                    handler.label_index =
+                        u32::try_from(remap_offset(target, offset, end, replacement_len))
+                            .expect("generator handler offset exceeds u32");
+                }
+            }
+            (remap_offset(key, offset, end, replacement_len), handlers)
+        })
+        .collect();
+    if let Some(user) = chunk.user_code_offset {
+        // The source entry boundary may coincide with the first replaced op.
+        chunk.user_code_offset = Some(if user as usize == offset {
+            user
+        } else {
+            u32::try_from(remap_offset(user as usize, offset, end, replacement_len))
+                .expect("user code offset exceeds u32")
+        });
+    }
+    chunk.code.splice(offset..end, replacement);
+    chunk.lines.splice(offset..end, replacement_lines);
+    let final_boundaries = instruction_boundaries(chunk);
+    assert!(
+        chunk
+            .block_i32_results
+            .iter()
+            .all(|key| final_boundaries.contains(key)),
+        "relocated I32 block is not an instruction boundary"
+    );
+}
+
+fn resolve_private_helper_refs(chunks: &mut [Chunk], inline_exports: &BTreeSet<&'static str>) {
+    use vybe_runtime::chunk::LocalOrigin;
+    let indices: std::collections::BTreeMap<_, _> = PRIVATE_HELPERS
+        .iter()
+        .filter_map(|&(export, _)| {
+            private_helper_index(chunks, export).map(|index| (export, index))
+        })
+        .collect();
+    for chunk in chunks {
+        let mut refs = std::collections::BTreeMap::new();
+        for local in &chunk.local_names {
+            if local.origin != LocalOrigin::Compiler {
+                continue;
+            }
+            if let Some((export, offset)) = private_ref_marker(&local.name) {
+                if let Some(previous) = refs.insert(offset, (export, local.slot)) {
+                    assert_eq!(
+                        previous,
+                        (export, local.slot),
+                        "conflicting private reference records"
+                    );
+                }
+            }
+        }
+        // Highest offsets first: inlining cannot invalidate earlier records.
+        for (offset, (export, slot)) in refs.into_iter().rev() {
+            assert!(
+                offset
+                    .checked_add(7)
+                    .is_some_and(|end| end <= chunk.code.len()),
+                "private helper reference offset is out of bounds"
+            );
+            assert_eq!(
+                Op::decode(chunk.read_u16(offset), chunk.read_u16(offset + 2)),
+                Some(Op::REF_FUNC),
+                "private helper reference offset does not point to REF_FUNC"
+            );
+            assert_eq!(
+                chunk.read_u16(offset + 4),
+                UNRESOLVED_PRIVATE_REF,
+                "private helper reference was modified before finalization"
+            );
+            assert_eq!(
+                chunk.code[offset + 6],
+                0,
+                "private helper references cannot capture upvalues"
+            );
+            if inline_exports.contains(export)
+                || indices
+                    .get(export)
+                    .is_some_and(|&index| index > u16::MAX as usize)
+            {
+                inline_private_call(chunk, export, offset, slot);
+            } else {
+                let index =
+                    u16::try_from(*indices.get(export).expect("private helper was not linked"))
+                        .expect("private helper function index exceeds the u16 REF_FUNC encoding");
+                let [hi, lo] = index.to_be_bytes();
+                chunk.code[offset + 4] = hi;
+                chunk.code[offset + 5] = lo;
+            }
+        }
+        chunk.local_names.retain(|local| {
+            local.origin != LocalOrigin::Compiler || private_ref_marker(&local.name).is_none()
+        });
+    }
+}
+
 /// Mapping from helper chunk name to the global name used at call sites.
 const MAPPINGS: &[(&str, &str)] = &[
+    ("__stdlib_reverse_copy", "__vybe_reverse_copy"),
+    (
+        "__stdlib_reverse_copy_own_fields",
+        "__vybe_reverse_copy_own_fields",
+    ),
+    (
+        "__stdlib_reverse_copy_prototype_members",
+        "__vybe_reverse_copy_prototype_members",
+    ),
+    (
+        "__stdlib_reverse_copy_own_fields_prototype_members",
+        "__vybe_reverse_copy_own_fields_prototype_members",
+    ),
+    (
+        "__stdlib_bytes_to_binary_string_all",
+        "__vybe_bytes_to_binary_string_all",
+    ),
+    (
+        "__stdlib_bytes_to_binary_string",
+        "__vybe_bytes_to_binary_string",
+    ),
+    (
+        "__stdlib_binary_string_to_bytes",
+        "__vybe_binary_string_to_bytes",
+    ),
     ("__stdlib_autoderef", "__vybe_autoderef"),
     ("__stdlib_dyneq", "__vybe_dyneq"),
     ("__stdlib_dynlt", "__vybe_dynlt"),
     ("__stdlib_dyngt", "__vybe_dyngt"),
     ("__stdlib_dynle", "__vybe_dynle"),
     ("__stdlib_dynge", "__vybe_dynge"),
+    (
+        "__stdlib_encoding_base64_decode",
+        "__vybe_encoding_base64_decode",
+    ),
+    ("__stdlib_encoding_bin2hex", "__vybe_encoding_bin2hex"),
+    ("__stdlib_encoding_hex2bin", "__vybe_encoding_hex2bin"),
+    ("__stdlib_encoding_str_rot13", "__vybe_encoding_str_rot13"),
+    (
+        "__stdlib_encoding_quoted_printable_encode",
+        "__vybe_encoding_quoted_printable_encode",
+    ),
+    (
+        "__stdlib_encoding_quoted_printable_decode",
+        "__vybe_encoding_quoted_printable_decode",
+    ),
+    (
+        "__stdlib_encoding_convert_uuencode",
+        "__vybe_encoding_convert_uuencode",
+    ),
+    (
+        "__stdlib_encoding_convert_uudecode",
+        "__vybe_encoding_convert_uudecode",
+    ),
+    (
+        "__stdlib_encoding_base64_decode_lenient",
+        "__vybe_encoding_base64_decode_lenient",
+    ),
+    ("__stdlib_sort_by_key", "__vybe_sort_by_key"),
+    (
+        "__stdlib_sort_by_key_receiver",
+        "__vybe_sort_by_key_receiver",
+    ),
+    ("__stdlib_heapify", "__vybe_heapify"),
+    ("__stdlib_nsmallest", "__vybe_nsmallest"),
+    ("__stdlib_nlargest", "__vybe_nlargest"),
+    ("__stdlib_nsmallest_key", "__vybe_nsmallest_key"),
+    ("__stdlib_nlargest_key", "__vybe_nlargest_key"),
+    (
+        "__stdlib_nsmallest_key_receiver",
+        "__vybe_nsmallest_key_receiver",
+    ),
+    (
+        "__stdlib_nlargest_key_receiver",
+        "__vybe_nlargest_key_receiver",
+    ),
     ("__stdlib_sorted", "__vybe_sorted"),
     ("__stdlib_chan_send", "__vybe_chan_send"),
     ("__stdlib_chan_recv", "__vybe_chan_recv"),
@@ -158,6 +714,12 @@ const MAPPINGS: &[(&str, &str)] = &[
     ),
 ];
 
+fn mappings() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    MAPPINGS
+        .iter()
+        .chain(crate::primitives::array_transforms::SHARED_HELPERS.iter())
+}
+
 /// Emit the runtime-helper preamble at the START of a script chunk.
 /// This must be called BEFORE any user code is emitted.
 ///
@@ -169,7 +731,7 @@ const MAPPINGS: &[(&str, &str)] = &[
 /// the preamble leaves those alone. On non-Vybe runtimes the globals start
 /// null and the preamble installs the bundled helper bytecode chunks.
 pub fn emit_runtime_helper_preamble(script: &mut Chunk, stdlib_base: usize) {
-    for (i, &(_chunk_name, global_name)) in MAPPINGS.iter().enumerate() {
+    for (i, &(_chunk_name, global_name)) in mappings().enumerate() {
         let ci = stdlib_base + i;
 
         // Check if global is already set: global_get + ref_is_null
@@ -223,12 +785,33 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
     let mut requested = referenced_helper_exports(chunks);
     add_helper_dependencies(&mut requested);
     for excluded in excluded_exports {
-        requested.remove(*excluded);
+        if private_helper_arity(excluded).is_none() {
+            requested.remove(*excluded);
+        }
     }
     if requested.is_empty() {
         return;
     }
 
+    // Only treat a body as installed when its global declaration actually
+    // points to the expected helper chunk. Finalization can run again after
+    // linking modules; that must not duplicate previously bundled algorithms.
+    let mut installed: BTreeSet<_> = chunks[0]
+        .global_inits
+        .iter()
+        .filter_map(|init| {
+            let export = helper_export_for_global(&init.name)?;
+            let ConstExpr::RefFunc(index) = &init.init else {
+                return None;
+            };
+            (chunks.get(*index)?.name == export).then_some(export)
+        })
+        .collect();
+    installed.extend(
+        PRIVATE_HELPERS
+            .iter()
+            .filter_map(|&(export, _)| private_helper_index(chunks, export).map(|_| export)),
+    );
     let helper_base = chunks.len();
     // Build helper chunks with their imports registered on `chunks[0]`
     // (the module-level imports section — single per WASM module).
@@ -237,13 +820,73 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
     // native handlers; on v8 their `ecma:array.*` imports resolve
     // to native `Array.prototype.*`; on wasmtime the Phase-C polyfill
     // supplies the imports.
-    let helpers = {
-        let (first, _rest) = chunks.split_at_mut(1);
-        let exports = ordered_helper_exports(&requested);
-        crate::primitives::polyfills::build_runtime_helpers_for_exports(&mut first[0], &exports)
-    };
+    let mut helper_chunks = Vec::new();
+    let mut helper_exports = Vec::new();
+    let mut inline_exports = BTreeSet::new();
+    // A single similar_text site gains no body sharing. Inline its optimized
+    // primitive to remove the extra function and call frame, provided the
+    // caller can accommodate its six private locals. Repeated sites retain
+    // one shared body; the existing wide-index fallback uses the same path.
+    if !installed.contains("__stdlib_similar_text") {
+        let sites: BTreeSet<_> = chunks.iter().enumerate().flat_map(|(index, chunk)| {
+            chunk.local_names.iter().filter_map(move |local| {
+                (local.origin == vybe_runtime::chunk::LocalOrigin::Compiler)
+                    .then(|| private_ref_marker(&local.name)).flatten()
+                    .filter(|(export, _)| *export == "__stdlib_similar_text")
+                    .map(|(_, offset)| (index, offset))
+            })
+        }).collect();
+        if sites.len() == 1 {
+            let (index, _) = *sites.iter().next().unwrap();
+            if chunks[index].local_count <= u16::MAX - 6 {
+                inline_exports.insert("__stdlib_similar_text");
+            }
+        }
+    }
+    requested.retain(|name| !inline_exports.contains(name));
+    loop {
+        let candidates: Vec<_> = ordered_helper_exports(&requested)
+            .into_iter()
+            .filter(|name| !installed.contains(name) && !helper_exports.contains(name))
+            .collect();
+        let mut missing = Vec::new();
+        for name in candidates {
+            let index = helper_base + helper_chunks.len() + missing.len();
+            if private_helper_arity(name).is_some() && index > u16::MAX as usize {
+                inline_exports.insert(name);
+            } else {
+                missing.push(name);
+            }
+        }
+        requested.retain(|name| !inline_exports.contains(name));
+        if missing.is_empty() {
+            break;
+        }
+        let mut built = Vec::new();
+        for &name in &missing {
+            if private_helper_arity(name).is_some() {
+                built.push(build_private_primitive(name).expect("registered primitive body"));
+            } else {
+                // Existing public helper definitions remain available until
+                // their callers migrate to the relevant adapter/primitive.
+                built.extend(crate::primitives::polyfills::build_runtime_helpers_for_exports(
+                    &mut chunks[0], &[name],
+                ).chunks);
+            }
+        }
+        requested.extend(referenced_helper_exports(&built));
+        // Builders can register references on the module-level import carrier.
+        requested.extend(referenced_helper_exports(&chunks[..1]));
+        add_helper_dependencies(&mut requested);
+        requested.retain(|name| {
+            !inline_exports.contains(name)
+                && (private_helper_arity(name).is_some() || !excluded_exports.contains(name))
+        });
+        helper_chunks.extend(built);
+        helper_exports.extend(missing);
+    }
 
-    for (i, &chunk_name) in helpers.exports.iter().enumerate() {
+    for (i, &chunk_name) in helper_exports.iter().enumerate() {
         if let Some(global_name) = helper_global_for_export(chunk_name) {
             chunks[0].global_inits.push(GlobalInit {
                 name: global_name.to_string(),
@@ -251,7 +894,8 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
             });
         }
     }
-    chunks.extend(helpers.chunks);
+    chunks.extend(helper_chunks);
+    resolve_private_helper_refs(chunks, &inline_exports);
 }
 
 /// Convenience: emit func_ref push + args already on stack + call_ref.
@@ -268,9 +912,30 @@ pub fn emit_call(chunk: &mut Chunk, global_name: &str, argc: u8, line: u32) {
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, argc, line);
 }
 
+/// Outline a body while preserving an already evaluated argument stack.
+/// The helper's explicit arity is independent of its user callback receiver ABI.
+pub(crate) fn emit_stacked_helper_call(c: &mut Chunk, global: &str, argc: u8, line: u32) {
+    let base = c.alloc_scratch(argc as u16);
+    for offset in (0..argc).rev() {
+        c.emit_op_u16(Op::LOCAL_SET, base + offset as u16, line);
+    }
+    crate::primitives::globals::emit_read(c, global, line);
+    for offset in 0..argc {
+        c.emit_op_u16(Op::LOCAL_GET, base + offset as u16, line);
+    }
+    crate::primitives::callable::emit_direct_invoke_chunk(c, argc, line);
+}
+
 fn referenced_helper_exports(chunks: &[Chunk]) -> BTreeSet<&'static str> {
     let mut exports = BTreeSet::new();
     for chunk in chunks {
+        for local in &chunk.local_names {
+            if local.origin == vybe_runtime::chunk::LocalOrigin::Compiler {
+                if let Some((export, _)) = private_ref_marker(&local.name) {
+                    exports.insert(export);
+                }
+            }
+        }
         for constant in &chunk.constants {
             if let Value::String(name) = constant {
                 if let Some(export) = helper_export_for_global(name.as_ref()) {
@@ -319,22 +984,162 @@ fn helper_export_dependencies(export: &str) -> &'static [&'static str] {
 }
 
 fn ordered_helper_exports(exports: &BTreeSet<&'static str>) -> Vec<&'static str> {
-    MAPPINGS
-        .iter()
+    mappings()
         .filter_map(|&(chunk_name, _global_name)| {
             exports.contains(chunk_name).then_some(chunk_name)
         })
+        .chain(
+            PRIVATE_HELPERS
+                .iter()
+                .filter_map(|&(export, _)| exports.contains(export).then_some(export)),
+        )
         .collect()
 }
 
 fn helper_export_for_global(global_name: &str) -> Option<&'static str> {
-    MAPPINGS.iter().find_map(|&(chunk_name, mapped_global)| {
-        (mapped_global == global_name).then_some(chunk_name)
-    })
+    if let Some(&(export, global)) = MAPPINGS.first() {
+        if global_name == global {
+            return Some(export);
+        }
+    }
+    helper_mapping_indexes().by_global.get(global_name).copied()
 }
 
 fn helper_global_for_export(export: &str) -> Option<&'static str> {
-    MAPPINGS
-        .iter()
-        .find_map(|&(chunk_name, global_name)| (chunk_name == export).then_some(global_name))
+    if let Some(&(first_export, global)) = MAPPINGS.first() {
+        if export == first_export {
+            return Some(global);
+        }
+    }
+    helper_mapping_indexes().by_export.get(export).copied()
+}
+
+struct HelperMappingIndexes {
+    by_global: HashMap<&'static str, &'static str>,
+    by_export: HashMap<&'static str, &'static str>,
+}
+
+fn helper_mapping_indexes() -> &'static HelperMappingIndexes {
+    static INDEXES: OnceLock<HelperMappingIndexes> = OnceLock::new();
+    INDEXES.get_or_init(|| {
+        let mut by_global = HashMap::new();
+        let mut by_export = HashMap::new();
+        for &(export, global) in mappings() {
+            // Keep the ordered catalog's first match for duplicate names.
+            by_global.entry(global).or_insert(export);
+            by_export.entry(export).or_insert(global);
+        }
+        HelperMappingIndexes {
+            by_global,
+            by_export,
+        }
+    })
+}
+
+#[cfg(test)]
+mod helper_mapping_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn cached_helper_mappings_preserve_ordered_catalog_and_unknown_names() {
+        let mut names: Vec<_> = mappings()
+            .flat_map(|&(export, global)| [export, global])
+            .collect();
+        names.extend([
+            "",
+            "ordinary field",
+            "__vybe_unknown",
+            "__stdlib_unknown",
+            "__ecma_regexp_unknown",
+            "é😀",
+        ]);
+        for name in names {
+            assert_eq!(
+                helper_export_for_global(name),
+                mappings().find_map(|&(export, global)| (name == global).then_some(export))
+            );
+            assert_eq!(
+                helper_global_for_export(name),
+                mappings().find_map(|&(export, global)| (name == export).then_some(global))
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "interleaved opt-level-0 actual compiler lookup benchmark"]
+    fn benchmark_actual_helper_mapping_lookup() {
+        use std::{hint::black_box, time::Instant};
+        let catalog: Vec<_> = mappings().copied().collect();
+        let init = Instant::now();
+        black_box(helper_mapping_indexes());
+        println!(
+            "mapping cache init={}ns entries={}",
+            init.elapsed().as_nanos(),
+            catalog.len()
+        );
+        for reverse in [false, true] {
+            for case in ["miss", "all_hits", "mixed", "first_hit"] {
+                let names: Vec<_> = (0..50_000)
+                    .map(|i| {
+                        let (export, global) = catalog[if case == "first_hit" {
+                            0
+                        } else {
+                            i % catalog.len()
+                        }];
+                        if case == "miss" || (case == "mixed" && i % 10 != 0) {
+                            format!("ordinary-property-{i}")
+                        } else {
+                            (if reverse { export } else { global }).to_owned()
+                        }
+                    })
+                    .collect();
+                let timed = |cached| {
+                    let start = Instant::now();
+                    let mut hits = 0usize;
+                    for name in &names {
+                        let name = black_box(name.as_str());
+                        let value = if cached {
+                            if reverse {
+                                helper_global_for_export(name)
+                            } else {
+                                helper_export_for_global(name)
+                            }
+                        } else {
+                            mappings().find_map(|&(export, global)| {
+                                let (key, value) = if reverse {
+                                    (export, global)
+                                } else {
+                                    (global, export)
+                                };
+                                (name == key).then_some(value)
+                            })
+                        };
+                        hits += black_box(value).is_some() as usize;
+                    }
+                    (start.elapsed().as_nanos(), hits)
+                };
+                let (mut before, mut after) = (Vec::new(), Vec::new());
+                for batch in 0..7 {
+                    let (a, b) = if batch % 2 == 0 {
+                        (timed(false), timed(true))
+                    } else {
+                        let b = timed(true);
+                        let a = timed(false);
+                        (a, b)
+                    };
+                    assert_eq!(a.1, b.1);
+                    before.push(a.0);
+                    after.push(b.0);
+                }
+                before.sort_unstable();
+                after.sort_unstable();
+                println!(
+                    "actual mapping {case} reverse={reverse} old={}ns cached={}ns speedup={:.2}x",
+                    before[3],
+                    after[3],
+                    before[3] as f64 / after[3] as f64
+                );
+            }
+        }
+    }
 }

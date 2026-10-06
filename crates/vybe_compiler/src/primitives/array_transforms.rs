@@ -4,10 +4,292 @@
 //! `UNPACK`: they reshape/compact/scatter array values. They are intentionally
 //! separate from `packing.rs`, which is byte/binary struct packing.
 
-use crate::primitives::{collections, loops, ops};
+use crate::primitives::{bundle, collections, loops, ops};
 use vybe_ast::ArrayTraversalOrder;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+
+/// Finite helper catalog shared with the lazy linker. Existing module facts
+/// select distinct bodies so indexed reads keep the caller's object policy.
+pub(crate) const SHARED_HELPERS: &[(&str, &str)] = &[
+    ("__stdlib_array_pack_row", "__vybe_array_pack_row"),
+    (
+        "__stdlib_array_pack_row_own_fields",
+        "__vybe_array_pack_row_own_fields",
+    ),
+    (
+        "__stdlib_array_pack_row_prototype_members",
+        "__vybe_array_pack_row_prototype_members",
+    ),
+    (
+        "__stdlib_array_pack_row_own_fields_prototype_members",
+        "__vybe_array_pack_row_own_fields_prototype_members",
+    ),
+    ("__stdlib_array_pack_column", "__vybe_array_pack_column"),
+    (
+        "__stdlib_array_pack_column_own_fields",
+        "__vybe_array_pack_column_own_fields",
+    ),
+    (
+        "__stdlib_array_pack_column_prototype_members",
+        "__vybe_array_pack_column_prototype_members",
+    ),
+    (
+        "__stdlib_array_pack_column_own_fields_prototype_members",
+        "__vybe_array_pack_column_own_fields_prototype_members",
+    ),
+    (
+        "__stdlib_array_pack_vector_row",
+        "__vybe_array_pack_vector_row",
+    ),
+    (
+        "__stdlib_array_pack_vector_row_own_fields",
+        "__vybe_array_pack_vector_row_own_fields",
+    ),
+    (
+        "__stdlib_array_pack_vector_row_prototype_members",
+        "__vybe_array_pack_vector_row_prototype_members",
+    ),
+    (
+        "__stdlib_array_pack_vector_row_own_fields_prototype_members",
+        "__vybe_array_pack_vector_row_own_fields_prototype_members",
+    ),
+    (
+        "__stdlib_array_pack_vector_column",
+        "__vybe_array_pack_vector_column",
+    ),
+    (
+        "__stdlib_array_pack_vector_column_own_fields",
+        "__vybe_array_pack_vector_column_own_fields",
+    ),
+    (
+        "__stdlib_array_pack_vector_column_prototype_members",
+        "__vybe_array_pack_vector_column_prototype_members",
+    ),
+    (
+        "__stdlib_array_pack_vector_column_own_fields_prototype_members",
+        "__vybe_array_pack_vector_column_own_fields_prototype_members",
+    ),
+    ("__stdlib_array_unpack_row", "__vybe_array_unpack_row"),
+    (
+        "__stdlib_array_unpack_row_own_fields",
+        "__vybe_array_unpack_row_own_fields",
+    ),
+    (
+        "__stdlib_array_unpack_row_prototype_members",
+        "__vybe_array_unpack_row_prototype_members",
+    ),
+    (
+        "__stdlib_array_unpack_row_own_fields_prototype_members",
+        "__vybe_array_unpack_row_own_fields_prototype_members",
+    ),
+    ("__stdlib_array_unpack_column", "__vybe_array_unpack_column"),
+    (
+        "__stdlib_array_unpack_column_own_fields",
+        "__vybe_array_unpack_column_own_fields",
+    ),
+    (
+        "__stdlib_array_unpack_column_prototype_members",
+        "__vybe_array_unpack_column_prototype_members",
+    ),
+    (
+        "__stdlib_array_unpack_column_own_fields_prototype_members",
+        "__vybe_array_unpack_column_own_fields_prototype_members",
+    ),
+    ("__stdlib_array_merge_row", "__vybe_array_merge_row"),
+    (
+        "__stdlib_array_merge_row_own_fields",
+        "__vybe_array_merge_row_own_fields",
+    ),
+    (
+        "__stdlib_array_merge_row_prototype_members",
+        "__vybe_array_merge_row_prototype_members",
+    ),
+    (
+        "__stdlib_array_merge_row_own_fields_prototype_members",
+        "__vybe_array_merge_row_own_fields_prototype_members",
+    ),
+    ("__stdlib_array_merge_column", "__vybe_array_merge_column"),
+    (
+        "__stdlib_array_merge_column_own_fields",
+        "__vybe_array_merge_column_own_fields",
+    ),
+    (
+        "__stdlib_array_merge_column_prototype_members",
+        "__vybe_array_merge_column_prototype_members",
+    ),
+    (
+        "__stdlib_array_merge_column_own_fields_prototype_members",
+        "__vybe_array_merge_column_own_fields_prototype_members",
+    ),
+    ("__stdlib_array_reshape_row", "__vybe_array_reshape_row"),
+    (
+        "__stdlib_array_reshape_row_own_fields",
+        "__vybe_array_reshape_row_own_fields",
+    ),
+    (
+        "__stdlib_array_reshape_row_prototype_members",
+        "__vybe_array_reshape_row_prototype_members",
+    ),
+    (
+        "__stdlib_array_reshape_row_own_fields_prototype_members",
+        "__vybe_array_reshape_row_own_fields_prototype_members",
+    ),
+    (
+        "__stdlib_array_reshape_column",
+        "__vybe_array_reshape_column",
+    ),
+    (
+        "__stdlib_array_reshape_column_own_fields",
+        "__vybe_array_reshape_column_own_fields",
+    ),
+    (
+        "__stdlib_array_reshape_column_prototype_members",
+        "__vybe_array_reshape_column_prototype_members",
+    ),
+    (
+        "__stdlib_array_reshape_column_own_fields_prototype_members",
+        "__vybe_array_reshape_column_own_fields_prototype_members",
+    ),
+    (
+        "__stdlib_array_reshape_pad_row",
+        "__vybe_array_reshape_pad_row",
+    ),
+    (
+        "__stdlib_array_reshape_pad_row_own_fields",
+        "__vybe_array_reshape_pad_row_own_fields",
+    ),
+    (
+        "__stdlib_array_reshape_pad_row_prototype_members",
+        "__vybe_array_reshape_pad_row_prototype_members",
+    ),
+    (
+        "__stdlib_array_reshape_pad_row_own_fields_prototype_members",
+        "__vybe_array_reshape_pad_row_own_fields_prototype_members",
+    ),
+    (
+        "__stdlib_array_reshape_pad_column",
+        "__vybe_array_reshape_pad_column",
+    ),
+    (
+        "__stdlib_array_reshape_pad_column_own_fields",
+        "__vybe_array_reshape_pad_column_own_fields",
+    ),
+    (
+        "__stdlib_array_reshape_pad_column_prototype_members",
+        "__vybe_array_reshape_pad_column_prototype_members",
+    ),
+    (
+        "__stdlib_array_reshape_pad_column_own_fields_prototype_members",
+        "__vybe_array_reshape_pad_column_own_fields_prototype_members",
+    ),
+];
+
+fn emit_shared_call(
+    chunks: &mut [Chunk],
+    current: usize,
+    operation: &str,
+    argc: u8,
+    order: ArrayTraversalOrder,
+    line: u32,
+) {
+    let order = match order {
+        ArrayTraversalOrder::RowMajor => "row",
+        ArrayTraversalOrder::ColumnMajor => "column",
+    };
+    let facts = match (
+        chunks[current].module_instance_fields_are_own_properties,
+        chunks[current].module_members_on_prototype,
+    ) {
+        (false, false) => "",
+        (true, false) => "_own_fields",
+        (false, true) => "_prototype_members",
+        (true, true) => "_own_fields_prototype_members",
+    };
+    let global = format!("__vybe_array_{operation}_{order}{facts}");
+    bundle::emit_stacked_helper_call(&mut chunks[current], &global, argc, line);
+}
+
+/// Exact catalog membership supplies the argument ABI for every variant.
+pub(crate) fn shared_helper_arity(name: &str) -> Option<u8> {
+    SHARED_HELPERS.iter().find(|(export, _)| *export == name)?;
+    let operation = name.strip_prefix("__stdlib_array_")?;
+    Some(if operation.starts_with("pack_row")
+        || operation.starts_with("pack_column")
+        || operation.starts_with("reshape_row")
+        || operation.starts_with("reshape_column") { 2 } else { 3 })
+}
+
+fn shared_state_slots(name: &str) -> u16 {
+    if name.starts_with("__stdlib_array_reshape_") { 22 }
+    else if name.starts_with("__stdlib_array_pack_") { 13 }
+    else { 11 }
+}
+
+// Include scratch emitted by the nested shaped-mask and dynamic-add helpers.
+// Exact catalog membership is checked before these operation budgets apply.
+fn shared_inline_local_budget(name: &str) -> u16 {
+    shared_helper_arity(name).expect("registered array transform");
+    if name.starts_with("__stdlib_array_reshape_") { 22 }
+    else if name.starts_with("__stdlib_array_pack_") { 13 }
+    else { 21 }
+}
+
+fn emit_shared_body(chunks: &mut [Chunk], current: usize, name: &str, base: u16, line: u32) {
+    let operation = name.strip_prefix("__stdlib_array_").unwrap();
+    let order = if operation.contains("_column") {
+        ArrayTraversalOrder::ColumnMajor
+    } else {
+        ArrayTraversalOrder::RowMajor
+    };
+    if operation.starts_with("pack_") {
+        emit_pack_mask_body(chunks, current, operation.starts_with("pack_vector_"), order, base, line);
+    } else if operation.starts_with("unpack_") {
+        emit_unpack_mask_body(chunks, current, order, base, line);
+    } else if operation.starts_with("merge_") {
+        emit_merge_mask_body(chunks, current, order, base, line);
+    } else {
+        emit_reshape_body(chunks, current, operation.starts_with("reshape_pad_"), order, base, line);
+    }
+}
+
+pub(crate) fn build_shared_helper(name: &str) -> Chunk {
+    let argc = shared_helper_arity(name).expect("registered array transform");
+    let mut chunk = crate::primitives::functions::create_function_chunk(name, argc);
+    chunk.local_count = argc as u16;
+    chunk.module_instance_fields_are_own_properties = name.contains("_own_fields");
+    chunk.module_members_on_prototype = name.contains("_prototype_members");
+    // Parameters occupy the first slots; reserve the remaining state once.
+    chunk.alloc_scratch(shared_state_slots(name) - argc as u16);
+    let mut chunks = vec![chunk];
+    emit_shared_body(&mut chunks, 0, name, 0, 0);
+    chunks[0].emit_op(Op::RETURN, 0);
+    chunks.remove(0)
+}
+
+/// Append the exact selected body against fresh caller-local state. Input
+/// slots contain already evaluated arguments and remain intact after copying.
+/// The public call path does not use this seam until private linking is enabled.
+pub(crate) fn emit_inline_shared_helper(chunk: &mut Chunk, name: &str, input_base: u16, line: u32) {
+    let argc = shared_helper_arity(name).expect("registered array transform");
+    let input_end = input_base.checked_add(argc as u16)
+        .expect("array transform input slots exceed the local index range");
+    assert!(input_end <= chunk.local_count, "array transform input slots are not allocated");
+    chunk.local_count.checked_add(shared_inline_local_budget(name))
+        .expect("array transform inline body exceeds the local slot budget");
+    // All input and nested-state limits are checked before changing the chunk.
+    let base = chunk.alloc_scratch(shared_state_slots(name));
+    for arg in 0..argc as u16 {
+        chunk.emit_op_u16(Op::LOCAL_GET, input_base + arg, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, base + arg, line);
+    }
+    let previous_facts = (chunk.module_instance_fields_are_own_properties, chunk.module_members_on_prototype);
+    chunk.module_instance_fields_are_own_properties = name.contains("_own_fields");
+    chunk.module_members_on_prototype = name.contains("_prototype_members");
+    emit_shared_body(std::slice::from_mut(chunk), 0, name, base, line);
+    chunk.module_instance_fields_are_own_properties = previous_facts.0;
+    chunk.module_members_on_prototype = previous_facts.1;
+}
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -34,6 +316,9 @@ fn emit_array_flat(chunks: &mut [Chunk], current: usize, line: u32) {
 fn emit_is_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx = chunks[current].add_import("ecma:array", "isArray");
     chunks[current].emit_call(idx, 1, line);
+    // isArray has a declared Boolean result; only mask values are polymorphic.
+    let cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast, 1, line);
 }
 
 fn emit_flatten_slot(
@@ -52,7 +337,6 @@ fn emit_flatten_slot(
 
     lget(&mut chunks[current], value_slot, line);
     emit_is_array(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
     lget(&mut chunks[current], value_slot, line);
@@ -83,14 +367,12 @@ fn emit_flat_result_shaped_like_mask(
 
     lget(&mut chunks[current], mask_slot, line);
     emit_is_array(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
     lget(&mut chunks[current], mask_slot, line);
     i32_const(&mut chunks[current], line, 0);
     collections::emit_get(chunks, current, line);
     emit_is_array(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
     collections::emit_array_new(chunks, current, 0, line);
@@ -104,8 +386,8 @@ fn emit_flat_result_shaped_like_mask(
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], mask_slot, line);
     emit_array_len(chunks, current, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], mask_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -157,9 +439,8 @@ fn emit_to_i32(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I32_OR, line);
 }
 
-/// `ecma:array.length` answers with an `F64` — it is a JS property, and JS
-/// numbers are doubles. A length that is about to be counted with, rather than
-/// compared, has to be coerced first or the `i32` opcodes read a float.
+/// The array platform declares lengths as INDEX/i32. Retain the explicit
+/// index normalization here for the reshape input contract.
 fn emit_array_len_i32(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_array_len(chunks, current, line);
     emit_to_i32(&mut chunks[current], line);
@@ -204,7 +485,24 @@ pub fn emit_reshape(
     order: ArrayTraversalOrder,
     line: u32,
 ) {
-    let base = chunks[current].alloc_scratch(22);
+    emit_shared_call(
+        chunks,
+        current,
+        if has_pad { "reshape_pad" } else { "reshape" },
+        if has_pad { 3 } else { 2 },
+        order,
+        line,
+    );
+}
+
+fn emit_reshape_body(
+    chunks: &mut [Chunk],
+    current: usize,
+    has_pad: bool,
+    order: ArrayTraversalOrder,
+    base: u16,
+    line: u32,
+) {
     let source_slot = base;
     let shape_slot = base + 1;
     let pad_slot = base + 2;
@@ -228,12 +526,6 @@ pub fn emit_reshape(
     let level_slot = base + 20;
     let dim_slot = base + 21;
 
-    if has_pad {
-        lset(&mut chunks[current], pad_slot, line);
-    }
-    lset(&mut chunks[current], shape_slot, line);
-    lset(&mut chunks[current], source_slot, line);
-
     emit_flatten_slot(chunks, current, source_slot, flat_slot, order, line);
 
     lget(&mut chunks[current], shape_slot, line);
@@ -254,8 +546,8 @@ pub fn emit_reshape(
     let state = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], rank_slot, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], weights_slot, line);
     lget(&mut chunks[current], total_slot, line);
@@ -295,7 +587,7 @@ pub fn emit_reshape(
         lget(&mut chunks[current], i_slot, line);
         lget(&mut chunks[current], total_slot, line);
         chunks[current].emit_op(Op::I32_LT_S, line);
-        loops::emit_loop_cond(chunks, current, line);
+        loops::emit_loop_cond_from_i32(chunks, current, line);
 
         lget(&mut chunks[current], flat_slot, line);
         lget(&mut chunks[current], pad_slot, line);
@@ -340,7 +632,7 @@ pub fn emit_reshape(
             lget(&mut chunks[current], k_slot, line);
             lget(&mut chunks[current], total_slot, line);
             chunks[current].emit_op(Op::I32_LT_S, line);
-            loops::emit_loop_cond(chunks, current, line);
+            loops::emit_loop_cond_from_i32(chunks, current, line);
 
             i32_const(&mut chunks[current], line, 0);
             lset(&mut chunks[current], linear_slot, line);
@@ -350,8 +642,8 @@ pub fn emit_reshape(
             let inner = loops::emit_loop_start(chunks, current, line);
             lget(&mut chunks[current], i_slot, line);
             lget(&mut chunks[current], rank_slot, line);
-            ops::emit_dyn_lt(&mut chunks[current], line);
-            loops::emit_loop_cond(chunks, current, line);
+            chunks[current].emit_op(Op::I32_LT_S, line);
+            loops::emit_loop_cond_from_i32(chunks, current, line);
 
             emit_shape_extent(chunks, current, shape_slot, i_slot, line);
             lset(&mut chunks[current], extent_slot, line);
@@ -423,7 +715,7 @@ pub fn emit_reshape(
     i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_SUB, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond(chunks, current, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], rank_slot, line);
     i32_const(&mut chunks[current], line, 1);
@@ -443,8 +735,8 @@ pub fn emit_reshape(
     lget(&mut chunks[current], pos_slot, line);
     lget(&mut chunks[current], nest_slot, line);
     emit_array_len(chunks, current, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], grouped_slot, line);
     lget(&mut chunks[current], nest_slot, line);
@@ -484,7 +776,24 @@ pub fn emit_pack_mask(
     order: ArrayTraversalOrder,
     line: u32,
 ) {
-    let base = chunks[current].alloc_scratch(12);
+    emit_shared_call(
+        chunks,
+        current,
+        if has_vector { "pack_vector" } else { "pack" },
+        if has_vector { 3 } else { 2 },
+        order,
+        line,
+    );
+}
+
+fn emit_pack_mask_body(
+    chunks: &mut [Chunk],
+    current: usize,
+    has_vector: bool,
+    order: ArrayTraversalOrder,
+    base: u16,
+    line: u32,
+) {
     let source_slot = base;
     let mask_slot = base + 1;
     let vector_slot = base + 2;
@@ -493,16 +802,11 @@ pub fn emit_pack_mask(
     let vector_flat_slot = base + 5;
     let result_slot = base + 6;
     let i_slot = base + 7;
+    let limit_slot = base + 12;
     let selected_count_slot = base + 8;
     let vector_len_slot = base + 9;
     let prefix_slot = base + 10;
     let pad_slot = base + 11;
-
-    if has_vector {
-        lset(&mut chunks[current], vector_slot, line);
-    }
-    lset(&mut chunks[current], mask_slot, line);
-    lset(&mut chunks[current], source_slot, line);
 
     emit_flatten_slot(chunks, current, source_slot, source_flat_slot, order, line);
     emit_flatten_slot(chunks, current, mask_slot, mask_flat_slot, order, line);
@@ -515,12 +819,15 @@ pub fn emit_pack_mask(
     i32_const(&mut chunks[current], line, 0);
     lset(&mut chunks[current], i_slot, line);
 
-    let state = loops::emit_loop_start(chunks, current, line);
-    lget(&mut chunks[current], i_slot, line);
+    // Flattening produced a private array that this loop never mutates.
     lget(&mut chunks[current], source_flat_slot, line);
     emit_array_len(chunks, current, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    loops::emit_loop_cond(chunks, current, line);
+    lset(&mut chunks[current], limit_slot, line);
+    let state = loops::emit_loop_start(chunks, current, line);
+    lget(&mut chunks[current], i_slot, line);
+    lget(&mut chunks[current], limit_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], mask_flat_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -589,7 +896,16 @@ pub fn emit_merge_mask(
     order: ArrayTraversalOrder,
     line: u32,
 ) {
-    let base = chunks[current].alloc_scratch(10);
+    emit_shared_call(chunks, current, "merge", 3, order, line);
+}
+
+fn emit_merge_mask_body(
+    chunks: &mut [Chunk],
+    current: usize,
+    order: ArrayTraversalOrder,
+    base: u16,
+    line: u32,
+) {
     let true_slot = base;
     let false_slot = base + 1;
     let mask_slot = base + 2;
@@ -600,17 +916,13 @@ pub fn emit_merge_mask(
     let false_is_array_slot = base + 7;
     let result_slot = base + 8;
     let i_slot = base + 9;
-
-    lset(&mut chunks[current], mask_slot, line);
-    lset(&mut chunks[current], false_slot, line);
-    lset(&mut chunks[current], true_slot, line);
+    let limit_slot = base + 10;
 
     // A SCALAR mask selects one source WHOLE — it has no shape to walk, and
     // flattening it to a one-element array would return a one-element result
     // where Fortran's `where (.true.)` assigns the entire array.
     lget(&mut chunks[current], mask_slot, line);
     emit_is_array(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
     emit_flatten_slot(chunks, current, mask_slot, mask_flat_slot, order, line);
@@ -636,12 +948,15 @@ pub fn emit_merge_mask(
     i32_const(&mut chunks[current], line, 0);
     lset(&mut chunks[current], i_slot, line);
 
-    let state = loops::emit_loop_start(chunks, current, line);
-    lget(&mut chunks[current], i_slot, line);
+    // Flattening produced a private array that this loop never mutates.
     lget(&mut chunks[current], mask_flat_slot, line);
     emit_array_len(chunks, current, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    loops::emit_loop_cond(chunks, current, line);
+    lset(&mut chunks[current], limit_slot, line);
+    let state = loops::emit_loop_start(chunks, current, line);
+    lget(&mut chunks[current], i_slot, line);
+    lget(&mut chunks[current], limit_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], result_slot, line);
     lget(&mut chunks[current], mask_flat_slot, line);
@@ -703,7 +1018,6 @@ fn emit_source_flat(
 ) {
     lget(&mut chunks[current], source_slot, line);
     emit_is_array(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     lset(&mut chunks[current], is_array_slot, line);
 
     lget(&mut chunks[current], is_array_slot, line);
@@ -743,7 +1057,16 @@ pub fn emit_unpack_mask(
     order: ArrayTraversalOrder,
     line: u32,
 ) {
-    let base = chunks[current].alloc_scratch(10);
+    emit_shared_call(chunks, current, "unpack", 3, order, line);
+}
+
+fn emit_unpack_mask_body(
+    chunks: &mut [Chunk],
+    current: usize,
+    order: ArrayTraversalOrder,
+    base: u16,
+    line: u32,
+) {
     let vector_slot = base;
     let mask_slot = base + 1;
     let field_slot = base + 2;
@@ -753,18 +1076,14 @@ pub fn emit_unpack_mask(
     let field_is_array_slot = base + 6;
     let result_slot = base + 7;
     let i_slot = base + 8;
+    let limit_slot = base + 10;
     let vector_index_slot = base + 9;
-
-    lset(&mut chunks[current], field_slot, line);
-    lset(&mut chunks[current], mask_slot, line);
-    lset(&mut chunks[current], vector_slot, line);
 
     emit_flatten_slot(chunks, current, vector_slot, vector_flat_slot, order, line);
     emit_flatten_slot(chunks, current, mask_slot, mask_flat_slot, order, line);
 
     lget(&mut chunks[current], field_slot, line);
     emit_is_array(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     lset(&mut chunks[current], field_is_array_slot, line);
 
     lget(&mut chunks[current], field_is_array_slot, line);
@@ -784,12 +1103,15 @@ pub fn emit_unpack_mask(
     i32_const(&mut chunks[current], line, 0);
     lset(&mut chunks[current], vector_index_slot, line);
 
-    let state = loops::emit_loop_start(chunks, current, line);
-    lget(&mut chunks[current], i_slot, line);
+    // Flattening produced a private array that this loop never mutates.
     lget(&mut chunks[current], mask_flat_slot, line);
     emit_array_len(chunks, current, line);
-    ops::emit_dyn_lt(&mut chunks[current], line);
-    loops::emit_loop_cond(chunks, current, line);
+    lset(&mut chunks[current], limit_slot, line);
+    let state = loops::emit_loop_start(chunks, current, line);
+    lget(&mut chunks[current], i_slot, line);
+    lget(&mut chunks[current], limit_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], mask_flat_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -828,3 +1150,7 @@ pub fn emit_unpack_mask(
 
     emit_flat_result_shaped_like_mask(chunks, current, mask_slot, result_slot, line);
 }
+
+#[cfg(test)]
+#[path = "../../tests/fixtures/collection_optimization_array_transform_state_base.rs"]
+mod state_base_tests;

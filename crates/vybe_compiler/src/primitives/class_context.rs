@@ -432,7 +432,9 @@ impl Compiler {
 
     /// Properties and methods occupy separate namespaces.
     pub(crate) fn separate_property_method_namespace(&self) -> bool {
-        self.profile.separate_property_method_namespace
+        self.directives()
+            .separate_property_method_namespace
+            .unwrap_or(self.profile.separate_property_method_namespace)
     }
 
     // `class_introspection_metadata` is GONE — now
@@ -673,11 +675,11 @@ impl Compiler {
                     | vybe_ast::builtin_slots::BuiltinType::Double
             )
         }) || self.expr_is_provably_number(cond);
-        self.want_i32_condition = true;
-        self.gave_i32_condition = false;
+        let previous_request = std::mem::replace(&mut self.want_i32_condition, true);
+        let previous_report = std::mem::replace(&mut self.gave_i32_condition, false);
         let result = self.compile_expr(cond);
-        self.want_i32_condition = false;
-        let gave = std::mem::take(&mut self.gave_i32_condition);
+        self.want_i32_condition = previous_request;
+        let gave = std::mem::replace(&mut self.gave_i32_condition, previous_report);
         result?;
         if !gave {
             if cond_is_number {

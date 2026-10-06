@@ -12,10 +12,10 @@ use vybe_runtime::opcode::Op;
 
 fn emit_sort_in_place(c: &mut Chunk, h: u16, line: u32) {
     let mut imports = Chunk::new("imports");
-    collections::emit_stable_merge_sort(&mut imports, c, h, line, |_, c, lhs, rhs, line| {
+    collections::emit_stable_merge_sort(&mut imports, c, h, line, None, |_, c, lhs, rhs, line| {
         get(c, lhs, line);
         get(c, rhs, line);
-        ops::emit_dyn_gt(c, line);
+        ops::emit_comparison_helper_call(c, "__vybe_dyngt", line);
     });
 }
 
@@ -91,6 +91,15 @@ fn emit_comparator_greater(c: &mut Chunk, line: u32) {
 
 /// Establish the heap invariant in place. Stack: `[heap]` -> `[null]`.
 pub fn emit_heapify(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    if !crate::primitives::polyfills::is_compiling_runtime_helper() {
+        crate::primitives::bundle::emit_stacked_helper_call(
+            &mut chunks[current],
+            "__vybe_heapify",
+            1,
+            line,
+        );
+        return;
+    }
     let chunk = &mut chunks[current];
     let h = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, h, line);
@@ -102,7 +111,7 @@ fn emit_push_sorted(c: &mut Chunk, h: u16, x: u16, line: u32) {
     emit_binary_insert(c, h, x, line, |c, lhs, rhs, line| {
         get(c, lhs, line);
         get(c, rhs, line);
-        ops::emit_dyn_gt(c, line);
+        ops::emit_comparison_helper_call(c, "__vybe_dyngt", line);
     });
 }
 
@@ -260,9 +269,9 @@ fn increment(c: &mut Chunk, index: u16, line: u32) {
 }
 fn key_better(c: &mut Chunk, largest: bool, line: u32) {
     if largest {
-        ops::emit_dyn_gt(c, line);
+        ops::emit_comparison_helper_call(c, "__vybe_dyngt", line);
     } else {
-        ops::emit_dyn_lt(c, line);
+        ops::emit_comparison_helper_call(c, "__vybe_dynlt", line);
     }
 }
 
@@ -288,47 +297,16 @@ fn pair_better(c: &mut Chunk, lhs: u16, rhs: u16, largest: bool, line: u32) {
     c.emit_end(line);
 }
 
-// Keep the worst retained decoration at the root of the private heap.
-fn sift_up(c: &mut Chunk, arr: u16, pos: u16, item: u16, largest: bool, line: u32) {
-    let base = c.alloc_scratch(2);
-    let parent = base;
-    let value = base + 1;
-    let done = c.emit_block(line);
-    let (repeat, _) = c.emit_loop_s(line);
-    get(c, pos, line);
-    c.emit_f64_const(0.0, line);
-    c.emit_op(Op::F64_LE, line);
-    c.emit_br_if(1, line);
-    get(c, pos, line);
-    c.emit_f64_const(1.0, line);
-    c.emit_op(Op::F64_SUB, line);
-    c.emit_f64_const(2.0, line);
-    c.emit_op(Op::F64_DIV, line);
-    c.emit_op(Op::F64_FLOOR, line);
-    set(c, parent, line);
-    read(c, arr, parent, value, line);
-    pair_better(c, value, item, largest, line);
-    c.emit_op(Op::I32_EQZ, line);
-    c.emit_br_if(1, line);
-    write(c, arr, pos, value, line);
-    get(c, parent, line);
-    set(c, pos, line);
-    c.emit_br(0, line);
-    c.emit_end(line);
-    c.patch_loop(repeat);
-    c.emit_end(line);
-    c.patch_block(done);
-    write(c, arr, pos, item, line);
-}
-
-fn sift_down(c: &mut Chunk, arr: u16, len: u16, item: u16, largest: bool, line: u32) {
+// Keep the worst retained decoration at the root. An explicit start permits
+// bottom-up heap construction; replacement sifts still start at zero.
+fn sift_down(c: &mut Chunk, arr: u16, len: u16, item: u16, start: u16, largest: bool, line: u32) {
     let base = c.alloc_scratch(5);
     let pos = base;
     let child = base + 1;
     let right = base + 2;
     let value = base + 3;
     let other = base + 4;
-    c.emit_f64_const(0.0, line);
+    get(c, start, line);
     set(c, pos, line);
     let done = c.emit_block(line);
     let (repeat, _) = c.emit_loop_s(line);
@@ -376,8 +354,26 @@ fn sift_down(c: &mut Chunk, arr: u16, len: u16, item: u16, largest: bool, line: 
 
 fn emit_n_of(chunks: &mut [Chunk], current: usize, argc: u8, largest: bool, line: u32) {
     let abi = crate::primitives::class_context::module_receiver_abi(chunks);
+    if !crate::primitives::polyfills::is_compiling_runtime_helper() {
+        let receiver = abi == vybe_runtime::chunk::ReceiverAbi::Parameter;
+        let global = match (largest, argc >= 3, receiver) {
+            (false, false, _) => "__vybe_nsmallest",
+            (true, false, _) => "__vybe_nlargest",
+            (false, true, false) => "__vybe_nsmallest_key",
+            (true, true, false) => "__vybe_nlargest_key",
+            (false, true, true) => "__vybe_nsmallest_key_receiver",
+            (true, true, true) => "__vybe_nlargest_key_receiver",
+        };
+        crate::primitives::bundle::emit_stacked_helper_call(
+            &mut chunks[current],
+            global,
+            if argc >= 3 { 3 } else { 2 },
+            line,
+        );
+        return;
+    }
     let c = &mut chunks[current];
-    let base = c.alloc_scratch(12);
+    let base = c.alloc_scratch(15);
     let n = base;
     let data = base + 1;
     let key_fn = base + 2;
@@ -390,6 +386,9 @@ fn emit_n_of(chunks: &mut [Chunk], current: usize, argc: u8, largest: bool, line
     let key = base + 9;
     let item = base + 10;
     let root = base + 11;
+    let sift_start = base + 12;
+    let need_sift = base + 13;
+    let building = base + 14;
     if argc >= 3 {
         set(c, key_fn, line);
     }
@@ -436,6 +435,9 @@ fn emit_n_of(chunks: &mut [Chunk], current: usize, argc: u8, largest: bool, line
     get(c, len, line);
     c.emit_op(Op::F64_GE, line);
     c.emit_br_if(1, line);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_TEE, need_sift, line);
+    set(c, building, line);
     read(c, data, index, value, line);
     if argc >= 3 {
         get(c, key_fn, line);
@@ -463,17 +465,30 @@ fn emit_n_of(chunks: &mut [Chunk], current: usize, argc: u8, largest: bool, line
     set(c, item, line);
     get(c, filled, line);
     set(c, pos, line);
-    // When all elements are requested, decorate directly without maintaining
-    // a heap that would immediately be sorted again.
+    // Evaluate the first n keys before comparing their decorations. Fill
+    // the buffer directly, then build its worst-at-root heap in O(n) time.
+    // When all input items are requested, sorting needs no heap at all.
+    write(c, result, pos, item, line);
+    increment(c, filled, line);
+    get(c, filled, line);
+    get(c, n, line);
+    c.emit_op(Op::F64_EQ, line);
     get(c, n, line);
     get(c, len, line);
     c.emit_op(Op::F64_LT, line);
+    c.emit_op(Op::I32_AND, line);
+    c.emit_op_u16(Op::LOCAL_TEE, need_sift, line);
+    set(c, building, line);
+    get(c, building, line);
     c.emit_if(line);
-    sift_up(c, result, pos, item, largest, line);
-    c.emit_else(line);
-    write(c, result, pos, item, line);
+    get(c, n, line);
+    c.emit_f64_const(2.0, line);
+    c.emit_op(Op::F64_DIV, line);
+    c.emit_op(Op::F64_FLOOR, line);
+    c.emit_f64_const(1.0, line);
+    c.emit_op(Op::F64_SUB, line);
+    set(c, sift_start, line);
     c.emit_end(line);
-    increment(c, filled, line);
     c.emit_else(line);
     get(c, result, line);
     c.emit_i32_const(0, line);
@@ -482,14 +497,43 @@ fn emit_n_of(chunks: &mut [Chunk], current: usize, argc: u8, largest: bool, line
     get(c, key, line);
     field(c, root, 0, line);
     key_better(c, largest, line);
+    c.emit_op_u16(Op::LOCAL_TEE, need_sift, line);
     c.emit_if(line);
     get(c, key, line);
     get(c, index, line);
     get(c, value, line);
     c.emit_array_new_fixed(0, 3, line);
     set(c, item, line);
-    sift_down(c, result, n, item, largest, line);
+    c.emit_f64_const(0.0, line);
+    set(c, sift_start, line);
     c.emit_end(line);
+    c.emit_end(line);
+    // Both construction and accepted replacements reuse one emitted sift.
+    get(c, need_sift, line);
+    c.emit_if(line);
+    let heap_done = c.emit_block(line);
+    let (heap_loop, _) = c.emit_loop_s(line);
+    get(c, sift_start, line);
+    c.emit_f64_const(0.0, line);
+    c.emit_op(Op::F64_LT, line);
+    c.emit_br_if(1, line);
+    get(c, building, line);
+    c.emit_if(line);
+    read(c, result, sift_start, item, line);
+    c.emit_end(line);
+    sift_down(c, result, n, item, sift_start, largest, line);
+    get(c, building, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_br_if(1, line); // one root replacement is finished
+    get(c, sift_start, line);
+    c.emit_f64_const(1.0, line);
+    c.emit_op(Op::F64_SUB, line);
+    set(c, sift_start, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(heap_loop);
+    c.emit_end(line);
+    c.patch_block(heap_done);
     c.emit_end(line);
     increment(c, index, line);
     c.emit_br(0, line);
@@ -498,9 +542,16 @@ fn emit_n_of(chunks: &mut [Chunk], current: usize, argc: u8, largest: bool, line
     c.emit_end(line);
     c.patch_block(done);
 
-    collections::emit_stable_merge_sort(&mut imports, c, result, line, |_, c, lhs, rhs, line| {
-        pair_better(c, rhs, lhs, largest, line);
-    });
+    collections::emit_stable_merge_sort(
+        &mut imports,
+        c,
+        result,
+        line,
+        None,
+        |_, c, lhs, rhs, line| {
+            pair_better(c, rhs, lhs, largest, line);
+        },
+    );
     c.emit_f64_const(0.0, line);
     set(c, index, line);
     let done = c.emit_block(line);
@@ -551,4 +602,28 @@ pub fn emit_merge(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     }
     let sorted = chunks[current].add_import("ecma:array", "toSorted");
     chunks[current].emit_call(sorted, 1, line);
+}
+
+pub(crate) fn build_shared_helper(name: &str) -> Chunk {
+    let (emitter, argc): (fn(&mut [Chunk], usize, u8, u32), u8) = match name {
+        "__stdlib_heapify" => (emit_heapify, 1),
+        "__stdlib_nsmallest" => (emit_nsmallest, 2),
+        "__stdlib_nlargest" => (emit_nlargest, 2),
+        "__stdlib_nsmallest_key" | "__stdlib_nsmallest_key_receiver" => (emit_nsmallest, 3),
+        "__stdlib_nlargest_key" | "__stdlib_nlargest_key_receiver" => (emit_nlargest, 3),
+        _ => unreachable!("unknown shared heap helper"),
+    };
+    let mut c = Chunk::new(name);
+    c.arity = argc;
+    c.local_count = argc as u16;
+    if name.ends_with("_receiver") {
+        c.module_receiver_abi = vybe_runtime::chunk::ReceiverAbi::Parameter;
+    }
+    for slot in 0..argc {
+        c.emit_op_u16(Op::LOCAL_GET, slot as u16, 0);
+    }
+    let mut chunks = vec![c];
+    emitter(&mut chunks, 0, argc, 0);
+    chunks[0].emit_op(Op::RETURN, 0);
+    chunks.pop().unwrap()
 }

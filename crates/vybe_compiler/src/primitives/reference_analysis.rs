@@ -1,4 +1,5 @@
 //! Resolve module address-taking before emitting any function bodies.
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
 
@@ -42,18 +43,35 @@ impl Scan {
     }
 
     fn address(&mut self, name: &str) {
-        let name = self.key(name);
+        // Scope lookup does not require an owned key. In case-sensitive
+        // modules, borrow the AST name and allocate only for a new global.
+        let name = match self.fold {
+            None => Cow::Borrowed(name),
+            Some(CaseAlphabet::Ascii) => Cow::Owned(name.to_ascii_lowercase()),
+            Some(CaseAlphabet::Unicode) => Cow::Owned(name.to_lowercase()),
+        };
         for frame in self.frames.iter().skip(1).rev() {
-            match frame.redirects.get(&name) {
+            match frame.redirects.get(name.as_ref()) {
                 Some(ScopeDeclKind::Global) => break,
                 Some(ScopeDeclKind::Nonlocal) => continue,
                 _ => {}
             }
-            if frame.locals.contains(&name) || frame.closed {
+            if frame.locals.contains(name.as_ref()) || frame.closed {
                 return;
             }
         }
-        self.globals.insert(name.to_owned());
+        match name {
+            Cow::Borrowed(name) => {
+                if !self.globals.contains(name) {
+                    self.globals.insert(name.to_owned());
+                }
+            }
+            // Folding already produced an owned key. Preserve its original
+            // single insertion lookup instead of probing the set twice.
+            Cow::Owned(name) => {
+                self.globals.insert(name);
+            }
+        }
     }
 
     fn bind(&mut self, name: &str, function_scoped: bool) {
@@ -209,7 +227,7 @@ impl Scan {
                 }
                 for name in names {
                     frame.redirects.insert(
-                        name.clone(),
+                        name,
                         if *kind == ScopeDeclKind::Closed {
                             ScopeDeclKind::Global
                         } else {

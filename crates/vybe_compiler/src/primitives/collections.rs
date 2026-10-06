@@ -201,7 +201,7 @@ pub fn emit_rank(chunks: &mut [Chunk], current: usize, line: u32) {
     fn emit_is_array(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
         emit_import_call(chunks, current, "ecma:array", "isArray", 1, line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        emit_import_call(chunks, current, "wasm:js-boolean", "cast", 1, line);
     }
 
     fn emit_array_get_zero(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
@@ -280,7 +280,7 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     let is_array = chunks[current].add_import("ecma:array", "isArray");
     chunks[current].emit_call(is_array, 1, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    emit_import_call(chunks, current, "wasm:js-boolean", "cast", 1, line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
@@ -457,7 +457,7 @@ pub fn emit_iter_natural(chunks: &mut [Chunk], current: usize, line: u32) {
         let idx = chunks[current].add_import("ecma:array", "isArray");
         chunks[current].emit_call(idx, 1, line);
     }
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    emit_import_call(chunks, current, "wasm:js-boolean", "cast", 1, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     chunks[current].emit_else(line);
@@ -545,7 +545,7 @@ pub fn emit_promote_empty_array_for_string_key(
         let idx = chunks[current].add_import("ecma:array", "isArray");
         chunks[current].emit_call(idx, 1, line);
     }
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    emit_import_call(chunks, current, "wasm:js-boolean", "cast", 1, line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
@@ -556,13 +556,12 @@ pub fn emit_promote_empty_array_for_string_key(
         1,
         line,
     );
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // js-string.test already returns the i32 condition required by IF.
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunks[current].emit_op(Op::ARRAY_LENGTH, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    crate::primitives::ops::emit_dyn_ne(&mut chunks[current], line);
+    // GC array length is an i32, so emptiness needs no dynamic equality.
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
@@ -590,6 +589,33 @@ pub fn emit_promote_empty_array_for_string_key(
 /// `Compiler::emit_negative_index_wrap` BEFORE this emit.
 pub fn emit_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::ARRAY_GET, line);
+}
+
+#[cfg(test)]
+mod known_array_promotion_tests {
+    use super::*;
+
+    #[test]
+    fn promotion_uses_integer_conditions_without_dynamic_comparison_helpers() {
+        let mut chunks = vec![Chunk::new("promotion")];
+        emit_promote_empty_array_for_string_key(&mut chunks, 0, 0, 1, 1);
+        let chunk = &chunks[0];
+        let mut offset = 0;
+        let mut has_length = false;
+        let mut has_integer_empty_test = false;
+        while offset < chunk.code.len() {
+            let group = u16::from_be_bytes(chunk.code[offset..offset + 2].try_into().unwrap());
+            let sub = u16::from_be_bytes(chunk.code[offset + 2..offset + 4].try_into().unwrap());
+            let op = Op::decode(group, sub).expect("valid emitted opcode");
+            assert_ne!(op, Op::CALL_REF, "known integer conditions must not call dynamic helpers");
+            assert_ne!(op, Op::GLOBAL_GET, "promotion must not require a comparison helper global");
+            has_length |= op == Op::ARRAY_LENGTH;
+            has_integer_empty_test |= op == Op::I32_EQZ;
+            let operand = offset + 4;
+            offset = operand + op.operand_format().size_in(&chunk.code, operand);
+        }
+        assert!(has_length && has_integer_empty_test);
+    }
 }
 
 /// Trap (WASM `unreachable`) unless `arr` (in a local) is a non-null array and
@@ -710,7 +736,7 @@ pub fn emit_shift(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     let is_array = chunks[current].add_import("ecma:array", "isArray");
     chunks[current].emit_call(is_array, 1, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    emit_import_call(chunks, current, "wasm:js-boolean", "cast", 1, line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
@@ -861,19 +887,29 @@ pub fn emit_sort_with_comparator_in_chunk(chunk: &mut Chunk, line: u32) {
 
 /// Array sort by key function (in-place). Stack: [array, key_fn] -> [array].
 ///
-/// This emits the sort directly instead of routing through a synthetic
-/// language helper, so Python `heapq`, JS/PHP comparators, and future language
-/// adapters can share one bytecode shape for key-based ordering.
+/// The common helper linker shares the body across call sites. Callback ABI
+/// declarations and dynamic key comparison retain their source semantics.
 pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32) {
     let abi = crate::primitives::class_context::module_receiver_abi(chunks);
+    if !crate::primitives::polyfills::is_compiling_runtime_helper() {
+        let global = if abi == vybe_runtime::chunk::ReceiverAbi::Parameter {
+            "__vybe_sort_by_key_receiver"
+        } else {
+            "__vybe_sort_by_key"
+        };
+        crate::primitives::bundle::emit_stacked_helper_call(&mut chunks[current], global, 2, line);
+        return;
+    }
     let c = &mut chunks[current];
-    let base = c.alloc_scratch(6);
+    let base = c.alloc_scratch(8);
     let key_fn = base;
     let arr = base + 1;
     let len = base + 2;
     let index = base + 3;
     let decorated = base + 4;
     let value = base + 5;
+    let gc = base + 6;
+    let pair = base + 7;
     lset(c, key_fn, line);
     lset(c, arr, line);
     let mut imports = Chunk::new("imports");
@@ -881,7 +917,7 @@ pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32
     emit_len_into(&mut imports, c, line);
     lset(c, len, line);
     lget(c, len, line);
-    emit_new_with_length_into(&mut imports, c, line);
+    emit_private_array_new(&mut imports, c, gc, line);
     lset(c, decorated, line);
 
     // Evaluate keys exactly once, in input order. Keep the original values in
@@ -898,16 +934,14 @@ pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32
     lget(c, index, line);
     emit_get_into(&mut imports, c, line);
     lset(c, value, line);
-    lget(c, decorated, line);
-    lget(c, index, line);
     lget(c, key_fn, line);
     let recv = crate::primitives::callable::emit_callback_receiver(c, abi, line);
     lget(c, value, line);
     crate::primitives::callable::emit_direct_invoke_chunk(c, 1 + recv, line);
     lget(c, value, line);
     c.emit_array_new_fixed(0, 2, line);
-    emit_set_into(&mut imports, c, line);
-    c.emit_op(Op::DROP, line);
+    lset(c, pair, line);
+    emit_private_set(&mut imports, c, decorated, index, pair, Some(gc), line);
     lget(c, index, line);
     c.emit_f64_const(1.0, line);
     c.emit_op(Op::F64_ADD, line);
@@ -918,15 +952,22 @@ pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32
     c.emit_end(line);
     c.patch_block(done);
 
-    emit_stable_merge_sort(&mut imports, c, decorated, line, |_, c, lhs, rhs, line| {
-        for pair in [lhs, rhs] {
-            lget(c, pair, line);
-            c.emit_i32_const(0, line);
-            c.emit_op(Op::ARRAY_GET, line);
-        }
-        // Preserve the existing dynamic key comparison and coercion contract.
-        crate::primitives::ops::emit_dyn_gt(c, line);
-    });
+    emit_stable_merge_sort(
+        &mut imports,
+        c,
+        decorated,
+        line,
+        Some(len),
+        |_, c, lhs, rhs, line| {
+            for pair in [lhs, rhs] {
+                lget(c, pair, line);
+                c.emit_i32_const(0, line);
+                c.emit_op(Op::ARRAY_GET, line);
+            }
+            // Preserve the existing dynamic key comparison and coercion contract.
+            crate::primitives::ops::emit_comparison_helper_call(c, "__vybe_dyngt", line);
+        },
+    );
 
     c.emit_f64_const(0.0, line);
     lset(c, index, line);
@@ -938,9 +979,7 @@ pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32
     c.emit_br_if(1, line);
     lget(c, arr, line);
     lget(c, index, line);
-    lget(c, decorated, line);
-    lget(c, index, line);
-    emit_get_into(&mut imports, c, line);
+    emit_private_get(&mut imports, c, decorated, index, Some(gc), line);
     c.emit_i32_const(1, line);
     c.emit_op(Op::ARRAY_GET, line);
     emit_set_into(&mut imports, c, line);
@@ -955,6 +994,26 @@ pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32
     c.emit_end(line);
     c.patch_block(done);
     lget(c, arr, line);
+}
+
+pub(crate) fn build_sort_by_key(receiver_parameter: bool) -> Chunk {
+    let mut c = Chunk::new(if receiver_parameter {
+        "__stdlib_sort_by_key_receiver"
+    } else {
+        "__stdlib_sort_by_key"
+    });
+    c.arity = 2;
+    c.local_count = 2;
+    if receiver_parameter {
+        c.module_receiver_abi = vybe_runtime::chunk::ReceiverAbi::Parameter;
+    }
+    for slot in 0..2 {
+        c.emit_op_u16(Op::LOCAL_GET, slot, 0);
+    }
+    let mut chunks = vec![c];
+    emit_sort_by_key_in_place(&mut chunks, 0, 0);
+    chunks[0].emit_op(Op::RETURN, 0);
+    chunks.pop().unwrap()
 }
 
 /// Array lastIndexOf. Stack: [array, value] → [i32] via `ecma:array.lastIndexOf`.
@@ -1127,7 +1186,7 @@ pub fn emit_clear_keyed(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], value_slot, line);
     let is_array = chunks[current].add_import("ecma:array", "isArray");
     chunks[current].emit_call(is_array, 1, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    emit_import_call(chunks, current, "wasm:js-boolean", "cast", 1, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
@@ -1243,15 +1302,22 @@ pub fn emit_sort_func(chunks: &mut [Chunk], current: usize, line: u32) {
     lset(c, arr, line);
     // Imports are chunk-local; this carrier only preserves the existing _into API.
     let mut imports = Chunk::new("imports");
-    emit_stable_merge_sort(&mut imports, c, arr, line, |imports, c, lhs, rhs, line| {
-        lget(c, cmp, line);
-        let receiver = crate::primitives::callable::emit_callback_receiver(c, abi, line);
-        lget(c, lhs, line);
-        lget(c, rhs, line);
-        crate::primitives::callable::emit_direct_invoke_chunk(c, 2 + receiver, line);
-        c.emit_i32_const(0, line);
-        crate::primitives::ops::emit_dyn_gt_into(imports, c, line);
-    });
+    emit_stable_merge_sort(
+        &mut imports,
+        c,
+        arr,
+        line,
+        None,
+        |imports, c, lhs, rhs, line| {
+            lget(c, cmp, line);
+            let receiver = crate::primitives::callable::emit_callback_receiver(c, abi, line);
+            lget(c, lhs, line);
+            lget(c, rhs, line);
+            crate::primitives::callable::emit_direct_invoke_chunk(c, 2 + receiver, line);
+            c.emit_i32_const(0, line);
+            crate::primitives::ops::emit_dyn_gt_into(imports, c, line);
+        },
+    );
     lget(c, arr, line);
 }
 
@@ -2372,7 +2438,7 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, arg_count: u8, inclusive
             crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
         }
     }
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     // result.push(isstr ? String.fromCharCode(i) : i)
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
@@ -2529,19 +2595,40 @@ pub fn emit_sorted_invoke(chunk: &mut Chunk, line: u32) {
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
 }
 
-/// reversed(iterable). Stack: [seq] → [reversed_array]. Inlined polymorphic
-/// reverse (works for arrays AND dicts — `emit_get` yields dict keys by
-/// insertion order, which `ecma:array.toReversed` does not), replacing the
-/// retired `__vybe_reversed` stdlib chunk.
+/// reversed(iterable). Stack: [seq] → [reversed_array]. Shared polymorphic
+/// reverse retaining the common indexed-read contract. Language adapters
+/// normalize iterable semantics (such as dictionary keys) before this call.
 pub fn emit_reversed(chunks: &mut [Chunk], current: usize, line: u32) {
-    let base = chunks[current].local_count;
-    chunks[current].alloc_scratch(3); // seq(base) + result(base+1) + i(base+2)
-    let seq = base;
-    let result = base + 1;
-    let i = base + 2;
+    let helper = match (
+        chunks[current].module_instance_fields_are_own_properties,
+        chunks[current].module_members_on_prototype,
+    ) {
+        (false, false) => "__vybe_reverse_copy",
+        (true, false) => "__vybe_reverse_copy_own_fields",
+        (false, true) => "__vybe_reverse_copy_prototype_members",
+        (true, true) => "__vybe_reverse_copy_own_fields_prototype_members",
+    };
+    crate::primitives::bundle::emit_stacked_helper_call(&mut chunks[current], helper, 1, line);
+}
 
-    // seq = <input on stack>
-    chunks[current].emit_op_u16(Op::LOCAL_SET, seq, line);
+pub(crate) fn build_reverse_copy(name: &str) -> Chunk {
+    let mut body = crate::primitives::functions::create_function_chunk(name, 1);
+    // Indexed object reads consult these existing directive facts on the
+    // executing frame. Keep the caller's contract across the outlined call.
+    body.module_instance_fields_are_own_properties = name.contains("_own_fields");
+    body.module_members_on_prototype = name.contains("_prototype_members");
+    body.local_count = 1;
+    let mut chunks = vec![body];
+    emit_reverse_copy_body(&mut chunks, 0, 0);
+    chunks[0].emit_op(Op::RETURN, 0);
+    chunks.remove(0)
+}
+
+fn emit_reverse_copy_body(chunks: &mut [Chunk], current: usize, line: u32) {
+    let seq = 0;
+    let result = chunks[current].alloc_scratch(2);
+    let i = result + 1;
+
     // result = []
     emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
@@ -2557,7 +2644,8 @@ pub fn emit_reversed(chunks: &mut [Chunk], current: usize, line: u32) {
     // if !(i >= 0) → break
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    crate::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
+    // The cursor is produced by i32 subtraction and never escapes the helper.
+    chunks[current].emit_op(Op::I32_GE_S, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     // result.push(seq[i])
@@ -2790,18 +2878,99 @@ pub fn build_max(imports: &mut Chunk) -> Chunk {
     c
 }
 
+/// Allocate a compiler-owned buffer from a proven nonnegative integer length.
+/// The GC path is restricted to lengths fitting signed-i32 operands in the
+/// current value ABI; `gc` records which allocation path owns the buffer.
+pub(crate) fn emit_private_array_new(imports: &mut Chunk, c: &mut Chunk, gc: u16, line: u32) {
+    let len = c.alloc_scratch(1);
+    lset(c, len, line);
+    lget(c, len, line);
+    c.emit_f64_const(i32::MAX as f64, line);
+    c.emit_op(Op::F64_LE, line);
+    lset(c, gc, line);
+    lget(c, gc, line);
+    c.emit_if_value(line);
+    lget(c, len, line);
+    c.emit_op(Op::I32_FROM_F64, line);
+    c.emit_op_u16(Op::ARRAY_NEW_DEFAULT, 0, line);
+    c.emit_else(line);
+    lget(c, len, line);
+    emit_new_with_length_into(imports, c, line);
+    c.emit_end(line);
+}
+
+pub(crate) fn emit_private_get(
+    imports: &mut Chunk,
+    c: &mut Chunk,
+    arr: u16,
+    index: u16,
+    gc: Option<u16>,
+    line: u32,
+) {
+    if let Some(gc) = gc {
+        lget(c, gc, line);
+        c.emit_if_value(line);
+    }
+    lget(c, arr, line);
+    lget(c, index, line);
+    if gc.is_some() {
+        c.emit_op(Op::I32_FROM_F64, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_else(line);
+        lget(c, arr, line);
+        lget(c, index, line);
+    }
+    emit_get_into(imports, c, line);
+    if gc.is_some() {
+        c.emit_end(line);
+    }
+}
+
+pub(crate) fn emit_private_set(
+    imports: &mut Chunk,
+    c: &mut Chunk,
+    arr: u16,
+    index: u16,
+    value: u16,
+    gc: Option<u16>,
+    line: u32,
+) {
+    if let Some(gc) = gc {
+        lget(c, gc, line);
+        c.emit_if(line);
+        lget(c, arr, line);
+        lget(c, index, line);
+        c.emit_op(Op::I32_FROM_F64, line);
+        lget(c, value, line);
+        c.emit_op(Op::ARRAY_SET, line);
+        c.emit_else(line);
+    }
+    lget(c, arr, line);
+    lget(c, index, line);
+    lget(c, value, line);
+    emit_set_into(imports, c, line);
+    c.emit_op(Op::DROP, line);
+    if gc.is_some() {
+        c.emit_end(line);
+    }
+}
+
 /// Stable bottom-up merge sort. Only private numeric indices are specialized;
 /// `greater` owns element/comparator semantics and leaves an i32 predicate.
 /// Alternating source/destination buffers avoids copying after every merge.
 /// The original array reference is retained, with a final copy only when needed.
+/// `private_length` additionally proves that `arr` was allocated by
+/// `emit_private_array_new` with that length, and cannot be mutated by callbacks.
+/// A source array or a descriptive type hint cannot establish this proof.
 pub(crate) fn emit_stable_merge_sort(
     imports: &mut Chunk,
     c: &mut Chunk,
     arr: u16,
     line: u32,
+    private_length: Option<u16>,
     mut greater: impl FnMut(&mut Chunk, &mut Chunk, u16, u16, u32),
 ) {
-    let base = c.alloc_scratch(13);
+    let base = c.alloc_scratch(if private_length.is_some() { 14 } else { 13 });
     let len = base;
     let src = base + 1;
     let dst = base + 2;
@@ -2815,6 +2984,7 @@ pub(crate) fn emit_stable_merge_sort(
     let out = base + 10;
     let lhs = base + 11;
     let rhs = base + 12;
+    let gc = private_length.map(|_| base + 13);
 
     fn increment(c: &mut Chunk, slot: u16, line: u32) {
         lget(c, slot, line);
@@ -2822,16 +2992,32 @@ pub(crate) fn emit_stable_merge_sort(
         c.emit_op(Op::F64_ADD, line);
         lset(c, slot, line);
     }
-    fn read(imports: &mut Chunk, c: &mut Chunk, src: u16, index: u16, value: u16, line: u32) {
-        lget(c, src, line);
-        lget(c, index, line);
-        emit_get_into(imports, c, line);
+    fn read(
+        imports: &mut Chunk,
+        c: &mut Chunk,
+        src: u16,
+        index: u16,
+        value: u16,
+        gc: Option<u16>,
+        line: u32,
+    ) {
+        emit_private_get(imports, c, src, index, gc, line);
         lset(c, value, line);
     }
 
-    lget(c, arr, line);
-    emit_len_into(imports, c, line);
-    lset(c, len, line);
+    if let Some(length) = private_length {
+        lget(c, length, line);
+        lset(c, len, line);
+        lget(c, len, line);
+        c.emit_f64_const(i32::MAX as f64, line);
+        c.emit_op(Op::F64_LE, line);
+        lset(c, gc.unwrap(), line);
+    } else {
+        lget(c, arr, line);
+        emit_len_into(imports, c, line);
+        lset(c, len, line);
+    }
+
     // Empty/singleton arrays need no temporary allocation or comparison.
     let done = c.emit_block(line);
     lget(c, len, line);
@@ -2842,7 +3028,7 @@ pub(crate) fn emit_stable_merge_sort(
     // allocation for already sorted arrays, including arrays of equal keys.
     c.emit_f64_const(0.0, line);
     lset(c, left, line);
-    read(imports, c, arr, left, lhs, line);
+    read(imports, c, arr, left, lhs, gc, line);
     c.emit_f64_const(1.0, line);
     lset(c, out, line);
     let not_sorted = c.emit_block(line);
@@ -2851,7 +3037,7 @@ pub(crate) fn emit_stable_merge_sort(
     lget(c, len, line);
     c.emit_op(Op::F64_GE, line);
     c.emit_br_if(2, line); // all adjacent pairs ordered: leave done
-    read(imports, c, arr, out, rhs, line);
+    read(imports, c, arr, out, rhs, gc, line);
     greater(imports, c, lhs, rhs, line);
     c.emit_br_if(1, line); // first descending pair: merge the array
     lget(c, rhs, line);
@@ -2865,7 +3051,11 @@ pub(crate) fn emit_stable_merge_sort(
     lget(c, arr, line);
     lset(c, src, line);
     lget(c, len, line);
-    emit_new_with_length_into(imports, c, line);
+    if let Some(gc) = gc {
+        emit_private_array_new(imports, c, gc, line);
+    } else {
+        emit_new_with_length_into(imports, c, line);
+    }
     lset(c, dst, line);
     c.emit_f64_const(1.0, line);
     lset(c, width, line);
@@ -2901,6 +3091,19 @@ pub(crate) fn emit_stable_merge_sort(
     lget(c, start, line);
     lset(c, out, line);
 
+    // Compiler-owned decorations cannot be rewritten by a comparator. Retain
+    // both run heads and refresh only the consumed head; caller arrays still
+    // use the ordinary reads below to preserve observable access behavior.
+    if private_length.is_some() {
+        read(imports, c, src, left, lhs, gc, line);
+        lget(c, right, line);
+        lget(c, end, line);
+        c.emit_op(Op::F64_LT, line);
+        c.emit_if(line);
+        read(imports, c, src, right, rhs, gc, line);
+        c.emit_end(line);
+    }
+
     let merge_done = c.emit_block(line);
     let (merge, _) = c.emit_loop_s(line);
     lget(c, out, line);
@@ -2911,34 +3114,89 @@ pub(crate) fn emit_stable_merge_sort(
     lget(c, mid, line);
     c.emit_op(Op::F64_GE, line);
     c.emit_if(line);
-    read(imports, c, src, right, lhs, line);
+    if let Some(gc) = gc {
+        lget(c, gc, line);
+        c.emit_if(line);
+        lget(c, dst, line);
+        lget(c, out, line);
+        c.emit_op(Op::I32_FROM_F64, line);
+        lget(c, src, line);
+        lget(c, right, line);
+        c.emit_op(Op::I32_FROM_F64, line);
+        lget(c, end, line);
+        lget(c, right, line);
+        c.emit_op(Op::F64_SUB, line);
+        c.emit_op(Op::I32_FROM_F64, line);
+        c.emit_op(Op::ARRAY_COPY, line);
+        c.emit_br(3, line); // leave the merge-done block
+        c.emit_end(line);
+    }
+    read(imports, c, src, right, lhs, gc, line);
     increment(c, right, line);
     c.emit_else(line);
     lget(c, right, line);
     lget(c, end, line);
     c.emit_op(Op::F64_GE, line);
     c.emit_if(line);
-    read(imports, c, src, left, lhs, line);
+    if let Some(gc) = gc {
+        lget(c, gc, line);
+        c.emit_if(line);
+        lget(c, dst, line);
+        lget(c, out, line);
+        c.emit_op(Op::I32_FROM_F64, line);
+        lget(c, src, line);
+        lget(c, left, line);
+        c.emit_op(Op::I32_FROM_F64, line);
+        lget(c, mid, line);
+        lget(c, left, line);
+        c.emit_op(Op::F64_SUB, line);
+        c.emit_op(Op::I32_FROM_F64, line);
+        c.emit_op(Op::ARRAY_COPY, line);
+        c.emit_br(4, line); // leave the merge-done block
+        c.emit_end(line);
+    }
+    read(imports, c, src, left, lhs, gc, line);
     increment(c, left, line);
     c.emit_else(line);
-    read(imports, c, src, left, lhs, line);
-    read(imports, c, src, right, rhs, line);
-    greater(imports, c, lhs, rhs, line);
-    c.emit_if(line);
-    lget(c, rhs, line);
-    lset(c, lhs, line);
-    increment(c, right, line);
-    c.emit_else(line);
-    // Ties select the left run: equal elements keep their original order.
-    increment(c, left, line);
+    if private_length.is_some() {
+        greater(imports, c, lhs, rhs, line);
+        c.emit_if(line);
+        emit_private_set(imports, c, dst, out, rhs, gc, line);
+        increment(c, right, line);
+        lget(c, right, line);
+        lget(c, end, line);
+        c.emit_op(Op::F64_LT, line);
+        c.emit_if(line);
+        read(imports, c, src, right, rhs, gc, line);
+        c.emit_end(line);
+        c.emit_else(line);
+        emit_private_set(imports, c, dst, out, lhs, gc, line);
+        increment(c, left, line);
+        lget(c, left, line);
+        lget(c, mid, line);
+        c.emit_op(Op::F64_LT, line);
+        c.emit_if(line);
+        read(imports, c, src, left, lhs, gc, line);
+        c.emit_end(line);
+        c.emit_end(line);
+        increment(c, out, line);
+        c.emit_br(2, line); // both exhaustion guards, then the merge loop
+    } else {
+        read(imports, c, src, left, lhs, gc, line);
+        read(imports, c, src, right, rhs, gc, line);
+        greater(imports, c, lhs, rhs, line);
+        c.emit_if(line);
+        lget(c, rhs, line);
+        lset(c, lhs, line);
+        increment(c, right, line);
+        c.emit_else(line);
+        // Ties select the left run: equal elements keep their original order.
+        increment(c, left, line);
+        c.emit_end(line);
+    }
     c.emit_end(line);
     c.emit_end(line);
-    c.emit_end(line);
-    lget(c, dst, line);
-    lget(c, out, line);
-    lget(c, lhs, line);
-    emit_set_into(imports, c, line);
-    c.emit_op(Op::DROP, line);
+    emit_private_set(imports, c, dst, out, lhs, gc, line);
     increment(c, out, line);
     c.emit_br(0, line);
     c.emit_end(line);
@@ -2973,6 +3231,18 @@ pub(crate) fn emit_stable_merge_sort(
     c.emit_op(Op::REF_EQ, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line);
+    if let Some(gc) = gc {
+        lget(c, gc, line);
+        c.emit_if(line);
+        lget(c, arr, line);
+        c.emit_i32_const(0, line);
+        lget(c, src, line);
+        c.emit_i32_const(0, line);
+        lget(c, len, line);
+        c.emit_op(Op::I32_FROM_F64, line);
+        c.emit_op(Op::ARRAY_COPY, line);
+        c.emit_else(line);
+    }
     c.emit_f64_const(0.0, line);
     lset(c, out, line);
     let copy_done = c.emit_block(line);
@@ -2994,6 +3264,9 @@ pub(crate) fn emit_stable_merge_sort(
     c.patch_loop(copy);
     c.emit_end(line);
     c.patch_block(copy_done);
+    if gc.is_some() {
+        c.emit_end(line);
+    }
     c.emit_end(line);
     c.emit_end(line);
     c.patch_block(done);
@@ -3015,15 +3288,15 @@ pub fn build_sorted(imports: &mut Chunk) -> Chunk {
     c.emit_i32_const(i32::MAX, 0);
     emit_slice_into(imports, &mut c, 0);
     lset(&mut c, 1, 0);
-    emit_stable_merge_sort(imports, &mut c, 1, 0, emit_sort_greater);
+    emit_stable_merge_sort(imports, &mut c, 1, 0, None, emit_sort_greater);
     lget(&mut c, 1, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
 // `build_reversed` removed — `__stdlib_reversed` was already out of
-// MAPPINGS, so nothing could request it. `reversed()` inlines its
-// polymorphic loop in `emit_reversed`.
+// MAPPINGS, so nothing could request it. The current primitive links
+// `__stdlib_reverse_copy` on demand instead.
 
 // ── enumerate(array) → [[0,a],[1,b],...] ────────────────────
 pub fn build_enumerate(imports: &mut Chunk) -> Chunk {
@@ -3410,7 +3683,7 @@ pub fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_in_place");
     c.arity = 1;
     c.local_count = 1;
-    emit_stable_merge_sort(imports, &mut c, 0, 0, emit_sort_greater);
+    emit_stable_merge_sort(imports, &mut c, 0, 0, None, emit_sort_greater);
     lget(&mut c, 0, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -3428,7 +3701,7 @@ pub fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     c.arity = 2;
     c.local_count = 2;
     let abi = imports.module_receiver_abi;
-    emit_stable_merge_sort(imports, &mut c, 0, 0, |imports, c, lhs, rhs, line| {
+    emit_stable_merge_sort(imports, &mut c, 0, 0, None, |imports, c, lhs, rhs, line| {
         lget(c, 1, line);
         let receiver = crate::primitives::callable::emit_callback_receiver(c, abi, line);
         lget(c, lhs, line);
@@ -3442,5 +3715,5 @@ pub fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     c
 }
 
-// `build_sort_by_key` removed — nothing referenced `__vybe_sort_by_key`.
-// LINQ `OrderBy(keySelector)` reaches `__stdlib_sort_with_comparator`.
+// LINQ OrderBy has its own comparator path. The common key-sort helper above
+// packages emit_sort_by_key_in_place for its existing shared callers.

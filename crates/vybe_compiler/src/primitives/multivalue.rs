@@ -42,8 +42,8 @@ pub fn emit_tag(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Pack the top `n` stack values into a shared multi-value packet.
 /// Stack: `[v0, ..., vn] -> [packet]`.
 pub fn emit_from_stack(chunks: &mut [Chunk], current: usize, n: u16, line: u32) {
-    let base = chunks[current].alloc_scratch(n.max(1));
-    crate::primitives::collections::emit_pack_n(chunks, current, n, base, line);
+    // Values are already in element order; this packet owns no spill locals.
+    crate::primitives::collections::emit_array_new(chunks, current, n, line);
     emit_tag(chunks, current, line);
 }
 
@@ -72,7 +72,7 @@ pub fn emit_as_multi_value(chunks: &mut [Chunk], current: usize, line: u32) {
     let row = chunks[current].alloc_scratch(1);
     save(&mut chunks[current], value, line);
     emit_is_multi_value_slot(&mut chunks[current], value, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     load(&mut chunks[current], value, line);
     chunks[current].emit_else(line);
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
@@ -92,7 +92,7 @@ pub fn emit_first(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     save(&mut chunks[current], value, line);
     emit_is_multi_value_slot(&mut chunks[current], value, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     load(&mut chunks[current], value, line);
     chunks[current].emit_i32_const(0, line);
     crate::primitives::collections::emit_get(chunks, current, line);

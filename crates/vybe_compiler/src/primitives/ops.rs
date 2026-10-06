@@ -1277,74 +1277,27 @@ pub fn emit_dyn_neg(chunk: &mut Chunk, line: u32) {
 // has a separate `imports: &mut Chunk` parameter.
 
 pub fn emit_dyn_to_bool_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    let slots = alloc_locals(code, 2);
-    let v = slots;
-    let f = slots + 1;
+    // Helpers carry their own imports, just like ordinary chunks. Keep the
+    // value-to-i32 contract identical instead of expanding a second truthiness
+    // implementation (and allocating two scratch locals) in every helper.
+    emit_dyn_to_bool(code, line);
+}
 
-    let test_bool = code.add_import("wasm:js-boolean", "test");
-    let cast_bool = code.add_import("wasm:js-boolean", "cast");
-    let test_num = code.add_import("wasm:js-number", "test");
-    let to_f64 = code.add_import("wasm:js-number", "toF64");
-    let test_str = code.add_import("wasm:js-string", "test");
-    let str_length = code.add_import("wasm:js-string", "length");
-    let test_bigint = code.add_import("wasm:js-bigint", "test");
+#[cfg(test)]
+mod truthiness_into_reuse_tests {
+    use super::*;
 
-    save(code, v, line);
-
-    load(code, v, line);
-    code.emit_op(Op::REF_IS_NULL, line);
-    code.emit_if_i32(line);
-    i32_const(code, 0, line);
-    code.emit_else(line);
-
-    load(code, v, line);
-    call1(code, test_bool, line);
-    code.emit_if_i32(line);
-    load(code, v, line);
-    call1(code, cast_bool, line); // Bool → i32
-    code.emit_else(line);
-
-    load(code, v, line);
-    call1(code, test_num, line);
-    code.emit_if_i32(line);
-    load(code, v, line);
-    call1(code, to_f64, line);
-    save(code, f, line);
-    load(code, f, line);
-    load(code, f, line);
-    code.emit_op(Op::F64_NE, line);
-    code.emit_if_i32(line);
-    i32_const(code, 0, line);
-    code.emit_else(line);
-    load(code, f, line);
-    f64_const(code, 0.0, line);
-    code.emit_op(Op::F64_NE, line);
-    code.emit_end(line);
-    code.emit_else(line);
-
-    load(code, v, line);
-    call1(code, test_str, line);
-    code.emit_if_i32(line);
-    load(code, v, line);
-    call1(code, str_length, line);
-    i32_const(code, 0, line);
-    code.emit_op(Op::I32_NE, line);
-    code.emit_else(line);
-
-    load(code, v, line);
-    call1(code, test_bigint, line);
-    code.emit_if_i32(line);
-    load(code, v, line);
-    emit_bigint_zero(code, line);
-    emit_bigint_cmp(code, "ne", line);
-    code.emit_else(line);
-    i32_const(code, 1, line);
-    code.emit_end(line);
-
-    code.emit_end(line);
-    code.emit_end(line);
-    code.emit_end(line);
-    code.emit_end(line);
+    #[test]
+    fn helper_truthiness_uses_the_same_emission_as_regular_chunks() {
+        let mut direct = Chunk::new("direct_truthiness");
+        let mut helper = Chunk::new("helper_truthiness");
+        let mut imports = Chunk::new("imports");
+        emit_dyn_to_bool(&mut direct, 17);
+        emit_dyn_to_bool_into(&mut imports, &mut helper, 17);
+        assert_eq!(helper.code, direct.code);
+        assert_eq!(helper.local_count, direct.local_count);
+        assert_eq!(helper.imports.len(), direct.imports.len());
+    }
 }
 
 pub fn emit_dyn_not_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
@@ -1646,7 +1599,7 @@ pub fn emit_dyn_neg_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
 
 /// The type-dispatch body is identical at every use. Link it once per module
 /// through the existing helper mechanism, retaining the public i32 result.
-fn emit_comparison_helper_call(chunk: &mut Chunk, global: &str, line: u32) {
+pub(crate) fn emit_comparison_helper_call(chunk: &mut Chunk, global: &str, line: u32) {
     let base = alloc_locals(chunk, 2);
     save(chunk, base + 1, line);
     save(chunk, base, line);

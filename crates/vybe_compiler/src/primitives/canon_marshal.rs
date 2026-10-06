@@ -37,7 +37,7 @@ pub fn emit_store_utf8(
     line: u32,
     push_string: impl FnOnce(&mut Chunk),
 ) -> (u16, u16) {
-    emit_store_byte_array(chunk, line, |chunk| {
+    emit_store_byte_array_impl(chunk, line, true, |chunk| {
         // bytes = Array.from(TextEncoder().encode(s))
         //
         // ⚠ The `Array.from` is LOAD-BEARING. `web:encoding.encode` answers a
@@ -74,11 +74,19 @@ pub fn emit_store_byte_array(
     line: u32,
     push_array: impl FnOnce(&mut Chunk),
 ) -> (u16, u16) {
+    emit_store_byte_array_impl(chunk, line, false, push_array)
+}
+
+fn emit_store_byte_array_impl(
+    chunk: &mut Chunk,
+    line: u32,
+    encoded_bytes: bool,
+    push_array: impl FnOnce(&mut Chunk),
+) -> (u16, u16) {
     let bytes = chunk.alloc_scratch(1);
     let len = chunk.alloc_scratch(1);
-    let ptr = chunk.alloc_scratch(1);
     let i = chunk.alloc_scratch(1);
-    let base = chunk.alloc_scratch(1);
+    let encoded_byte = encoded_bytes.then(|| chunk.alloc_scratch(1));
 
     push_array(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, bytes, line);
@@ -86,67 +94,10 @@ pub fn emit_store_byte_array(
     // len = bytes.length — the UTF-8 BYTE count, not the string's `.length`,
     // which counts UTF-16 code units.
     chunk.emit_op_u16(Op::LOCAL_GET, bytes, line);
-    let arr_len = chunk.add_import("ecma:array", "length");
-    chunk.emit_call(arr_len, 1, line);
-    let to_i32 = chunk.add_import("wasm:js-number", "toI32");
-    chunk.emit_call(to_i32, 1, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
     chunk.emit_op_u16(Op::LOCAL_SET, len, line);
 
-    // ── bump-allocate `len` bytes ───────────────────────────────────────────
-    // base = BUMP, growing enough pages for the payload when BUMP is absent.
-    crate::primitives::globals::emit_read(chunk, BUMP, line);
-    chunk.emit_op_u16(Op::LOCAL_TEE, base, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    let undef_test = chunk.add_import("wasm:js-undefined", "test");
-    chunk.emit_call(undef_test, 1, line);
-    chunk.emit_op(Op::I32_OR, line);
-    chunk.emit_if(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, len, line);
-    chunk.emit_i32_const(16, line);
-    chunk.emit_op(Op::I32_SHR_U, line);
-    chunk.emit_i32_const(1, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, line);
-    chunk.emit_i32_const(65536, line);
-    chunk.emit_op(Op::I32_MUL, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, base, line);
-    chunk.emit_end(line);
-
-    // Grow again if this request would run off the end of memory. BUMP may
-    // already be near a page boundary, and one write may span several pages.
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, len, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, line);
-    chunk.emit_i32_const(65536, line);
-    chunk.emit_op(Op::I32_MUL, line);
-    chunk.emit_op(Op::I32_GT_U, line);
-    chunk.emit_if(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, len, line);
-    chunk.emit_i32_const(16, line);
-    chunk.emit_op(Op::I32_SHR_U, line);
-    chunk.emit_i32_const(1, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, line);
-    chunk.emit_i32_const(65536, line);
-    chunk.emit_op(Op::I32_MUL, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, base, line);
-    chunk.emit_end(line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, ptr, line);
-
-    // BUMP = base + align_to(len + 8, 8) — 8-aligned so a later i64/f64 store
-    // lands legally, and never zero-width so two empty buffers cannot alias.
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, len, line);
-    chunk.emit_i32_const(15, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_i32_const(!7, line);
-    chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    crate::primitives::globals::emit_write(chunk, BUMP, line);
+    let ptr = emit_alloc(chunk, line, len);
 
     // ── copy ────────────────────────────────────────────────────────────────
     // `block { loop { br_if 1 (done); store; br 0 } }` — depth 1 leaves the
@@ -159,16 +110,39 @@ pub fn emit_store_byte_array(
     let (_copy, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len, line);
-    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_op(
+        if encoded_bytes {
+            Op::I32_GE_U
+        } else {
+            Op::I32_GE_S
+        },
+        line,
+    );
     chunk.emit_br_if(1, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ptr, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, bytes, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    let to_i32b = chunk.add_import("wasm:js-number", "toI32");
-    chunk.emit_call(to_i32b, 1, line);
+    if let Some(byte) = encoded_byte {
+        // Array.from(TextEncoder.encode(...)) contains only byte-valued
+        // numbers. This canonical loop shape lets the VM copy the whole run
+        // while remaining ordinary Wasm loads/stores in serialized output.
+        chunk.emit_op_u16(Op::LOCAL_GET, bytes, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+        chunk.emit_i32_const(-1, line);
+        chunk.emit_op(Op::I32_AND, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, byte, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, ptr, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+        chunk.emit_op(Op::I32_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, byte, line);
+    } else {
+        chunk.emit_op_u16(Op::LOCAL_GET, ptr, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+        chunk.emit_op(Op::I32_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, bytes, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        let to_i32b = chunk.add_import("wasm:js-number", "toI32");
+        chunk.emit_call(to_i32b, 1, line);
+    }
     chunk.emit_op(Op::I32_STORE8, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_i32_const(1, line);
@@ -204,35 +178,52 @@ pub fn emit_alloc(chunk: &mut Chunk, line: u32, n_slot: u16) -> u16 {
     chunk.emit_if(line);
     chunk.emit_i32_const(1, line);
     chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, base, line);
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if(line);
+    chunk.emit_op(Op::UNREACHABLE, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_i32_const(65536, line);
     chunk.emit_op(Op::I32_MUL, line);
     chunk.emit_op_u16(Op::LOCAL_SET, base, line);
     chunk.emit_end(line);
 
-    // Grow while the request would run off the end. A LOOP, not a single `if`:
-    // `emit_store_utf8`'s one-shot grow adds exactly one page, which is not
-    // enough for a request larger than 64KB. A read buffer is caller-sized, so
-    // this one has to keep growing until it fits.
-    let done = chunk.emit_block(line);
-    let (grow, _) = chunk.emit_loop_s(line);
+    // Keep the allocation base fixed. Advancing it to the old end after each
+    // one-page grow leaves the available span at one page forever for n > 64K.
+    // Widen before adding so an oversized memory32 request cannot wrap.
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op(Op::I64_EXTEND_I32_U, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
-    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op(Op::I64_EXTEND_I32_U, line);
+    chunk.emit_op(Op::I64_ADD, line);
     chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, line);
-    chunk.emit_i32_const(65536, line);
-    chunk.emit_op(Op::I32_MUL, line);
-    chunk.emit_op(Op::I32_LE_U, line);
-    chunk.emit_br_if(1, line);
-    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I64_EXTEND_I32_U, line);
+    chunk.emit_i64_const(16, line);
+    chunk.emit_op(Op::I64_SHL, line);
+    chunk.emit_op(Op::I64_GT_U, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op(Op::I64_EXTEND_I32_U, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
+    chunk.emit_op(Op::I64_EXTEND_I32_U, line);
+    chunk.emit_op(Op::I64_ADD, line);
+    chunk.emit_i64_const(65535, line);
+    chunk.emit_op(Op::I64_ADD, line);
+    chunk.emit_i64_const(16, line);
+    chunk.emit_op(Op::I64_SHR_U, line);
+    chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, line);
+    chunk.emit_op(Op::I64_EXTEND_I32_U, line);
+    chunk.emit_op(Op::I64_SUB, line);
+    chunk.emit_op(Op::I32_WRAP_I64, line);
     chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, line);
-    chunk.emit_i32_const(65536, line);
-    chunk.emit_op(Op::I32_MUL, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, base, line);
-    chunk.emit_br(0, line);
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if(line);
+    chunk.emit_op(Op::UNREACHABLE, line);
     chunk.emit_end(line);
-    chunk.patch_loop(grow);
     chunk.emit_end(line);
-    chunk.patch_block(done);
 
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ptr, line);
@@ -279,36 +270,86 @@ pub fn emit_append_bytes(
     ptr_slot: u16,
     len_slot: u16,
 ) {
+    const PUSH_BATCH: i32 = 254;
     let i = chunk.alloc_scratch(1);
+    let push = chunk.add_import("ecma:array", "push");
+    let length = chunk.add_import("ecma:array", "length");
+    let set = chunk.add_import("ecma:array", "set");
+    let base = chunk.alloc_scratch(1);
+    let cursor = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_call(length, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, base, line);
 
     chunk.emit_i32_const(0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ptr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
     let done = chunk.emit_block(line);
-    let (copy, _) = chunk.emit_loop_s(line);
+    let batch_done = chunk.emit_block(line);
+    let (batch_copy, _) = chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(PUSH_BATCH, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunk.emit_op(Op::I32_GT_S, line);
+    chunk.emit_br_if(1, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    for offset in 0..PUSH_BATCH {
+        chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+        chunk.emit_op(Op::I32_LOAD8_U, line);
+        if offset != 0 {
+            // The existing optional memarg format mirrors Wasm's unsigned
+            // effective-address offset. Avoid an i32 add for every byte.
+            chunk.emit_leb_u32(0x80, line);
+            chunk.emit_leb_u32(offset as u32, line);
+        }
+    }
+    chunk.emit_call(push, (PUSH_BATCH + 1) as u8, line);
+    chunk.emit_op(Op::DROP, line); // push answers the new length
+
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(PUSH_BATCH, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_i32_const(PUSH_BATCH, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(batch_copy);
+    chunk.emit_end(line);
+    chunk.patch_block(batch_done);
+
+    // A Wasm import has one fixed signature: keep `push` at 255 arguments and
+    // use the separate fixed-arity setter for fewer than 254 remaining bytes.
+    let (tail_copy, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunk.emit_op(Op::I32_GE_S, line);
     chunk.emit_br_if(1, line);
-
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ptr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op(Op::I32_ADD, line);
-    // `I32_LOAD8_U` — UNSIGNED. The signed form sign-extends any byte ≥ 0x80,
-    // so every multi-byte UTF-8 sequence would decode as a negative number and
-    // the text would come back mojibake.
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
     chunk.emit_op(Op::I32_LOAD8_U, line);
-    let push = chunk.add_import("ecma:array", "push");
-    chunk.emit_call(push, 2, line);
-    chunk.emit_op(Op::DROP, line); // push answers the new length
-
+    chunk.emit_call(set, 3, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_i32_const(1, line);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
     chunk.emit_br(0, line);
     chunk.emit_end(line);
-    chunk.patch_loop(copy);
+    chunk.patch_loop(tail_copy);
     chunk.emit_end(line);
     chunk.patch_block(done);
 }

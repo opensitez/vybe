@@ -31,8 +31,7 @@ pub fn emit_concat(chunk: &mut Chunk, part_count: usize, line: u32) {
         let concat_idx = chunk.add_import("wasm:js-string", "concat");
         // Only the trailing parts obstruct the first pair. Leave that pair
         // on the operand stack and preserve left-to-right concatenation.
-        let tail_count = u16::try_from(part_count - 2)
-            .expect("emit_concat: too many string parts");
+        let tail_count = u16::try_from(part_count - 2).expect("emit_concat: too many string parts");
         let base = chunk.local_count;
         chunk.local_count = chunk
             .local_count
@@ -399,7 +398,15 @@ pub fn emit_scalar_chars(chunk: &mut Chunk, line: u32) {
 /// `mb_strlen("a😀b")` is 3 where the UTF-16 count is 4.
 pub fn emit_scalar_length(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_scalar_chars(&mut chunks[current], line);
-    crate::primitives::collections::emit_len(chunks, current, line);
+    // Array.from always materializes a private Array. Retain it in the exact
+    // first old generic-length slot through caller-frame cleanup: its elements
+    // may keep caller-owned objects alive. String/Map/Object arms are unreachable.
+    let chunk = &mut chunks[current];
+    let array = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, array, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, array, line);
+    let length = chunk.add_import("ecma:array", "length");
+    chunk.emit_call(length, 1, line);
 }
 
 /// Code-point substring. Stack: `[string, start, end]` → `[string]`, `end`
@@ -901,8 +908,8 @@ pub fn emit_glob_to_regex(chunks: &mut [Chunk], current: usize, line: u32) {
     let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], n, line);
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     // c = pat[i]
     emit_char_at(chunks, current, pat, i, line);
@@ -914,7 +921,8 @@ pub fn emit_glob_to_regex(chunks: &mut [Chunk], current: usize, line: u32) {
         // Inside `[...]` everything is literal until the closing `]`.
         get(&mut chunks[current], c, line);
         chunks[current].emit_string_const("]", line);
-        chunks[current].emit_op(Op::EQ, line);
+        let equals = chunks[current].add_import("wasm:js-string", "equals");
+        chunks[current].emit_call(equals, 2, line);
         chunks[current].emit_if(line);
         i32c(&mut chunks[current], 0, line);
         set(&mut chunks[current], in_class, line);
@@ -925,21 +933,24 @@ pub fn emit_glob_to_regex(chunks: &mut [Chunk], current: usize, line: u32) {
     {
         get(&mut chunks[current], c, line);
         chunks[current].emit_string_const("*", line);
-        chunks[current].emit_op(Op::EQ, line);
+        let equals = chunks[current].add_import("wasm:js-string", "equals");
+        chunks[current].emit_call(equals, 2, line);
         chunks[current].emit_if_value(line);
         chunks[current].emit_string_const(".*", line);
         chunks[current].emit_else(line);
 
         get(&mut chunks[current], c, line);
         chunks[current].emit_string_const("?", line);
-        chunks[current].emit_op(Op::EQ, line);
+        let equals = chunks[current].add_import("wasm:js-string", "equals");
+        chunks[current].emit_call(equals, 2, line);
         chunks[current].emit_if_value(line);
         chunks[current].emit_string_const(".", line);
         chunks[current].emit_else(line);
 
         get(&mut chunks[current], c, line);
         chunks[current].emit_string_const("[", line);
-        chunks[current].emit_op(Op::EQ, line);
+        let equals = chunks[current].add_import("wasm:js-string", "equals");
+        chunks[current].emit_call(equals, 2, line);
         chunks[current].emit_if_value(line);
         {
             i32c(&mut chunks[current], 1, line);
@@ -953,7 +964,8 @@ pub fn emit_glob_to_regex(chunks: &mut [Chunk], current: usize, line: u32) {
             set(&mut chunks[current], nxt, line);
             emit_char_at(chunks, current, pat, nxt, line);
             chunks[current].emit_string_const("!", line);
-            chunks[current].emit_op(Op::EQ, line);
+            let equals = chunks[current].add_import("wasm:js-string", "equals");
+            chunks[current].emit_call(equals, 2, line);
             chunks[current].emit_if_value(line);
             get(&mut chunks[current], nxt, line);
             set(&mut chunks[current], i, line);
@@ -968,8 +980,9 @@ pub fn emit_glob_to_regex(chunks: &mut [Chunk], current: usize, line: u32) {
             chunks[current].emit_string_const(GLOB_META, line);
             get(&mut chunks[current], c, line);
             emit_index_of(&mut chunks[current], line);
-            i32c(&mut chunks[current], 0, line);
-            crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+            // ecma:string.indexOf produces a Number (F64 in the VM).
+            chunks[current].emit_f64_const(0.0, line);
+            chunks[current].emit_op(Op::F64_LT, line);
             chunks[current].emit_if_value(line);
             get(&mut chunks[current], c, line);
             chunks[current].emit_else(line);
@@ -1085,6 +1098,20 @@ fn concat(chunks: &mut [Chunk], current: usize, line: u32) {
 /// preserved and never grouped; the fractional part is copied through with its
 /// separator replaced.
 pub fn emit_group_digits(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_group_digits_impl(chunks, current, line, false);
+}
+
+/// Group a producer-proven ASCII numeric string in runs of three units.
+///
+/// Caller must prove the string producer emits ASCII; this is not a runtime
+/// conversion or a general Unicode fast path. Separators remain arbitrary
+/// Values and retain strict concat errors at the original group boundaries.
+/// Uses the generic emitter's same 12 scratch slots and evaluation order.
+pub fn emit_group_digits_ascii_numeric(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_group_digits_impl(chunks, current, line, true);
+}
+
+fn emit_group_digits_impl(chunks: &mut [Chunk], current: usize, line: u32, ascii_numeric: bool) {
     let base = chunks[current].alloc_scratch(9);
     let (dec_point, sep, s, dot, int_end, digits, frac, out, i) = (
         base,
@@ -1166,59 +1193,118 @@ pub fn emit_group_digits(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_substring(&mut chunks[current], line);
     set(&mut chunks[current], digits, line);
 
-    get(&mut chunks[current], s, line);
-    i32c(&mut chunks[current], 0, line);
-    get(&mut chunks[current], start, line);
-    emit_substring(&mut chunks[current], line);
-    set(&mut chunks[current], out, line);
+    if !ascii_numeric {
+        get(&mut chunks[current], s, line);
+        i32c(&mut chunks[current], 0, line);
+        get(&mut chunks[current], start, line);
+        emit_substring(&mut chunks[current], line);
+        set(&mut chunks[current], out, line);
+    }
 
     // for i in 0..len(digits): if i > 0 && (len - i) % 3 == 0 { out += sep }
     let n = chunks[current].alloc_scratch(1);
     get(&mut chunks[current], digits, line);
     emit_length(&mut chunks[current], line);
     set(&mut chunks[current], n, line);
-    i32c(&mut chunks[current], 0, line);
-    set(&mut chunks[current], i, line);
+    if !ascii_numeric {
+        i32c(&mut chunks[current], 0, line);
+        set(&mut chunks[current], i, line);
+    }
 
-    let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
-    get(&mut chunks[current], i, line);
-    get(&mut chunks[current], n, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    if ascii_numeric {
+        // Only for ASCII numeric formatter output; generic Unicode path remains.
+        // `first` is a private primitive String used only by the completed
+        // sign decision. Its last read precedes `start`/`digits`/`out`; no
+        // callback can observe its slot or String identity. Reuse it for I32
+        // step, retaining the exact generic 12-slot local budget.
+        let step = first;
+        // For positive lengths, ((n - 1) % 3) + 1 is the first group
+        // size 1..3. Zero-length input produces an unused step0; its loop
+        // condition is false. No branch, coercion, or additional local.
+        get(&mut chunks[current], n, line);
+        i32c(&mut chunks[current], 1, line);
+        chunks[current].emit_op(Op::I32_SUB, line);
+        i32c(&mut chunks[current], 3, line);
+        chunks[current].emit_op(Op::I32_REM_S, line);
+        i32c(&mut chunks[current], 1, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        set(&mut chunks[current], step, line);
+        // Merge the sign and first1..3 ASCII digits in one proven-safe slice.
+        // n==0 has first_size0, retaining the old sign-only/empty value.
+        get(&mut chunks[current], s, line);
+        i32c(&mut chunks[current], 0, line);
+        get(&mut chunks[current], start, line);
+        get(&mut chunks[current], step, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        emit_substring(&mut chunks[current], line);
+        set(&mut chunks[current], out, line);
+        get(&mut chunks[current], step, line);
+        set(&mut chunks[current], i, line);
+        let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
+        get(&mut chunks[current], i, line);
+        get(&mut chunks[current], n, line);
+        chunks[current].emit_op(Op::I32_LT_S, line);
+        crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+        get(&mut chunks[current], out, line);
+        get(&mut chunks[current], sep, line);
+        concat(chunks, current, line);
+        set(&mut chunks[current], out, line);
+        get(&mut chunks[current], out, line);
+        get(&mut chunks[current], digits, line);
+        get(&mut chunks[current], i, line);
+        get(&mut chunks[current], i, line);
+        i32c(&mut chunks[current], 3, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        emit_substring(&mut chunks[current], line);
+        concat(chunks, current, line);
+        set(&mut chunks[current], out, line);
+        get(&mut chunks[current], i, line);
+        i32c(&mut chunks[current], 3, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        set(&mut chunks[current], i, line);
+        crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+    } else {
+        let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
+        get(&mut chunks[current], i, line);
+        get(&mut chunks[current], n, line);
+        chunks[current].emit_op(Op::I32_LT_S, line);
+        crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
-    get(&mut chunks[current], i, line);
-    i32c(&mut chunks[current], 0, line);
-    chunks[current].emit_op(Op::I32_GT_S, line);
-    get(&mut chunks[current], n, line);
-    get(&mut chunks[current], i, line);
-    chunks[current].emit_op(Op::I32_SUB, line);
-    i32c(&mut chunks[current], 3, line);
-    chunks[current].emit_op(Op::I32_REM_S, line);
-    i32c(&mut chunks[current], 0, line);
-    chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_op(Op::I32_AND, line);
-    chunks[current].emit_if(line);
-    get(&mut chunks[current], out, line);
-    get(&mut chunks[current], sep, line);
-    concat(chunks, current, line);
-    set(&mut chunks[current], out, line);
-    chunks[current].emit_end(line);
+        get(&mut chunks[current], i, line);
+        i32c(&mut chunks[current], 0, line);
+        chunks[current].emit_op(Op::I32_GT_S, line);
+        get(&mut chunks[current], n, line);
+        get(&mut chunks[current], i, line);
+        chunks[current].emit_op(Op::I32_SUB, line);
+        i32c(&mut chunks[current], 3, line);
+        chunks[current].emit_op(Op::I32_REM_S, line);
+        i32c(&mut chunks[current], 0, line);
+        chunks[current].emit_op(Op::I32_EQ, line);
+        chunks[current].emit_op(Op::I32_AND, line);
+        chunks[current].emit_if(line);
+        get(&mut chunks[current], out, line);
+        get(&mut chunks[current], sep, line);
+        concat(chunks, current, line);
+        set(&mut chunks[current], out, line);
+        chunks[current].emit_end(line);
 
-    get(&mut chunks[current], out, line);
-    get(&mut chunks[current], digits, line);
-    get(&mut chunks[current], i, line);
-    get(&mut chunks[current], i, line);
-    i32c(&mut chunks[current], 1, line);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    emit_substring(&mut chunks[current], line);
-    concat(chunks, current, line);
-    set(&mut chunks[current], out, line);
+        get(&mut chunks[current], out, line);
+        get(&mut chunks[current], digits, line);
+        get(&mut chunks[current], i, line);
+        get(&mut chunks[current], i, line);
+        i32c(&mut chunks[current], 1, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        emit_substring(&mut chunks[current], line);
+        concat(chunks, current, line);
+        set(&mut chunks[current], out, line);
 
-    get(&mut chunks[current], i, line);
-    i32c(&mut chunks[current], 1, line);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    set(&mut chunks[current], i, line);
-    crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+        get(&mut chunks[current], i, line);
+        i32c(&mut chunks[current], 1, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        set(&mut chunks[current], i, line);
+        crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+
+    }
 
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], frac, line);
@@ -1321,6 +1407,11 @@ pub fn emit_trim_chars(
     opts: TrimOptions,
     line: u32,
 ) {
+    let ascii_defaults = if argc < 2 {
+        opts.default_chars.filter(|set| set.is_ascii())
+    } else {
+        None
+    };
     if argc < 2 {
         match opts.default_chars {
             None => {
@@ -1353,9 +1444,9 @@ pub fn emit_trim_chars(
         let st = crate::primitives::loops::emit_loop_start(chunks, current, line);
         get(&mut chunks[current], start, line);
         get(&mut chunks[current], end, line);
-        crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-        crate::primitives::loops::emit_loop_cond(chunks, current, line);
-        emit_char_in_set(chunks, current, chars, s, start, 0, line);
+        chunks[current].emit_op(Op::I32_LT_S, line);
+        crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+        emit_char_in_set(chunks, current, chars, s, start, 0, ascii_defaults, line);
         chunks[current].emit_br_if(st.break_depth(0) as u32, line);
         get(&mut chunks[current], start, line);
         i32c(&mut chunks[current], 1, line);
@@ -1369,9 +1460,9 @@ pub fn emit_trim_chars(
         let st = crate::primitives::loops::emit_loop_start(chunks, current, line);
         get(&mut chunks[current], end, line);
         get(&mut chunks[current], start, line);
-        crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
-        crate::primitives::loops::emit_loop_cond(chunks, current, line);
-        emit_char_in_set(chunks, current, chars, s, end, -1, line);
+        chunks[current].emit_op(Op::I32_GT_S, line);
+        crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+        emit_char_in_set(chunks, current, chars, s, end, -1, ascii_defaults, line);
         chunks[current].emit_br_if(st.break_depth(0) as u32, line);
         get(&mut chunks[current], end, line);
         i32c(&mut chunks[current], 1, line);
@@ -1396,9 +1487,14 @@ fn emit_char_in_set(
     s: u16,
     idx: u16,
     offset: i32,
+    ascii_defaults: Option<&str>,
     line: u32,
 ) {
     let chunk = &mut chunks[current];
+    if let Some(defaults) = ascii_defaults {
+        emit_char_outside_ascii_defaults(chunk, defaults, s, idx, offset, line);
+        return;
+    }
     get(chunk, chars, line);
     get(chunk, s, line);
     get(chunk, idx, line);
@@ -1412,6 +1508,57 @@ fn emit_char_in_set(
     chunk.emit_call(index_of, 2, line);
     i32c(chunk, 0, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
+}
+
+// A static ASCII set cannot contain a surrogate or the replacement character.
+// Raw UTF-16 code units therefore have exactly the same membership as charAt,
+// including the VM's lossy surrogate strings. Explicit sets keep the old path.
+fn emit_char_outside_ascii_defaults(
+    chunk: &mut Chunk,
+    defaults: &str,
+    s: u16,
+    idx: u16,
+    offset: i32,
+    line: u32,
+) {
+    let mut codes: Vec<u8> = defaults.bytes().collect();
+    codes.sort_unstable();
+    codes.dedup();
+    if codes.is_empty() {
+        i32c(chunk, 1, line);
+        return;
+    }
+    let mut ranges: Vec<(u8, u8)> = Vec::new();
+    for code in codes {
+        if let Some(last) = ranges.last_mut() {
+            if code == last.1 + 1 {
+                last.1 = code;
+                continue;
+            }
+        }
+        ranges.push((code, code));
+    }
+    let cp = chunk.alloc_scratch(1);
+    get(chunk, s, line);
+    get(chunk, idx, line);
+    if offset != 0 {
+        i32c(chunk, -offset, line);
+        chunk.emit_op(Op::I32_SUB, line);
+    }
+    let char_code_at = chunk.add_import("wasm:js-string", "charCodeAt");
+    chunk.emit_call(char_code_at, 2, line);
+    set(chunk, cp, line);
+    for (index, (lo, hi)) in ranges.into_iter().enumerate() {
+        get(chunk, cp, line);
+        i32c(chunk, lo as i32, line);
+        chunk.emit_op(Op::I32_SUB, line);
+        i32c(chunk, (hi - lo) as i32, line);
+        chunk.emit_op(Op::I32_LE_U, line);
+        if index != 0 {
+            chunk.emit_op(Op::I32_OR, line);
+        }
+    }
+    chunk.emit_op(Op::I32_EQZ, line);
 }
 
 /// `sep.join(iterable)` — join ANY iterable, not only an array.
@@ -1557,7 +1704,48 @@ fn class_table(class: CharClass) -> &'static str {
 
 /// Membership test. Stack: `[cp: i32]` → `[i32 0/1]` — binary search for
 /// the first boundary `> cp`; inside a range iff that index is odd.
+// The receiver is a string and codePointAt produces an i32. ASCII ranges
+// avoid searching the Unicode boundary string while preserving its fallback.
 fn emit_class_test(chunks: &mut [Chunk], current: usize, class: CharClass, line: u32) {
+    let cp = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], cp, line);
+    if matches!(class, CharClass::Digit) {
+        emit_ascii_class(&mut chunks[current], cp, class, line);
+        return;
+    }
+    get(&mut chunks[current], cp, line);
+    i32c(&mut chunks[current], 128, line);
+    chunks[current].emit_op(Op::I32_LT_U, line);
+    chunks[current].emit_if_i32(line);
+    emit_ascii_class(&mut chunks[current], cp, class, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], cp, line);
+    emit_unicode_class_test(chunks, current, class, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ascii_class(chunk: &mut Chunk, cp: u16, class: CharClass, line: u32) {
+    let ranges: &[(i32, i32)] = match class {
+        CharClass::Digit => &[(48, 57)],
+        CharClass::Alpha => &[(65, 90), (97, 122)],
+        CharClass::Alnum => &[(48, 57), (65, 90), (97, 122)],
+        CharClass::Space => &[(9, 13), (32, 32)],
+        CharClass::Upper => &[(65, 90)],
+        CharClass::Lower => &[(97, 122)],
+    };
+    for (index, &(lo, hi)) in ranges.iter().enumerate() {
+        get(chunk, cp, line);
+        i32c(chunk, lo, line);
+        chunk.emit_op(Op::I32_SUB, line);
+        i32c(chunk, hi - lo, line);
+        chunk.emit_op(Op::I32_LE_U, line);
+        if index != 0 {
+            chunk.emit_op(Op::I32_OR, line);
+        }
+    }
+}
+
+fn emit_unicode_class_test(chunks: &mut [Chunk], current: usize, class: CharClass, line: u32) {
     let table = class_table(class);
     let n_bounds = (table.chars().count() / 2) as i32;
     let base = chunks[current].alloc_scratch(4);
@@ -1577,7 +1765,7 @@ fn emit_class_test(chunks: &mut [Chunk], current: usize, class: CharClass, line:
         c.emit_op_u16(Op::LOCAL_GET, hi, line);
         c.emit_op(Op::I32_LT_S, line);
     }
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     {
         let c = &mut chunks[current];
         let cca = c.add_import("wasm:js-string", "charCodeAt");
@@ -1653,7 +1841,7 @@ fn emit_all_in_class(chunks: &mut [Chunk], current: usize, class: CharClass, lin
         c.emit_op_u16(Op::LOCAL_GET, ok, line);
         c.emit_op(Op::I32_AND, line);
     }
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     {
         let c = &mut chunks[current];
         let cpa = c.add_import("wasm:js-string", "codePointAt");
@@ -1718,7 +1906,7 @@ fn emit_cased_class(chunks: &mut [Chunk], current: usize, want_upper: bool, line
         c.emit_op(Op::I32_EQZ, line);
         c.emit_op(Op::I32_AND, line);
     }
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     {
         let c = &mut chunks[current];
         let cpa = c.add_import("wasm:js-string", "codePointAt");
@@ -2437,7 +2625,7 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
 // Handles `{{` / `}}` escapes; nested-attribute / format-spec
 // (`{key.attr}` / `{key:.2f}`) are follow-up work — for now the
 // closing `}` terminates the placeholder name unconditionally.
-pub fn build_format_map(imports: &mut Chunk) -> Chunk {
+pub fn build_format_map(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_format_map");
     c.arity = 2;
     c.local_count = 7; // s(0), d(1), out(2), i(3), len(4), end(5), key(6)
@@ -2469,10 +2657,11 @@ pub fn build_format_map(imports: &mut Chunk) -> Chunk {
     let outer_block = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
 
+    // Private cursors and js-string.length are i32 values.
     // if i >= len: break
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_LT_S, 0);
     c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(1, 0);
 
@@ -2503,7 +2692,7 @@ pub fn build_format_map(imports: &mut Chunk) -> Chunk {
     let (scan_loop, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_LT_S, 0);
     c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(1, 0);
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
@@ -2536,7 +2725,8 @@ pub fn build_format_map(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
     c.emit_op(Op::ARRAY_GET, 0);
     c.emit_call(to_str, 1, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    // Both the accumulated output and String(d[key]) are strings.
+    emit_str_concat(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, out, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
@@ -2555,7 +2745,7 @@ pub fn build_format_map(imports: &mut Chunk) -> Chunk {
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
     c.emit_op(Op::I32_ADD, 0);
     emit_str_substring(&mut c, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    emit_str_concat(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, out, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
@@ -2571,6 +2761,232 @@ pub fn build_format_map(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
     c.emit_op(Op::RETURN, 0);
     c
+}
+
+/// Proven literal templates whose existing scanner visits many placeholders.
+/// Literal receiver provenance is checked by the intrinsic before calling this.
+pub fn format_map_literal_uses_large_path(template: &str) -> bool {
+    if template.encode_utf16().count() < 128 {
+        return false;
+    }
+    let bytes = template.as_bytes();
+    let mut index = 0;
+    let mut placeholders = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'{' {
+            placeholders += 1;
+            if placeholders >= 64 {
+                return true;
+            }
+            index += 1;
+            while index < bytes.len() && bytes[index] != b'}' {
+                index += 1;
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+/// Append the selected large-template algorithm into the actual caller.
+/// Receiver and mapping were evaluated once, in order, into private locals.
+pub fn emit_format_map_large_into(c: &mut Chunk, receiver: u16, mapping: u16) {
+    let s = receiver;
+    let d = mapping;
+    let out = c.alloc_scratch(5);
+    let i = out + 1;
+    let len = out + 2;
+    let end = out + 3;
+    let key = out + 4;
+    let parts = c.alloc_scratch(3);
+    let fragment = parts + 1;
+    let mode = parts + 2; // 0: typed; 1: inspect first placeholder; 2: fragments
+    let create_parts = c.add_import("vybe:js-array", "newWithLength");
+    let append_part = c.add_import("ecma:array", "push");
+    let join_parts = c.add_import("ecma:array", "join");
+
+    let to_str = c.add_import("ecma:string", "String");
+
+    // out = ""
+    let empty = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("")));
+    crate::primitives::expressions::emit_const_index(c, empty, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+
+    // i = 0; len = wasm:js-string.length(s)
+    crate::primitives::instructions::core_wasm::i32_const(c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    emit_str_length(c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_i32_const(128, 0);
+    c.emit_op(Op::I32_GE_S, 0);
+    c.emit_op_u16(Op::LOCAL_SET, mode, 0);
+
+    let open_brace = c.add_constant(vybe_runtime::Value::I32(b'{' as i32));
+    let close_brace = c.add_constant(vybe_runtime::Value::I32(b'}' as i32));
+
+    let outer_block = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    // Private cursors and js-string.length are i32 values.
+    // if i >= len: break
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::I32_LT_S, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
+    c.emit_br_if(1, 0);
+
+    // ch = wasm:js-string.charCodeAt(s, i)
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    emit_str_char_code_at(c, 0);
+
+    // Branch on '{' / '}' / literal
+    let ch_slot = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, ch_slot, 0);
+
+    // -- '{' branch --
+    let open_block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, ch_slot, 0);
+    crate::primitives::expressions::emit_const_index(c, open_brace, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0);
+
+    // Find closing '}': end = i+1; while end < len && s[end] != '}': end++
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, end, 0);
+
+    let scan_block = c.emit_block(0);
+    let (scan_loop, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::I32_LT_S, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
+    c.emit_br_if(1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    emit_str_char_code_at(c, 0);
+    crate::primitives::expressions::emit_const_index(c, close_brace, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_br_if(1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    crate::primitives::instructions::core_wasm::i32_const(c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, end, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0);
+    c.patch_loop(scan_loop);
+    c.emit_end(0);
+    c.patch_block(scan_block);
+
+    // key = s.substring(i+1, end); out += String(d[key]); i = end + 1
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    emit_str_substring(c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, d, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_call(to_str, 1, 0);
+    // Both operands stay on the stack on the ordinary typed path.
+    c.emit_op_u16(Op::LOCAL_GET, mode, 0);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_if_params(0, 2, 1);
+    emit_str_concat(c, 0);
+    c.emit_else(0);
+    // Only the candidate/active path spills the two proven-string operands.
+    c.emit_op_u16(Op::LOCAL_SET, fragment, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, mode, 0);
+    c.emit_i32_const(1, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_if(0);
+    c.emit_i32_const(0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, mode, 0);
+    c.emit_op_u16(Op::LOCAL_GET, fragment, 0);
+    emit_str_length(c, 0);
+    c.emit_i32_const(65536, 0);
+    c.emit_op(Op::I32_GE_S, 0);
+    c.emit_if(0);
+    c.emit_i32_const(0, 0);
+    c.emit_call(create_parts, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, parts, 0);
+    c.emit_i32_const(2, 0);
+    c.emit_op_u16(Op::LOCAL_SET, mode, 0);
+    c.emit_end(0);
+    c.emit_end(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, mode, 0);
+    c.emit_i32_const(2, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_if_value(0);
+    for value in [out, fragment] {
+        c.emit_op_u16(Op::LOCAL_GET, parts, 0);
+        c.emit_op_u16(Op::LOCAL_GET, value, 0);
+        c.emit_call(append_part, 2, 0);
+        c.emit_op(Op::DROP, 0);
+    }
+    c.emit_string_const("", 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, fragment, 0);
+    emit_str_concat(c, 0);
+    c.emit_end(0);
+    c.emit_end(0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    crate::primitives::instructions::core_wasm::i32_const(c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_br(1, 0); // continue outer loop
+    c.emit_end(0);
+    c.patch_block(open_block);
+
+    // -- literal char path: out += s.substring(i, i+1); i++
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    emit_str_substring(c, 0);
+    emit_str_concat(c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::primitives::instructions::core_wasm::i32_const(c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(outer_block);
+
+    c.emit_op_u16(Op::LOCAL_GET, mode, 0);
+    c.emit_i32_const(2, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_if_value(0);
+    c.emit_op_u16(Op::LOCAL_GET, parts, 0);
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_call(append_part, 2, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, parts, 0);
+    c.emit_string_const("", 0);
+    c.emit_call(join_parts, 2, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_end(0);
 }
 
 // `build_concat` removed — nothing referenced `__vybe_concat`. The

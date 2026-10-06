@@ -91,7 +91,7 @@ pub fn apply_augmentations(
     // Dart mixin member satisfies an abstract one.
     // Instance and static are separate surfaces: a class may declare a static
     // `make` and receive an instance `make`, and neither shadows the other.
-    let own: Vec<(bool, String)> = class
+    let own: std::collections::HashSet<(bool, String)> = class
         .instance_methods
         .iter()
         .map(|m| (false, m))

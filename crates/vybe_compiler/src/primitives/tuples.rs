@@ -135,25 +135,33 @@ pub fn emit_tuple_value_eq(chunk: &mut Chunk, line: u32) {
 /// for any `source`/`result` (string operands skip via the `isArray` guards),
 /// so callers need not know the operand types.
 pub fn emit_propagate_tag(chunks: &mut [Chunk], current: usize, line: u32) {
-    let src = chunks[current].alloc_scratch(1);
-    set(chunks, current, src, line); // [result]; source stashed
+    let src = chunks[current].alloc_scratch(2);
+    let result = src + 1;
+    set(chunks, current, src, line);
+    // Nested Wasm blocks cannot consume operands below their entry height.
+    set(chunks, current, result, line);
 
     // if isArray(source) && isTuple(source) && isArray(result) { tag(result) }
     get(chunks, current, src, line);
     call_is_array(chunks, current, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    let cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast, 1, line);
     chunks[current].emit_if(line);
     get(chunks, current, src, line);
     emit_is_tuple(chunks, current, line);
     chunks[current].emit_if(line);
-    core_wasm::dup(&mut chunks[current], line); // [result, result]
+    get(chunks, current, result, line);
     call_is_array(chunks, current, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    let cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast, 1, line);
     chunks[current].emit_if(line);
+    get(chunks, current, result, line);
     emit_tag(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    get(chunks, current, result, line);
 }
 
 fn get(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
@@ -241,13 +249,13 @@ pub fn emit_list_string_to_tuple(chunk: &mut Chunk, line: u32) {
     let ilen = chunk.add_import("wasm:js-string", "length");
     chunk.emit_call(ilen, 1, line);
     core_wasm::i32_const(chunk, line, 0);
-    crate::primitives::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_op(Op::I32_GT_S, line);
     chunk.emit_op_u16(Op::LOCAL_GET, inner, line);
     core_wasm::string_const(chunk, line, ", ");
     let index_of = chunk.add_import("ecma:string", "indexOf");
     chunk.emit_call(index_of, 2, line);
     core_wasm::i32_const(chunk, line, 0);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::I32_LT_S, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, res, line);

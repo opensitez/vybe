@@ -289,8 +289,45 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     chunks.push(crate::primitives::references::build_autoderef());
     exports.push("__stdlib_autoderef");
 
-    for name in ["__stdlib_dyneq", "__stdlib_dynlt", "__stdlib_dyngt", "__stdlib_dynle", "__stdlib_dynge",] {
+    for name in [
+        "__stdlib_dyneq",
+        "__stdlib_dynlt",
+        "__stdlib_dyngt",
+        "__stdlib_dynle",
+        "__stdlib_dynge",
+    ] {
         chunks.push(crate::primitives::ops::build_dyn_comparison(name));
+        exports.push(name);
+    }
+
+    for name in [
+        "__stdlib_reverse_copy",
+        "__stdlib_reverse_copy_own_fields",
+        "__stdlib_reverse_copy_prototype_members",
+        "__stdlib_reverse_copy_own_fields_prototype_members",
+        "__stdlib_encoding_base64_decode",
+        "__stdlib_bytes_to_binary_string",
+        "__stdlib_bytes_to_binary_string_all",
+        "__stdlib_binary_string_to_bytes",
+        "__stdlib_encoding_bin2hex",
+        "__stdlib_encoding_hex2bin",
+        "__stdlib_encoding_str_rot13",
+        "__stdlib_encoding_quoted_printable_encode",
+        "__stdlib_encoding_quoted_printable_decode",
+        "__stdlib_encoding_convert_uuencode",
+        "__stdlib_encoding_convert_uudecode",
+        "__stdlib_encoding_base64_decode_lenient",
+        "__stdlib_sort_by_key",
+        "__stdlib_sort_by_key_receiver",
+        "__stdlib_heapify",
+        "__stdlib_nsmallest",
+        "__stdlib_nlargest",
+        "__stdlib_nsmallest_key",
+        "__stdlib_nlargest_key",
+        "__stdlib_nsmallest_key_receiver",
+        "__stdlib_nlargest_key_receiver",
+    ] {
+        chunks.push(build_runtime_helper_export(imports, name).unwrap());
         exports.push(name);
     }
 
@@ -584,6 +621,11 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     ));
     exports.push("__stdlib_regex_match_all_pat_first");
 
+    for &(name, _) in crate::primitives::array_transforms::SHARED_HELPERS {
+        chunks.push(build_runtime_helper_export(imports, name).unwrap());
+        exports.push(name);
+    }
+
     RuntimeHelpers { chunks, exports }
 }
 
@@ -606,12 +648,82 @@ pub fn build_runtime_helpers_for_exports(
     RuntimeHelpers { chunks, exports }
 }
 
+/// Reuse only context-free, hand-emitted helper templates. Keep relocation,
+/// globals, and request values outside the cache; callers receive an owned copy
+/// before the normal module finalization and linking passes mutate the chunk.
+fn cached_context_free_helper(name: &str, build: impl FnOnce() -> Chunk) -> Chunk {
+    use std::collections::HashMap;
+    use std::sync::{Arc, OnceLock, RwLock};
+    static CACHE: OnceLock<RwLock<HashMap<String, Arc<Chunk>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    let cached = cache.read().unwrap().get(name).cloned();
+    let template = match cached {
+        Some(template) => template,
+        None => {
+            // Builders may enter other primitive machinery. Never keep the
+            // cache lock held while emitting a helper or cloning its code.
+            let built = Arc::new(build());
+            cache.write().unwrap().entry(name.to_owned()).or_insert(built).clone()
+        }
+    };
+    template.as_ref().clone()
+}
+
 fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk> {
     let _guard = RuntimeHelperBuildGuard::enter();
+    if crate::primitives::array_transforms::SHARED_HELPERS
+        .iter()
+        .any(|(export, _)| *export == name)
+    {
+        return Some(crate::primitives::array_transforms::build_shared_helper(
+            name,
+        ));
+    }
     let chunk = match name {
-        "__stdlib_autoderef" => crate::primitives::references::build_autoderef(),
-        "__stdlib_dyneq" | "__stdlib_dynlt" | "__stdlib_dyngt" | "__stdlib_dynle" | "__stdlib_dynge" =>
-            crate::primitives::ops::build_dyn_comparison(name),
+        "__stdlib_levenshtein" => crate::primitives::string_similarity::build_levenshtein(),
+        "__stdlib_similar_text" => crate::primitives::string_similarity::build_similar_text(),
+        "__stdlib_random_next_unit" => crate::primitives::random::build_next_unit(),
+        "__stdlib_erf" => crate::primitives::math::build_erf(),
+        "__stdlib_csv_parse_line"
+        | "__stdlib_csv_parse_document"
+        | "__stdlib_csv_format_minimal"
+        | "__stdlib_csv_format_whitespace" => crate::primitives::csv::build_shared_helper(name),
+        "__stdlib_bytes_to_binary_string"
+        | "__stdlib_bytes_to_binary_string_all"
+        | "__stdlib_binary_string_to_bytes" => crate::primitives::base64::build_shared_helper(name),
+        "__stdlib_autoderef" => cached_context_free_helper(name, || {
+            crate::primitives::references::build_autoderef()
+        }),
+        "__stdlib_dyneq" | "__stdlib_dynlt" | "__stdlib_dyngt" | "__stdlib_dynle"
+        | "__stdlib_dynge" => cached_context_free_helper(name, || {
+            crate::primitives::ops::build_dyn_comparison(name)
+        }),
+        "__stdlib_encoding_base64_decode"
+        | "__stdlib_encoding_base64_decode_lenient"
+        | "__stdlib_encoding_bin2hex"
+        | "__stdlib_encoding_hex2bin"
+        | "__stdlib_encoding_str_rot13"
+        | "__stdlib_encoding_quoted_printable_encode"
+        | "__stdlib_encoding_quoted_printable_decode"
+        | "__stdlib_encoding_convert_uuencode"
+        | "__stdlib_encoding_convert_uudecode" => {
+            crate::primitives::string_encoding::build_shared_helper(name)
+        }
+        "__stdlib_sort_by_key" => crate::primitives::collections::build_sort_by_key(false),
+        "__stdlib_sort_by_key_receiver" => crate::primitives::collections::build_sort_by_key(true),
+        "__stdlib_heapify"
+        | "__stdlib_nsmallest"
+        | "__stdlib_nlargest"
+        | "__stdlib_nsmallest_key"
+        | "__stdlib_nlargest_key"
+        | "__stdlib_nsmallest_key_receiver"
+        | "__stdlib_nlargest_key_receiver" => crate::primitives::heap::build_shared_helper(name),
+        "__stdlib_reverse_copy"
+        | "__stdlib_reverse_copy_own_fields"
+        | "__stdlib_reverse_copy_prototype_members"
+        | "__stdlib_reverse_copy_own_fields_prototype_members" => {
+            crate::primitives::collections::build_reverse_copy(name)
+        }
         "__stdlib_sorted" => crate::primitives::collections::build_sorted(imports),
         "__stdlib_chan_send" => crate::primitives::channels::build_chan_send(imports),
         "__stdlib_chan_recv" => crate::primitives::channels::build_chan_recv(imports),
@@ -764,6 +876,60 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
 pub struct RuntimeHelpers {
     pub chunks: Vec<Chunk>,
     pub exports: Vec<&'static str>,
+}
+
+#[cfg(test)]
+mod context_free_helper_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cached_helpers_match_fresh_bodies_without_touching_module_imports() {
+        let mut imports = Chunk::new("test-module");
+        imports.add_import("test:sentinel", "first");
+        for name in [
+            "__stdlib_autoderef", "__stdlib_dyneq", "__stdlib_dynlt",
+            "__stdlib_dyngt", "__stdlib_dynle", "__stdlib_dynge",
+        ] {
+            let expected = with_polyfill_guard(|| {
+                if name == "__stdlib_autoderef" {
+                    crate::primitives::references::build_autoderef()
+                } else {
+                    crate::primitives::ops::build_dyn_comparison(name)
+                }
+            });
+            for _ in 0..2 {
+                let actual = build_runtime_helper_export(&mut imports, name).unwrap();
+                assert_eq!(actual.code, expected.code, "{name}");
+                assert_eq!(actual.constants, expected.constants, "{name}");
+                assert_eq!(actual.arity, expected.arity, "{name}");
+                assert_eq!(actual.local_count, expected.local_count, "{name}");
+                assert_eq!(actual.globals, expected.globals, "{name}");
+                let import_names = |chunk: &Chunk| chunk.imports.iter()
+                    .map(|import| (import.module.clone(), import.name.clone()))
+                    .collect::<Vec<_>>();
+                assert_eq!(import_names(&actual), import_names(&expected), "{name}");
+            }
+            assert_eq!(imports.imports.len(), 1);
+        }
+    }
+
+    #[test]
+    fn cached_helper_copies_are_independently_mutable() {
+        let mut imports = Chunk::new("first-module");
+        let mut first = build_runtime_helper_export(&mut imports, "__stdlib_autoderef").unwrap();
+        let expected_code = first.code.clone();
+        first.code.clear();
+        first.constants.clear();
+        first.local_count = 0;
+
+        let mut other_imports = Chunk::new("second-module");
+        other_imports.add_import("test:sentinel", "different");
+        let next = build_runtime_helper_export(&mut other_imports, "__stdlib_autoderef").unwrap();
+        assert_eq!(next.code, expected_code);
+        assert!(!next.constants.is_empty());
+        assert!(next.local_count > 0);
+        assert_eq!(other_imports.imports.len(), 1);
+    }
 }
 
 impl RuntimeHelpers {

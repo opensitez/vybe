@@ -32,7 +32,7 @@ use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
 use crate::primitives::instructions::recipes;
-use crate::primitives::{loops, ops, records};
+use crate::primitives::records;
 
 /// The shared recursive copy helper. One chunk per compilation, keyed by name.
 const COPY_CHUNK: &str = "__vybe_value_copy";
@@ -43,15 +43,40 @@ const COPY_CHUNK: &str = "__vybe_value_copy";
 /// answered from the STATIC type — Pascal's `var a, b: TR` default-initialises
 /// and never runs a constructor, so it carries no stamp to read. It is a
 /// compile-time constant at every call site, which keeps the helper
-/// monomorphic; the recursive calls inside always pass `false` so a nested
-/// REFERENCE stays shared.
+/// monomorphic; recursive calls use the ordinary-copy proof state, so a
+/// nested REFERENCE stays shared.
 pub fn emit_deep_copy(chunks: &mut Vec<Chunk>, current: usize, slot: u16, force: bool, line: u32) {
     let helper = ensure_copy_chunk(chunks);
     chunks[current].emit_op_u16(Op::REF_FUNC, helper as u16, line);
     chunks[current].emit(0u8, line); // upvalue count
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunks[current].emit_bool_const(force, line);
+    chunks[current].emit_i32_const(i32::from(force), line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+}
+
+/// Copy an unknown value only when its declaration requests value storage.
+/// Scalars take the helper's existing identity-return path without invoking
+/// it. The aggregate branch supplies the same pure proof used by recursive
+/// calls; callable and declaration-stamp checks still happen in the helper.
+pub fn emit_deep_copy_if_needed(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    slot: u16,
+    line: u32,
+) {
+    let helper = ensure_copy_chunk(chunks);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    recipes::is_object(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::REF_FUNC, helper as u16, line);
+    chunk.emit(0u8, line); // upvalue count
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_i32_const(2, line); // caller-proven aggregate
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_end(line);
 }
 
 /// Idempotent by chunk name, the same shape `sprintf::ensure_chunk` uses.
@@ -73,11 +98,18 @@ fn ensure_copy_chunk(chunks: &mut Vec<Chunk>) -> usize {
     idx
 }
 
-/// `__vybe_value_copy(value, force) -> value`
+/// `__vybe_value_copy(value, force: i32) -> value`
+///
+/// This second parameter is private compiler control: 0 = ordinary copy,
+/// 1 = forced copy, 2 = ordinary copy with caller-proven aggregate input.
+/// Public `emit_deep_copy` callers supply only 0/1. State 2 occurs on the
+/// guarded caller path and this body's direct self-reference after the same
+/// exact aggregate predicate;
+/// it skips that duplicate predicate while retaining callable/stamp checks.
 ///
 /// ```text
-/// if !force {
-///     value is not an aggregate  -> value    // number, string, bool, null
+/// if mode != forced {
+///     unproven non-aggregate     -> value    // number, string, bool, null
 ///     value is a function        -> value    // closures are references
 ///     value has no __value_copy  -> value    // a reference object
 /// }
@@ -94,12 +126,13 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
     let force = 1u16;
 
     let base = chunks[idx].local_count;
-    chunks[idx].alloc_scratch(5);
-    let (out, keys, i_slot, key, copied) = (base, base + 1, base + 2, base + 3, base + 4);
+    chunks[idx].alloc_scratch(6);
+    let (out, keys, i_slot, key, copied, keys_len) =
+        (base, base + 1, base + 2, base + 3, base + 4, base + 5);
 
     chunks[idx].emit_op_u16(Op::LOCAL_GET, force, LINE);
-    ops::emit_dyn_to_bool(&mut chunks[idx], LINE);
-    chunks[idx].emit_op(Op::I32_EQZ, LINE);
+    chunks[idx].emit_i32_const(1, LINE);
+    chunks[idx].emit_op(Op::I32_NE, LINE);
     chunks[idx].emit_if(LINE);
     {
         let bail_if = |chunks: &mut [Chunk], test: &dyn Fn(&mut Chunk)| {
@@ -109,12 +142,18 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
             chunks[idx].emit_op(Op::RETURN, LINE);
             chunks[idx].emit_end(LINE);
         };
+        // State 0 has no aggregate proof. State 2 was checked immediately
+        // before the direct call, with no intervening observable step.
+        chunks[idx].emit_op_u16(Op::LOCAL_GET, force, LINE);
+        chunks[idx].emit_op(Op::I32_EQZ, LINE);
+        chunks[idx].emit_if(LINE);
         // Not a heap aggregate at all — scalars and strings are already values.
         bail_if(chunks, &|c| {
             c.emit_op_u16(Op::LOCAL_GET, value, LINE);
             recipes::is_object(c, LINE);
             c.emit_op(Op::I32_EQZ, LINE);
         });
+        chunks[idx].emit_end(LINE);
         // A function or closure. Map-backed like everything else, but a
         // reference by nature — deep-copying one shreds it.
         bail_if(chunks, &|c| {
@@ -136,7 +175,10 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
             // by the host, which is also the only place that can see a callable
             // that is not a bare funcref (a bound function, a closure object).
             crate::primitives::reflection::emit_is_callable_in_chunk(c, LINE);
-            crate::primitives::ops::emit_dyn_to_bool(c, LINE);
+            // The host returns canonical numeric 0/1 through its boxed value
+            // ABI. Unbox that proven Number before the native Wasm i32 IF.
+            let to_i32 = c.add_import("wasm:js-number", "toI32");
+            c.emit_call(to_i32, 1, LINE);
         });
         // An aggregate whose declaration never asked for value storage.
         bail_if(chunks, &|c| {
@@ -163,26 +205,44 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
     chunks[idx].emit_call(keys_fn, 1, LINE);
     chunks[idx].emit_op_u16(Op::LOCAL_SET, keys, LINE);
 
-    let state = loops::emit_for_in_start(chunks, idx, keys, i_slot, LINE);
+    // The key snapshot never escapes this helper. Recursive copies can mutate
+    // copied values, but cannot change this private array's length or order.
+    chunks[idx].emit_op_u16(Op::LOCAL_GET, keys, LINE);
+    let length_fn = chunks[idx].add_import("ecma:array", "length");
+    chunks[idx].emit_call(length_fn, 1, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_SET, keys_len, LINE);
+    chunks[idx].emit_i32_const(0, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_SET, i_slot, LINE);
+    let exit = chunks[idx].emit_block(LINE);
+    let (repeat, _) = chunks[idx].emit_loop_s(LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_GET, i_slot, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_GET, keys_len, LINE);
+    chunks[idx].emit_op(Op::I32_GE_S, LINE);
+    chunks[idx].emit_br_if(1, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_GET, keys, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_GET, i_slot, LINE);
+    crate::primitives::collections::emit_get(chunks, idx, LINE);
     chunks[idx].emit_op_u16(Op::LOCAL_SET, key, LINE);
-    // `out[key] = self(out[key], false)`, in two steps.
-    //
-    // The call is issued on a CLEAN stack and its result sunk into a local
-    // before the `set` operands are pushed. Building `[out, key]` first and
-    // calling with them underneath the callee is what `emit_sprintf_from_array`
-    // deliberately avoids — it stashes into locals for the same reason. Doing
-    // it the other way round, the recursion demonstrably re-entered (a forced
-    // run overflowed the stack inside this chunk) yet its result never reached
-    // the field, while writing a constant in the same position worked.
-    chunks[idx].emit_op_u16(Op::REF_FUNC, idx as u16, LINE);
-    chunks[idx].emit(0u8, LINE); // upvalue count
+    // Read each field exactly once, before deciding whether recursion is
+    // needed. Scalar values take the helper's existing pure aggregate bail
+    // directly; aggregates retain its callable/stamp checks and copy behavior.
     chunks[idx].emit_op_u16(Op::LOCAL_GET, out, LINE);
     chunks[idx].emit_op_u16(Op::LOCAL_GET, key, LINE);
     let get_fn = chunks[idx].add_import("ecma:object", "get");
     chunks[idx].emit_call(get_fn, 2, LINE);
-    chunks[idx].emit_bool_const(false, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_SET, copied, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_GET, copied, LINE);
+    recipes::is_object(&mut chunks[idx], LINE);
+    chunks[idx].emit_if(LINE);
+    // Keep the recursive invocation on a clean stack; its result is stored
+    // before pushing the later set operands.
+    chunks[idx].emit_op_u16(Op::REF_FUNC, idx as u16, LINE);
+    chunks[idx].emit(0u8, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_GET, copied, LINE);
+    chunks[idx].emit_i32_const(2, LINE);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[idx], 2, LINE);
     chunks[idx].emit_op_u16(Op::LOCAL_SET, copied, LINE);
+    chunks[idx].emit_end(LINE);
 
     chunks[idx].emit_op_u16(Op::LOCAL_GET, out, LINE);
     chunks[idx].emit_op_u16(Op::LOCAL_GET, key, LINE);
@@ -193,7 +253,15 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
     // value and the assignment's own result is `V` (§13.15.2), not it.
     // Removing this `DROP` made `++o.x` evaluate to null.
     chunks[idx].emit_op(Op::DROP, LINE);
-    loops::emit_for_in_end(chunks, idx, i_slot, state, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_GET, i_slot, LINE);
+    chunks[idx].emit_i32_const(1, LINE);
+    chunks[idx].emit_op(Op::I32_ADD, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_SET, i_slot, LINE);
+    chunks[idx].emit_br(0, LINE);
+    chunks[idx].emit_end(LINE);
+    chunks[idx].patch_loop(repeat);
+    chunks[idx].emit_end(LINE);
+    chunks[idx].patch_block(exit);
 
     chunks[idx].emit_op_u16(Op::LOCAL_GET, out, LINE);
     chunks[idx].emit_op(Op::RETURN, LINE);

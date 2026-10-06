@@ -677,6 +677,10 @@ impl Compiler {
             ExprKind::Binary {
                 op: BinOp::Concat, ..
             } => Some("string".into()),
+            ExprKind::Binary {
+                op: BinOp::Integer(_, vybe_ast::BitLane::W32),
+                ..
+            } => Some("int32".into()),
             ExprKind::Binary { op, left, right }
                 if matches!(
                     op,
@@ -893,6 +897,9 @@ impl Compiler {
             ExprKind::Lit(Literal::Int(n)) => *n >= range.0 && *n <= range.1,
 
             ExprKind::Binary { op, left, right } => {
+                if matches!(op, BinOp::Integer(_, vybe_ast::BitLane::W32)) {
+                    return is_i32;
+                }
                 // A bitwise op only leaves an exact i32 when it really is the
                 // i32 opcode. If either operand is a user value type, the
                 // operator may be OVERLOADED (C# `operator &`, Python
@@ -901,6 +908,11 @@ impl Compiler {
                     || self.expr_user_value_type_name(right).is_some()
                 {
                     return false;
+                }
+                if is_i32
+                    && self.static_builtin_operator_returns_i32(op, left, right)
+                {
+                    return true;
                 }
                 match op {
                     // `x & MASK` is bounded by the mask whenever the mask is a

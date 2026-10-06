@@ -163,7 +163,7 @@ pub fn emit_value_copy(chunks: &mut Vec<Chunk>, current: usize, slot: u16, line:
 /// Copy only if the instance says its declaration asked for it — the
 /// cross-language half, for a value whose type this compiler cannot see.
 pub fn emit_value_copy_if_needed(chunks: &mut Vec<Chunk>, current: usize, slot: u16, line: u32) {
-    crate::primitives::clone::emit_deep_copy(chunks, current, slot, false, line);
+    crate::primitives::clone::emit_deep_copy_if_needed(chunks, current, slot, line);
 }
 
 // ── Variant part — arms SHARE one region ────────────────────────────────

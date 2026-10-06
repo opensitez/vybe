@@ -320,6 +320,15 @@ impl Compiler {
         name: &str,
         args: &[&Expression],
     ) -> Result<bool, String> {
+        self.try_compile_builtin_with_emit_request(name, args, EmitRequest::Value)
+    }
+
+    pub(super) fn try_compile_builtin_with_emit_request(
+        &mut self,
+        name: &str,
+        args: &[&Expression],
+        request: EmitRequest,
+    ) -> Result<bool, String> {
         let line = self.line;
 
         // `globals()` removed. It built a dict from `self.defined_globals`
@@ -936,6 +945,8 @@ impl Compiler {
         }
 
         if let Some(def) = builtin {
+            let mut typed_provider_handled = false;
+            let result = (|| -> Result<bool, String> {
             match &def.emit {
                 BuiltinEmit::Print => {
                     // print / console.log → `wasi:logging/logging.log`. The
@@ -1180,7 +1191,22 @@ impl Compiler {
                         }
                     }
                     let line = self.line;
-                    self.emit_common(common_name.as_str(), args.len() as u8, line);
+                    let (representation, typed_handled) = self.emit_common_with_emit_request(
+                        common_name.as_str(), args.len() as u8, line, request,
+                    );
+                    typed_provider_handled = typed_handled;
+                    if matches!(request, EmitRequest::I32Condition) {
+                        match representation {
+                            ResultRepresentation::RawI32Boolean => {
+                                self.gave_i32_condition = true;
+                            }
+                            ResultRepresentation::BoxedBoolean => {
+                                fn_call!(self, "wasm:js-boolean", "cast", 1);
+                                self.gave_i32_condition = true;
+                            }
+                            ResultRepresentation::Unknown => {}
+                        }
+                    }
                 }
                 BuiltinEmit::Noop => {
                     self.emit_null();
@@ -1194,7 +1220,19 @@ impl Compiler {
                     self.emit_null();
                 }
             }
-            return Ok(true);
+            Ok(true)
+            })();
+            // Legacy metadata describes the resolved terminal emitter, not
+            // the source spelling. A handled typed provider owns its result
+            // contract even when it deliberately reports Unknown.
+            if matches!(&result, Ok(true))
+                && matches!(request, EmitRequest::I32Condition)
+                && !typed_provider_handled
+                && def.i32_condition
+            {
+                self.gave_i32_condition = true;
+            }
+            return result;
         }
 
         // Generic 1:1 opcode route (WAT/WAST only): the wast profile lowers every
@@ -1944,6 +1982,33 @@ impl Compiler {
     /// constructors with overloaded shapes) branch on it; most emits
     /// ignore it because their stack contract is fixed.
     pub(super) fn emit_common(&mut self, name: &str, argc: u8, line: u32) {
+        self.emit_common_with_emit_request(name, argc, line, EmitRequest::Value);
+    }
+
+    fn emit_common_with_emit_request(
+        &mut self,
+        name: &str,
+        argc: u8,
+        line: u32,
+        request: EmitRequest,
+    ) -> (ResultRepresentation, bool) {
+        let mut representation = ResultRepresentation::Unknown;
+        let mut typed_provider_handled = false;
+        self.emit_common_requested(
+            name, argc, line, request, &mut representation, &mut typed_provider_handled,
+        );
+        (representation, typed_provider_handled)
+    }
+
+    fn emit_common_requested(
+        &mut self,
+        name: &str,
+        argc: u8,
+        line: u32,
+        request: EmitRequest,
+        representation: &mut ResultRepresentation,
+        typed_provider_handled: &mut bool,
+    ) {
         // `control_flow.exit` is THE exit primitive. It is handled here rather
         // than in the common dispatch because the lowering needs the compiler
         // itself — an import index for `wasi:cli/exit` AND the chunk list, to
@@ -2148,8 +2213,25 @@ impl Compiler {
         }
         // Then the pure (chunk + line) common ops.
         let line2 = line;
-        let handled =
-            common::dispatch::emit_common(name, &mut self.chunks, self.current, argc, line2);
+        let handled = match request {
+            EmitRequest::Value => {
+                common::dispatch::emit_common(name, &mut self.chunks, self.current, argc, line2)
+            }
+            EmitRequest::I32Condition => {
+                let (outcome, typed_handled) =
+                    common::dispatch::emit_common_with_result_provenance(
+                        name, &mut self.chunks, self.current, argc, line2, request,
+                    );
+                *typed_provider_handled = typed_handled;
+                match outcome {
+                    EmitOutcome::Unhandled => false,
+                    EmitOutcome::Handled(result) => {
+                        *representation = result;
+                        true
+                    }
+                }
+            }
+        };
         if handled {
             let chunk = &mut self.chunks[self.current];
             if chunk.local_count > chunk.scratch_high_water {
@@ -3309,6 +3391,25 @@ impl Compiler {
     ) -> Result<(), String> {
         let line = self.line;
         match name {
+            "format_map" => {
+                if args.len() != 2 {
+                    return Err(format!("format_map expects receiver and mapping, got {}", args.len()));
+                }
+                let large_literal = matches!(&args[0].kind,
+                    ExprKind::Lit(Literal::Str(template))
+                        if common::strings::format_map_literal_uses_large_path(template));
+                self.compile_expr(args[0])?;
+                self.compile_expr(args[1])?;
+                if large_literal {
+                    let base = self.chunk().alloc_scratch(2);
+                    self.emit_u16(Op::LOCAL_SET, base + 1);
+                    self.emit_u16(Op::LOCAL_SET, base);
+                    common::strings::emit_format_map_large_into(self.chunk(), base, base + 1);
+                } else {
+                    common::collections::emit_runtime_helper_call(
+                        &mut self.chunks, self.current, "__vybe_format_map", 2, line);
+                }
+            }
             "base64_encode_binary_string" => {
                 if args.len() != 1 {
                     return Err(format!(

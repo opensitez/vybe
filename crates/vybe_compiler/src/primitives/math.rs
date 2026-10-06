@@ -322,35 +322,45 @@ pub fn emit_exp(chunk: &mut Chunk, line: u32) {
 /// Abramowitz-Stegun 7.1.26, shared because C/Fortran/Python/Ruby expose the
 /// same libm-shaped function. Special values are handled explicitly.
 pub fn emit_erf(chunk: &mut Chunk, line: u32) {
-    let x = chunk.alloc_scratch(1);
-    let t = chunk.alloc_scratch(1);
-    let poly = chunk.alloc_scratch(1);
-    let y = chunk.alloc_scratch(1);
+    crate::primitives::bundle::emit_private_helper_call(chunk, "__stdlib_erf", 1, line);
+}
 
-    chunk.emit_op_u16(Op::LOCAL_SET, x, line);
+/// Shared approximation body, with the evaluated caller operand in parameter 0.
+pub(crate) fn build_erf() -> Chunk {
+    let mut chunk = crate::primitives::functions::create_function_chunk("__stdlib_erf", 1);
+    chunk.local_count = 1;
+    crate::primitives::bundle::mark_private_helper_body(&mut chunk);
+    emit_erf_body(&mut chunk, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    chunk
+}
+
+pub(crate) fn emit_erf_body(chunk: &mut Chunk, x: u16, line: u32) {
+    let t = chunk.alloc_scratch(1);
+    let y = chunk.alloc_scratch(1);
 
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_op(Op::F64_NE, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_f64_const(f64::INFINITY, line);
     chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_f64_const(1.0, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_f64_const(f64::NEG_INFINITY, line);
     chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_f64_const(-1.0, line);
     chunk.emit_else(line);
 
@@ -364,6 +374,9 @@ pub fn emit_erf(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op_u16(Op::LOCAL_SET, t, line);
 
+    // Keep the leading subtraction operand below the Horner polynomial.
+    // Its inputs are private f64 state and its construction has no host calls.
+    chunk.emit_f64_const(1.0, line);
     chunk.emit_f64_const(1.061405429, line);
     chunk.emit_op_u16(Op::LOCAL_GET, t, line);
     chunk.emit_op(Op::F64_MUL, line);
@@ -383,10 +396,6 @@ pub fn emit_erf(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, t, line);
     chunk.emit_op(Op::F64_MUL, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, poly, line);
-
-    chunk.emit_f64_const(1.0, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, poly, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_op(Op::F64_MUL, line);
@@ -399,7 +408,7 @@ pub fn emit_erf(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op(Op::F64_LT, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, y, line);
     chunk.emit_op(Op::F64_NEG, line);
     chunk.emit_else(line);
@@ -470,13 +479,14 @@ pub fn emit_gamma(chunk: &mut Chunk, line: u32) {
     let x = chunk.alloc_scratch(1);
     let i = chunk.alloc_scratch(1);
     let result = chunk.alloc_scratch(1);
+    let limit = chunk.alloc_scratch(1);
 
     chunk.emit_op_u16(Op::LOCAL_SET, x, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_f64_const(0.5, line);
     chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_f64_const(std::f64::consts::PI, line);
     chunk.emit_op(Op::F64_SQRT, line);
     chunk.emit_else(line);
@@ -484,14 +494,14 @@ pub fn emit_gamma(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_f64_const(-0.5, line);
     chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_f64_const(-2.0 * std::f64::consts::PI.sqrt(), line);
     chunk.emit_else(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op(Op::F64_LE, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_f64_const(f64::INFINITY, line);
     chunk.emit_else(line);
 
@@ -499,7 +509,16 @@ pub fn emit_gamma(chunk: &mut Chunk, line: u32) {
     emit_floor(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
+    // The integral branch multiplies only positive integers. At 171! its
+    // f64 result is already +Infinity, and every later multiplication leaves
+    // it there. Bounding the private cursor preserves all finite results and
+    // avoids work proportional to a large input (including an infinite loop
+    // for +Infinity). The non-integral Stirling path keeps its existing math.
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_f64_const(172.0, line);
+    chunk.emit_op(Op::F64_MIN, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, limit, line);
     chunk.emit_f64_const(1.0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_f64_const(2.0, line);
@@ -507,7 +526,7 @@ pub fn emit_gamma(chunk: &mut Chunk, line: u32) {
     let block = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, limit, line);
     chunk.emit_op(Op::F64_GE, line);
     chunk.emit_br_if(1, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
@@ -682,7 +701,10 @@ const MIN_SUBNORMAL_F32: f64 = 1.401298464324817e-45;
 pub fn emit_next_toward(chunk: &mut Chunk, up: bool, lane: FloatLane, line: u32) {
     let x = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, x, line);
+    emit_next_toward_from_slot(chunk, x, up, lane, line);
+}
 
+fn emit_next_toward_from_slot(chunk: &mut Chunk, x: u16, up: bool, lane: FloatLane, line: u32) {
     // NaN has no neighbour.
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
@@ -750,6 +772,10 @@ fn emit_bit_step(chunk: &mut Chunk, step: i64, x: u16, lane: FloatLane, line: u3
 /// `nextafter(x, y)` — the neighbour of `x` in `y`'s direction, `y` when equal.
 /// Stack: `[x, y] → [result]`.
 pub fn emit_next_after(chunk: &mut Chunk, lane: FloatLane, line: u32) {
+    chunk
+        .local_count
+        .checked_add(2)
+        .expect("next_after full local budget");
     let base = chunk.alloc_scratch(2);
     chunk.emit_op_u16(Op::LOCAL_SET, base + 1, line); // y
     chunk.emit_op_u16(Op::LOCAL_SET, base, line); // x
@@ -766,11 +792,9 @@ pub fn emit_next_after(chunk: &mut Chunk, lane: FloatLane, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op(Op::F64_GT, line);
     chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    emit_next_toward(chunk, true, lane, line);
+    emit_next_toward_from_slot(chunk, base, true, lane, line);
     chunk.emit_else(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    emit_next_toward(chunk, false, lane, line);
+    emit_next_toward_from_slot(chunk, base, false, lane, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }

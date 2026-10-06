@@ -42,7 +42,6 @@ pub fn emit_canonical_key_slot(
     let rendered = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::primitives::tuples::emit_is_tuple(chunks, current, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
@@ -291,13 +290,13 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     crate::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
 
     chunks[current].emit_else(line);
@@ -305,9 +304,11 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::primitives::collections::emit_contains(chunks, current, line);
+    let cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, has_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, has_slot, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
 
     chunks[current].emit_bool_const(true, line);
 
@@ -317,7 +318,7 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     crate::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
 
     chunks[current].emit_end(line);
@@ -354,8 +355,9 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    crate::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    // indexOf is an INDEX/i32 producer, including its -1 missing sentinel.
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_if_value(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     class_slots::emit_class_get(
@@ -785,8 +787,8 @@ pub fn build_dict_values_from_entries(imports: &mut Chunk) -> Chunk {
     // if i >= len: break
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
+    // Private cursor and declared string/array INDEX lengths are i32.
+    c.emit_op(Op::I32_GE_S, 0);
     c.emit_br_if(1, 0);
 
     // result.push(entries[i][1])
@@ -822,7 +824,7 @@ pub fn build_dict_values_from_entries(imports: &mut Chunk) -> Chunk {
 // `dict[key] = default` and return `default`. Polymorphic (Map /
 // plain Object / PHP `__keys`-tracked) via `Op::ARRAY_GET` /
 // `Op::ARRAY_SET`.
-pub fn build_setdefault(imports: &mut Chunk) -> Chunk {
+pub fn build_setdefault(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_setdefault");
     c.arity = 3;
     c.local_count = 5; // dict(0), key(1), default(2), existing(3), result(4)
@@ -846,7 +848,7 @@ pub fn build_setdefault(imports: &mut Chunk) -> Chunk {
     let done_block = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, existing, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0); // existing not null → keep result, exit
 
     // dict[key] = default; result = default

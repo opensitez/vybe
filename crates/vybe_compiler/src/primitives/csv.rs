@@ -25,6 +25,9 @@
 //!
 //! **No coercion here.** Callers pass strings.
 
+// Specialization follows this module's input contract and private producers:
+// dialects/content are strings, lengths and cursor positions are numbers,
+// and enclosure state is a private i32 flag. Adapters own coercion/validation.
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -41,11 +44,11 @@ fn call(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8
     chunks[current].emit_call(idx, argc, line);
 }
 
-/// One character of `s` at `idx`. Stack: `-> [string]`.
-fn char_at(chunks: &mut [Chunk], current: usize, s: u16, idx: u16, line: u32) {
+/// One UTF-16 code unit of `s` at a proven in-bounds index.
+fn char_code_at(chunks: &mut [Chunk], current: usize, s: u16, idx: u16, line: u32) {
     get(&mut chunks[current], s, line);
     get(&mut chunks[current], idx, line);
-    call(chunks, current, "ecma:string", "charAt", 2, line);
+    call(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
 }
 
 /// The default dialect: RFC 4180 — comma, double quote, quote-doubling.
@@ -67,52 +70,61 @@ pub fn emit_default_dialect(chunks: &mut [Chunk], current: usize, line: u32) {
 /// delimiter yields a trailing empty field — which is what php, python and
 /// RFC 4180 all specify.
 pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
-    let base = chunks[current].alloc_scratch(8);
-    let (enc, delim, s, out, cur, in_q, i, n) = (
-        base,
-        base + 1,
-        base + 2,
-        base + 3,
-        base + 4,
-        base + 5,
-        base + 6,
-        base + 7,
+    crate::primitives::bundle::emit_private_helper_call(
+        &mut chunks[current],
+        "__stdlib_csv_parse_line",
+        3,
+        line,
     );
+}
 
-    set(&mut chunks[current], enc, line);
-    set(&mut chunks[current], delim, line);
-    set(&mut chunks[current], s, line);
+pub(crate) fn emit_parse_line_body(
+    chunks: &mut [Chunk],
+    current: usize,
+    s: u16,
+    delim: u16,
+    enc: u16,
+    line: u32,
+) {
+    let base = chunks[current].alloc_scratch(5);
+    let (out, cur, in_q, i, n) = (base, base + 1, base + 2, base + 3, base + 4);
+    let enc_code = emit_token_code(chunks, current, enc, line);
+    let delimiter_code = emit_token_code(chunks, current, delim, line);
 
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
     set(&mut chunks[current], out, line);
     chunks[current].emit_string_const("", line);
     set(&mut chunks[current], cur, line);
-    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_i32_const(0, line);
     set(&mut chunks[current], in_q, line);
     chunks[current].emit_f64_const(0.0, line);
     set(&mut chunks[current], i, line);
     get(&mut chunks[current], s, line);
     call(chunks, current, "wasm:js-string", "length", 1, line);
     set(&mut chunks[current], n, line);
+    let token_cache = chunks[current].alloc_scratch(4);
+    for slot in token_cache..token_cache + 4 {
+        chunks[current].emit_f64_const(-2.0, line);
+        set(&mut chunks[current], slot, line);
+    }
 
     let c = chunks[current].alloc_scratch(1);
     let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], n, line);
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
-    char_at(chunks, current, s, i, line);
+    char_code_at(chunks, current, s, i, line);
     set(&mut chunks[current], c, line);
 
     get(&mut chunks[current], in_q, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     {
         // ── inside an enclosure ──
         get(&mut chunks[current], c, line);
-        get(&mut chunks[current], enc, line);
-        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        get(&mut chunks[current], enc_code, line);
+        chunks[current].emit_op(Op::F64_EQ, line);
         chunks[current].emit_if(line);
         {
             // A doubled enclosure is a literal one; anything else closes.
@@ -124,50 +136,59 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
 
             get(&mut chunks[current], next, line);
             get(&mut chunks[current], n, line);
-            crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+            chunks[current].emit_op(Op::F64_LT, line);
             chunks[current].emit_if(line);
             {
-                char_at(chunks, current, s, next, line);
-                get(&mut chunks[current], enc, line);
-                crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+                char_code_at(chunks, current, s, next, line);
+                get(&mut chunks[current], enc_code, line);
+                chunks[current].emit_op(Op::F64_EQ, line);
                 chunks[current].emit_if(line);
                 get(&mut chunks[current], cur, line);
                 get(&mut chunks[current], enc, line);
-                crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+                crate::primitives::strings::emit_str_concat(&mut chunks[current], line);
                 set(&mut chunks[current], cur, line);
                 get(&mut chunks[current], next, line);
                 set(&mut chunks[current], i, line);
                 chunks[current].emit_else(line);
-                chunks[current].emit_bool_const(false, line);
+                chunks[current].emit_i32_const(0, line);
                 set(&mut chunks[current], in_q, line);
                 chunks[current].emit_end(line);
             }
             chunks[current].emit_else(line);
-            chunks[current].emit_bool_const(false, line);
+            chunks[current].emit_i32_const(0, line);
             set(&mut chunks[current], in_q, line);
             chunks[current].emit_end(line);
         }
         chunks[current].emit_else(line);
-        get(&mut chunks[current], cur, line);
-        get(&mut chunks[current], c, line);
-        crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
-        set(&mut chunks[current], cur, line);
+        emit_plain_run(
+            chunks,
+            current,
+            s,
+            cur,
+            i,
+            n,
+            enc,
+            None,
+            false,
+            token_cache,
+            line,
+        );
         chunks[current].emit_end(line);
     }
     chunks[current].emit_else(line);
     {
         // ── outside an enclosure ──
         get(&mut chunks[current], c, line);
-        get(&mut chunks[current], enc, line);
-        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        get(&mut chunks[current], enc_code, line);
+        chunks[current].emit_op(Op::F64_EQ, line);
         chunks[current].emit_if(line);
-        chunks[current].emit_bool_const(true, line);
+        chunks[current].emit_i32_const(1, line);
         set(&mut chunks[current], in_q, line);
         chunks[current].emit_else(line);
         {
             get(&mut chunks[current], c, line);
-            get(&mut chunks[current], delim, line);
-            crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            get(&mut chunks[current], delimiter_code, line);
+            chunks[current].emit_op(Op::F64_EQ, line);
             chunks[current].emit_if(line);
             get(&mut chunks[current], out, line);
             get(&mut chunks[current], cur, line);
@@ -176,10 +197,19 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
             chunks[current].emit_string_const("", line);
             set(&mut chunks[current], cur, line);
             chunks[current].emit_else(line);
-            get(&mut chunks[current], cur, line);
-            get(&mut chunks[current], c, line);
-            crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
-            set(&mut chunks[current], cur, line);
+            emit_plain_run(
+                chunks,
+                current,
+                s,
+                cur,
+                i,
+                n,
+                enc,
+                Some(delim),
+                false,
+                token_cache,
+                line,
+            );
             chunks[current].emit_end(line);
         }
         chunks[current].emit_end(line);
@@ -233,22 +263,26 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
 /// every `csv.parse_line` consumer — into the gate for a code-shape change.
 /// Unify when a SECOND language needs the document form.
 pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
-    let base = chunks[current].alloc_scratch(9);
-    let (enc, delim, s, out, row, cur, in_q, i, n) = (
-        base,
-        base + 1,
-        base + 2,
-        base + 3,
-        base + 4,
-        base + 5,
-        base + 6,
-        base + 7,
-        base + 8,
+    crate::primitives::bundle::emit_private_helper_call(
+        &mut chunks[current],
+        "__stdlib_csv_parse_document",
+        3,
+        line,
     );
+}
 
-    set(&mut chunks[current], enc, line);
-    set(&mut chunks[current], delim, line);
-    set(&mut chunks[current], s, line);
+pub(crate) fn emit_parse_document_body(
+    chunks: &mut [Chunk],
+    current: usize,
+    s: u16,
+    delim: u16,
+    enc: u16,
+    line: u32,
+) {
+    let base = chunks[current].alloc_scratch(6);
+    let (out, row, cur, in_q, i, n) = (base, base + 1, base + 2, base + 3, base + 4, base + 5);
+    let enc_code = emit_token_code(chunks, current, enc, line);
+    let delimiter_code = emit_token_code(chunks, current, delim, line);
 
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
     set(&mut chunks[current], out, line);
@@ -256,33 +290,37 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], row, line);
     chunks[current].emit_string_const("", line);
     set(&mut chunks[current], cur, line);
-    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_i32_const(0, line);
     set(&mut chunks[current], in_q, line);
     chunks[current].emit_f64_const(0.0, line);
     set(&mut chunks[current], i, line);
     get(&mut chunks[current], s, line);
     call(chunks, current, "wasm:js-string", "length", 1, line);
     set(&mut chunks[current], n, line);
+    let token_cache = chunks[current].alloc_scratch(4);
+    for slot in token_cache..token_cache + 4 {
+        chunks[current].emit_f64_const(-2.0, line);
+        set(&mut chunks[current], slot, line);
+    }
 
     let c = chunks[current].alloc_scratch(1);
     let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], n, line);
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
-    char_at(chunks, current, s, i, line);
+    char_code_at(chunks, current, s, i, line);
     set(&mut chunks[current], c, line);
 
     get(&mut chunks[current], in_q, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     {
         // ── inside an enclosure ── identical to `emit_parse_line`: a newline
         // here is CONTENT, which is the whole point of this function.
         get(&mut chunks[current], c, line);
-        get(&mut chunks[current], enc, line);
-        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        get(&mut chunks[current], enc_code, line);
+        chunks[current].emit_op(Op::F64_EQ, line);
         chunks[current].emit_if(line);
         {
             let next = chunks[current].alloc_scratch(1);
@@ -293,50 +331,59 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
 
             get(&mut chunks[current], next, line);
             get(&mut chunks[current], n, line);
-            crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+            chunks[current].emit_op(Op::F64_LT, line);
             chunks[current].emit_if(line);
             {
-                char_at(chunks, current, s, next, line);
-                get(&mut chunks[current], enc, line);
-                crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+                char_code_at(chunks, current, s, next, line);
+                get(&mut chunks[current], enc_code, line);
+                chunks[current].emit_op(Op::F64_EQ, line);
                 chunks[current].emit_if(line);
                 get(&mut chunks[current], cur, line);
                 get(&mut chunks[current], enc, line);
-                crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+                crate::primitives::strings::emit_str_concat(&mut chunks[current], line);
                 set(&mut chunks[current], cur, line);
                 get(&mut chunks[current], next, line);
                 set(&mut chunks[current], i, line);
                 chunks[current].emit_else(line);
-                chunks[current].emit_bool_const(false, line);
+                chunks[current].emit_i32_const(0, line);
                 set(&mut chunks[current], in_q, line);
                 chunks[current].emit_end(line);
             }
             chunks[current].emit_else(line);
-            chunks[current].emit_bool_const(false, line);
+            chunks[current].emit_i32_const(0, line);
             set(&mut chunks[current], in_q, line);
             chunks[current].emit_end(line);
         }
         chunks[current].emit_else(line);
-        get(&mut chunks[current], cur, line);
-        get(&mut chunks[current], c, line);
-        crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
-        set(&mut chunks[current], cur, line);
+        emit_plain_run(
+            chunks,
+            current,
+            s,
+            cur,
+            i,
+            n,
+            enc,
+            None,
+            false,
+            token_cache,
+            line,
+        );
         chunks[current].emit_end(line);
     }
     chunks[current].emit_else(line);
     {
         // ── outside an enclosure ──
         get(&mut chunks[current], c, line);
-        get(&mut chunks[current], enc, line);
-        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        get(&mut chunks[current], enc_code, line);
+        chunks[current].emit_op(Op::F64_EQ, line);
         chunks[current].emit_if(line);
-        chunks[current].emit_bool_const(true, line);
+        chunks[current].emit_i32_const(1, line);
         set(&mut chunks[current], in_q, line);
         chunks[current].emit_else(line);
         {
             get(&mut chunks[current], c, line);
-            get(&mut chunks[current], delim, line);
-            crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            get(&mut chunks[current], delimiter_code, line);
+            chunks[current].emit_op(Op::F64_EQ, line);
             chunks[current].emit_if(line);
             get(&mut chunks[current], row, line);
             get(&mut chunks[current], cur, line);
@@ -350,8 +397,8 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
                 // `\n` is consumed with the `\r` so the next record does not
                 // start with a stray empty first field.
                 get(&mut chunks[current], c, line);
-                chunks[current].emit_string_const("\r", line);
-                crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+                chunks[current].emit_f64_const(13.0, line);
+                chunks[current].emit_op(Op::F64_EQ, line);
                 chunks[current].emit_if(line);
                 {
                     let next = chunks[current].alloc_scratch(1);
@@ -361,12 +408,12 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
                     set(&mut chunks[current], next, line);
                     get(&mut chunks[current], next, line);
                     get(&mut chunks[current], n, line);
-                    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+                    chunks[current].emit_op(Op::F64_LT, line);
                     chunks[current].emit_if(line);
                     {
-                        char_at(chunks, current, s, next, line);
-                        chunks[current].emit_string_const("\n", line);
-                        crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+                        char_code_at(chunks, current, s, next, line);
+                        chunks[current].emit_f64_const(10.0, line);
+                        chunks[current].emit_op(Op::F64_EQ, line);
                         chunks[current].emit_if(line);
                         get(&mut chunks[current], next, line);
                         set(&mut chunks[current], i, line);
@@ -378,15 +425,24 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
                 chunks[current].emit_else(line);
                 {
                     get(&mut chunks[current], c, line);
-                    chunks[current].emit_string_const("\n", line);
-                    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+                    chunks[current].emit_f64_const(10.0, line);
+                    chunks[current].emit_op(Op::F64_EQ, line);
                     chunks[current].emit_if(line);
                     emit_end_record(chunks, current, row, cur, out, line);
                     chunks[current].emit_else(line);
-                    get(&mut chunks[current], cur, line);
-                    get(&mut chunks[current], c, line);
-                    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
-                    set(&mut chunks[current], cur, line);
+                    emit_plain_run(
+                        chunks,
+                        current,
+                        s,
+                        cur,
+                        i,
+                        n,
+                        enc,
+                        Some(delim),
+                        true,
+                        token_cache,
+                        line,
+                    );
                     chunks[current].emit_end(line);
                 }
                 chunks[current].emit_end(line);
@@ -410,27 +466,27 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
     // a non-empty field buffer, or a field already pushed by a delimiter.
     get(&mut chunks[current], cur, line);
     chunks[current].emit_string_const("", line);
-    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    call(chunks, current, "wasm:js-string", "equals", 2, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     get(&mut chunks[current], row, line);
     crate::primitives::collections::emit_len(chunks, current, line);
     chunks[current].emit_f64_const(0.0, line);
-    crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    chunks[current].emit_op(Op::F64_GT, line);
     chunks[current].emit_op(Op::I32_OR, line);
     get(&mut chunks[current], n, line);
     chunks[current].emit_f64_const(0.0, line);
-    crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if_i32(line);
     get(&mut chunks[current], n, line);
     chunks[current].emit_f64_const(1.0, line);
     chunks[current].emit_op(Op::F64_SUB, line);
     let last_idx = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], last_idx, line);
-    char_at(chunks, current, s, last_idx, line);
-    get(&mut chunks[current], enc, line);
-    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    char_code_at(chunks, current, s, last_idx, line);
+    get(&mut chunks[current], enc_code, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_i32_const(0, line);
     chunks[current].emit_end(line);
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
@@ -490,20 +546,25 @@ impl FormatOptions {
 /// enclosure, a line break, or (per [`FormatOptions`]) whitespace. An enclosure
 /// inside the field is doubled.
 pub fn emit_format_row(chunks: &mut [Chunk], current: usize, opts: FormatOptions, line: u32) {
-    let base = chunks[current].alloc_scratch(7);
-    let (enc, delim, row, out, i, n, f) = (
-        base,
-        base + 1,
-        base + 2,
-        base + 3,
-        base + 4,
-        base + 5,
-        base + 6,
-    );
+    let name = if opts.quote_whitespace {
+        "__stdlib_csv_format_whitespace"
+    } else {
+        "__stdlib_csv_format_minimal"
+    };
+    crate::primitives::bundle::emit_private_helper_call(&mut chunks[current], name, 3, line);
+}
 
-    set(&mut chunks[current], enc, line);
-    set(&mut chunks[current], delim, line);
-    set(&mut chunks[current], row, line);
+pub(crate) fn emit_format_row_body(
+    chunks: &mut [Chunk],
+    current: usize,
+    row: u16,
+    delim: u16,
+    enc: u16,
+    opts: FormatOptions,
+    line: u32,
+) {
+    let base = chunks[current].alloc_scratch(4);
+    let (out, i, n, f) = (base, base + 1, base + 2, base + 3);
 
     chunks[current].emit_string_const("", line);
     set(&mut chunks[current], out, line);
@@ -516,17 +577,17 @@ pub fn emit_format_row(chunks: &mut [Chunk], current: usize, opts: FormatOptions
     let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], n, line);
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     // A separator before every field but the first.
     get(&mut chunks[current], i, line);
     chunks[current].emit_f64_const(0.0, line);
-    crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    chunks[current].emit_op(Op::F64_GT, line);
     chunks[current].emit_if(line);
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], delim, line);
-    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    crate::primitives::strings::emit_str_concat(&mut chunks[current], line);
     set(&mut chunks[current], out, line);
     chunks[current].emit_end(line);
 
@@ -544,7 +605,8 @@ pub fn emit_format_row(chunks: &mut [Chunk], current: usize, opts: FormatOptions
         get(&mut chunks[current], f, line);
         get(&mut chunks[current], probe, line);
         call(chunks, current, "ecma:string", "includes", 2, line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        // includes produces a Boolean, not an arbitrary dialect value.
+        call(chunks, current, "wasm:js-boolean", "cast", 1, line);
         get(&mut chunks[current], needs, line);
         chunks[current].emit_op(Op::I32_OR, line);
         set(&mut chunks[current], needs, line);
@@ -558,7 +620,8 @@ pub fn emit_format_row(chunks: &mut [Chunk], current: usize, opts: FormatOptions
         get(&mut chunks[current], f, line);
         chunks[current].emit_string_const(nl, line);
         call(chunks, current, "ecma:string", "includes", 2, line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        // includes produces a Boolean, not an arbitrary dialect value.
+        call(chunks, current, "wasm:js-boolean", "cast", 1, line);
         get(&mut chunks[current], needs, line);
         chunks[current].emit_op(Op::I32_OR, line);
         set(&mut chunks[current], needs, line);
@@ -567,17 +630,20 @@ pub fn emit_format_row(chunks: &mut [Chunk], current: usize, opts: FormatOptions
     get(&mut chunks[current], needs, line);
     chunks[current].emit_if_value(line);
     {
-        // enc ++ f.replaceAll(enc, enc+enc) ++ enc
+        // Split/join doubles literal enclosures. replaceAll's replacement
+        // string interprets `$` patterns and cannot express this for all
+        // runtime enclosure characters (for example `$` itself).
         get(&mut chunks[current], enc, line);
         get(&mut chunks[current], f, line);
         get(&mut chunks[current], enc, line);
+        call(chunks, current, "ecma:string", "split", 2, line);
         get(&mut chunks[current], enc, line);
         get(&mut chunks[current], enc, line);
-        crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
-        call(chunks, current, "ecma:string", "replaceAll", 3, line);
-        crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+        crate::primitives::strings::emit_str_concat(&mut chunks[current], line);
+        call(chunks, current, "ecma:array", "join", 2, line);
+        crate::primitives::strings::emit_str_concat(&mut chunks[current], line);
         get(&mut chunks[current], enc, line);
-        crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+        crate::primitives::strings::emit_str_concat(&mut chunks[current], line);
     }
     chunks[current].emit_else(line);
     get(&mut chunks[current], f, line);
@@ -587,7 +653,7 @@ pub fn emit_format_row(chunks: &mut [Chunk], current: usize, opts: FormatOptions
 
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], rendered, line);
-    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    crate::primitives::strings::emit_str_concat(&mut chunks[current], line);
     set(&mut chunks[current], out, line);
 
     get(&mut chunks[current], i, line);
@@ -603,3 +669,147 @@ pub fn emit_format_row(chunks: &mut [Chunk], current: usize, opts: FormatOptions
 /// compiled in; kept because the module builds constants in both directions.
 #[allow(dead_code)]
 fn _value_marker(_v: Value) {}
+
+// The dialect remains a runtime argument, including for PHP. Only the
+// formatter's declared whitespace policy selects a shared algorithm body.
+pub(crate) fn build_shared_helper(name: &str) -> Chunk {
+    let mut chunk = Chunk::new(name);
+    chunk.arity = 3;
+    chunk.local_count = 3;
+    crate::primitives::bundle::mark_private_helper_body(&mut chunk);
+    let mut chunks = vec![chunk];
+    match name {
+        "__stdlib_csv_parse_line" => emit_parse_line_body(&mut chunks, 0, 0, 1, 2, 0),
+        "__stdlib_csv_parse_document" => emit_parse_document_body(&mut chunks, 0, 0, 1, 2, 0),
+        "__stdlib_csv_format_minimal" => {
+            emit_format_row_body(&mut chunks, 0, 0, 1, 2, FormatOptions::minimal(), 0)
+        }
+        "__stdlib_csv_format_whitespace" => emit_format_row_body(
+            &mut chunks,
+            0,
+            0,
+            1,
+            2,
+            FormatOptions::quote_whitespace(),
+            0,
+        ),
+        _ => unreachable!("unknown CSV helper"),
+    }
+    chunks[0].emit_op(Op::RETURN, 0);
+    chunks.pop().unwrap()
+}
+
+/// The current character has already been classified as ordinary content.
+/// Copy its whole run up to the next state-machine token in one substring.
+/// This avoids per-code-unit string assembly, and preserves surrogate pairs
+/// which the VM's one-code-unit charAt representation cannot retain alone.
+#[allow(clippy::too_many_arguments)]
+fn emit_plain_run(
+    chunks: &mut [Chunk],
+    current: usize,
+    s: u16,
+    cur: u16,
+    i: u16,
+    n: u16,
+    enc: u16,
+    delimiter: Option<u16>,
+    record_breaks: bool,
+    token_cache: u16,
+    line: u32,
+) {
+    let base = chunks[current].alloc_scratch(3);
+    let (end, search_start, candidate) = (base, base + 1, base + 2);
+    get(&mut chunks[current], n, line);
+    set(&mut chunks[current], end, line);
+    get(&mut chunks[current], i, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(&mut chunks[current], search_start, line);
+    let probes = 1 + usize::from(delimiter.is_some()) + if record_breaks { 2 } else { 0 };
+    for probe in 0..probes {
+        let runtime_token = if probe == 0 {
+            Some(enc)
+        } else if probe == 1 {
+            delimiter
+        } else {
+            None
+        };
+        if let Some(token) = runtime_token {
+            // Empty tokens never equal a character, so they cannot end a run.
+            get(&mut chunks[current], token, line);
+            call(chunks, current, "wasm:js-string", "length", 1, line);
+            chunks[current].emit_f64_const(0.0, line);
+            chunks[current].emit_op(Op::F64_GT, line);
+            chunks[current].emit_if(line);
+        }
+        // Reuse future positions and cache misses as n. Each token search
+        // resumes only after the preceding occurrence has been consumed.
+        get(&mut chunks[current], token_cache + probe as u16, line);
+        set(&mut chunks[current], candidate, line);
+        get(&mut chunks[current], candidate, line);
+        get(&mut chunks[current], search_start, line);
+        chunks[current].emit_op(Op::F64_LT, line);
+        chunks[current].emit_if(line);
+        get(&mut chunks[current], s, line);
+        if probe == 0 {
+            get(&mut chunks[current], enc, line);
+        } else if probe == 1 && delimiter.is_some() {
+            get(&mut chunks[current], delimiter.unwrap(), line);
+        } else {
+            chunks[current].emit_string_const(if probe == 2 { "\r" } else { "\n" }, line);
+        }
+        get(&mut chunks[current], search_start, line);
+        call(chunks, current, "ecma:string", "indexOf", 3, line);
+        set(&mut chunks[current], candidate, line);
+        get(&mut chunks[current], candidate, line);
+        chunks[current].emit_f64_const(0.0, line);
+        chunks[current].emit_op(Op::F64_LT, line);
+        chunks[current].emit_if(line);
+        get(&mut chunks[current], n, line);
+        set(&mut chunks[current], candidate, line);
+        chunks[current].emit_end(line);
+        get(&mut chunks[current], candidate, line);
+        set(&mut chunks[current], token_cache + probe as u16, line);
+        chunks[current].emit_end(line);
+        get(&mut chunks[current], candidate, line);
+        get(&mut chunks[current], end, line);
+        chunks[current].emit_op(Op::F64_LT, line);
+        chunks[current].emit_if(line);
+        get(&mut chunks[current], candidate, line);
+        set(&mut chunks[current], end, line);
+        chunks[current].emit_end(line);
+        if runtime_token.is_some() {
+            chunks[current].emit_end(line);
+        }
+    }
+    get(&mut chunks[current], cur, line);
+    get(&mut chunks[current], s, line);
+    get(&mut chunks[current], i, line);
+    get(&mut chunks[current], end, line);
+    call(chunks, current, "wasm:js-string", "substring", 3, line);
+    crate::primitives::strings::emit_str_concat(&mut chunks[current], line);
+    set(&mut chunks[current], cur, line);
+    get(&mut chunks[current], end, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    set(&mut chunks[current], i, line);
+}
+
+/// A charAt-sized token is exactly one UTF-16 unit. Classify numerically so
+/// supplementary input units never become a replacement-character token.
+fn emit_token_code(chunks: &mut [Chunk], current: usize, token: u16, line: u32) -> u16 {
+    let code = chunks[current].alloc_scratch(1);
+    get(&mut chunks[current], token, line);
+    call(chunks, current, "wasm:js-string", "length", 1, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], token, line);
+    chunks[current].emit_i32_const(0, line);
+    call(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_f64_const(-1.0, line);
+    chunks[current].emit_end(line);
+    set(&mut chunks[current], code, line);
+    code
+}

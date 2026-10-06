@@ -1555,30 +1555,21 @@ impl Compiler {
         obj_slot: u16,
         result_slot: u16,
         mode: BufferedGeneratorStepMode,
-        started_key: &class_slots::ResolvedSlot,
-        done_key: &class_slots::ResolvedSlot,
-        current_key: &class_slots::ResolvedSlot,
-        return_key: &class_slots::ResolvedSlot,
+        _started_key: &class_slots::ResolvedSlot,
+        _done_key: &class_slots::ResolvedSlot,
+        _current_key: &class_slots::ResolvedSlot,
+        _return_key: &class_slots::ResolvedSlot,
     ) {
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
         let line = self.line;
-        crate::primitives::generators::emit_next(self.chunk(), line);
-        let has_more_slot = self.define_local("__php_gen_has_more");
-        self.emit_u16(Op::LOCAL_SET, has_more_slot);
-        let value_slot = self.define_local("__php_gen_value");
-        self.emit_u16(Op::LOCAL_SET, value_slot);
-
-        self.emit_buffered_generator_mark_started(obj_slot, started_key);
-        self.emit_buffered_generator_apply_next_result(
-            obj_slot,
-            value_slot,
-            has_more_slot,
-            result_slot,
-            mode,
-            done_key,
-            current_key,
-            return_key,
+        let export = match mode {
+            BufferedGeneratorStepMode::Valid => "primitive.generator_start_valid",
+            BufferedGeneratorStepMode::Current => "primitive.generator_start_current",
+            BufferedGeneratorStepMode::Value => "primitive.generator_start_value",
+        };
+        crate::primitives::bundle::emit_private_helper_call_from_slots(
+            self.chunk(), export, obj_slot, 1, line,
         );
+        self.emit_u16(Op::LOCAL_SET, result_slot);
     }
 
     pub(crate) fn maybe_define_buffered_generator_key_index_slot(
@@ -2203,6 +2194,192 @@ impl Compiler {
 // Method-call protocol: each invocation's receiver is that invocation's own
 // argument (ECMA-262 §10.2.1), so this helper's internal method calls cannot
 // rebind anything the caller can observe.
+/// Decode a yielded packet once per module, rather than duplicating its
+/// wrapper checks and payload-store lookup at every generator call site.
+pub(crate) fn build_generator_yield_value() -> Chunk {
+    let mut chunk = crate::primitives::functions::create_function_chunk(
+        "primitive.generator_yield_value", 1,
+    );
+    let payload_id = chunk.local_count;
+    chunk.alloc_scratch(2);
+    let store = payload_id + 1;
+    let mut chunks = vec![chunk];
+    let line = 0;
+
+    chunks[0].emit_op_u16(Op::LOCAL_GET, 0, line);
+    recipes::is_object(&mut chunks[0], line);
+    chunks[0].emit_if_value(line);
+    emit_yield_packet_field(&mut chunks[0], "__vybe_generator_yield", line);
+    ops::emit_dyn_to_bool(&mut chunks[0], line);
+    chunks[0].emit_if_value(line);
+    emit_yield_packet_field(&mut chunks[0], "payload_id", line);
+    chunks[0].emit_op_u16(Op::LOCAL_SET, payload_id, line);
+    chunks[0].emit_op_u16(Op::LOCAL_GET, payload_id, line);
+    chunks[0].emit_op(Op::REF_IS_NULL, line);
+    chunks[0].emit_if_value(line);
+    emit_yield_packet_field(&mut chunks[0], "value", line);
+    chunks[0].emit_else(line);
+
+    crate::primitives::globals::emit_read(&mut chunks[0], "__vybe_generator_payloads", line);
+    chunks[0].emit_op_u16(Op::LOCAL_SET, store, line);
+    chunks[0].emit_op_u16(Op::LOCAL_GET, store, line);
+    chunks[0].emit_op(Op::REF_IS_NULL, line);
+    chunks[0].emit_if(line);
+    crate::primitives::dict::emit_new(&mut chunks, 0, line);
+    chunks[0].emit_dup(line);
+    chunks[0].emit_op_u16(Op::LOCAL_SET, store, line);
+    crate::primitives::globals::emit_write(&mut chunks[0], "__vybe_generator_payloads", line);
+    chunks[0].emit_end(line);
+    chunks[0].emit_op_u16(Op::LOCAL_GET, store, line);
+    chunks[0].emit_op_u16(Op::LOCAL_GET, payload_id, line);
+    collections::emit_get(&mut chunks, 0, line);
+
+    chunks[0].emit_end(line);
+    chunks[0].emit_else(line);
+    chunks[0].emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunks[0].emit_end(line);
+    chunks[0].emit_else(line);
+    chunks[0].emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunks[0].emit_end(line);
+    chunks[0].emit_op(Op::RETURN, line);
+    crate::primitives::bundle::mark_private_helper_body(&mut chunks[0]);
+    chunks.remove(0)
+}
+
+fn emit_yield_packet_field(chunk: &mut Chunk, field: &str, line: u32) {
+    let key = class_slots::resolve_interned(
+        chunk, &class_slots::ClassSlot::internal(field), &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk, class_slots::ObjSource::Local(0), &key, class_slots::Dest::Stack, line,
+    );
+}
+
+/// Start an iterator and publish its buffered state. Each return mode has one
+/// module-local body; call sites retain their own generator/type guard.
+pub(crate) fn build_buffered_generator_start(export: &str) -> Chunk {
+    let mode = match export {
+        "primitive.generator_start_valid" => BufferedGeneratorStepMode::Valid,
+        "primitive.generator_start_current" => BufferedGeneratorStepMode::Current,
+        "primitive.generator_start_value" => BufferedGeneratorStepMode::Value,
+        _ => unreachable!("unknown buffered generator start primitive"),
+    };
+    let mut chunk = crate::primitives::functions::create_function_chunk(export, 1);
+    let value = chunk.alloc_scratch(4);
+    let has_more = value + 1;
+    let index = value + 2;
+    let key = value + 3;
+    let line = 0;
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    emit_next(&mut chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, has_more, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    emit_generator_state_bool(&mut chunk, "__php_gen_started", true, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, has_more, line);
+    ops::emit_dyn_to_bool(&mut chunk, line);
+    chunk.emit_if_value(line);
+
+    emit_generator_protocol_get(&mut chunk, 0, "__vybe_generator_next_key", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, index, line);
+    let number_test = chunk.add_import("wasm:js-number", "test");
+    chunk.emit_op_u16(Op::LOCAL_GET, index, line);
+    chunk.emit_call(number_test, 1, line);
+    chunk.emit_if(line);
+    chunk.emit_else(line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, index, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    recipes::is_object(&mut chunk, line);
+    chunk.emit_if_value(line);
+    emit_generator_protocol_get(&mut chunk, value, "__vybe_generator_yield", line);
+    ops::emit_dyn_to_bool(&mut chunk, line);
+    chunk.emit_if_value(line);
+    emit_generator_protocol_get(&mut chunk, value, "key", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, key, line);
+    emit_generator_state_local(&mut chunk, "__vybe_generator_current_key", key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_call(number_test, 1, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_f64_const(1.0, line);
+    ops::emit_dyn_add(&mut chunk, line);
+    emit_generator_protocol_set(&mut chunk, "__vybe_generator_next_key", line);
+    chunk.emit_end(line);
+
+    emit_generator_state_bool(&mut chunk, "__php_gen_done", false, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    crate::primitives::bundle::emit_private_helper_call_from_slots(
+        &mut chunk, "primitive.generator_yield_value", value, 1, line,
+    );
+    emit_generator_protocol_set(&mut chunk, "__php_gen_current", line);
+    match mode {
+        BufferedGeneratorStepMode::Valid => chunk.emit_bool_const(true, line),
+        BufferedGeneratorStepMode::Current | BufferedGeneratorStepMode::Value => {
+            // Preserve the second decoding read: packet accessors may have
+            // changed while publishing the current value.
+            crate::primitives::bundle::emit_private_helper_call_from_slots(
+                &mut chunk, "primitive.generator_yield_value", value, 1, line,
+            );
+        }
+    }
+    chunk.emit_else(line);
+    emit_generator_state_bool(&mut chunk, "__php_gen_done", true, line);
+    emit_generator_state_local(&mut chunk, "__php_gen_return", value, line);
+    emit_generator_state_bool(&mut chunk, "__php_gen_current", false, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    emit_generator_protocol_set(&mut chunk, "__vybe_generator_current_key", line);
+    match mode {
+        BufferedGeneratorStepMode::Value => chunk.emit_op_u16(Op::LOCAL_GET, value, line),
+        BufferedGeneratorStepMode::Current | BufferedGeneratorStepMode::Valid => {
+            chunk.emit_bool_const(false, line);
+        }
+    }
+    chunk.emit_end(line);
+    chunk.emit_op(Op::RETURN, line);
+    crate::primitives::bundle::mark_private_helper_body(&mut chunk);
+    chunk
+}
+
+fn emit_generator_protocol_get(chunk: &mut Chunk, object: u16, field: &str, line: u32) {
+    let key = class_slots::resolve_interned(
+        chunk, &class_slots::ClassSlot::internal(field), &class_slots::PlainNames,
+    );
+    class_slots::emit_class_get(
+        chunk, class_slots::ObjSource::Local(object), &key, class_slots::Dest::Stack, line,
+    );
+}
+
+fn emit_generator_protocol_set(chunk: &mut Chunk, field: &str, line: u32) {
+    let key = class_slots::resolve_interned(
+        chunk, &class_slots::ClassSlot::internal(field), &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk, class_slots::ObjSource::Stack, &key, class_slots::ValueSource::Stack, line,
+    );
+}
+
+fn emit_generator_state_bool(chunk: &mut Chunk, field: &str, value: bool, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunk.emit_bool_const(value, line);
+    emit_generator_protocol_set(chunk, field, line);
+}
+
+fn emit_generator_state_local(chunk: &mut Chunk, field: &str, value: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_generator_protocol_set(chunk, field, line);
+}
+
 pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     use std::sync::Arc;
     let mut c = Chunk::new("__stdlib_iter_drain");

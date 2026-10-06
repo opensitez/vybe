@@ -7,7 +7,7 @@ use super::*;
 use crate::primitives::class_slots;
 
 impl Compiler {
-    fn emit_step_for_expr(&mut self, operand: &Expression, add: bool) {
+    fn emit_step_for_expr(&mut self, operand: &Expression, add: bool) -> Option<Expression> {
         if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
             && self.type_resolution() == vybe_ast::TypeResolution::Static
             && self.expr_is_provably_number(operand)
@@ -18,8 +18,13 @@ impl Compiler {
                 if add { &BinOp::Add } else { &BinOp::Sub },
                 Some((operand, &one)),
             );
+            Some(Expression::new(ExprKind::Binary {
+                op: if add { BinOp::Add } else { BinOp::Sub },
+                left: Box::new(operand.clone()), right: Box::new(one),
+            }))
         } else {
             self.emit_step_by_one(add);
+            None
         }
     }
 
@@ -833,49 +838,14 @@ impl Compiler {
     }
 
     pub(crate) fn emit_generator_yield_value(&mut self, yielded_slot: u16) {
-        self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        inst!(self, recipes::is_object);
         let line = self.line;
-        // `ref.test` already yields an i32; `Op::IF` consumes it directly.
-        self.chunk().emit_if_value(line);
-
-        self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.class_get(
-            class_slots::ObjSource::Stack,
-            &class_slots::ClassSlot::internal("__vybe_generator_yield"),
+        crate::primitives::bundle::emit_private_helper_call_from_slots(
+            self.chunk(),
+            "primitive.generator_yield_value",
+            yielded_slot,
+            1,
+            line,
         );
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if_value(line);
-
-        self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.class_get(
-            class_slots::ObjSource::Stack,
-            &class_slots::ClassSlot::internal("payload_id"),
-        );
-        let payload_id_slot = self.define_local("__yield_payload_id");
-        self.emit_u16(Op::LOCAL_SET, payload_id_slot);
-
-        self.emit_u16(Op::LOCAL_GET, payload_id_slot);
-        self.emit(Op::REF_IS_NULL);
-        self.chunk().emit_if_value(line);
-        self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.class_get(
-            class_slots::ObjSource::Stack,
-            &class_slots::ClassSlot::internal("value"),
-        );
-        self.chunk().emit_else(line);
-
-        self.emit_generator_payload_store();
-        self.emit_u16(Op::LOCAL_GET, payload_id_slot);
-        common::collections::emit_get(&mut self.chunks, self.current, line);
-
-        self.chunk().emit_end(line);
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.chunk().emit_end(line);
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.chunk().emit_end(line);
     }
 
     pub(crate) fn emit_generator_yield_key_or_fallback(
@@ -957,13 +927,30 @@ impl Compiler {
     }
 
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<(), String> {
+        let want_i32_condition = std::mem::take(&mut self.want_i32_condition);
+        let previous_report = std::mem::take(&mut self.gave_i32_condition);
+        let result = self.compile_expr_requested(expr, want_i32_condition);
+        let report = std::mem::take(&mut self.gave_i32_condition);
+        self.want_i32_condition = false;
+        self.gave_i32_condition = if want_i32_condition && result.is_ok() {
+            report
+        } else {
+            previous_report
+        };
+        result
+    }
+
+    fn compile_expr_requested(
+        &mut self,
+        expr: &Expression,
+        want_i32_condition: bool,
+    ) -> Result<(), String> {
         // TAKE the condition's "I'd rather have an i32" request. Every arm
         // below therefore compiles its sub-expressions with the request clear,
         // which is what keeps `a < b && c < d` correct: the `&&` needs real
         // values from its operands, so those comparisons must still box. Only
         // the generic binary tail — the outermost operator, the one whose
         // result IS the condition — hands it back.
-        let want_i32_condition = std::mem::take(&mut self.want_i32_condition);
         match &expr.kind {
             // ── Literals ────────────────────────────────────────────────
             ExprKind::Lit(lit) => match lit {
@@ -975,7 +962,12 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from(c.to_string().as_str())))
                 }
                 Literal::Bool(b) => {
-                    if *b {
+                    if want_i32_condition {
+                        let line = self.line;
+                        self.chunk().emit_i32_const(i32::from(*b), line);
+                        self.want_i32_condition = true;
+                        self.emit_i32_to_bool_or_report();
+                    } else if *b {
                         inst!(self, core_wasm::bool_const, true)
                     } else {
                         inst!(self, core_wasm::bool_const, false)
@@ -1311,9 +1303,15 @@ impl Compiler {
                             } else {
                                 self.compile_expr(term)?;
                             }
-                            common::expressions::emit_short_circuit_end(
-                                &mut self.chunks[self.current], skip,
-                            );
+                            if static_bool && *op == BinOp::And {
+                                common::expressions::emit_and_i32_end(
+                                    &mut self.chunks[self.current], skip,
+                                );
+                            } else {
+                                common::expressions::emit_short_circuit_end(
+                                    &mut self.chunks[self.current], skip,
+                                );
+                            }
                         }
                         if static_bool {
                             if want_i32_condition {
@@ -1361,10 +1359,15 @@ impl Compiler {
                         )
                     };
                     self.compile_condition_to_i32(right)?;
-                    common::expressions::emit_short_circuit_end(
-                        &mut self.chunks[self.current],
-                        skip,
-                    );
+                    if *op == BinOp::And {
+                        common::expressions::emit_and_i32_end(
+                            &mut self.chunks[self.current], skip,
+                        );
+                    } else {
+                        common::expressions::emit_short_circuit_end(
+                            &mut self.chunks[self.current], skip,
+                        );
+                    }
                     if want_i32_condition {
                         self.gave_i32_condition = true;
                     } else if self.profile.materialize_bool_results {
@@ -1982,22 +1985,22 @@ impl Compiler {
                         if *op == UnaryOp::PostInc {
                             inst!(self, core_wasm::dup);
                         }
-                        self.emit_step_for_expr(inner, true);
+                        let source = self.emit_step_for_expr(inner, true);
                         if *op == UnaryOp::PreInc {
                             inst!(self, core_wasm::dup);
                         }
-                        self.compile_assign_target(inner)?;
+                        self.compile_assign_target_valued(inner, source.as_ref())?;
                     }
                     UnaryOp::PreDec | UnaryOp::PostDec => {
                         self.compile_expr(inner)?;
                         if *op == UnaryOp::PostDec {
                             inst!(self, core_wasm::dup);
                         }
-                        self.emit_step_for_expr(inner, false);
+                        let source = self.emit_step_for_expr(inner, false);
                         if *op == UnaryOp::PreDec {
                             inst!(self, core_wasm::dup);
                         }
-                        self.compile_assign_target(inner)?;
+                        self.compile_assign_target_valued(inner, source.as_ref())?;
                     }
                     UnaryOp::AddrOf => {
                         self.compile_address_of_expr(inner)?;
@@ -2245,11 +2248,26 @@ impl Compiler {
             ExprKind::Ternary { cond, then, else_ } => {
                 self.compile_condition_to_i32(cond)?;
                 let line = self.line;
-                self.chunk().emit_if_value(line);
-                self.compile_expr(then)?;
-                self.chunk().emit_else(line);
-                self.compile_expr(else_)?;
-                self.chunk().emit_end(line);
+                // Only literal Boolean arms avoid conversion altogether.
+                // Dynamic arms share the original post-join coercion, rather
+                // than duplicating slot dispatch and scratch locals per arm.
+                let raw_bool_arms = matches!(&then.kind, ExprKind::Lit(Literal::Bool(_)))
+                    && matches!(&else_.kind, ExprKind::Lit(Literal::Bool(_)));
+                if want_i32_condition && raw_bool_arms {
+                    self.chunk().emit_if_i32(line);
+                    self.compile_condition_to_i32(then)?;
+                    self.chunk().emit_else(line);
+                    self.compile_condition_to_i32(else_)?;
+                    self.chunk().emit_end(line);
+                    self.want_i32_condition = true;
+                    self.emit_i32_to_bool_or_report();
+                } else {
+                    self.chunk().emit_if_value(line);
+                    self.compile_expr(then)?;
+                    self.chunk().emit_else(line);
+                    self.compile_expr(else_)?;
+                    self.chunk().emit_end(line);
+                }
             }
 
             // ── Call ────────────────────────────────────────────────────
@@ -2325,16 +2343,13 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    self.compile_call(callee, args)?;
-                    if want_i32_condition {
-                        if let ExprKind::Ident(name) = &callee.kind {
-                            if self.scope().resolve(name).is_none()
-                                && self.profile.lookup_builtin(name).is_some_and(|def| def.i32_condition)
-                            {
-                                self.gave_i32_condition = true;
-                            }
-                        }
-                    }
+                    let multi_return_arity = self.multi_return_arity_for_callee(callee);
+                    let request = if want_i32_condition && multi_return_arity.is_none() {
+                        EmitRequest::I32Condition
+                    } else {
+                        EmitRequest::Value
+                    };
+                    self.compile_call_with_emit_request(callee, args, request)?;
                     // Multi-value result repack: when the callee is one of
                     // the pre-scanned multi-return functions, CALL leaves
                     // N values on the stack. A destructure-assign consumes
@@ -2342,7 +2357,7 @@ impl Compiler {
                     // primitives/mod.rs, which bypasses this branch); every
                     // other use site — `r = f()`, `print(f())`, `f() + g()`
                     // — expects a single value, so we re-pack here.
-                    if let Some(n) = self.multi_return_arity_for_callee(callee) {
+                    if let Some(n) = multi_return_arity {
                         self.pack_multi_value_result(n);
                     }
                 }
@@ -8556,7 +8571,10 @@ impl Compiler {
                         );
                     }
                 } else {
-                    self.compile_expr(member)?;
+                    let class_slot = self.define_local("__static_property_read_class");
+                    self.emit_u16(Op::LOCAL_SET, class_slot);
+                    self.emit_u16(Op::LOCAL_GET, class_slot);
+                    self.emit_static_property_key(class_slot, member)?;
                     {
                         let l = self.line;
                         common::collections::emit_get(&mut self.chunks, self.current, l);
@@ -9116,12 +9134,14 @@ pub fn emit_and_start(chunk: &mut Chunk, line: u32) -> usize {
 
 /// Static-profile `&&` where the left operand is already a raw i32 condition.
 pub fn emit_and_i32_start(chunk: &mut Chunk, line: u32) -> usize {
-    let block = chunk.emit_block_params(line, 1, 1);
-    chunk.emit_dup(line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(0, line);
-    chunk.emit_op(Op::DROP, line);
-    block
+    chunk.emit_if_i32(line)
+}
+
+/// Close a static i32 AND: false skips the right operand and returns zero.
+pub fn emit_and_i32_end(chunk: &mut Chunk, _block: usize) {
+    chunk.emit_else(0);
+    crate::primitives::instructions::core_wasm::i32_const(chunk, 0, 0);
+    chunk.emit_end(0);
 }
 
 // ── Short-circuit logical OR ────────────────────────────────────────────
@@ -9152,11 +9172,10 @@ pub fn emit_or_start(chunk: &mut Chunk, line: u32) -> usize {
 
 /// Static-profile `||` where the left operand is already a raw i32 condition.
 pub fn emit_or_i32_start(chunk: &mut Chunk, line: u32) -> usize {
-    let block = chunk.emit_block_params(line, 1, 1);
-    chunk.emit_dup(line);
-    chunk.emit_br_if(0, line);
-    chunk.emit_op(Op::DROP, line);
-    block
+    let branch = chunk.emit_if_i32(line);
+    crate::primitives::instructions::core_wasm::i32_const(chunk, line, 1);
+    chunk.emit_else(line);
+    branch
 }
 
 /// End a short-circuit AND or OR.
@@ -9770,7 +9789,13 @@ pub(crate) fn emit_const_index(chunk: &mut Chunk, idx: u32, line: u32) {
         Value::Bool(value) => chunk.emit_bool_const(value, line),
         Value::I32(value) => chunk.emit_i32_const(value, line),
         Value::I64(value) => chunk.emit_i64_const(value, line),
-        Value::BigInt(value) => chunk.emit_i64_const(value.to_i64_wrapping(), line),
+        Value::BigInt(value) => {
+            crate::primitives::instructions::core_wasm::emit_value(
+                chunk,
+                line,
+                &Value::BigInt(value),
+            );
+        }
         Value::F64(value) => chunk.emit_f64_const(value, line),
         Value::F32(value) => chunk.emit_f32_const(value, line),
         Value::String(value) | Value::Symbol(value) => chunk.emit_string_const(&value, line),

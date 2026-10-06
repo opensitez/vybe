@@ -2663,6 +2663,16 @@ impl Compiler {
     ) -> Result<(u16, Option<usize>), String> {
         let line = self.line;
         let args_slot = self.define_local(&format!("__{}_args", local_prefix));
+        if !args.iter().any(|arg| arg.spread) {
+            if let Ok(count) = u16::try_from(args.len()) {
+                for arg in args {
+                    self.compile_expr(&arg.value)?;
+                }
+                self.emit_array_new_fixed(0, count);
+                self.emit_u16(Op::LOCAL_SET, args_slot);
+                return Ok((args_slot, Some(args.len())));
+            }
+        }
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         self.emit_u16(Op::LOCAL_SET, args_slot);
 
@@ -2789,7 +2799,8 @@ impl Compiler {
 
         let ns = self.scope().next_slot;
         self.chunks[func_idx].finalize_local_count(ns);
-        self.chunks[func_idx].local_names = self.scope().defined_names.clone();
+        let local_names = self.scope().defined_names.clone();
+        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[func_idx], &local_names);
         self.scopes.pop();
         self.current = saved_current;
         self.function_label_base = saved_label_base;
@@ -2846,6 +2857,16 @@ impl Compiler {
     ) -> Result<u16, String> {
         let line = self.line;
         let args_slot = self.define_local(slot_name);
+        if !args.iter().any(|arg| arg.spread) {
+            if let Ok(count) = u16::try_from(args.len()) {
+                for arg in args {
+                    self.compile_expr_with_value_copy(&arg.value)?;
+                }
+                self.emit_array_new_fixed(0, count);
+                self.emit_u16(Op::LOCAL_SET, args_slot);
+                return Ok(args_slot);
+            }
+        }
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         self.emit_u16(Op::LOCAL_SET, args_slot);
         for arg in args {
@@ -3666,6 +3687,15 @@ impl Compiler {
         callee: &Expression,
         args: &[Argument],
     ) -> Result<(), String> {
+        self.compile_call_with_emit_request(callee, args, EmitRequest::Value)
+    }
+
+    pub(super) fn compile_call_with_emit_request(
+        &mut self,
+        callee: &Expression,
+        args: &[Argument],
+        request: EmitRequest,
+    ) -> Result<(), String> {
         let _debug_call = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
             format!("compiler call expression line {}", callee.span.start_line)
         });
@@ -3763,11 +3793,6 @@ impl Compiler {
             self.emit_control_element(&control_type, args.len() as u8, line);
             return Ok(());
         }
-
-        // The `vybe.gui.setProperty(name, "Text", v)` arm is GONE. It matched a
-        // BY-NAME GUI surface that is not a language's own: real VB.NET writes
-        // `display.Text = v`, and the two samples that spelled it this way now
-        // do. Nothing in the tree names `vybe.gui.*`.
 
         if self.try_compile_go_map_has_call(callee, args)? {
             return Ok(());
@@ -4898,7 +4923,7 @@ impl Compiler {
                 if self.try_compile_spread_host_builtin(callee, name, args)? {
                     return Ok(());
                 }
-                if self.try_compile_builtin(name, &arg_exprs)? {
+                if self.try_compile_builtin_with_emit_request(name, &arg_exprs, request)? {
                     return Ok(());
                 }
             }
@@ -4986,7 +5011,7 @@ impl Compiler {
                 if self.try_compile_spread_host_builtin(callee, &compound, args)? {
                     return Ok(());
                 }
-                if self.try_compile_builtin(&compound, &arg_exprs)? {
+                if self.try_compile_builtin_with_emit_request(&compound, &arg_exprs, request)? {
                     return Ok(());
                 }
 
@@ -5074,7 +5099,7 @@ impl Compiler {
             let parts = self.flatten_member_chain(callee);
             if parts.len() >= 2 {
                 let compound = parts.join(".");
-                if self.try_compile_builtin(&compound, &arg_exprs)? {
+                if self.try_compile_builtin_with_emit_request(&compound, &arg_exprs, request)? {
                     return Ok(());
                 }
                 // Component-model namespace fallback. Profile tree mounts
@@ -5092,7 +5117,7 @@ impl Compiler {
             }
         }
 
-        // ── Two-level host prefix: `vybe.gui.setProperty(...)` ──────
+        // ── Two-level host prefix: `wasi.cli.log(...)` ──────
         //
         // VB / languages without ESM imports reach host functions via
         // a literal namespace chain `<prefix>.<module>.<fn>(args)` where
@@ -5124,7 +5149,7 @@ impl Compiler {
                                 Some((module, func))
                             }
                             // The global namespace tree mounts EVERY host
-                            // export (`vybe.gui.*` right next to `ecma.*`) —
+                            // export (`web.*` right next to `ecma.*`) —
                             // a tree HostCall is the same direct
                             // component-model call, no per-profile
                             // package-root data required.
@@ -9525,12 +9550,12 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
                             self.emit(Op::REF_IS_NULL);
                             let line = self.line;
-                            self.chunk().emit_if(line);
+                            self.chunk().emit_if_params(line, 1, 1);
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
                             fn_call!(self, "wasm:js-undefined", "test", 1);
                             let line = self.line;
-                            self.chunk().emit_if(line);
+                            self.chunk().emit_if_params(line, 1, 1);
                             self.chunk().emit_else(line);
                             self.emit_fortran_member_receiver_writeback(object, obj_tmp);
                             self.chunk().emit_end(line);
@@ -9578,12 +9603,12 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
                             self.emit(Op::REF_IS_NULL);
                             let line = self.line;
-                            self.chunk().emit_if(line);
+                            self.chunk().emit_if_params(line, 1, 1);
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
                             fn_call!(self, "wasm:js-undefined", "test", 1);
                             let line = self.line;
-                            self.chunk().emit_if(line);
+                            self.chunk().emit_if_params(line, 1, 1);
                             self.chunk().emit_else(line);
                             self.emit_fortran_member_receiver_writeback(object, obj_tmp);
                             self.chunk().emit_end(line);
@@ -9614,12 +9639,12 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
                         self.emit(Op::REF_IS_NULL);
                         let line = self.line;
-                        self.chunk().emit_if(line);
+                        self.chunk().emit_if_params(line, 1, 1);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
-                        self.chunk().emit_if(line);
+                        self.chunk().emit_if_params(line, 1, 1);
                         self.chunk().emit_else(line);
                         self.emit_fortran_member_receiver_writeback(object, obj_tmp);
                         self.chunk().emit_end(line);
@@ -10242,12 +10267,12 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
                             self.emit(Op::REF_IS_NULL);
                             let line = self.line;
-                            self.chunk().emit_if(line);
+                            self.chunk().emit_if_params(line, 1, 1);
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
                             fn_call!(self, "wasm:js-undefined", "test", 1);
                             let line = self.line;
-                            self.chunk().emit_if(line);
+                            self.chunk().emit_if_params(line, 1, 1);
                             self.chunk().emit_else(line);
                             self.emit_fortran_member_receiver_writeback(object, obj_tmp);
                             self.chunk().emit_end(line);
@@ -10269,12 +10294,12 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
                             self.emit(Op::REF_IS_NULL);
                             let line = self.line;
-                            self.chunk().emit_if(line);
+                            self.chunk().emit_if_params(line, 1, 1);
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
                             fn_call!(self, "wasm:js-undefined", "test", 1);
                             let line = self.line;
-                            self.chunk().emit_if(line);
+                            self.chunk().emit_if_params(line, 1, 1);
                             self.chunk().emit_else(line);
                             self.emit_fortran_member_receiver_writeback(object, obj_tmp);
                             self.chunk().emit_end(line);
@@ -10293,12 +10318,12 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
                         self.emit(Op::REF_IS_NULL);
                         let line = self.line;
-                        self.chunk().emit_if(line);
+                        self.chunk().emit_if_params(line, 1, 1);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
-                        self.chunk().emit_if(line);
+                        self.chunk().emit_if_params(line, 1, 1);
                         self.chunk().emit_else(line);
                         self.emit_fortran_member_receiver_writeback(object, obj_tmp);
                         self.chunk().emit_end(line);

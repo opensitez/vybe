@@ -88,7 +88,7 @@ fn loop_start(chunk: &mut Chunk, line: u32) -> LoopState {
 fn loop_break_unless_lt(chunk: &mut Chunk, i_slot: u16, n_slot: u16, line: u32) {
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::I32_LT_S, line);
     chunk.emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 }
@@ -103,8 +103,8 @@ fn loop_end(chunk: &mut Chunk, state: LoopState, line: u32) {
 
 fn bump(chunk: &mut Chunk, i_slot: u16, line: u32) {
     lget(chunk, i_slot, line);
-    chunk.emit_f64_const(1.0, line);
-    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
     lset(chunk, i_slot, line);
 }
 
@@ -192,7 +192,7 @@ pub fn emit_value_kind(chunk: &mut Chunk, value_slot: u16, line: u32) {
     lget(chunk, value_slot, line);
     let is_array = chunk.add_import("ecma:array", "isArray");
     chunk.emit_call(is_array, 1, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    add_call(chunk, "wasm:js-boolean", "cast", 1, line);
     chunk.emit_if_value(line);
     push_str(chunk, "array", line);
     chunk.emit_else(line);
@@ -202,6 +202,31 @@ pub fn emit_value_kind(chunk: &mut Chunk, value_slot: u16, line: u32) {
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
+}
+
+// Source functions may use the helper names. A compiler-origin parameter
+// record distinguishes our generated body without reserving source names.
+fn helper_marker(name: &str) -> String {
+    format!("<json-helper:{name}:value>")
+}
+
+fn existing_helper(chunks: &[Chunk], name: &str, arity: u8) -> Option<usize> {
+    let marker = helper_marker(name);
+    chunks.iter().position(|chunk| {
+        chunk.name == name && chunk.arity == arity
+            && !chunk.module_instance_fields_are_own_properties
+            && !chunk.module_members_on_prototype
+            && chunk.local_names.iter().any(|local| {
+                local.slot == 0 && local.name == marker
+                    && local.origin == vybe_runtime::chunk::LocalOrigin::Compiler
+            })
+    })
+}
+
+fn mark_helper(chunk: &mut Chunk) {
+    chunk.local_names.push(vybe_runtime::chunk::LocalName::new(
+        0, helper_marker(&chunk.name), vybe_runtime::chunk::LocalOrigin::Compiler,
+    ));
 }
 
 // ── normalize helper ─────────────────────────────────────────────────────────
@@ -216,8 +241,15 @@ pub fn emit_value_kind(chunk: &mut Chunk, value_slot: u16, line: u32) {
 ///   (PHP / plain dict). When falsy, an object carrying an own `__type`
 ///   (a class instance, e.g. Python `datetime`) routes to the hook instead.
 fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    // These internal helpers historically use Chunk::new's default policy.
+    // Keep that policy when sharing their bodies, even if the caller differs.
+    let name = "__json_normalize";
+    if let Some(index) = existing_helper(chunks, name, 4) {
+        return index;
+    }
     let helper_idx = chunks.len();
-    let mut h = create_function_chunk("__json_normalize", 4);
+    let mut h = create_function_chunk(name, 4);
+    mark_helper(&mut h);
     h.alloc_scratch(4); // reserve the four param slots
 
     let value_slot = 0u16;
@@ -263,7 +295,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut h, role_slot, line);
         h.emit_op(Op::REF_IS_NULL, line);
         h.emit_op(Op::I32_EQZ, line);
-        h.emit_if_value(line);
+        h.emit_if(line);
         lget(&mut h, role_slot, line);
         lget(&mut h, value_slot, line);
         call_ref(&mut h, 1, line);
@@ -314,7 +346,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         h.emit_op(Op::REF_IS_NULL, line);
         h.emit_op(Op::I32_EQZ, line);
         h.emit_op(Op::I32_AND, line);
-        h.emit_if_value(line);
+        h.emit_if(line);
         lget(&mut h, role_slot, line);
         lget(&mut h, value_slot, line);
         call_ref(&mut h, 1, line);
@@ -326,7 +358,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // Array → array of normalize(elem).
     lget(&mut h, value_slot, line);
     add_call(&mut h, "ecma:array", "isArray", 1, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+    add_call(&mut h, "wasm:js-boolean", "cast", 1, line);
     h.emit_if(line);
     {
         h.emit_array_new_fixed(0, 0, line);
@@ -334,7 +366,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut h, value_slot, line);
         h.emit_op(Op::ARRAY_LENGTH, line);
         lset(&mut h, n_slot, line);
-        h.emit_f64_const(0.0, line);
+        h.emit_i32_const(0, line);
         lset(&mut h, i_slot, line);
         let lp = loop_start(&mut h, line);
         loop_break_unless_lt(&mut h, i_slot, n_slot, line);
@@ -361,7 +393,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut h, value_slot, line);
     push_str(&mut h, "__type", line);
     add_call(&mut h, "ecma:object", "hasOwn", 2, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut h, line); // i32: hasType
+    add_call(&mut h, "wasm:js-boolean", "cast", 1, line); // i32: hasType
     lget(&mut h, props_slot, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
     h.emit_op(Op::I32_EQZ, line); // i32: !props
@@ -408,7 +440,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lset(&mut h, keys_slot, line);
     lget(&mut h, keys_slot, line);
     h.emit_op(Op::REF_IS_NULL, line);
-    h.emit_if_value(line);
+    h.emit_if(line);
     lget(&mut h, value_slot, line);
     add_call(&mut h, "ecma:object", "keys", 1, line);
     lset(&mut h, keys_slot, line);
@@ -427,7 +459,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut h, keys_slot, line);
     h.emit_op(Op::ARRAY_LENGTH, line);
     lset(&mut h, n_slot, line);
-    h.emit_f64_const(0.0, line);
+    h.emit_i32_const(0, line);
     lset(&mut h, i_slot, line);
     let lp = loop_start(&mut h, line);
     loop_break_unless_lt(&mut h, i_slot, n_slot, line);
@@ -442,13 +474,13 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut h, value_slot, line);
     lget(&mut h, key_slot, line);
     add_call(&mut h, "ecma:object", "hasOwn", 2, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+    add_call(&mut h, "wasm:js-boolean", "cast", 1, line);
     // Map entries are not ECMAScript own properties. They still preserve
     // their exact keys when a language encodes a dictionary as JSON.
     lget(&mut h, value_slot, line);
     lget(&mut h, key_slot, line);
     add_call(&mut h, "ecma:map", "has", 2, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+    add_call(&mut h, "wasm:js-boolean", "cast", 1, line);
     h.emit_op(Op::I32_OR, line);
     h.emit_if_value(line);
     lget(&mut h, value_slot, line);
@@ -541,8 +573,15 @@ pub fn emit_stringify_props(chunks: &mut Vec<Chunk>, current: usize, line: u32) 
 /// separators so callers get Python-style `", "` / `": "` compact output that
 /// `ecma:json.stringify` cannot itself produce.
 fn build_render_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    // These internal helpers historically use Chunk::new's default policy.
+    // Keep that policy when sharing their bodies, even if the caller differs.
+    let name = "__json_render";
+    if let Some(index) = existing_helper(chunks, name, 3) {
+        return index;
+    }
     let helper_idx = chunks.len();
-    let mut h = create_function_chunk("__json_render", 3);
+    let mut h = create_function_chunk(name, 3);
+    mark_helper(&mut h);
     h.alloc_scratch(3);
 
     let value_slot = 0u16;
@@ -558,7 +597,7 @@ fn build_render_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // Array → "[" + parts.join(itemSep) + "]".
     lget(&mut h, value_slot, line);
     add_call(&mut h, "ecma:array", "isArray", 1, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+    add_call(&mut h, "wasm:js-boolean", "cast", 1, line);
     h.emit_if(line);
     {
         h.emit_array_new_fixed(0, 0, line);
@@ -566,7 +605,7 @@ fn build_render_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut h, value_slot, line);
         h.emit_op(Op::ARRAY_LENGTH, line);
         lset(&mut h, n_slot, line);
-        h.emit_f64_const(0.0, line);
+        h.emit_i32_const(0, line);
         lset(&mut h, i_slot, line);
         let lp = loop_start(&mut h, line);
         loop_break_unless_lt(&mut h, i_slot, n_slot, line);
@@ -605,7 +644,7 @@ fn build_render_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut h, keys_slot, line);
         h.emit_op(Op::ARRAY_LENGTH, line);
         lset(&mut h, n_slot, line);
-        h.emit_f64_const(0.0, line);
+        h.emit_i32_const(0, line);
         lset(&mut h, i_slot, line);
         let lp = loop_start(&mut h, line);
         loop_break_unless_lt(&mut h, i_slot, n_slot, line);

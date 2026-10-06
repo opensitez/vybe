@@ -1067,7 +1067,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, index);
                 self.emit_u16(Op::LOCAL_GET, count);
                 ops::emit_dyn_lt(&mut self.chunks[current], line);
-                crate::primitives::loops::emit_loop_cond(&mut self.chunks, current, line);
+                crate::primitives::loops::emit_loop_cond_from_i32(&mut self.chunks, current, line);
 
                 // Coerce per ITEM, not per list: a `children:` list mixes
                 // concrete widgets with composites, and only the composite needs
@@ -2609,17 +2609,6 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, element);
     }
-
-    // `try_emit_gui_property_by_name` is GONE, and with it the last reason for
-    // `GUI_MODULE` to be matched against a program's own source.
-    //
-    // It lowered `vybe.gui.setProperty(name, prop, value)` onto
-    // `getElementById` + the property ROLE — correct as far as it went, but it
-    // existed to keep an INVENTED spelling working. Real VB.NET has no such
-    // call: a control is a variable and you write `display.Text = v`. The two
-    // samples that spelled it this way (`examples/vb/calculator.vb`,
-    // `form_contacts.vb`) are real VB.NET now, and nothing in the tree names
-    // `vybe.gui.*`, so the arm had no input left.
 
     /// Declare a container `position: absolute`.
     ///

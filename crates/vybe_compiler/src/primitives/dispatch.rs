@@ -45,6 +45,48 @@ use crate::primitives::{
 /// (e.g. `threading.task_delay`) push a new function chunk for the worker
 /// body. Slice-shape ops still work — `&mut Vec<Chunk>` derefs to
 /// `&mut [Chunk]` for index access.
+/// Dispatch with an optional producer-reported result representation.
+/// Legacy emitters retain their existing emission and an unknown result.
+pub fn emit_common_with_result(
+    name: &str,
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+    request: vybe_runtime::registry::emitter_results::EmitRequest,
+) -> vybe_runtime::registry::emitter_results::EmitOutcome {
+    emit_common_with_result_provenance(name, chunks, current, argc, line, request).0
+}
+
+/// The flag is true only when a typed producer actually handled this
+/// emission. An unknown typed result must not inherit legacy type hints.
+pub fn emit_common_with_result_provenance(
+    name: &str,
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+    request: vybe_runtime::registry::emitter_results::EmitRequest,
+) -> (vybe_runtime::registry::emitter_results::EmitOutcome, bool) {
+    use vybe_runtime::registry::emitter_results::{self, EmitOutcome, ResultRepresentation};
+    if let Some(dot) = name.find('.') {
+        let namespace = &name[..dot];
+        if let Some(selected) = crate::languages::emit_dispatch_for(namespace) {
+            if let Some(typed) = emitter_results::for_dispatch(namespace, selected) {
+                match (typed.dispatch)(name, chunks, current, argc, line, request) {
+                    EmitOutcome::Unhandled => {}
+                    handled => return (handled, true),
+                }
+            }
+        }
+    }
+    if emit_common(name, chunks, current, argc, line) {
+        (EmitOutcome::Handled(ResultRepresentation::Unknown), false)
+    } else {
+        (EmitOutcome::Unhandled, false)
+    }
+}
+
 pub fn emit_common(
     name: &str,
     chunks: &mut Vec<Chunk>,
@@ -1135,6 +1177,9 @@ pub fn emit_common(
         }
         "ref_eq" => {
             chunks[current].emit_op(Op::REF_EQ, line);
+        }
+        "ref_is_null" => {
+            chunks[current].emit_op(Op::REF_IS_NULL, line);
         }
         "ref_nonnull" => {
             chunks[current].emit_op(Op::REF_IS_NULL, line);

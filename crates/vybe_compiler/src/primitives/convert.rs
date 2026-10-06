@@ -54,48 +54,50 @@ pub fn emit_float_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     let v = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
 
-    // NaN
+    // These Number predicates return canonical Booleans, not arbitrary values.
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     host::emit(&mut chunks[current], "ecma:number", "isNaN", 1, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    host::emit(&mut chunks[current], "wasm:js-boolean", "cast", 1, line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("NaN", line);
     chunks[current].emit_else(line);
 
-    // ±Infinity
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     host::emit(&mut chunks[current], "ecma:number", "isFinite", 1, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "wasm:js-boolean", "cast", 1, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    crate::primitives::math::emit_signbit(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
+    emit_float_signbit(&mut chunks[current], v, line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("-Infinity", line);
     chunks[current].emit_else(line);
     chunks[current].emit_string_const("Infinity", line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
 
-    // Negative zero: compares EQUAL to zero, so the sign bit is the only
-    // witness. This is the case java lacked.
-    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    crate::primitives::math::emit_signbit(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    // Both tests are pure numeric instructions. Combining their i32 results
+    // keeps the ordinary finite formatting body at one emission site.
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     chunks[current].emit_f64_const(0.0, line);
     chunks[current].emit_op(Op::F64_EQ, line);
-    chunks[current].emit_if(line);
+    emit_float_signbit(&mut chunks[current], v, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("-0.0", line);
     chunks[current].emit_else(line);
     emit_float_to_string_finite(chunks, current, v, line);
     chunks[current].emit_end(line);
-    chunks[current].emit_else(line);
-    emit_float_to_string_finite(chunks, current, v, line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
 
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
+/// The numeric sign-bit predicate, consumed immediately as an i32 condition.
+fn emit_float_signbit(chunk: &mut Chunk, v: u16, line: u32) {
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_op(Op::F64_COPYSIGN, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_LT, line);
 }
 
 /// An integral double keeps one fractional digit (`10` → `"10.0"`); anything
@@ -104,8 +106,8 @@ fn emit_float_to_string_finite(chunks: &mut [Chunk], current: usize, v: u16, lin
     use crate::primitives::instructions::host;
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     host::emit(&mut chunks[current], "ecma:number", "isInteger", 1, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    host::emit(&mut chunks[current], "wasm:js-boolean", "cast", 1, line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     chunks[current].emit_i32_const(1, line);
     host::emit(&mut chunks[current], "ecma:number", "toFixed", 2, line);
@@ -154,75 +156,34 @@ pub fn emit_to_string_targeted(chunk: &mut Chunk, _target: &Target, line: u32) {
 // `emit_*` forms above splice inline. Same concept, same module.
 
 // ── isNumeric(value) → bool ─────────────────────────────────
-// Check if value is a number type using ref_typeof opcode.
-pub fn build_is_numeric(imports: &mut Chunk) -> Chunk {
+// Check existing numeric tags or a primitive string with a numeric prefix.
+pub fn build_is_numeric(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_isnumeric");
     c.arity = 1;
-    c.local_count = 2; // val(0), result(1)
-    let val = 0u16;
-    let result = 1u16;
-
-    // VB `IsNumeric(v)`:
-    //   typeof(v) ∈ {"number", "i32", "i64"}                → true
-    //   typeof(v) == "string" && !isNaN(parseFloat(v))      → true
-    //   otherwise                                            → false
-    //
-    // Block-and-br_if cascade so each positive case short-circuits and
-    // the next check is skipped.
-    let num_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("number")));
-    let i32_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("i32")));
-    let i64_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("i64")));
-    let str_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("string")));
-
+    c.local_count = 2;
+    let test_number = c.add_import("wasm:js-number", "test");
+    let test_string = c.add_import("wasm:js-string", "test");
+    let parse = c.add_import("ecma:number", "parseFloat");
     let done = c.emit_block(0);
-
-    // typeof(v) == "number"
-    c.emit_op_u16(Op::LOCAL_GET, val, 0);
-    crate::primitives::reflection::emit_typeof_in_chunk(&mut c, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, num_str, 0);
-    crate::primitives::strings::emit_str_equals(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    // Same numeric tag set as ecma:value.typeof == "number", including
+    // F32/I32/I64 and NaN. Result remains the original boxed-I320/1 ABI.
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_call(test_number, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_br_if(0, 0);
-
-    // typeof(v) == "i32"
-    c.emit_op_u16(Op::LOCAL_GET, val, 0);
-    crate::primitives::reflection::emit_typeof_in_chunk(&mut c, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, i32_str, 0);
-    crate::primitives::strings::emit_str_equals(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_br_if(0, 0);
-
-    // typeof(v) == "i64"
-    c.emit_op_u16(Op::LOCAL_GET, val, 0);
-    crate::primitives::reflection::emit_typeof_in_chunk(&mut c, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, i64_str, 0);
-    crate::primitives::strings::emit_str_equals(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_br_if(0, 0);
-
-    // typeof(v) == "string" — try parseFloat, accept iff !isNaN
-    c.emit_op_u16(Op::LOCAL_GET, val, 0);
-    crate::primitives::reflection::emit_typeof_in_chunk(&mut c, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, str_str, 0);
-    crate::primitives::strings::emit_str_equals(&mut c, 0);
-    // [is_string]
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0); // not a string → done with result still false
-
-    // result = !isNaN(parseFloat(v))  ≡  parsed == parsed
-    let pf_idx = c.add_import("ecma:number", "parseFloat");
-    c.emit_op_u16(Op::LOCAL_GET, val, 0);
-    c.emit_call(pf_idx, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_call(test_string, 1, 0);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0); // all other primitive/object tags retain false
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_call(parse, 1, 0);
     c.emit_dup(0);
     c.emit_op(Op::F64_EQ, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
+    c.emit_op_u16(Op::LOCAL_SET, 1, 0);
     c.emit_end(0);
     c.patch_block(done);
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -307,18 +268,25 @@ pub fn build_to_bytes(_imports: &mut Chunk) -> Chunk {
 // Python's `hex(5)` returns `"0x5"` (with prefix); the underlying
 // `ecma:number.toString(n, radix)` produces just `"5"`. Each chunk
 // concatenates the prefix and forwards to the host.
-pub fn build_pyradix(imports: &mut Chunk, name: &str, prefix: &str, radix: i32) -> Chunk {
+pub fn build_pyradix(_imports: &mut Chunk, name: &str, prefix: &str, radix: i32) -> Chunk {
     let mut c = Chunk::new(name);
     c.arity = 1;
     c.local_count = 1;
     let pref = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prefix)));
     let r = c.add_constant(vybe_runtime::Value::I32(radix));
     let ts_idx = c.add_import("ecma:number", "toString");
-    crate::primitives::expressions::emit_const_index(&mut c, pref, 0);
+    let vybe_runtime::Value::String(prefix) = c.constants[pref as usize].clone() else {
+        unreachable!()
+    };
+    c.emit_string_const(&prefix, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, r, 0);
+    let vybe_runtime::Value::I32(radix) = c.constants[r as usize] else {
+        unreachable!()
+    };
+    c.emit_i32_const(radix, 0);
     c.emit_call(ts_idx, 2, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    let concat = c.add_import("wasm:js-string", "concat");
+    c.emit_call(concat, 2, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }

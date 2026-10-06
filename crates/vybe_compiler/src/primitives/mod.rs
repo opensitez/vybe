@@ -166,6 +166,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vybe_runtime::chunk::Import as BytecodeImport;
 use vybe_runtime::opcode::Op;
+use vybe_runtime::registry::emitter_results::{EmitOutcome, EmitRequest, ResultRepresentation};
 use vybe_runtime::{Chunk, Value};
 
 fn compiler_timing_path() -> Option<String> {
@@ -614,7 +615,10 @@ pub struct Compiler {
     /// surrounding expression is entitled to.
     want_i32_condition: bool,
     /// The request above was honoured: the value on the stack is an i32.
-    /// Written ONLY by `emit_i32_to_bool_or_report`, where reporting and
+    /// Written by `emit_i32_to_bool_or_report` or a terminal typed builtin
+    /// dispatch reporting `RawI32Boolean`. Expression boundaries isolate
+    /// nested reports, and condition boundaries restore their caller's state.
+    /// In the comparison path, reporting and
     /// skipping the boxing are the same statement — so "the boxing was
     /// skipped" and "the stack holds an i32" cannot disagree. The dangerous
     /// direction is a report without a skip: `BR_IF` accepts a `Bool` happily,
@@ -3761,7 +3765,8 @@ impl Compiler {
         // need the VM to reserve slots at call-frame entry.
         let ns = self.scope().next_slot;
         self.chunks[0].finalize_local_count(ns);
-        self.chunks[0].local_names = self.scope().defined_names.clone();
+        let local_names = self.scope().defined_names.clone();
+        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[0], &local_names);
         // Skip helper linking when compiling runtime helper source.
         // Re-running finalization here would call back into helper
         // compilation and recurse through `Compiler::compile`.

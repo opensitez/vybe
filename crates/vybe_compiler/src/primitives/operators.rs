@@ -862,6 +862,23 @@ impl Compiler {
         if Self::is_emitted_number_literal(expr) {
             return true;
         }
+        match &expr.kind {
+            ExprKind::Sequence(parts) => {
+                return parts.last().is_some_and(|part| self.expr_is_provably_number(part));
+            }
+            ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. } => {
+                return true;
+            }
+            ExprKind::Call { callee, optional: false, .. } => {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if let Some(hint) = self.profile.builtin_return_types.get(&name.to_lowercase()) {
+                        return self.hint_is_builtin_number(hint)
+                            && self.resolve_pending_class_name_for_type_hint(hint).is_none();
+                    }
+                }
+            }
+            _ => {}
+        }
         if let ExprKind::Cast { expr: inner, type_name ,} = &expr.kind {
             // A numeric conversion proves its result even when ordinary
             // variable hints are advisory. Do not infer through an object
@@ -974,11 +991,51 @@ impl Compiler {
     ) -> Option<StaticOperatorTarget> {
         let slot = Self::binary_operator_slot(op)?;
         let ty = self.static_builtin_operator_type(op, left, right)?;
+        if ty == BuiltinType::Int
+            && self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+            && self.type_resolution() == vybe_ast::TypeResolution::Static
+        {
+            let is_unsigned_word = |operand: &Expression| {
+                self.infer_expr_type_hint(operand)
+                    .and_then(|hint| self.profile.integer_cast_widths.get(hint.trim()))
+                    .is_some_and(|width| width.bits == Some(32) && !width.signed)
+            };
+            if is_unsigned_word(left) && is_unsigned_word(right) {
+                let target = match op {
+                    BinOp::Lt => Some("opcode:i32.lt_u"),
+                    BinOp::LtEq => Some("opcode:i32.le_u"),
+                    BinOp::Gt => Some("opcode:i32.gt_u"),
+                    BinOp::GtEq => Some("opcode:i32.ge_u"),
+                    _ => None,
+                };
+                if let Some(target) = target {
+                    return Some(StaticOperatorTarget {
+                        slot,
+                        target: target.to_string(),
+                    });
+                }
+            }
+        }
         let target = self.builtin_type_slot_target(ty, slot)?.to_string();
         Some(StaticOperatorTarget { slot, target })
     }
 
-    fn emit_static_builtin_operator_target(&mut self, resolved: &StaticOperatorTarget) {
+    pub(super) fn static_builtin_operator_returns_i32(
+        &self, op: &BinOp, left: &Expression, right: &Expression,
+    ) -> bool {
+        self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+            && self.type_resolution() == vybe_ast::TypeResolution::Static
+            && self.resolve_static_builtin_operator(op, left, right).is_some_and(|resolved| {
+                matches!(resolved.target.as_str(), "opcode:i32.add" | "opcode:i32.sub"
+                    | "opcode:i32.mul" | "opcode:i32.div_s" | "opcode:i32.div_u"
+                    | "opcode:i32.rem_s" | "opcode:i32.rem_u" | "opcode:i32.and"
+                    | "opcode:i32.or" | "opcode:i32.xor")
+            })
+    }
+
+    fn emit_static_builtin_operator_target(
+        &mut self, resolved: &StaticOperatorTarget, operands: (&Expression, &Expression),
+    ) {
         match resolved.target.as_str() {
             "opcode:i32.shl" => {
                 self.emit_shift_slot(Op::I32_SHL, None);
@@ -990,7 +1047,31 @@ impl Compiler {
             }
             _ => {}
         }
-        self.emit_slot_target(&resolved.target, 2, self.line, "static builtin operator");
+        let word_comparison = match resolved.target.as_str() {
+            "opcode:i32.eq" => Some(Op::I32_EQ),
+            "opcode:i32.ne" => Some(Op::I32_NE),
+            "opcode:i32.lt_s" => Some(Op::I32_LT_S),
+            "opcode:i32.le_s" => Some(Op::I32_LE_S),
+            "opcode:i32.gt_s" => Some(Op::I32_GT_S),
+            "opcode:i32.ge_s" => Some(Op::I32_GE_S),
+            "opcode:i32.lt_u" => Some(Op::I32_LT_U),
+            "opcode:i32.le_u" => Some(Op::I32_LE_U),
+            "opcode:i32.gt_u" => Some(Op::I32_GT_U),
+            "opcode:i32.ge_u" => Some(Op::I32_GE_U),
+            _ => None,
+        };
+        if let Some(opcode) = word_comparison {
+            let line = self.line;
+            let normalized = |expr: &Expression| matches!(&expr.kind,
+                ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. });
+            let proofs = (normalized(operands.0), normalized(operands.1));
+            crate::primitives::bits::emit_word_comparison_with_normalized_operands(
+                self.chunk(), opcode, proofs, line,
+            );
+            self.sync_scope_slots_with_chunk();
+        } else {
+            self.emit_slot_target(&resolved.target, 2, self.line, "static builtin operator");
+        }
         if matches!(
             resolved.slot,
             vybe_ast::ProtocolSlot::Eq
@@ -1059,12 +1140,10 @@ impl Compiler {
         )
     }
 
-    fn emit_strict_equality_operands(
-        &mut self,
+    fn literal_null_operand(
         operands: Option<(&Expression, &Expression)>,
-        line: u32,
-    ) {
-        let null_operand = operands.and_then(|(left, right)| {
+    ) -> Option<bool> {
+        operands.and_then(|(left, right)| {
             if matches!(&right.kind, ExprKind::Lit(Literal::Null)) {
                 Some(false)
             } else if matches!(&left.kind, ExprKind::Lit(Literal::Null)) {
@@ -1072,7 +1151,15 @@ impl Compiler {
             } else {
                 None
             }
-        });
+        })
+    }
+
+    fn emit_strict_equality_operands(
+        &mut self,
+        operands: Option<(&Expression, &Expression)>,
+        line: u32,
+    ) {
+        let null_operand = Self::literal_null_operand(operands);
         if let Some(null_on_left) = null_operand {
             // Specialize the same equality primitive selected below. Its
             // null/undefined contract and the caller's Boolean result ABI
@@ -1147,7 +1234,24 @@ impl Compiler {
     ) {
         if let BinOp::Integer(operation, lane) = op {
             let line = self.line;
-            crate::primitives::bits::emit_integer_binary(self.chunk(), *lane, *operation, line);
+            let normalized = |expr: &Expression| {
+                *lane == vybe_ast::BitLane::W32 && matches!(&expr.kind,
+                    ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. })
+            };
+            let proofs = operands.map(|(left, right)| (normalized(left), normalized(right)))
+                .unwrap_or((false, false));
+            if *operation == vybe_ast::IntOp::Or
+                && operands.is_some_and(|(_, right)| matches!(&right.kind, ExprKind::Lit(Literal::Int(0))))
+            {
+                self.emit(Op::DROP);
+                if !proofs.0 {
+                    crate::primitives::bits::emit_normalize_integer(self.chunk(), *lane, line);
+                }
+                return;
+            }
+            crate::primitives::bits::emit_integer_binary_with_normalized_operands(
+                self.chunk(), *lane, *operation, proofs, line,
+            );
             return;
         }
         let (left_num_lit, right_num_lit) = match operands {
@@ -1184,7 +1288,7 @@ impl Compiler {
         let both_provably_number = left_is_number && right_is_number;
         if let Some((left, right)) = operands {
             if let Some(target) = self.resolve_static_builtin_operator(op, left, right) {
-                self.emit_static_builtin_operator_target(&target);
+                self.emit_static_builtin_operator_target(&target, (left, right));
                 return;
             }
             if matches!(op, BinOp::Eq | BinOp::NotEq)
@@ -1480,6 +1584,11 @@ impl Compiler {
                         {
                             if both_provably_number {
                                 self.emit(Op::F64_EQ);
+                            } else if let Some(null_on_left) = Self::literal_null_operand(operands) {
+                                crate::primitives::ops::emit_dyn_eq_null_operand(
+                                    self.chunk(), null_on_left, line,
+                                );
+                                self.sync_scope_slots_with_chunk();
                             } else {
                                 crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
                             }
@@ -1623,9 +1732,17 @@ impl Compiler {
                         let condition_result = std::mem::take(&mut self.want_i32_condition);
                         if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
                             && self.type_resolution() == vybe_ast::TypeResolution::Static
-                            && both_provably_number
                         {
-                            self.emit(Op::F64_EQ);
+                            if both_provably_number {
+                                self.emit(Op::F64_EQ);
+                            } else if let Some(null_on_left) = Self::literal_null_operand(operands) {
+                                crate::primitives::ops::emit_dyn_eq_null_operand(
+                                    self.chunk(), null_on_left, line,
+                                );
+                                self.sync_scope_slots_with_chunk();
+                            } else {
+                                crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+                            }
                             self.emit(Op::I32_EQZ);
                         } else {
                             crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
@@ -2402,6 +2519,33 @@ mod tests {
 
     fn str_lit(value: &str) -> Expression {
         Expression::new(ExprKind::Lit(Literal::Str(value.into())))
+    }
+
+    #[test]
+    fn numeric_proof_uses_declared_call_result_and_sequence_tail() {
+        let compiler = compiler_with_profile(
+            "[compiler]\n[builtin_return_types]\nload_word = \"integer\"\nload_text = \"string\"\n",
+        );
+        let call = |name: &str| Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
+            args: vec![],
+            optional: false,
+        });
+        assert!(compiler.expr_is_provably_number(&call("load_word")));
+        assert!(!compiler.expr_is_provably_number(&call("load_text")));
+        assert!(!compiler.expr_is_provably_number(&call("unknown")));
+        let mut optional = call("load_word");
+        if let ExprKind::Call { optional, .. } = &mut optional.kind {
+            *optional = true;
+        }
+        assert!(!compiler.expr_is_provably_number(&optional));
+        assert!(compiler.expr_is_provably_number(&Expression::new(ExprKind::Sequence(
+            vec![str_lit("prefix"), call("load_word")],
+        ))));
+        assert!(!compiler.expr_is_provably_number(&Expression::new(ExprKind::Sequence(
+            vec![call("load_word"), str_lit("tail")],
+        ))));
+        assert!(!compiler.expr_is_provably_number(&Expression::new(ExprKind::Sequence(vec![]))));
     }
 
     #[test]

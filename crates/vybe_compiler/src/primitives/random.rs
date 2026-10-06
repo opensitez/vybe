@@ -17,8 +17,8 @@
 //! reinventing them.
 
 use crate::primitives::instructions::core_wasm;
-use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_runtime::Chunk;
 
 const RNG_GLOBAL: &str = "__vybe_rng";
 
@@ -44,6 +44,25 @@ pub fn emit_seed(chunks: &mut [Chunk], current: usize, line: u32) {
 /// One PRNG step → uniform `f64` in `[0, 1)`. Lazily seeds the global cell from
 /// `ecma:math:random` when still null (unseeded). Stack: `[]` → `[f64]`.
 pub fn emit_next_unit(chunks: &mut [Chunk], current: usize, line: u32) {
+    crate::primitives::bundle::emit_private_helper_call(
+        &mut chunks[current],
+        "__stdlib_random_next_unit",
+        0,
+        line,
+    );
+}
+
+/// One lazy entropy tap shared by every operation, retaining the seeded global.
+pub(crate) fn build_next_unit() -> Chunk {
+    let chunk = crate::primitives::functions::create_function_chunk("__stdlib_random_next_unit", 0);
+    let mut chunks = vec![chunk];
+    emit_next_unit_body(&mut chunks, 0, 0);
+    chunks[0].emit_op(Op::RETURN, 0);
+    crate::primitives::bundle::mark_private_helper_body(&mut chunks[0]);
+    chunks.remove(0)
+}
+
+pub(crate) fn emit_next_unit_body(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = chunks[current].local_count;
     chunks[current].alloc_scratch(1);
     let s = base;
@@ -108,7 +127,7 @@ pub fn emit_rand_int_inclusive(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, hi, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, lo, line);
     emit_next_unit(chunks, current, line); // u
-    // range = hi - lo + 1
+                                           // range = hi - lo + 1
     chunks[current].emit_op_u16(Op::LOCAL_GET, hi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, lo, line);
     chunks[current].emit_op(Op::I32_SUB, line);
@@ -182,7 +201,7 @@ pub fn emit_shuffle(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // exit when i <= 0
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    crate::primitives::ops::emit_dyn_le(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_LE_S, line);
     chunks[current].emit_br_if(1, line);
     // j = floor(next_unit() * (i + 1))
     emit_next_unit(chunks, current, line);

@@ -522,7 +522,8 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, idx);
         self.emit_u16(Op::LOCAL_GET, list);
         common::collections::emit_len(&mut self.chunks, self.current, line);
-        crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
+        // Emitter-owned counters and lengths do not invoke source operators.
+        self.emit(Op::F64_LT);
         self.chunk().emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
         self.chunk().emit_br_if(1, line);
 
@@ -543,7 +544,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, entry);
         common::collections::emit_len(&mut self.chunks, self.current, line);
         self.emit_const(Value::F64(1.0));
-        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        self.emit(Op::F64_EQ);
         self.chunk().emit_if(line);
 
         let recv = crate::primitives::callable::push_callback_from_slot(
@@ -580,7 +581,7 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, idx);
         self.emit_const(Value::F64(1.0));
-        crate::primitives::ops::emit_dyn_add(self.chunk(), line);
+        self.emit(Op::F64_ADD);
         self.emit_u16(Op::LOCAL_SET, idx);
 
         self.chunk().emit_br(0, line);

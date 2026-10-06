@@ -1784,6 +1784,10 @@ impl Compiler {
                                 expected,
                                 line,
                             );
+                            // The shared identity predicate returns a canonical Bool value.
+                            // A Wasm IF consumes its checked i32 representation.
+                            let cast = self.chunk().add_import("wasm:js-boolean", "cast");
+                            self.chunk().emit_call(cast, 1, line);
                             self.chunk().emit_if(line);
                             inst!(self, core_wasm::bool_const, true);
                             self.emit_u16(Op::LOCAL_SET, arm_match_slot);
@@ -2119,14 +2123,7 @@ impl Compiler {
 
             self.emit_u16(Op::LOCAL_GET, dispatch_slot);
             self.emit_const(Value::F64(0.0));
-            {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
-            };
-            {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            };
+            self.emit(Op::F64_LT);
             self.chunk().emit_if(line);
             self.emit_u16(Op::LOCAL_GET, case_match_slot);
             {
@@ -2144,14 +2141,7 @@ impl Compiler {
         if let Some(default_idx) = default_idx {
             self.emit_u16(Op::LOCAL_GET, dispatch_slot);
             self.emit_const(Value::F64(0.0));
-            {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
-            };
-            {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            };
+            self.emit(Op::F64_LT);
             self.chunk().emit_if(line);
             self.emit_const(Value::F64(default_idx as f64));
             self.emit_u16(Op::LOCAL_SET, dispatch_slot);
@@ -2161,35 +2151,16 @@ impl Compiler {
         for (i, case) in all_cases.iter().enumerate() {
             self.emit_u16(Op::LOCAL_GET, dispatch_slot);
             self.emit_const(Value::F64(i as f64));
+            // This index is compiler-owned numeric state, not a user value.
             if self.profile.switch_fallthrough {
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_le(self.chunk(), line);
-                };
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                };
-                self.chunk().emit_if_value(line);
+                self.emit(Op::F64_LE);
                 self.emit_u16(Op::LOCAL_GET, dispatch_slot);
                 self.emit_const(Value::F64(0.0));
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_ge(self.chunk(), line);
-                };
-                self.chunk().emit_else(line);
-                self.emit_const(Value::Bool(false));
-                self.chunk().emit_end(line);
+                self.emit(Op::F64_GE);
+                self.emit(Op::I32_AND);
             } else {
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                };
+                self.emit(Op::F64_EQ);
             }
-            {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            };
             self.chunk().emit_if(line);
             self.label_depth += 1;
             for s in &case.body {
@@ -5266,7 +5237,9 @@ impl Compiler {
                         false
                     };
                     if !skip_c_coerce {
-                        self.bind_value_to_declared_type(effective_type_hint, Some(init_expr))?;
+                        if decl.type_hint.as_ref().is_none_or(|hint| hint.converts()) {
+                            self.bind_value_to_declared_type(effective_type_hint, Some(init_expr))?;
+                        }
                     }
                     self.maybe_promote_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
                     // ECMA-262 §10.2.9 SetFunctionName — anonymous
@@ -5318,6 +5291,14 @@ impl Compiler {
                             value_slot,
                             line,
                         );
+                        self.mark_promoted_global_cell(name);
+                    } else if self
+                        .module_addr_taken_globals
+                        .contains(&self.pointer_binding_key(name))
+                    {
+                        // A wrap emitted inside another function need not have
+                        // executed yet. Establish global storage at its declaration.
+                        self.emit_wrap_top_of_stack_in_pointer_cell();
                         self.mark_promoted_global_cell(name);
                     }
                     self.emit_global_write(&cn);
@@ -5803,7 +5784,9 @@ impl Compiler {
                     None
                 };
                 let stored_type_hint = self.lookup_var_type_hint(name).map(str::to_string);
-                self.bind_value_to_declared_type(stored_type_hint.as_deref(), source)?;
+                if self.lookup_var_declared(name).is_none_or(|hint| hint.converts()) {
+                    self.bind_value_to_declared_type(stored_type_hint.as_deref(), source)?;
+                }
                 self.emit_var_set(name);
                 if let (Some(old), Some(emit_finalizer)) = (old_slot, finalizer) {
                     self.emit_rebound_value_finalizer(old, emit_finalizer);
@@ -5878,7 +5861,7 @@ impl Compiler {
                     }
                 } else {
                     self.emit_u16(Op::LOCAL_GET, class_tmp);
-                    self.compile_expr(member)?;
+                    self.emit_static_property_key(class_tmp, member)?;
                     self.emit_u16(Op::LOCAL_GET, value_tmp);
                     let line = self.line;
                     common::collections::emit_set(&mut self.chunks, self.current, line);

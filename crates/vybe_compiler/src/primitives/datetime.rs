@@ -198,6 +198,16 @@ pub fn emit_days_in_month(chunk: &mut Chunk, indexing: MonthIndexing, line: u32)
         chunk.emit_f64_const(1.0, line);
         chunk.emit_op(Op::F64_ADD, line);
     }
+    // Zero-based normalization has just produced an f64, even for callers
+    // that supplied another numeric representation. One-based callers have
+    // not passed through that arithmetic and retain dynamic equality.
+    let emit_month_equals = |chunk: &mut Chunk| {
+        if indexing == MonthIndexing::ZeroBased {
+            chunk.emit_op(Op::F64_EQ, line);
+        } else {
+            super::ops::emit_dyn_eq(chunk, line);
+        }
+    };
     let month = chunk.alloc_scratch(1);
     let year = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, month, line);
@@ -206,7 +216,7 @@ pub fn emit_days_in_month(chunk: &mut Chunk, indexing: MonthIndexing, line: u32)
     // February is the only month needing the year; the rest are a lookup.
     chunk.emit_op_u16(Op::LOCAL_GET, month, line);
     chunk.emit_f64_const(2.0, line);
-    super::ops::emit_dyn_eq(chunk, line);
+    emit_month_equals(chunk);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, year, line);
     emit_is_leap_year(chunk, line);
@@ -220,7 +230,7 @@ pub fn emit_days_in_month(chunk: &mut Chunk, indexing: MonthIndexing, line: u32)
     for short_month in [4.0, 6.0, 9.0, 11.0] {
         chunk.emit_op_u16(Op::LOCAL_GET, month, line);
         chunk.emit_f64_const(short_month, line);
-        super::ops::emit_dyn_eq(chunk, line);
+        emit_month_equals(chunk);
         chunk.emit_if_value(line);
         chunk.emit_f64_const(30.0, line);
         chunk.emit_else(line);
@@ -284,7 +294,7 @@ pub fn month_add_clamps(policy: DateTimePolicy) -> bool {
 /// The numeric variants are core `*.const`; `null` is `ref.null`; boolean,
 /// string and bigint are the js-primitive-builtins / js-string-builtins
 /// imports (`wasm:js-boolean.fromI32`, `wasm:string-constants`,
-/// `wasm:js-bigint.fromI64`). None of it goes through the constant pool, and
+/// the existing `ecma:bigint.BigInt` constructor). None goes through the constant pool, and
 /// none of it is a custom opcode.
 ///
 /// Anything with no WASM encoding panics rather than pooling it. The pool push
@@ -308,12 +318,8 @@ pub fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
         Value::Undefined => {
             crate::primitives::globals::emit_read(chunk, "undefined", line);
         }
-        // AST bigint literals always fit i64 — oversize ones are normalized to
-        // `BigInt("…")` by the walker — so the ToBigInt64 wrap is lossless.
         Value::BigInt(v) => {
-            chunk.emit_i64_const(v.to_i64_wrapping(), line);
-            let idx = chunk.add_import("wasm:js-bigint", "fromI64");
-            chunk.emit_call(idx, 1, line);
+            crate::primitives::instructions::core_wasm::emit_value(chunk, line, &Value::BigInt(v));
         }
         Value::V128(v) => {
             chunk.emit_op(Op::V128_CONST, line);
@@ -418,20 +424,22 @@ pub fn emit_add_months(chunk: &mut Chunk, policy: DateTimePolicy, line: u32) {
         // so surplus days cannot roll forward.
         let normalized_y = chunk.alloc_scratch(1);
         let normalized_m = chunk.alloc_scratch(1);
-        // y + floor(mo / 12)
-        chunk.emit_op_u16(Op::LOCAL_GET, y, line);
+        // Cache the private numeric year delta in the month scratch until
+        // it is overwritten with the normalized month. Calendar getters and
+        // the caller's count have already been consumed in their original order.
         chunk.emit_op_u16(Op::LOCAL_GET, mo, line);
         chunk.emit_f64_const(12.0, line);
         chunk.emit_op(Op::F64_DIV, line);
         chunk.emit_op(Op::F64_FLOOR, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, normalized_m, line);
+        // y + floor(mo / 12)
+        chunk.emit_op_u16(Op::LOCAL_GET, y, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, normalized_m, line);
         chunk.emit_op(Op::F64_ADD, line);
         chunk.emit_op_u16(Op::LOCAL_SET, normalized_y, line);
         // mo - 12 * floor(mo / 12)  → 0..11, correct for negative n too.
         chunk.emit_op_u16(Op::LOCAL_GET, mo, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, mo, line);
-        chunk.emit_f64_const(12.0, line);
-        chunk.emit_op(Op::F64_DIV, line);
-        chunk.emit_op(Op::F64_FLOOR, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, normalized_m, line);
         chunk.emit_f64_const(12.0, line);
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op(Op::F64_SUB, line);
