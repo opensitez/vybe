@@ -36,6 +36,10 @@ pub(crate) fn send(document: DocumentId, operation: &str, args: Value) -> Result
     session()?.call(document, operation, args)
 }
 
+pub(crate) fn send_pixels(document: DocumentId, args: Value, pixels: Vec<u8>) -> Result<Value, String> {
+    session()?.call_with_pixels(document, args, pixels.into())
+}
+
 fn split_operation(op: impl Serialize) -> Result<(String, Value), String> {
     match serde_json::to_value(op).map_err(|e| e.to_string())? {
         Value::String(name) => Ok((name, Value::Null)),

@@ -1225,6 +1225,11 @@ pub fn register(vm: &mut VM) {
                 if sw == 0 || sh == 0 || dw == 0.0 || dh == 0.0 {
                     return Value::Null;
                 }
+                let rect = [sx as f64, sy as f64, sw as f64, sh as f64,
+                    dx as f64, dy as f64, dw as f64, dh as f64];
+                if backend().is_some_and(|engine| engine.draw_image_source(&target, &source, rect)) {
+                    return Value::Null;
+                }
                 if let Query2DValue::SourceImage {
                     data,
                     width,

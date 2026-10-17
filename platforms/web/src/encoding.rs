@@ -15,7 +15,7 @@
 use std::str;
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, TypedElemKind};
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, Value, VM};
 
 // ── Encoding Standard prototypes ──────────────────────────────────────
 //
@@ -46,7 +46,8 @@ pub fn shared_text_decoder_prototype() -> Value {
     named_prototype(&TEXT_DECODER_PROTOTYPE, "TextDecoder")
 }
 
-fn make_uint8_array(bytes: Vec<u8>) -> Value {
+fn make_uint8_array(bytes: impl AsRef<[u8]>) -> Value {
+    let bytes = bytes.as_ref();
     let array = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, bytes.len());
     if let Value::Object(obj) = &array {
         let mut locked = obj.lock().unwrap();
@@ -68,6 +69,48 @@ fn make_uint8_array(bytes: Vec<u8>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encode(vm: &mut VM, input: Option<Value>) -> Result<Value, String> {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(
+            vm.resolve_host_function_index("web:encoding", "encode")
+                .unwrap(),
+        );
+        let mut args = vec![Value::Undefined];
+        if let Some(input) = input {
+            args.push(input);
+        }
+        vm.invoke(&Value::Object(vybe_runtime::heap::alloc(function)), &args)
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    #[test]
+    fn registered_encoder_preserves_utf8_and_coercion() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        for (input, expected) in [
+            (Some(Value::String(Arc::from("Aé🦀"))), "Aé🦀".as_bytes()),
+            (Some(Value::I32(42)), b"42".as_slice()),
+            (Some(Value::Undefined), b"undefined".as_slice()),
+            (None, b"".as_slice()),
+        ] {
+            let encoded = encode(&mut vm, input).unwrap();
+            let Value::Object(object) = encoded else {
+                panic!("TextEncoder must return an object");
+            };
+            let locked = object.lock().unwrap();
+            let ObjectKind::TypedArray(typed) = &locked.kind else {
+                panic!("TextEncoder must return a typed array");
+            };
+            assert_eq!(typed.elem, TypedElemKind::U8);
+            assert_eq!(typed.length, expected.len());
+            let buffer = typed.buffer.lock().unwrap();
+            assert_eq!(
+                &buffer[typed.byte_offset..typed.byte_offset + expected.len()],
+                expected
+            );
+        }
+    }
 
     fn encode_into(vm: &mut VM, source: &str, destination: Value) -> Result<Value, String> {
         let mut function = Object::new();
@@ -237,24 +280,160 @@ mod tests {
         };
         assert_eq!(*typed.buffer.lock().unwrap(), vec![0xc3, 0xa9, b'A', 0]);
     }
+
+    fn decode(vm: &mut VM, source: Value, fatal: bool, ignore_bom: bool) -> Result<Value, String> {
+        let mut decoder = Object::new();
+        decoder
+            .properties
+            .insert("fatal".into(), Value::Bool(fatal));
+        decoder
+            .properties
+            .insert("ignoreBOM".into(), Value::Bool(ignore_bom));
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(
+            vm.resolve_host_function_index("web:encoding", "decode")
+                .unwrap(),
+        );
+        vm.invoke(
+            &Value::Object(vybe_runtime::heap::alloc(function)),
+            &[Value::Object(vybe_runtime::heap::alloc(decoder)), source],
+        )
+        .map_err(|error| format!("{error:?}"))
+    }
+
+    #[test]
+    fn decoder_reads_only_the_typed_array_view_and_handles_bom() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let backing = make_uint8_array(b"!\xef\xbb\xbf\xc3\xa9?".to_vec());
+        let Value::Object(backing_obj) = backing else {
+            panic!("typed array")
+        };
+        let buffer_obj = {
+            let backing = backing_obj.lock().unwrap();
+            let ObjectKind::TypedArray(ref typed) = backing.kind else {
+                panic!("typed array")
+            };
+            typed.buffer_obj.clone()
+        };
+        let view = vybe_platform_ecma::typedarray::new_view_over_buffer(
+            TypedElemKind::U8,
+            buffer_obj,
+            1,
+            5,
+        );
+        let Value::String(text) = decode(&mut vm, view.clone(), false, false).unwrap() else {
+            panic!("decoded string")
+        };
+        assert_eq!(&*text, "é");
+        let Value::String(text) = decode(&mut vm, view, false, true).unwrap() else {
+            panic!("decoded string")
+        };
+        assert_eq!(&*text, "\u{feff}é");
+    }
+
+    #[test]
+    fn decoder_preserves_replacement_and_fatal_behavior() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let source = make_uint8_array(vec![b'A', 0xff, b'B']);
+        let Value::String(text) = decode(&mut vm, source.clone(), false, false).unwrap() else {
+            panic!("decoded string")
+        };
+        assert_eq!(&*text, "A\u{fffd}B");
+        assert!(decode(&mut vm, source, true, false).is_err());
+    }
+
+    #[test]
+    fn decoder_snapshots_shared_bytes_before_conversion() {
+        let source = make_uint8_array("é".as_bytes().to_vec());
+        let Value::Object(ref object) = source else {
+            panic!("typed array")
+        };
+        let (backing, bytes) = {
+            let object = object.lock().unwrap();
+            let ObjectKind::TypedArray(ref typed) = object.kind else {
+                panic!("typed array")
+            };
+            (typed.buffer_obj.clone(), typed.buffer.clone())
+        };
+        {
+            let mut backing = backing.lock().unwrap();
+            let ObjectKind::ArrayBuffer(ref mut state) = backing.kind else {
+                panic!("array buffer")
+            };
+            state.shared = true;
+        }
+        let text = with_bytes_from_arg(Some(&source), |input| {
+            assert!(bytes.try_lock().is_ok());
+            decode_utf8(input, false, false).unwrap()
+        });
+        assert_eq!(&*text, "é");
+    }
+
+    #[test]
+    #[ignore = "local Web decode allocation diagnostic"]
+    fn bench_decoder_borrowed_bytes() {
+        use std::time::Instant;
+
+        let source = make_uint8_array("é".repeat(131_072).into_bytes());
+        for (label, borrowed) in [("copied", false), ("borrowed", true)] {
+            let mut samples = Vec::new();
+            for _ in 0..5 {
+                let started = Instant::now();
+                for _ in 0..50 {
+                    let value = if borrowed {
+                        with_bytes_from_arg(Some(&source), |bytes| {
+                            decode_utf8(bytes, false, false).unwrap()
+                        })
+                    } else {
+                        let bytes = with_bytes_from_arg(Some(&source), |bytes| bytes.to_vec());
+                        let text = String::from_utf8_lossy(&bytes).into_owned();
+                        Arc::from(text.as_str())
+                    };
+                    std::hint::black_box(value);
+                }
+                samples.push(started.elapsed());
+            }
+            samples.sort_unstable();
+            println!("{label} UTF-8 decode, 50 x 256 KiB: {:?}", samples[2]);
+        }
+    }
 }
 
-fn bytes_from_arg(arg: Option<&Value>) -> Vec<u8> {
+fn with_bytes_from_arg<T>(arg: Option<&Value>, use_bytes: impl FnOnce(&[u8]) -> T) -> T {
     match arg {
         Some(Value::Object(obj)) => {
             let o = obj.lock().unwrap();
             match &o.kind {
-                ObjectKind::ArrayBuffer(ab) => ab.bytes.lock().unwrap().clone(),
+                ObjectKind::ArrayBuffer(ab) => {
+                    if ab.shared {
+                        let snapshot = ab.bytes.lock().unwrap().clone();
+                        drop(o);
+                        use_bytes(&snapshot)
+                    } else {
+                        use_bytes(&ab.bytes.lock().unwrap())
+                    }
+                }
                 ObjectKind::TypedArray(ta) => {
                     let start = ta.byte_offset;
                     let end = start
                         + vybe_platform_ecma::typedarray::ta_live_length(ta)
                             * ta.elem.bytes_per_element();
+                    let shared = {
+                        let backing = ta.buffer_obj.lock().unwrap();
+                        matches!(&backing.kind, ObjectKind::ArrayBuffer(state) if state.shared)
+                    };
                     let bytes = ta.buffer.lock().unwrap();
-                    bytes
-                        .get(start..end)
-                        .map(|slice| slice.to_vec())
-                        .unwrap_or_default()
+                    let slice = bytes.get(start..end).unwrap_or_default();
+                    if shared {
+                        let snapshot = slice.to_vec();
+                        drop(bytes);
+                        drop(o);
+                        use_bytes(&snapshot)
+                    } else {
+                        use_bytes(slice)
+                    }
                 }
                 _ => {
                     if let Some(Value::Object(buf)) = o.properties.get("buffer") {
@@ -271,17 +450,25 @@ fn bytes_from_arg(arg: Option<&Value>) -> Vec<u8> {
                                 .map(|v| v.as_i32().max(0) as usize)
                                 .unwrap_or(0);
                             let d = ab.bytes.lock().unwrap();
-                            return d
-                                .get(off..off + len)
-                                .map(|s| s.to_vec())
+                            let slice = off
+                                .checked_add(len)
+                                .and_then(|end| d.get(off..end))
                                 .unwrap_or_default();
+                            if ab.shared {
+                                let snapshot = slice.to_vec();
+                                drop(d);
+                                drop(bo);
+                                drop(o);
+                                return use_bytes(&snapshot);
+                            }
+                            return use_bytes(slice);
                         }
                     }
-                    Vec::new()
+                    use_bytes(&[])
                 }
             }
         }
-        _ => Vec::new(),
+        _ => use_bytes(&[]),
     }
 }
 
@@ -305,21 +492,18 @@ fn throw_type_error(ctx: &mut HostContext, message: &str) {
     ));
 }
 
-fn decode_utf8(bytes: &[u8], fatal: bool, ignore_bom: bool) -> Result<String, ()> {
+fn decode_utf8(bytes: &[u8], fatal: bool, ignore_bom: bool) -> Result<Arc<str>, ()> {
     let decoded = if fatal {
-        str::from_utf8(bytes)
-            .map(|text| text.to_string())
-            .map_err(|_| ())?
+        str::from_utf8(bytes).map_err(|_| ())?.into()
     } else {
-        String::from_utf8_lossy(bytes).into_owned()
+        String::from_utf8_lossy(bytes)
     };
     if !ignore_bom {
-        Ok(decoded
-            .strip_prefix('\u{FEFF}')
-            .unwrap_or(decoded.as_str())
-            .to_string())
+        Ok(Arc::from(
+            decoded.strip_prefix('\u{FEFF}').unwrap_or(&decoded),
+        ))
     } else {
-        Ok(decoded)
+        Ok(Arc::from(decoded.as_ref()))
     }
 }
 
@@ -350,9 +534,10 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "web:encoding",
         "encode",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let s = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-            make_uint8_array(s.into_bytes())
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| match args.get(1) {
+            Some(Value::String(text)) => make_uint8_array(text.as_bytes()),
+            Some(value) => make_uint8_array(format!("{value}").as_bytes()),
+            None => make_uint8_array(b""),
         }),
     );
 
@@ -475,7 +660,6 @@ pub fn register(vm: &mut VM) {
         "web:encoding",
         "decode",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let bytes = bytes_from_arg(args.get(1));
             let (fatal, ignore_bom) = match args.first() {
                 Some(Value::Object(decoder)) => {
                     let decoder = decoder.lock().unwrap();
@@ -494,8 +678,8 @@ pub fn register(vm: &mut VM) {
                 }
                 _ => (false, false),
             };
-            match decode_utf8(&bytes, fatal, ignore_bom) {
-                Ok(text) => Value::String(Arc::from(text.as_str())),
+            match with_bytes_from_arg(args.get(1), |bytes| decode_utf8(bytes, fatal, ignore_bom)) {
+                Ok(text) => Value::String(text),
                 Err(()) => {
                     throw_type_error(ctx, "The encoded data was not valid UTF-8");
                     Value::Null

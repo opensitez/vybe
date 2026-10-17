@@ -527,6 +527,12 @@ pub trait CanvasBackend: Send + Sync {
     /// one, the same way a page names an element id.
     fn apply(&self, target: &str, op: Op2D);
 
+    /// Draw an engine-owned CanvasImageSource without host pixel readback.
+    /// Return false when unsupported so the caller can use its pixel fallback.
+    fn draw_image_source(&self, _target: &str, _source: &str, _rect: [f64; 8]) -> bool {
+        false
+    }
+
     /// Ensure a surface exists for `target` (`getContext`'s side effect).
     fn ensure(&self, target: &str);
 

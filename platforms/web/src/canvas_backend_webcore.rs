@@ -20,7 +20,7 @@ use crate::canvas_backend::{
 };
 use crate::engine::DocumentId;
 use webcore::canvas::{
-    Canvas as _, Color, ColorStop, CompositeOp, Direction, FillRule, Font, FontKerning,
+    Color, ColorStop, CompositeOp, Direction, FillRule, Font, FontKerning,
     FontStretch, FontStyle, FontVariantCaps, FontWeight, Gradient as CanvasGradient, Image,
     ImageData, LineCap, LineJoin, Paint as CanvasPaint, Path2D as CanvasPath,
     PathOp as EnginePathOp, Pattern as CanvasPattern, Repetition, Shadow, SmoothingQuality,

@@ -90,13 +90,42 @@ fn send(target: &str, operation: &str, payload: Value) -> Result<Value, String> 
 }
 
 impl CanvasBackend for OsBrowserCanvas {
+    fn draw_image_source(&self, target: &str, source: &str, rect: [f64; 8]) -> bool {
+        let (target_document, _) = target_parts(target);
+        let (source_document, source) = target_parts(source);
+        if target_document != source_document {
+            return false;
+        }
+        if let Err(error) = send(target, "CanvasDrawImage", json!({
+            "source": source,
+            "rect": rect,
+        })) {
+            eprintln!("osbrowser canvas: {error}");
+        }
+        true
+    }
+
     fn ensure(&self, target: &str) {
         let _ = send(target, "CanvasEnsure", Value::Null);
     }
 
-    fn apply(&self, target: &str, op: Op2D) {
+    fn apply(&self, target: &str, mut op: Op2D) {
+        let pixels = match &mut op {
+            Op2D::PutImageData { pixels, .. }
+            | Op2D::PutImageDataDirty { pixels, .. }
+            | Op2D::DrawImageRgba { pixels, .. } => Some(std::mem::take(pixels)),
+            _ => None,
+        };
         if let Ok(op) = serde_json::to_value(op) {
-            if let Err(error) = send(target, "CanvasApply", op) {
+            let result = if let Some(pixels) = pixels {
+                let (document, target) = target_parts(target);
+                crate::engine_osbrowser::send_pixels(document, json!({
+                    "target": target, "payload": op,
+                }), pixels)
+            } else {
+                send(target, "CanvasApply", op)
+            };
+            if let Err(error) = result {
                 eprintln!("osbrowser canvas: {error}");
             }
         }
@@ -120,4 +149,16 @@ impl CanvasBackend for OsBrowserCanvas {
 
 pub fn install() {
     canvas_backend::set_backend(Arc::new(OsBrowserCanvas));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_source_draw_keeps_cross_document_pixel_fallback() {
+        assert!(!OsBrowserCanvas.draw_image_source(
+            "d7:n1", "d8:n2", [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+        ));
+    }
 }

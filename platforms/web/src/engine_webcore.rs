@@ -54,20 +54,6 @@ fn from_webcore_event(f: webcore::ui_events::UiEvent) -> UiEventFields {
     }
 }
 
-trait WebcoreDocumentLayoutCompat {
-    fn flush_layout(&mut self);
-}
-
-impl WebcoreDocumentLayoutCompat for Document {
-    fn flush_layout(&mut self) {
-        let width = self.root.layout.last_containing_width;
-        if width <= 0.0 {
-            return;
-        }
-        webcore::LayoutEngine::new().layout(self, width);
-    }
-}
-
 /// The viewport a document is laid out against before anyone resizes it.
 /// `WindowOp::ResizeTo` is what changes it afterwards.
 ///
@@ -252,7 +238,7 @@ impl WebEngine for WebCore {
 
         let events: Arc<Mutex<VecDeque<(NodeId, String)>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-        let mut entry = Entry {
+        let entry = Entry {
             doc: webcore::browser::BrowserDocument::new(doc),
             resources_dirty: true,
             events: Arc::clone(&events),
@@ -304,7 +290,9 @@ impl WebEngine for WebCore {
     }
 
     fn document(&self, document: DocumentId, op: DomOp) -> DomValue {
-        with_entry(document, |entry| {
+        let pending_input = matches!(&op,
+            DomOp::DispatchKeyboard(_) | DomOp::DispatchPointer { .. } | DomOp::DispatchWheel(_));
+        let result = with_entry(document, |entry| {
             if matches!(
                 &op,
                 DomOp::AppendChild { .. }
@@ -506,7 +494,6 @@ impl WebEngine for WebCore {
                 // Cross-document, so dispatched before the lock like the
                 // markup setters — see `apply`.
                 DomOp::ImportNode { .. } => DomValue::Null,
-                DomOp::TextContent(n) => DomValue::Text(doc.text_content(to_hb(doc, n))),
                 // **A document's text is its TITLE, and writing it must not
                 // touch the tree.** `textContent` replaces all of a node's
                 // children with one text node — right for an element, and for
@@ -520,6 +507,7 @@ impl WebEngine for WebCore {
                 // does nothing; `widgets` answers the title, and one seam
                 // cannot have two answers.
                 DomOp::TextContent(DOCUMENT) => DomValue::Text(doc.title()),
+                DomOp::TextContent(n) => DomValue::Text(doc.text_content(to_hb(doc, n))),
                 DomOp::SetTextContent(DOCUMENT, t) => {
                     doc.set_title(&t);
                     DomValue::None
@@ -648,6 +636,7 @@ impl WebEngine for WebCore {
                                             kind: event.event_type.clone(),
                                             key: event.key().to_owned(),
                                             code: event.code().to_owned(),
+                                            key_code: event.key_code as i32,
                                             client_x: event.client_x().round() as i32,
                                             client_y: event.client_y().round() as i32,
                                             button: event.button() as i32,
@@ -714,21 +703,24 @@ impl WebEngine for WebCore {
                     DomValue::Bool(changed)
                 }
                 DomOp::DispatchKeyboard(event) => {
-                    use webcore::dom::HtmlEventType;
                     let kind = match event.kind.as_str() {
-                        "keyup" => HtmlEventType::KeyUp,
-                        "keypress" => HtmlEventType::KeyPress,
-                        _ => HtmlEventType::KeyDown,
+                        "keyup" => "keyup",
+                        "keypress" => "keypress",
+                        _ => "keydown",
                     };
-                    doc.process_key_event(
-                        kind,
-                        event.key_code as u32,
-                        event.key.chars().next(),
-                        event.ctrl_key,
-                        event.shift_key,
-                        event.alt_key,
-                        event.meta_key,
-                    );
+                    let mut keyboard = webcore::dom::events::DomEvent::new(kind, 0);
+                    keyboard.key_code = event.key_code as u32;
+                    let mut characters = event.key.chars();
+                    let first = characters.next();
+                    keyboard.char_code = if characters.next().is_none() { first } else { None };
+                    keyboard.key = event.key;
+                    keyboard.set_code(event.code);
+                    keyboard.set_repeat(event.repeat);
+                    keyboard.ctrl_key = event.ctrl_key;
+                    keyboard.shift_key = event.shift_key;
+                    keyboard.alt_key = event.alt_key;
+                    keyboard.meta_key = event.meta_key;
+                    doc.process_keyboard_event(keyboard);
                     DomValue::None
                 }
                 DomOp::DispatchWheel(event) => {
@@ -824,7 +816,13 @@ impl WebEngine for WebCore {
                 _ => DomValue::Null,
             }
         })
-        .unwrap_or(DomValue::None)
+        .unwrap_or(DomValue::None);
+        if pending_input {
+            if let Some(document) = browser_document(document) {
+                document.notify_pending_tasks();
+            }
+        }
+        result
     }
 
     fn window(&self, op: WindowOp) -> WindowValue {
@@ -1086,6 +1084,44 @@ mod tests {
         let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
         else { panic!("no DOM event queue") };
         assert_eq!(event_paths(&events), vec![(button, button, "click")]);
+    }
+
+    #[test]
+    fn canvas_mouse_buttons_bubble_to_document_with_held_state() {
+        let browser = WebCore;
+        let document = browser.new_document("Canvas mouse input");
+        let DomValue::Node(canvas) = browser.document(document, DomOp::CreateElement {
+            tag: "canvas".into(), input_type: String::new(),
+        }) else { panic!("canvas not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: canvas });
+        browser.document(document, DomOp::SetStyleProperty(canvas, "width".into(), "320px".into()));
+        browser.document(document, DomOp::SetStyleProperty(canvas, "height".into(), "200px".into()));
+        for kind in ["mousedown", "mousemove", "mouseup"] {
+            browser.document(document, DomOp::ObserveEvent { node: DOCUMENT, kind: kind.into() });
+        }
+        let DomValue::Rect { x, y, width, height } =
+            browser.document(document, DomOp::BoundingClientRect(canvas))
+        else { panic!("canvas not laid out") };
+        assert!(width > 0.0 && height > 0.0);
+        let (client_x, client_y) = ((x + width / 2.0) as f32, (y + height / 2.0) as f32);
+        for (kind, button, held) in [
+            ("mousedown", 0, 1), ("mousemove", 0, 1),
+            ("mousedown", 2, 3), ("mouseup", 0, 2), ("mouseup", 2, 0),
+            ("mousedown", 1, 4), ("mouseup", 1, 0),
+        ] {
+            browser.document(document, DomOp::DispatchPointer {
+                kind: kind.into(), client_x, client_y, button,
+            });
+            let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+            else { panic!("no DOM event queue") };
+            let events: Vec<_> = events.iter().filter(|event| event.fields.kind == kind).collect();
+            assert_eq!(events.len(), 1, "{kind} must reach the document exactly once");
+            let event = events[0];
+            assert_eq!(event.target, canvas);
+            assert_eq!(event.current_target, DOCUMENT);
+            assert_eq!(event.fields.button, button);
+            assert_eq!(event.fields.buttons, held, "{kind} held-button mask");
+        }
     }
 
     #[test]
@@ -1356,6 +1392,45 @@ mod tests {
         for kind in ["keydown", "keypress", "keyup"] {
             assert!(events.iter().any(|event| event.current_target == DOCUMENT && event.kind == kind),
                 "missing {kind}: {events:?}");
+        }
+    }
+
+    #[test]
+    fn keyboard_dispatch_preserves_named_key_physical_code_and_repeat() {
+        let browser = WebCore;
+        let document = browser.new_document("Keyboard payload");
+        for kind in ["keydown", "keyup"] {
+            browser.document(document, DomOp::ObserveEvent {
+                node: DOCUMENT, kind: kind.into(),
+            });
+        }
+        for (kind, key, code, key_code, repeat, ctrl_key) in [
+            ("keydown", "ArrowUp", "ArrowUp", 38, true, false),
+            ("keyup", "ArrowUp", "ArrowUp", 38, false, false),
+            ("keydown", "Control", "ControlRight", 17, false, true),
+            ("keyup", "Control", "ControlRight", 17, false, false),
+        ] {
+            browser.document(document, DomOp::DispatchKeyboard(UiEventFields {
+                kind: kind.into(), key: key.into(), code: code.into(), key_code,
+                repeat, ctrl_key, ..UiEventFields::default()
+            }));
+        }
+        let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+        else { panic!("missing keyboard queue") };
+        assert_eq!(events.len(), 4, "{events:?}");
+        for (event, (kind, key, code, key_code, repeat, ctrl)) in events.iter().zip([
+            ("keydown", "ArrowUp", "ArrowUp", 38, true, false),
+            ("keyup", "ArrowUp", "ArrowUp", 38, false, false),
+            ("keydown", "Control", "ControlRight", 17, false, true),
+            ("keyup", "Control", "ControlRight", 17, false, false),
+        ]) {
+            assert_eq!(event.current_target, DOCUMENT);
+            assert_eq!(event.kind, kind);
+            assert_eq!(event.fields.key, key);
+            assert_eq!(event.fields.code, code);
+            assert_eq!(event.fields.key_code, key_code);
+            assert_eq!(event.fields.repeat, repeat);
+            assert_eq!(event.fields.ctrl_key, ctrl);
         }
     }
 
