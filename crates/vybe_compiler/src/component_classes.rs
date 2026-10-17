@@ -12,7 +12,6 @@
 //! description of the platform types a language surfaces (the .NET BCL,
 //! WinForms), used to resolve member access to host calls at compile time.
 
-use std::collections::HashMap;
 
 /// A resource type definition in the Component Model.
 /// Resources are opaque handles to host-managed state.

@@ -74,8 +74,7 @@ pub fn emit_c_fmod(chunk: &mut Chunk, line: u32) {
     let a_slot = chunk.local_count + 1;
     chunk.alloc_scratch(2);
     chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a
+    chunk.emit_op_u16(Op::LOCAL_TEE, a_slot, line); // a
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a (for subtraction later)
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line); // b
     chunk.emit_op(Op::F64_DIV, line); // a/b
@@ -92,8 +91,7 @@ pub fn emit_python_floor_mod(chunk: &mut Chunk, line: u32) {
     let a_slot = chunk.local_count + 1;
     chunk.alloc_scratch(2);
     chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a
+    chunk.emit_op_u16(Op::LOCAL_TEE, a_slot, line); // a
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line); // a
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line); // b
     chunk.emit_op(Op::F64_DIV, line); // a/b
@@ -127,8 +125,7 @@ pub fn emit_round(chunk: &mut Chunk, policy: MidpointPolicy, line: u32) {
         // something we did.
         MidpointPolicy::HalfAwayFromZero => {
             let x = chunk.alloc_scratch(1);
-            chunk.emit_op_u16(Op::LOCAL_SET, x, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+            chunk.emit_op_u16(Op::LOCAL_TEE, x, line);
             chunk.emit_op(Op::F64_ABS, line);
             chunk.emit_f64_const(0.5, line);
             chunk.emit_op(Op::F64_ADD, line);
@@ -203,16 +200,12 @@ pub fn emit_neg(chunk: &mut Chunk, line: u32) {
 /// clamp(x, min, max) = min(max(x, min), max). Stack: [x, min, max] → [result].
 /// Pure WASM — no host import needed.
 pub fn emit_clamp(chunk: &mut Chunk, line: u32) {
-    let max_slot = chunk.local_count;
-    let min_slot = chunk.local_count + 1;
-    chunk.alloc_scratch(2);
+    let max_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, max_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, min_slot, line);
-    // stack: [x]
-    chunk.emit_op_u16(Op::LOCAL_GET, min_slot, line); // [x, min]
-    chunk.emit_op(Op::F64_MAX, line); // [max(x, min)]
-    chunk.emit_op_u16(Op::LOCAL_GET, max_slot, line); // [max(x,min), max]
-    chunk.emit_op(Op::F64_MIN, line); // [min(max(x,min), max)]
+    // x and min are already in order on the operand stack.
+    chunk.emit_op(Op::F64_MAX, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, max_slot, line);
+    chunk.emit_op(Op::F64_MIN, line);
 }
 
 // ── Host imports (standard math, same across all languages) ──
@@ -603,15 +596,12 @@ pub fn emit_copysign(chunk: &mut Chunk, line: u32) {
 }
 
 /// `signbit(x)` — true when the IEEE sign bit is set (including `-0`). Detected
-/// via `copysign(1, x) < 0`. Stack: `[x]` → boolean.
+/// by signed comparison of the raw bit pattern. Stack: `[x]` → boolean.
 pub fn emit_signbit(chunk: &mut Chunk, line: u32) {
-    let base = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, base, line); // stash x
-    chunk.emit_f64_const(1.0, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    chunk.emit_op(Op::F64_COPYSIGN, line); // ±1
-    chunk.emit_f64_const(0.0, line);
-    chunk.emit_op(Op::F64_LT, line); // < 0 → i32
+    // Reinterpret rather than convert: signed zero and NaN signs are bits.
+    chunk.emit_op(Op::I64_REINTERPRET_F64, line);
+    chunk.emit_i64_const(0, line);
+    chunk.emit_op(Op::I64_LT_S, line);
     crate::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
@@ -643,26 +633,23 @@ pub fn emit_inf(chunk: &mut Chunk, line: u32) {
 pub fn emit_is_inf(chunk: &mut Chunk, line: u32) {
     let base = chunk.alloc_scratch(2);
     chunk.emit_op_u16(Op::LOCAL_SET, base + 1, line); // sign
-    chunk.emit_op_u16(Op::LOCAL_SET, base, line); // x
-    // x == +Inf
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, base, line); // retain x for its magnitude test
+    chunk.emit_op(Op::F64_ABS, line);
     chunk.emit_f64_const(f64::INFINITY, line);
     chunk.emit_op(Op::F64_EQ, line);
-    // sign >= 0
+    // Once |x| is infinity, x*sign >= 0 selects matching nonzero signs.
+    // NaN signs fail the comparison; either signed zero accepts both infinities.
+    // Keep this eager: the original recipe also converts sign for finite x.
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op(Op::F64_GE, line);
-    chunk.emit_op(Op::I32_AND, line);
-    // x == -Inf
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    chunk.emit_f64_const(f64::NEG_INFINITY, line);
-    chunk.emit_op(Op::F64_EQ, line);
-    // sign <= 0
     chunk.emit_op_u16(Op::LOCAL_GET, base + 1, line);
     chunk.emit_f64_const(0.0, line);
-    chunk.emit_op(Op::F64_LE, line);
-    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op(Op::I32_AND, line);
     crate::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
@@ -721,6 +708,15 @@ fn emit_next_toward_from_slot(chunk: &mut Chunk, x: u16, up: bool, lane: FloatLa
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_else(line);
 
+    emit_finite_next_toward_from_slot(chunk, x, up, lane, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+// x is ordered and is not the infinity in the travelled direction.
+fn emit_finite_next_toward_from_slot(
+    chunk: &mut Chunk, x: u16, up: bool, lane: FloatLane, line: u32,
+) {
     // ±0 both step to the smallest subnormal of the travelled sign — the bit
     // pattern is NOT contiguous across the sign bit, so this cannot be a ±1.
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
@@ -734,39 +730,28 @@ fn emit_next_toward_from_slot(chunk: &mut Chunk, x: u16, up: bool, lane: FloatLa
     chunk.emit_f64_const(if up { tiny } else { -tiny }, line);
     chunk.emit_else(line);
 
-    // Magnitude grows away from zero, so the step's sign follows the operand's.
-    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
-    chunk.emit_f64_const(0.0, line);
-    chunk.emit_op(Op::F64_GT, line);
-    chunk.emit_if_value(line);
-    emit_bit_step(chunk, if up { 1 } else { -1 }, x, lane, line);
-    chunk.emit_else(line);
-    emit_bit_step(chunk, if up { -1 } else { 1 }, x, lane, line);
-    chunk.emit_end(line);
-
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-}
-
-/// `local[x]`'s bit pattern, shifted by `step`, read back as an `f64`.
-fn emit_bit_step(chunk: &mut Chunk, step: i64, x: u16, lane: FloatLane, line: u32) {
-    use vybe_ast::NumericRepr;
+    // Nonzero ordered x: signed unit controls the adjacent bit pattern.
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     match lane {
+        FloatLane::F32 => crate::primitives::bits::emit_reinterpret(chunk, vybe_ast::NumericRepr::I32, line),
+        FloatLane::F64 => crate::primitives::bits::emit_reinterpret(chunk, vybe_ast::NumericRepr::I64, line),
+    }
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_op(Op::F64_COPYSIGN, line);
+    match lane {
         FloatLane::F32 => {
-            crate::primitives::bits::emit_reinterpret(chunk, NumericRepr::I32, line);
-            chunk.emit_i32_const(step as i32, line);
-            chunk.emit_op(Op::I32_ADD, line);
-            crate::primitives::bits::emit_reinterpret(chunk, NumericRepr::F32, line);
+            chunk.emit_op(Op::I32_FROM_F64, line);
+            chunk.emit_op(if up { Op::I32_ADD } else { Op::I32_SUB }, line);
+            crate::primitives::bits::emit_reinterpret(chunk, vybe_ast::NumericRepr::F32, line);
         }
         FloatLane::F64 => {
-            crate::primitives::bits::emit_reinterpret(chunk, NumericRepr::I64, line);
-            chunk.emit_i64_const(step, line);
-            chunk.emit_op(Op::I64_ADD, line);
-            crate::primitives::bits::emit_reinterpret(chunk, NumericRepr::F64, line);
+            chunk.emit_op(Op::I64_TRUNC_F64_S, line);
+            chunk.emit_op(if up { Op::I64_ADD } else { Op::I64_SUB }, line);
+            crate::primitives::bits::emit_reinterpret(chunk, vybe_ast::NumericRepr::F64, line);
         }
     }
+    chunk.emit_end(line);
 }
 
 /// `nextafter(x, y)` — the neighbour of `x` in `y`'s direction, `y` when equal.
@@ -792,7 +777,8 @@ pub fn emit_next_after(chunk: &mut Chunk, lane: FloatLane, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op(Op::F64_GT, line);
     chunk.emit_if_value(line);
-    emit_next_toward_from_slot(chunk, base, true, lane, line);
+    // y > x proves x is ordered and cannot be positive infinity.
+    emit_finite_next_toward_from_slot(chunk, base, true, lane, line);
     chunk.emit_else(line);
     emit_next_toward_from_slot(chunk, base, false, lane, line);
     chunk.emit_end(line);
@@ -805,8 +791,7 @@ pub fn emit_next_after(chunk: &mut Chunk, lane: FloatLane, line: u32) {
 pub fn emit_ulp(chunk: &mut Chunk, lane: FloatLane, line: u32) {
     let x = chunk.alloc_scratch(1);
     chunk.emit_op(Op::F64_ABS, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, x, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, x, line);
     emit_next_toward(chunk, true, lane, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_op(Op::F64_SUB, line);

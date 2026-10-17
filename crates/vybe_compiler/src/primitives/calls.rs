@@ -7,6 +7,154 @@
 use super::*;
 use crate::primitives::class_slots;
 
+#[cfg(test)]
+mod callable_invocation_tests {
+    use super::*;
+    use vybe_ast::{CallableInvocation, Directives};
+
+    #[test]
+    fn callable_policy_is_unstated_by_default() {
+        assert_eq!(Directives::default().callable_invocation, None);
+    }
+
+    #[test]
+    fn callable_policy_inherits_through_an_unstated_overlay() {
+        let mut outer = Directives {
+            callable_invocation: Some(CallableInvocation::Single),
+            ..Default::default()
+        };
+        outer.overlay(&Directives::default());
+        assert_eq!(outer.callable_invocation, Some(CallableInvocation::Single));
+    }
+
+    #[test]
+    fn callable_policy_explicit_overlay_wins_without_changing_parent() {
+        let parent = Directives {
+            callable_invocation: Some(CallableInvocation::Single),
+            ..Default::default()
+        };
+        let mut child = parent.clone();
+        child.overlay(&Directives {
+            callable_invocation: Some(CallableInvocation::Multicast),
+            ..Default::default()
+        });
+        assert_eq!(child.callable_invocation, Some(CallableInvocation::Multicast));
+        assert_eq!(parent.callable_invocation, Some(CallableInvocation::Single));
+        child.overlay(&parent);
+        assert_eq!(child.callable_invocation, Some(CallableInvocation::Single));
+    }
+
+    fn emission(policy: Option<CallableInvocation>, expression_callee: bool,
+        typed: bool, args: Vec<Argument>) -> Vec<Chunk> {
+        let profile = crate::profile::parse_profile(
+            include_str!("../../../../languages/go/src/profile")).unwrap();
+        let callee = Expression::ident("callback");
+        let callee = if expression_callee {
+            Expression::new(ExprKind::Sequence(vec![callee]))
+        } else { callee };
+        let module = Module {
+            canon: Default::default(), name: "callable_policy_test".into(),
+            language: vybe_ast::Lang::Go, imports: Vec::new(),
+            directives: Directives {
+                callable_invocation: policy,
+                receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+                ..Default::default()
+            },
+            body: vec![
+                Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident("callback".into()),
+                        type_hint: typed.then(|| vybe_ast::TypeHint::checked("func(...int32) int32")),
+                        init: Some(if typed { Expression::new(ExprKind::Lambda {
+                            params: vec![Param {
+                                name: "values".into(), type_hint: Some("[]int32".into()),
+                                default: None, pass_by: PassBy::Value, is_rest: true,
+                                is_kwargs: false, is_optional: false, is_nullable: false,
+                            }], captures: Vec::new(), is_async: false,
+                            body: LambdaBody::Expr(Box::new(Expression::new(
+                                ExprKind::Lit(Literal::Int(7))))),
+                        }) } else { Expression::null() }), array_bounds: None, with_events: false,
+                    }], kind: VarDeclKind::Let,
+                }),
+                Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+                    callee: Box::new(callee), args, optional: false,
+                }))),
+            ],
+        };
+        Compiler::with_profile(profile).compile(&module).unwrap()
+    }
+
+    fn assert_same_emission(left: &[Chunk], right: &[Chunk]) {
+        assert_eq!(left.len(), right.len());
+        for (left, right) in left.iter().zip(right) {
+            assert_eq!(left.code, right.code);
+            assert_eq!(left.local_count, right.local_count);
+        }
+    }
+
+    #[test]
+    fn single_identifier_uses_expression_fallback_including_spread() {
+        for args in [Vec::new(), vec![Argument::positional(Expression::new(
+            ExprKind::Call { callee: Box::new(Expression::ident("argumentEffect")),
+                args: Vec::new(), optional: false }))],
+            vec![Argument { value: Expression::new(ExprKind::Array(Vec::new())),
+                name: None, by_ref: false, spread: true }]] {
+            let actual = emission(Some(CallableInvocation::Single), false, true, args.clone());
+            let previous_workaround = emission(None, true, true, args);
+            assert_same_emission(&actual, &previous_workaround);
+        }
+    }
+
+    #[test]
+    fn explicit_multicast_preserves_legacy_identifier_emission() {
+        assert_same_emission(&emission(None, false, true, Vec::new()),
+            &emission(Some(CallableInvocation::Multicast), false, true, Vec::new()));
+    }
+
+    #[test]
+    fn single_does_not_redirect_an_untyped_identifier() {
+        assert_same_emission(&emission(None, false, false, Vec::new()),
+            &emission(Some(CallableInvocation::Single), false, false, Vec::new()));
+    }
+}
+
+/// Borrowed call operands. Small calls need no heap allocation just to adapt
+/// the source Argument slice to the compiler's expression-slice helpers.
+enum CallArgExpressions<'a> {
+    Inline { values: [&'a Expression; 8], len: usize },
+    Heap(Vec<&'a Expression>),
+}
+
+impl<'a> CallArgExpressions<'a> {
+    fn new(args: &'a [Argument], placeholder: &'a Expression) -> Self {
+        if args.len() <= 8 {
+            let mut values = [placeholder; 8];
+            for (slot, arg) in values.iter_mut().zip(args) {
+                *slot = &arg.value;
+            }
+            Self::Inline { values, len: args.len() }
+        } else {
+            Self::Heap(args.iter().map(|arg| &arg.value).collect())
+        }
+    }
+}
+
+impl<'a> std::ops::Deref for CallArgExpressions<'a> {
+    type Target = [&'a Expression];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Inline { values, len } => &values[..*len],
+            Self::Heap(values) => values,
+        }
+    }
+}
+
+impl<'a, 'view> IntoIterator for &'view CallArgExpressions<'a> {
+    type Item = &'view &'a Expression;
+    type IntoIter = std::slice::Iter<'view, &'a Expression>;
+    fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+
 fn python_is_identifier_literal(value: &str) -> bool {
     let mut chars = value.chars();
     match chars.next() {
@@ -77,10 +225,6 @@ fn array_element_type_hint(type_hint: &str) -> Option<String> {
     None
 }
 
-/// Borrow a configured namespace path as the `&[&str]` the tree walk takes.
-fn scope_segments(scope: &[String]) -> Vec<&str> {
-    scope.iter().map(String::as_str).collect()
-}
 
 fn is_dotnet_linq_method_name(name: &str) -> bool {
     matches!(
@@ -809,7 +953,27 @@ fn resolve_pointer_receiver_instance_method_owner(
     }
     let receiver_type = resolve_receiver_type_hint(compiler, object)?;
     let class_name = compiler.resolve_pending_class_name_for_type_hint(&receiver_type)?;
+    // Interface members declare signatures, not callable class-global bodies.
+    // Keep the receiver's runtime implementation instead of binding the
+    // abstract declaration through the concrete pointer-receiver shortcut.
+    if compiler.chunks[0]
+        .types
+        .iter()
+        .any(|ty| ty.name == class_name && ty.is_interface)
+    {
+        return None;
+    }
     let pending = compiler.pending_classes.get(&class_name)?;
+    // A declaration-only interface member has a name but no implementation
+    // overloads. Such a name is not a callable class-global method body.
+    let storage_key = compiler.js_member_storage_name_for_class(&class_name, field);
+    if !pending
+        .instance_method_overloads
+        .get(&storage_key)
+        .is_some_and(|overloads| !overloads.is_empty())
+    {
+        return None;
+    }
     let method_key = compiler.canon(field);
     pending
         .instance_member_names
@@ -1207,7 +1371,6 @@ impl Compiler {
         method_name: &str,
         arg_count: u8,
     ) -> Option<String> {
-        let scope = &self.profile.namespaces.type_scopes;
         let start = self
             .resolve_pending_class_name_for_type_hint(type_hint)
             .unwrap_or_else(|| Self::tree_type_key(type_hint));
@@ -1370,6 +1533,68 @@ impl Compiler {
         args: &[Argument],
         arg_exprs: &[&Expression],
     ) -> Result<(), String> {
+        // The overload resolver has already excluded virtual and rest calls.
+        // A completed source method states whether it needs an environment;
+        // never infer that from an unfinished chunk's default capture count.
+        let callee = &self.chunks[chunk_idx];
+        let ordinary_modes = [method_name, callee.name.as_str()].iter().all(|name| {
+            self.function_param_modes.get(self.canon_lookup(name).as_ref())
+                .is_none_or(|modes| modes.iter().all(|mode| *mode == PassBy::Value))
+        });
+        if self.call_supplies_receiver()
+            && self.universal_receiver()
+            && !self.class_prototype_dispatch()
+            && !self.uses_proxy
+            && self.directives().method_bindings_live != Some(true)
+            && !self.profile.pads_trailing_optional_arg
+            && callee.direct_entry_has_captures == Some(false)
+            && callee.takes_receiver
+            && !callee.is_async && !callee.is_generator
+            && callee.func_sig.is_none()
+            && callee.result_arity == 1
+            && usize::from(callee.arity) == args.len() + 1
+            && callee.param_count == callee.arity
+            && ordinary_modes
+            && args.iter().all(|arg| !arg.by_ref && !arg.spread && arg.name.is_none())
+        {
+            let mut signature = Chunk::new("<known-instance-call>");
+            signature.arity = callee.arity;
+            signature.result_arity = callee.result_arity;
+            signature.direct_entry_has_captures = Some(false);
+            let line = self.line;
+            let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+            for (index, arg) in arg_exprs.iter().enumerate() {
+                self.compile_expr(arg)?;
+                let slot = self.define_local(&format!("__direct_instance_method_arg_{index}"));
+                self.emit_u16(Op::LOCAL_SET, slot);
+                arg_slots.push(slot);
+            }
+            // Preserve the old null/undefined route, including its receiver
+            // binding, without checking rest metadata on a known non-rest
+            // target. Arguments have already run once, in their original order.
+            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+            self.emit(Op::REF_IS_NULL);
+            let condition = self.chunk().emit_if_i32(line);
+            self.chunk().emit_i32_const(1, line);
+            self.chunk().emit_else(line);
+            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+            fn_call!(self, "wasm:js-undefined", "test", 1);
+            self.chunk().emit_end(line);
+            self.chunk().patch_block(condition);
+            let block = self.chunk().emit_if_value(line);
+            self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
+            self.chunk().emit(0, line);
+            let fn_tmp = self.define_local("__direct_instance_method_fn");
+            self.emit_u16(Op::LOCAL_SET, fn_tmp);
+            self.emit_normal_call_from_arg_slots(fn_tmp, None, None, &arg_slots);
+            self.chunk().emit_else(line);
+            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+            for slot in arg_slots { self.emit_u16(Op::LOCAL_GET, slot); }
+            self.chunk().emit_direct_defined_call(chunk_idx as u32, &signature, false, line)?;
+            self.chunk().emit_end(line);
+            self.chunk().patch_block(block);
+            return Ok(());
+        }
         let line = self.line;
         self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
         self.chunk().emit(0, line);
@@ -1388,7 +1613,7 @@ impl Compiler {
     ) -> Result<(), String> {
         if let Some(param_modes) = self
             .function_param_modes
-            .get(&self.canon(method_name))
+            .get(self.canon_lookup(method_name).as_ref())
             .cloned()
         {
             let receiver_param_offset = usize::from(param_modes.len() == args.len() + 1);
@@ -1573,8 +1798,7 @@ impl Compiler {
 
         self.emit_global_read("__js_global_this");
         let global_this_slot = self.define_temp_local("__js_global_this_value");
-        self.emit_u16(Op::LOCAL_SET, global_this_slot);
-        self.emit_u16(Op::LOCAL_GET, global_this_slot);
+        self.emit_u16(Op::LOCAL_TEE, global_this_slot);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
         self.chunk().emit_if_value(line);
@@ -1584,7 +1808,7 @@ impl Compiler {
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::primitives::ops::emit_proven_i32_condition(self.chunk(), line);
         self.chunk().emit_if_value(line);
         self.emit_common("object.new", 0, self.line);
         inst!(self, core_wasm::dup);
@@ -1893,6 +2117,7 @@ impl Compiler {
         }
         self.emit_u16(Op::LOCAL_GET, args_slot);
         fn_call!(self, "ecma:function", "apply", 3);
+        self.end_receiver_bind(saved_js_this);
     }
 
     fn emit_rest_call_from_args_array(
@@ -2011,8 +2236,12 @@ impl Compiler {
                 class_slots::ObjSource::Local(callee_slot),
                 &class_slots::ClassSlot::internal("__vybe_rest_fixed_arity"),
             );
-            self.emit(Op::REF_IS_NULL);
             let line = self.line;
+            let rest_arity_slot = self.define_temp_local("__call_rest_fixed_arity");
+            self.emit_u16(Op::LOCAL_SET, rest_arity_slot);
+            super::delegates::emit_slot_is_nullish_in_chunk(
+                self.chunk(), rest_arity_slot, line,
+            );
             self.chunk().emit_if(line);
             self.emit_normal_call_from_arg_slots(
                 callee_slot, receiver_slot, js_this_slot, arg_slots,
@@ -2059,9 +2288,8 @@ impl Compiler {
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, used_rest_slot);
 
-        self.emit_u16(Op::LOCAL_GET, rest_arity_slot);
-        self.emit(Op::REF_IS_NULL);
         let line = self.line;
+        super::delegates::emit_slot_is_nullish_in_chunk(self.chunk(), rest_arity_slot, line);
         self.chunk().emit_if(line);
         self.chunk().emit_else(line);
         for fixed_count in rest_fixed_counts {
@@ -2123,18 +2351,15 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, has_own_marker_slot);
                 self.emit(Op::I32_EQZ);
                 let line = self.line;
-                self.chunk().emit_if(line);
-                self.emit_dispatch_and_store_from_arg_slots(
-                    callee_slot,
-                    None,
-                    Some(receiver_slot),
-                    arg_slots,
-                    result_slot,
-                );
+                // Both marker-absent cases use precisely the same dispatch.
+                // Join the condition before emitting the (large) call path.
+                self.chunk().emit_if_i32(line);
+                self.chunk().emit_i32_const(1, line);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, marker_slot);
                 fn_call!(self, "wasm:js-undefined", "test", 1);
                 let line = self.line;
+                self.chunk().emit_end(line);
                 self.chunk().emit_if(line);
                 self.emit_dispatch_and_store_from_arg_slots(
                     callee_slot,
@@ -2146,7 +2371,6 @@ impl Compiler {
                 self.chunk().emit_else(line);
                 self.emit_js_apply_from_arg_slots(callee_slot, receiver_slot, arg_slots);
                 self.emit_u16(Op::LOCAL_SET, result_slot);
-                self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
                 self.emit_u16(Op::LOCAL_GET, result_slot);
                 return;
@@ -2213,17 +2437,17 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, has_own_marker_slot);
         self.emit(Op::I32_EQZ);
         let line = self.line;
-        self.chunk().emit_if(line);
-        self.emit_call_ref_with_bound_js_this_arg_slots(callee_slot, receiver_slot, arg_slots);
+        self.chunk().emit_if_i32(line);
+        self.chunk().emit_i32_const(1, line);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, marker_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
         let line = self.line;
+        self.chunk().emit_end(line);
         self.chunk().emit_if(line);
         self.emit_call_ref_with_bound_js_this_arg_slots(callee_slot, receiver_slot, arg_slots);
         self.chunk().emit_else(line);
         self.emit_js_apply_from_arg_slots(callee_slot, receiver_slot, arg_slots);
-        self.chunk().emit_end(line);
         self.chunk().emit_end(line);
     }
 
@@ -2232,8 +2456,9 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("__vybe_method_receiver")));
         let has_own_idx = self.import("ecma:object", "hasOwn");
         self.emit_host_call(has_own_idx, 2);
-        let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        // hasOwn already returns a physical boolean; no language truthiness
+        // conversion is needed for this internal receiver-ownership test.
+        fn_call!(self, "wasm:js-boolean", "cast", 1);
         let slot = self.define_local(local_name);
         self.emit_u16(Op::LOCAL_SET, slot);
         slot
@@ -2328,14 +2553,13 @@ impl Compiler {
         let lookup_slot = self.define_local("__js_lookup_fn");
         self.emit_u16(Op::LOCAL_SET, lookup_slot);
 
+        // Both missing lookup values select the same invocation recipe.
+        // The pure null/undefined tests need only one result region.
         self.emit_u16(Op::LOCAL_GET, lookup_slot);
         self.emit(Op::REF_IS_NULL);
-        let line = self.line;
-        self.chunk().emit_if_value(line);
-        self.emit_method_miss_or_invoke(obj_slot, lookup_slot, method_name, arg_slots);
-        self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, lookup_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
+        self.emit(Op::I32_OR);
         let line = self.line;
         self.chunk().emit_if_value(line);
         self.emit_method_miss_or_invoke(obj_slot, lookup_slot, method_name, arg_slots);
@@ -2377,7 +2601,6 @@ impl Compiler {
         );
         self.chunk().emit_end(marker_line);
         self.emit_u16(Op::LOCAL_GET, result_slot);
-        self.chunk().emit_end(line);
         self.chunk().emit_end(line);
         Ok(())
     }
@@ -2476,9 +2699,8 @@ impl Compiler {
             self.emit_const(Value::I32(0));
             self.emit_u16(Op::LOCAL_SET, used_rest_slot);
 
-            self.emit_u16(Op::LOCAL_GET, rest_arity_slot);
-            self.emit(Op::REF_IS_NULL);
             let line = self.line;
+            super::delegates::emit_slot_is_nullish_in_chunk(self.chunk(), rest_arity_slot, line);
             self.chunk().emit_if(line);
             self.chunk().emit_else(line);
             for fixed_count in rest_fixed_counts {
@@ -2656,6 +2878,19 @@ impl Compiler {
         self.compile_expr(arg)
     }
 
+    pub(super) fn compile_builtin_word_argument(
+        &mut self,
+        arg: &Expression,
+        mode: Option<PassBy>,
+    ) -> Result<bool, String> {
+        if matches!(mode, None | Some(PassBy::Value)) {
+            self.compile_word_operand(arg)
+        } else {
+            self.compile_builtin_argument(arg, mode)?;
+            Ok(false)
+        }
+    }
+
     pub(super) fn compile_call_args_array(
         &mut self,
         args: &[Argument],
@@ -2741,7 +2976,7 @@ impl Compiler {
                 }
                 ExprKind::Ident(name) => self
                     .function_return_types
-                    .get(&self.canon(name))
+                    .get(self.canon_lookup(name).as_ref())
                     .is_some_and(|ty| {
                         Compiler::normalize_type_hint(ty).eq_ignore_ascii_case("promise")
                     }),
@@ -2799,8 +3034,8 @@ impl Compiler {
 
         let ns = self.scope().next_slot;
         self.chunks[func_idx].finalize_local_count(ns);
-        let local_names = self.scope().defined_names.clone();
-        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[func_idx], &local_names);
+        let local_names = &self.scopes.last().unwrap().defined_names;
+        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[func_idx], local_names);
         self.scopes.pop();
         self.current = saved_current;
         self.function_label_base = saved_label_base;
@@ -3299,12 +3534,50 @@ impl Compiler {
         Ok(())
     }
 
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_generator_control(&mut self, predicates: bool, plain_packets: bool) {
+        self.generator_predicate_reuse = predicates;
+        self.generator_plain_control_packets = plain_packets;
+    }
+
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_generator_packet_chunks(mut self, op: &str, repeats: usize) -> Vec<vybe_runtime::Chunk> {
+        let mut root = vybe_runtime::Chunk::new("packet-owner");
+        crate::primitives::functions::emit_ref_func(&mut root, 1, 0, 0);
+        root.emit_op(Op::RETURN, 0);
+        self.chunks = vec![root, vybe_runtime::Chunk::new("packet")];
+        self.current = 1;
+        let input = self.define_local("input");
+        self.chunk().arity = 1;
+        self.chunk().param_count = 1;
+        for n in 0..repeats {
+            self.emit_u16(Op::LOCAL_GET, input);
+            self.emit_generator_control_packet_from_stack(op);
+            if n + 1 < repeats { self.emit(Op::DROP); }
+        }
+        self.emit(Op::RETURN);
+        crate::primitives::bundle::finalize_with_runtime_helpers(&mut self.chunks);
+        crate::primitives::globals::declare_free_globals(&mut self.chunks);
+        crate::primitives::globals::normalize_global_table(&mut self.chunks);
+        self.chunks
+    }
+
     pub(crate) fn emit_generator_control_packet_from_stack(&mut self, op: &str) {
         let value_slot = self.define_local("__gen_control_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
 
         let line = self.line;
-        common::dict::emit_new(&mut self.chunks, self.current, line);
+        // This private protocol record is read by fixed fields only. It never
+        // uses dictionary key insertion/enumeration, so no __keys array is needed.
+        #[cfg(feature = "primitive-benchmarks")]
+        let plain = self.generator_plain_control_packets;
+        #[cfg(not(feature = "primitive-benchmarks"))]
+        let plain = true;
+        if plain {
+            class_slots::emit_class_alloc(self.chunk(), line);
+        } else {
+            common::dict::emit_new(&mut self.chunks, self.current, line);
+        }
 
         inst!(self, core_wasm::dup);
         self.emit_const(Value::Bool(true));
@@ -3418,9 +3691,8 @@ impl Compiler {
                 for (i, slot) in fixed_slots.into_iter().enumerate() {
                     if Some(i) == rest_index {
                         ordered_args.push(Argument::positional(Expression::new(ExprKind::Array(
-                            rest_items
-                                .iter()
-                                .cloned()
+                            std::mem::take(&mut rest_items)
+                                .into_iter()
                                 .map(|value| ArrayElement {
                                     key: None,
                                     value,
@@ -3540,8 +3812,8 @@ impl Compiler {
         }
 
         let signatures = match &callee.kind {
-            ExprKind::Ident(name) => self.function_signatures.get(&self.canon(name)),
-            ExprKind::Member { field, .. } => self.function_signatures.get(&self.canon(field)),
+            ExprKind::Ident(name) => self.function_signatures.get(self.canon_lookup(name).as_ref()),
+            ExprKind::Member { field, .. } => self.function_signatures.get(self.canon_lookup(field).as_ref()),
             _ => None,
         };
 
@@ -3682,6 +3954,29 @@ impl Compiler {
         Ok(())
     }
 
+    fn source_value_shadows_builtin(&self, name: &str) -> bool {
+        if self.variable_namespace.is_some_and(|namespace| (namespace.body)(name) == name) {
+            return false;
+        }
+        self.static_local_binding(name).is_some_and(|binding|
+            self.scopes.iter().skip(binding.declaration_scope_depth)
+                .all(|scope| scope.is_open(name)))
+            || self.scopes.iter().rev().find_map(|scope| {
+                if scope.resolve(name).is_some() {
+                    Some(true)
+                } else if !scope.is_open(name) {
+                    Some(false)
+                } else {
+                    None
+                }
+            }).unwrap_or_else(|| {
+                self.module_variable_names.contains(name)
+                    || self.directives().variable_fold().is_some_and(|fold|
+                        self.module_variable_names.iter().any(|declared|
+                            super::scope::names_equal(fold, declared, name)))
+            })
+    }
+
     pub(super) fn compile_call(
         &mut self,
         callee: &Expression,
@@ -3706,7 +4001,27 @@ impl Compiler {
         } else {
             args
         };
-        let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
+        let arg_exprs = CallArgExpressions::new(args, callee);
+
+        // A single callable value uses the expression-call contract, not the
+        // identifier-only multicast delegate ladder. Enter before any named
+        // call specialization so spread/rest, receiver and evaluation behavior
+        // are exactly the same as for a produced callable expression.
+        if self.directives().callable_invocation == Some(vybe_ast::CallableInvocation::Single) {
+            if let ExprKind::Ident(name) = &callee.kind {
+                let is_declared_function = self.defined_functions.contains(name)
+                    || (!self.case_sensitive
+                        && self.defined_functions.contains_ascii_folded(name));
+                let is_callable_value = self.lookup_var_type_hint(name).is_some_and(|hint| {
+                    Self::is_callable_type_hint(hint) || self.type_hint_is_delegate_like(hint)
+                });
+                if is_callable_value
+                    && (!is_declared_function || self.has_accessible_local_binding(name))
+                {
+                    return self.compile_generic_expression_call(callee, args);
+                }
+            }
+        }
 
         // First-class funcref value call (WASM `call_ref` / `call_indirect`):
         // when a local variable holds a funcref, calling it is a plain
@@ -3745,12 +4060,12 @@ impl Compiler {
         // `new`) reaches here as a `Call`; construct it generically through the
         // ONE resolver. A local/function/user-class of the same name shadows.
         if let ExprKind::Ident(name) = &callee.kind {
-            let canon = self.canon(name);
+            let canon = self.canon_lookup(name);
             if self.scope().resolve(name).is_none()
                 && !self.defined_functions.contains(name.as_str())
-                && !self.defined_functions.contains(&canon)
+                && !self.defined_functions.contains(canon.as_ref())
                 && !self.defined_classes.contains(name.as_str())
-                && !self.defined_classes.contains(&canon)
+                && !self.defined_classes.contains(canon.as_ref())
             {
                 if let Some(super::resolver::Resolution::Tree(
                     crate::primitives::namespaces::ResolutionTarget::Ctor {
@@ -3860,8 +4175,7 @@ impl Compiler {
                     if let Some(arg) = args.first() {
                         self.compile_expr(&arg.value)?;
                         let arg_slot = self.define_local("__js_number_arg");
-                        self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit_u16(Op::LOCAL_GET, arg_slot);
+                        self.emit_u16(Op::LOCAL_TEE, arg_slot);
                         fn_call!(self, "ecma:value", "typeof", 1);
                         self.emit_const(Value::String(Arc::from("symbol")));
                         {
@@ -3899,38 +4213,23 @@ impl Compiler {
                 let line = self.line;
                 self.emit_static_constructor_guard_for_class(&owner, line);
             }
-            // No language gate: the decision below is entirely the TREE's —
-            // "does the receiver's declared type own a 0-arg `ToString`?" — and
-            // `namespace_tree_instance_method_owner` is scoped by `type_scopes`,
-            // so a language whose tree declares no such member takes the same
-            // generic branch it took before.
+            // Descriptor-owned members keep their normal resolution path.
+            // Otherwise use the profile's declared rendering role when it
+            // has one; profiles without a renderer use ordinary member
+            // dispatch. A shared call site must not select a platform by name.
             if !*null_safe && field.eq_ignore_ascii_case("ToString") && args.is_empty() {
-                if let Some(type_hint) = self.infer_expr_type_hint(object) {
-                    let resolved = self.resolve_source_type_alias(&type_hint);
-                    if self
-                        .namespace_tree_instance_method_owner(&resolved, field, 0)
-                        .is_some()
-                    {
-                        // Let descriptor-owned .NET ToString implementations
-                        // (StringWriter, StringBuilder, DateTime, ...) route
-                        // through platforms/dotnet instead of the generic
-                        // object-string fallback.
-                    } else if let Some(target) = self.primitive_to_string_target(object) {
+                let descriptor_owns_member = self.infer_expr_type_hint(object)
+                    .is_some_and(|type_hint| {
+                        let resolved = self.resolve_source_type_alias(&type_hint);
+                        self.namespace_tree_instance_method_owner(&resolved, field, 0).is_some()
+                    });
+                if !descriptor_owns_member {
+                    if let Some(target) = self.to_string_target(object) {
                         self.compile_expr(object)?;
                         let line = self.line;
                         self.emit_to_string_slot(Some(&target), line);
                         return Ok(());
-                    } else {
-                        self.compile_expr(object)?;
-                        let line = self.line;
-                        self.emit_common("dotnet.tostring_runtime", 1, line);
-                        return Ok(());
                     }
-                } else {
-                    self.compile_expr(object)?;
-                    let line = self.line;
-                    self.emit_common("dotnet.tostring_runtime", 1, line);
-                    return Ok(());
                 }
             }
             if let Some(text) = self.resolve_reflection_string_member_expr(object) {
@@ -4110,8 +4409,7 @@ impl Compiler {
                             let line = self.line;
                             common::collections::emit_get(&mut self.chunks, self.current, line);
                             let value_slot = self.define_local("__php_extract_value");
-                            self.emit_u16(Op::LOCAL_SET, value_slot);
-                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit_u16(Op::LOCAL_TEE, value_slot);
                             self.emit(Op::REF_IS_NULL);
                             let line = self.line;
                             self.chunk().emit_if(line);
@@ -4309,8 +4607,7 @@ impl Compiler {
                             line,
                         );
                         let picked = self.define_local("__base_method_fn");
-                        self.emit_u16(Op::LOCAL_SET, picked);
-                        self.emit_u16(Op::LOCAL_GET, picked);
+                        self.emit_u16(Op::LOCAL_TEE, picked);
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                         self.chunk().emit_if_value(line);
                         if let Some(s) = self_slot {
@@ -4368,23 +4665,14 @@ impl Compiler {
                 return Ok(());
             }
 
-            let canon = self.canon(name);
-            let shadows_builtin_exception = self.defined_functions.contains(&canon)
-                || self.defined_classes.contains(&canon)
-                || self.defined_globals.contains(&canon)
+            let canon = self.canon_lookup(name);
+            let shadows_builtin_exception = self.defined_functions.contains(canon.as_ref())
+                || self.defined_classes.contains(canon.as_ref())
+                || self.defined_globals.contains(canon.as_ref())
                 || (!self.case_sensitive
-                    && (self
-                        .defined_functions
-                        .iter()
-                        .any(|g| g.eq_ignore_ascii_case(name))
-                        || self
-                            .defined_classes
-                            .iter()
-                            .any(|g| g.eq_ignore_ascii_case(name))
-                        || self
-                            .defined_globals
-                            .iter()
-                            .any(|g| g.eq_ignore_ascii_case(name))));
+                    && (self.defined_functions.contains_ascii_folded(name)
+                        || self.defined_classes.contains_ascii_folded(name)
+                        || self.defined_globals.contains_ascii_folded(name)));
             if !shadows_builtin_exception
                 && common::errors::is_exception_type(name)
                 && self.tree_ctor_target(name).is_none()
@@ -4774,7 +5062,7 @@ impl Compiler {
                     .filter(|signature| signature.has_rest)
                     .or_else(|| {
                         self.function_signatures
-                            .get(&self.canon(field))
+                            .get(self.canon_lookup(field).as_ref())
                             .and_then(|signatures| self.select_call_signature(signatures, args))
                             .filter(|signature| signature.has_rest)
                             .cloned()
@@ -4807,7 +5095,7 @@ impl Compiler {
                     self.function_param_modes
                         .get(&qualified)
                         .cloned()
-                        .or_else(|| self.function_param_modes.get(&self.canon(field)).cloned())
+                        .or_else(|| self.function_param_modes.get(self.canon_lookup(field).as_ref()).cloned())
                         .map(|modes| {
                             // A method chunk may carry its receiver as
                             // parameter 0; the declared modes then lead with
@@ -4915,10 +5203,8 @@ impl Compiler {
         if let ExprKind::Ident(name) = &callee.kind {
             let shadows_builtin = self.defined_functions.contains(name)
                 || (!self.case_sensitive
-                    && self
-                        .defined_functions
-                        .iter()
-                        .any(|g| g.eq_ignore_ascii_case(name)));
+                    && self.defined_functions.contains_ascii_folded(name))
+                || self.source_value_shadows_builtin(name);
             if !shadows_builtin {
                 if self.try_compile_spread_host_builtin(callee, name, args)? {
                     return Ok(());
@@ -4936,13 +5222,13 @@ impl Compiler {
         // priority above; this is the data-driven tree fallback before the
         // ordinary dynamic/global callable path.
         if let ExprKind::Ident(name) = &callee.kind {
-            let canon = self.canon(name);
+            let canon = self.canon_lookup(name);
             if self.profile.uses_namespace_resolver()
                 && self.scope().resolve(name).is_none()
                 && !self.defined_functions.contains(name.as_str())
-                && !self.defined_functions.contains(&canon)
+                && !self.defined_functions.contains(canon.as_ref())
                 && !self.defined_classes.contains(name.as_str())
-                && !self.defined_classes.contains(&canon)
+                && !self.defined_classes.contains(canon.as_ref())
             {
                 match self.resolve_profile_namespace_chain(&[name.to_string()]) {
                     Some(super::resolver::Resolution::Tree(
@@ -5049,10 +5335,7 @@ impl Compiler {
                     // component-model export table — and emit a direct
                     // CALL_IMPORT. Only an export unknown at compile time
                     // falls back to the runtime namespace object.
-                    let static_target = self
-                        .module_exports
-                        .get(&ns_module)
-                        .and_then(|exports| exports.get(field))
+                    let static_target = self.recorded_module_export(&ns_module,field)
                         .cloned()
                         .or_else(|| {
                             let ctx =
@@ -5081,8 +5364,7 @@ impl Compiler {
                     }
                     self.emit_var_get(obj_name);
                     let namespace_slot = self.define_local("__host_namespace_call_ns");
-                    self.emit_u16(Op::LOCAL_SET, namespace_slot);
-                    self.emit_u16(Op::LOCAL_GET, namespace_slot);
+                    self.emit_u16(Op::LOCAL_TEE, namespace_slot);
                     self.class_get(
                         class_slots::ObjSource::Stack,
                         &class_slots::ClassSlot::internal(field),
@@ -5477,10 +5759,7 @@ impl Compiler {
                         let head = &parts[0];
                         self.has_accessible_local_binding(head)
                             || self.defined_globals.contains(head)
-                            || self
-                                .defined_globals
-                                .iter()
-                                .any(|g| g.eq_ignore_ascii_case(head))
+                            || self.defined_globals.contains_ascii_folded(head)
                             || self.is_class_field(head)
                             || self.is_class_static_field(head).is_some()
                     } else {
@@ -5516,8 +5795,7 @@ impl Compiler {
                                     let line = self.line;
                                     self.emit_common(&emit, 2, line);
                                     let resized_slot = self.define_local("__array_resize_value");
-                                    self.emit_u16(Op::LOCAL_SET, resized_slot);
-                                    self.emit_u16(Op::LOCAL_GET, resized_slot);
+                                    self.emit_u16(Op::LOCAL_TEE, resized_slot);
                                     self.compile_assign_target(&args[0].value)?;
                                     self.emit_null();
                                     return Ok(());
@@ -5810,7 +6088,8 @@ impl Compiler {
                                                 self.import(common::gui::DOM_MODULE, "appendChild");
                                             self.emit_host_call(append_idx, 3);
                                         }
-                                        self.emit(Op::DROP);
+                                        // A call expression retains appendChild's child result;
+                                        // the enclosing expression statement owns its DROP.
                                         return Ok(());
                                     }
                                 }
@@ -5986,10 +6265,7 @@ impl Compiler {
                             // source-level name with the canonical host
                             // export (`json.dumps` / `j.dumps` →
                             // ecma:json/stringify) before emitting.
-                            let (module, func) = match self
-                                .module_exports
-                                .get(&module)
-                                .and_then(|exports| exports.get(&func))
+                            let (module, func) = match self.recorded_module_export(&module,&func)
                             {
                                 Some((target_module, target_name)) => {
                                     (target_module.clone(), target_name.clone())
@@ -6457,8 +6733,7 @@ impl Compiler {
                                 .scope()
                                 .resolve("__nested_static_cls")
                                 .unwrap_or_else(|| self.define_local("__nested_static_cls"));
-                            self.emit_u16(Op::LOCAL_SET, cls_tmp);
-                            self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                            self.emit_u16(Op::LOCAL_TEE, cls_tmp);
                             self.class_get(
                                 class_slots::ObjSource::Stack,
                                 &class_slots::ClassSlot::internal(&self.canon(field)),
@@ -6467,8 +6742,7 @@ impl Compiler {
                                 .scope()
                                 .resolve("__nested_static_fn")
                                 .unwrap_or_else(|| self.define_local("__nested_static_fn"));
-                            self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                            self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                            self.emit_u16(Op::LOCAL_TEE, fn_tmp);
                             for a in &arg_exprs {
                                 self.compile_expr(a)?;
                             }
@@ -6868,14 +7142,12 @@ impl Compiler {
                 .as_deref()
                 .map(Self::normalize_type_hint)
                 .is_some_and(|type_hint| Self::is_string_type_hint(&type_hint));
-            let receiver_has_pending_user_method = self
-                .infer_expr_type_hint(object)
+            let receiver_has_pending_user_method = receiver_type_hint
                 .as_deref()
                 .is_some_and(|type_hint| {
                     self.pending_class_has_method_name_for_type(type_hint, field)
                 });
-            let receiver_is_user_type = self
-                .infer_expr_type_hint(object)
+            let receiver_is_user_type = receiver_type_hint
                 .as_deref()
                 .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
                 .is_some();
@@ -7176,7 +7448,7 @@ impl Compiler {
                         }
                         _ => false,
                     })
-                    .then(|| self.function_param_modes.get(&self.canon(field)).cloned())
+                    .then(|| self.function_param_modes.get(self.canon_lookup(field).as_ref()).cloned())
                     .flatten();
                 for (index, a) in arg_exprs.iter().enumerate() {
                     let mode = declared_modes
@@ -8261,6 +8533,14 @@ impl Compiler {
                     let returned_key = self.resolve_slot_interned(
                         &class_slots::ClassSlot::internal("__vybe_gen_returned"),
                     );
+                    // Evaluate the argument before inspecting continuation state:
+                    // argument evaluation may itself finish the generator.
+                    if arg_exprs.is_empty() {
+                        inst!(self, core_wasm::undefined);
+                    } else {
+                        self.compile_expr(&arg_exprs[0])?;
+                    }
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let is_done_idx = self.import("ecma:value", "isGeneratorDone");
@@ -8269,21 +8549,11 @@ impl Compiler {
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
 
-                    if arg_exprs.is_empty() {
-                        inst!(self, core_wasm::undefined);
-                    } else {
-                        self.compile_expr(&arg_exprs[0])?;
-                    }
-                    self.emit_u16(Op::LOCAL_SET, value_slot);
                     inst!(self, core_wasm::bool_const, true);
                     self.emit_u16(Op::LOCAL_SET, done_slot);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    if arg_exprs.is_empty() {
-                        inst!(self, core_wasm::undefined);
-                    } else {
-                        self.compile_expr(&arg_exprs[0])?;
-                    }
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.emit_generator_control_packet_from_stack("return");
                     let line = self.line;
                     crate::primitives::generators::emit_resume(self.chunk(), line);
@@ -8295,8 +8565,10 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, done_slot);
 
                     self.chunk().emit_end(line);
+                    // The async next driver also reads this marker. A finally
+                    // block may yield, so record actual completion only.
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    inst!(self, core_wasm::bool_const, true);
+                    self.emit_u16(Op::LOCAL_GET, done_slot);
                     self.class_set_resolved(
                         class_slots::ObjSource::Stack,
                         &returned_key,
@@ -8360,14 +8632,16 @@ impl Compiler {
                     let started_key = self.resolve_slot_interned(
                         &class_slots::ClassSlot::internal("__vybe_gen_started"),
                     );
-                    // If a previous `.return()` stamped the cont as
-                    // returned, short-circuit to `{value: undefined,
-                    // done: true}` per ECMA-262 §27.5.1.2 step 2.
+                    // Arguments still run when the generator is already done.
+                    if let Some(arg) = arg_exprs.first() {
+                        self.compile_expr(arg)?;
+                        self.emit_u16(Op::LOCAL_SET, value_slot);
+                    }
+                    // Completion includes natural returns and throws, and a
+                    // return pending through a yielding finally is not done.
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.class_get(
-                        class_slots::ObjSource::Stack,
-                        &class_slots::ClassSlot::internal("__vybe_gen_returned"),
-                    );
+                    let is_done_idx = self.import("ecma:value", "isGeneratorDone");
+                    self.emit_host_call(is_done_idx, 1);
                     {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -8388,17 +8662,10 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, has_more_slot);
                         self.emit_u16(Op::LOCAL_SET, value_slot);
                         self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                        {
-                            let line = self.line;
-                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        };
-                        {
-                            let line = self.line;
-                            // emit_dyn_not: has_more → i32 (1 if done, 0 if not done)
-                            // emit_i32_to_bool: convert to Bool for ECMA `done` property
-                            crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                        };
+                        // emit_next's yield/completion arms both emit i32.
+                        self.emit_i32_negated_condition();
+                        // IteratorResult.done remains a real Boolean.
+                        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                         self.emit_u16(Op::LOCAL_SET, done_slot);
                         // Per ECMA-262 §27.5.3.5: when a generator completes
                         // (done=true) with no explicit return value, the VM
@@ -8424,7 +8691,7 @@ impl Compiler {
                         // `v`. Pushes only the yielded value back; we
                         // query `isGeneratorDone` for the spec `done`.
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.compile_expr(&arg_exprs[0])?;
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
                         let line = self.line;
                         crate::primitives::generators::emit_resume(self.chunk(), line);
                         self.emit_u16(Op::LOCAL_SET, value_slot);
@@ -8441,7 +8708,7 @@ impl Compiler {
                         &started_key,
                         class_slots::ValueSource::Stack,
                     );
-                    // Both the early-`returned` short-circuit and the
+                    // Both the completed-generator short-circuit and the
                     // GEN_NEXT/RESUME paths converge here to build the
                     // `{value, done}` wrapper.
                     common::dict::emit_new(&mut self.chunks, self.current, line);
@@ -8856,51 +9123,9 @@ impl Compiler {
                     }
                     self.emit_u16(Op::LOCAL_GET, lookup_slot);
                     self.emit(Op::REF_IS_NULL);
-                    let line = self.line;
-                    self.chunk().emit_if(line);
-                    if let Some((args_slot, known_len)) = spread_call_args {
-                        self.emit_js_invoke_method_from_args_array(
-                            obj_tmp,
-                            method_name.as_str(),
-                            args_slot,
-                            known_len,
-                        );
-                    } else if self.program_has_callmissing {
-                        // The lookup missed and the program binds a method-miss
-                        // hook: a DYNAMIC INVOCATION, dispatched through the
-                        // Call Tags proposal rather than handed to
-                        // `invokeMethod`, which only raises.
-                        self.emit_dynamic_invoke_with_tag(
-                            obj_tmp,
-                            lookup_slot,
-                            method_name.as_str(),
-                            &arg_slots,
-                        );
-                    } else {
-                        let invoke = self.import("ecma:value", "invokeMethod");
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                        for slot in &arg_slots {
-                            self.emit_u16(Op::LOCAL_GET, *slot);
-                        }
-                        // §7.3.14 `Call(F, V, argumentsList)` takes a LIST, not N arguments.
-                        // Spreading them flat made this import's arity vary per call site,
-                        // which a WASM import cannot express: the writer types host imports
-                        // by an arity SCAN (max argc), so every shorter site under-supplied
-                        // and V8 reported it at the SHORT site, nowhere near the cause.
-                        let aline = self.line;
-                        common::collections::emit_array_new(
-                            &mut self.chunks,
-                            self.current,
-                            arg_slots.len() as u16,
-                            aline,
-                        );
-                        self.emit_host_call(invoke, 3);
-                    }
-                    self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, lookup_slot);
                     fn_call!(self, "wasm:js-undefined", "test", 1);
+                    self.emit(Op::I32_OR);
                     let line = self.line;
                     self.chunk().emit_if(line);
                     if let Some((args_slot, known_len)) = spread_call_args {
@@ -8959,7 +9184,6 @@ impl Compiler {
                         );
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
                 }
                 self.chunk().emit_end(line);
@@ -9221,19 +9445,26 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
                 let fn_tmp = self.define_local("__fn");
-                self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                self.emit_u16(Op::LOCAL_TEE, fn_tmp);
                 self.class_get_resolved(class_slots::ObjSource::Stack, &receiver_key);
                 let receiver_slot = self.define_local("__member_fast_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
                 // An ordinary instance method need not carry a bound-method
                 // receiver. The generator-aware path must preserve the object
                 // just as the normal member-call path does.
-                if !self.class_prototype_dispatch()
+                if self.call_supplies_receiver()
+                    && !resolves_to_static_container_method(self, object, field)
+                {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                } else if !self.class_prototype_dispatch()
                     && !resolves_to_static_container_method(self, object, field)
                 {
                     self.emit_u16(Op::LOCAL_GET, receiver_slot);
                     self.emit(Op::REF_IS_NULL);
+                    self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
+                    self.emit(Op::I32_OR);
                     let line = self.line;
                     self.chunk().emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -9308,7 +9539,7 @@ impl Compiler {
                         .filter(|signature| signature.has_rest)
                         .or_else(|| {
                             self.function_signatures
-                                .get(&self.canon(field))
+                                .get(self.canon_lookup(field).as_ref())
                                 .and_then(|signatures| self.select_call_signature(signatures, args))
                                 .filter(|signature| signature.has_rest)
                                 .cloned()
@@ -9482,7 +9713,7 @@ impl Compiler {
                     }
                 } else {
                     if let Some(param_modes) =
-                        self.function_param_modes.get(&self.canon(field)).cloned()
+                        self.function_param_modes.get(self.canon_lookup(field).as_ref()).cloned()
                     {
                         let receiver_param_offset =
                             usize::from(param_modes.len() == args.len() + 1);
@@ -9844,7 +10075,7 @@ impl Compiler {
                     .filter(|signature| signature.has_rest)
                     .or_else(|| {
                         self.function_signatures
-                            .get(&self.canon(field))
+                            .get(self.canon_lookup(field).as_ref())
                             .and_then(|signatures| self.select_call_signature(signatures, args))
                             .filter(|signature| signature.has_rest)
                             .cloned()
@@ -10105,40 +10336,9 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, lookup_slot);
                     self.emit(Op::REF_IS_NULL);
-                    let line = self.line;
-                    self.chunk().emit_if(line);
-                    if let Some((args_slot, known_len)) = spread_call_args {
-                        self.emit_js_invoke_method_from_args_array(
-                            obj_tmp,
-                            method_name.as_str(),
-                            args_slot,
-                            known_len,
-                        );
-                    } else {
-                        let invoke = self.import("ecma:value", "invokeMethod");
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                        for slot in &arg_slots {
-                            self.emit_u16(Op::LOCAL_GET, *slot);
-                        }
-                        // §7.3.14 `Call(F, V, argumentsList)` takes a LIST, not N arguments.
-                        // Spreading them flat made this import's arity vary per call site,
-                        // which a WASM import cannot express: the writer types host imports
-                        // by an arity SCAN (max argc), so every shorter site under-supplied
-                        // and V8 reported it at the SHORT site, nowhere near the cause.
-                        let aline = self.line;
-                        common::collections::emit_array_new(
-                            &mut self.chunks,
-                            self.current,
-                            arg_slots.len() as u16,
-                            aline,
-                        );
-                        self.emit_host_call(invoke, 3);
-                    }
-                    self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, lookup_slot);
                     fn_call!(self, "wasm:js-undefined", "test", 1);
+                    self.emit(Op::I32_OR);
                     let line = self.line;
                     self.chunk().emit_if(line);
                     if let Some((args_slot, known_len)) = spread_call_args {
@@ -10186,7 +10386,6 @@ impl Compiler {
                         );
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                    self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, js_result_slot);
@@ -10360,7 +10559,7 @@ impl Compiler {
 
             let rest_signature = self
                 .function_signatures
-                .get(&self.canon(name))
+                .get(self.canon_lookup(name).as_ref())
                 .and_then(|signatures| self.select_call_signature(signatures, args))
                 .filter(|signature| signature.has_rest)
                 .cloned();
@@ -10370,10 +10569,7 @@ impl Compiler {
             let shadows_import_binding = self.defined_functions.contains(name)
                 || self.defined_functions.contains(&key)
                 || (!self.case_sensitive
-                    && self
-                        .defined_functions
-                        .iter()
-                        .any(|g| g.eq_ignore_ascii_case(name)))
+                    && self.defined_functions.contains_ascii_folded(name))
                 || self.active_namespaces.as_ref().is_some_and(|active| {
                     let decl_name = format!("decl:{name}");
                     let decl_key = format!("decl:{key}");
@@ -10547,8 +10743,13 @@ impl Compiler {
                 }
             }
 
-            let fortran_arg_exprs: Vec<Expression> = arg_exprs.iter().cloned().cloned().collect();
-            if !self.has_accessible_local_binding(name) {
+            // Argument trees are needed only when a declared generic interface
+            // can resolve this call. An empty registry cannot supply a target,
+            // and a local binding already wins over it.
+            if !self.fortran_interface_overloads.is_empty()
+                && !self.has_accessible_local_binding(name)
+            {
+                let fortran_arg_exprs: Vec<Expression> = arg_exprs.iter().cloned().cloned().collect();
                 if let Some(target_name) =
                     self.resolve_fortran_interface_target(name, &fortran_arg_exprs)
                 {
@@ -10587,12 +10788,11 @@ impl Compiler {
                 });
             let is_known_func = self.defined_functions.contains(name)
                 || (!self.case_sensitive
-                    && self
-                        .defined_functions
-                        .iter()
-                        .any(|g| g.eq_ignore_ascii_case(name)))
+                    && self.defined_functions.contains_ascii_folded(name))
                 || is_known_module_static;
-            if !is_known_func && self.try_compile_builtin(name, &arg_exprs)? {
+            if !is_known_func && !self.source_value_shadows_builtin(name)
+                && self.try_compile_builtin(name, &arg_exprs)?
+            {
                 return Ok(());
             }
 
@@ -10636,11 +10836,11 @@ impl Compiler {
             // defaults false), so the PHP name check that used to sit here was
             // already unreachable.
             if !is_known_func && arg_exprs.len() == 1 && self.profile.parens_for_index {
-                let canon_name = self.canon(name);
+                let canon_name = self.canon_lookup(name);
                 let is_local = self.has_accessible_local_binding(name);
-                let is_global_var = self.defined_globals.contains(&canon_name)
-                    && !self.defined_classes.contains(&canon_name)
-                    && !self.defined_functions.contains(&canon_name);
+                let is_global_var = self.defined_globals.contains(canon_name.as_ref())
+                    && !self.defined_classes.contains(canon_name.as_ref())
+                    && !self.defined_functions.contains(canon_name.as_ref());
                 let is_callable_typed = self
                     .lookup_var_type_hint(name)
                     .is_some_and(Self::is_callable_type_hint);
@@ -10841,7 +11041,7 @@ impl Compiler {
                 {
                     if let Some(signature) = self
                         .function_signatures
-                        .get(&self.canon(name))
+                        .get(self.canon_lookup(name).as_ref())
                         .and_then(|signatures| {
                             signatures.iter().find(|signature| {
                                 !signature.has_rest && !signature.param_names.is_empty()
@@ -10923,7 +11123,7 @@ impl Compiler {
                         if receiver == 1 {
                             inst!(self, core_wasm::undefined);
                         }
-                        for param_name in &signature.param_names {
+                        for param_name in signature.param_names.iter() {
                             self.emit_u16(Op::LOCAL_GET, spread_slot);
                             self.emit_const(Value::String(Arc::from(param_name.as_str())));
                             common::collections::emit_get(
@@ -10976,13 +11176,13 @@ impl Compiler {
                 }
                 let is_local =
                     self.scope().resolve(name).is_some() || self.has_static_local_binding(name);
-                let canon_name = self.canon(name);
-                let is_direct_global = self.defined_globals.contains(&canon_name)
-                    || self.defined_functions.contains(&canon_name);
+                let canon_name = self.canon_lookup(name);
+                let is_direct_global = self.defined_globals.contains(canon_name.as_ref())
+                    || self.defined_functions.contains(canon_name.as_ref());
                 if !is_local {
                     if is_direct_global {
                         self.emit_var_get(name);
-                    } else if let Some(module_name) = self.enum_members.get(&canon_name).cloned() {
+                    } else if let Some(module_name) = self.enum_members.get(canon_name.as_ref()).cloned() {
                         let prefers_direct_module_global = self
                             .pending_classes
                             .get(&module_name)
@@ -10990,7 +11190,7 @@ impl Compiler {
                                 pending
                                     .static_method_names
                                     .iter()
-                                    .any(|member| member == &canon_name)
+                                    .any(|member| member == canon_name.as_ref())
                             });
                         if prefers_direct_module_global {
                             self.emit_var_get(name);
@@ -10998,7 +11198,7 @@ impl Compiler {
                             self.emit_global_read(&module_name);
                             self.class_get(
                                 class_slots::ObjSource::Stack,
-                                &class_slots::ClassSlot::internal(&canon_name),
+                                &class_slots::ClassSlot::internal(canon_name.as_ref()),
                             );
                         }
                     } else {
@@ -11031,7 +11231,19 @@ impl Compiler {
             // gated on a language NAME. It was `is_python_profile()`, so
             // `val f = Box(); f("x")` trapped with "Not a function" in every
             // other language that has the feature.
-            if self.profile.callable_objects && !is_known_func {
+            if self.profile.callable_objects
+                && !is_known_func
+                && !args.iter().any(|arg| arg.by_ref)
+                && self
+                    .function_param_modes
+                    .get(self.canon_lookup(name).as_ref())
+                    .is_none_or(|modes| {
+                        modes
+                            .iter()
+                            .copied()
+                            .all(|mode| !self.mode_needs_ref_aware_call_handling(mode))
+                    })
+            {
                 let callee_slot = self.define_local("__py_call_target");
                 self.emit_var_get(name);
                 self.emit_u16(Op::LOCAL_SET, callee_slot);
@@ -11114,9 +11326,14 @@ impl Compiler {
                     &class_slots::ClassSlot::internal("call"),
                 );
                 let call_slot = self.define_local("__py_call_method");
-                self.emit_u16(Op::LOCAL_SET, call_slot);
-                self.emit_u16(Op::LOCAL_GET, call_slot);
+                self.emit_u16(Op::LOCAL_TEE, call_slot);
                 self.emit(Op::REF_IS_NULL);
+                // Missing dynamic members may be undefined rather than null.
+                // Both must fall through to the language's Call protocol slot.
+                self.emit_u16(Op::LOCAL_GET, call_slot);
+                let undefined_test = self.import("wasm:js-undefined", "test");
+                self.emit_host_call(undefined_test, 1);
+                self.emit(Op::I32_OR);
                 let line = self.line;
                 self.chunk().emit_if_value(line);
 
@@ -11138,9 +11355,12 @@ impl Compiler {
                     line,
                 );
                 let dunder_slot = self.define_local("__py_dunder_call_method");
-                self.emit_u16(Op::LOCAL_SET, dunder_slot);
-                self.emit_u16(Op::LOCAL_GET, dunder_slot);
+                self.emit_u16(Op::LOCAL_TEE, dunder_slot);
                 self.emit(Op::REF_IS_NULL);
+                self.emit_u16(Op::LOCAL_GET, dunder_slot);
+                let undefined_test = self.import("wasm:js-undefined", "test");
+                self.emit_host_call(undefined_test, 1);
+                self.emit(Op::I32_OR);
                 let line = self.line;
                 self.chunk().emit_if_value(line);
                 // Neither a function, nor a `call` member, nor the Call slot:
@@ -11160,6 +11380,10 @@ impl Compiler {
                 return Ok(());
             }
 
+            if self.try_emit_immutable_declared_call(name, args)? {
+                return Ok(());
+            }
+
             if self.type_resolution() == vybe_ast::TypeResolution::Static
                 && is_known_func
                 && !has_spread
@@ -11167,7 +11391,7 @@ impl Compiler {
                 && !args.iter().any(|arg| arg.by_ref)
                 && self
                     .function_param_modes
-                    .get(&self.canon(name))
+                    .get(self.canon_lookup(name).as_ref())
                     .is_none_or(|modes| {
                         modes
                             .iter()
@@ -11175,12 +11399,12 @@ impl Compiler {
                             .all(|mode| !self.mode_needs_ref_aware_call_handling(mode))
                     })
             {
-                let canon_name = self.canon(name);
+                let canon_name = self.canon_lookup(name);
                 if let Some(callable_global) =
                     self.source_function_callable_global_name_for_canon(&canon_name)
                 {
                     self.emit_global_read(&callable_global);
-                } else if let Some(module_name) = self.enum_members.get(&canon_name).cloned() {
+                } else if let Some(module_name) = self.enum_members.get(canon_name.as_ref()).cloned() {
                     let prefers_direct_module_global = self
                         .pending_classes
                         .get(&module_name)
@@ -11188,7 +11412,7 @@ impl Compiler {
                             pending
                                 .static_method_names
                                 .iter()
-                                .any(|member| member == &canon_name)
+                                .any(|member| member == canon_name.as_ref())
                         });
                     if prefers_direct_module_global {
                         self.emit_var_get(name);
@@ -11196,7 +11420,7 @@ impl Compiler {
                         self.emit_global_read(&module_name);
                         self.class_get(
                             class_slots::ObjSource::Stack,
-                            &class_slots::ClassSlot::internal(&canon_name),
+                            &class_slots::ClassSlot::internal(canon_name.as_ref()),
                         );
                     }
                 } else {
@@ -11217,7 +11441,7 @@ impl Compiler {
             let callee_slot = self.define_local("__direct_call_callee");
             let is_local =
                 self.scope().resolve(name).is_some() || self.has_static_local_binding(name);
-            let canon_name = self.canon(name);
+            let canon_name = self.canon_lookup(name);
             // Same rule as a bare READ, asked on the CALL spelling — which is
             // the one that actually reaches it, since a bare callee never
             // passes through `compile_expr`'s `Ident` arm. Without this the
@@ -11226,8 +11450,8 @@ impl Compiler {
             if let Some(err) = self.ambiguous_module_member_error(name) {
                 return Err(err);
             }
-            let is_direct_global = self.defined_globals.contains(&canon_name)
-                || self.defined_functions.contains(&canon_name);
+            let is_direct_global = self.defined_globals.contains(canon_name.as_ref())
+                || self.defined_functions.contains(canon_name.as_ref());
             if let Some(callable_global) =
                 self.source_function_callable_global_name_for_canon(&canon_name)
             {
@@ -11235,7 +11459,7 @@ impl Compiler {
             } else if !is_local {
                 if is_direct_global {
                     self.emit_var_get(name);
-                } else if let Some(module_name) = self.enum_members.get(&canon_name).cloned() {
+                } else if let Some(module_name) = self.enum_members.get(canon_name.as_ref()).cloned() {
                     let prefers_direct_module_global = self
                         .pending_classes
                         .get(&module_name)
@@ -11243,7 +11467,7 @@ impl Compiler {
                             pending
                                 .static_method_names
                                 .iter()
-                                .any(|member| member == &canon_name)
+                                .any(|member| member == canon_name.as_ref())
                         });
                     if prefers_direct_module_global {
                         self.emit_var_get(name);
@@ -11251,7 +11475,7 @@ impl Compiler {
                         self.emit_global_read(&module_name);
                         self.class_get(
                             class_slots::ObjSource::Stack,
-                            &class_slots::ClassSlot::internal(&canon_name),
+                            &class_slots::ClassSlot::internal(canon_name.as_ref()),
                         );
                     }
                 } else {
@@ -11294,7 +11518,7 @@ impl Compiler {
                 self.emit_call_ref_with_arg_slots(callee_slot, rest_receiver, &arg_slots);
                 return Ok(());
             }
-            if let Some(param_modes) = self.function_param_modes.get(&self.canon(name)).cloned() {
+            if let Some(param_modes) = self.function_param_modes.get(self.canon_lookup(name).as_ref()).cloned() {
                 let needs_ref_aware_args = param_modes
                     .iter()
                     .copied()
@@ -11347,9 +11571,12 @@ impl Compiler {
             }
 
             if args.iter().any(|arg| arg.by_ref) {
+                let aliases = self.directives().reference_binding == Some(PassBy::Alias);
                 let mut arg_slots = Vec::with_capacity(args.len());
                 for (index, arg) in args.iter().enumerate() {
-                    if arg.by_ref {
+                    if arg.by_ref && aliases {
+                        self.compile_address_of_expr(&arg.value)?;
+                    } else if arg.by_ref {
                         self.compile_expr(&arg.value)?;
                     } else {
                         self.compile_expr_with_value_copy(&arg.value)?;
@@ -11364,6 +11591,12 @@ impl Compiler {
                 let result_slot = self.define_local("__direct_call_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
 
+                // Alias parameters mutate their place directly. Only
+                // copy-out conventions return a result/writeback pack.
+                if aliases {
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    return Ok(());
+                }
                 let mut ref_out_index = 1usize;
                 for arg in args {
                     if !arg.by_ref {
@@ -11618,6 +11851,18 @@ impl Compiler {
         }
 
         // ── Fallback: general expression call ───────────────────────
+        self.compile_generic_expression_call(callee, args)
+    }
+
+    /// Shared value-call lowering. In particular, do not replace this with a
+    /// bare CALL_REF: rest packing, spread, bound receivers and writeback are
+    /// part of invoking a single callable too.
+    fn compile_generic_expression_call(
+        &mut self,
+        callee: &Expression,
+        args: &[Argument],
+    ) -> Result<(), String> {
+        let arg_exprs = CallArgExpressions::new(args, callee);
         self.compile_expr(callee)?;
         let callee_slot = self.define_temp_local("__call_ref_callee");
         self.emit_u16(Op::LOCAL_SET, callee_slot);
@@ -11709,6 +11954,7 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         let has_by_ref_args = args.iter().any(|arg| arg.by_ref);
+        let aliases = self.directives().reference_binding == Some(PassBy::Alias);
         self.class_get(
             class_slots::ObjSource::Local(callee_slot),
             &class_slots::ClassSlot::internal("__vybe_method_receiver"),
@@ -11761,7 +12007,11 @@ impl Compiler {
         } else {
             let mut arg_slots = Vec::with_capacity(arg_exprs.len());
             for (index, arg) in arg_exprs.iter().enumerate() {
-                self.compile_expr(arg)?;
+                if aliases && args[index].by_ref {
+                    self.compile_address_of_expr(arg)?;
+                } else {
+                    self.compile_expr(arg)?;
+                }
                 let arg_slot = self.define_temp_local(&format!("__call_ref_arg_{}", index));
                 self.emit_u16(Op::LOCAL_SET, arg_slot);
                 arg_slots.push(arg_slot);
@@ -11772,7 +12022,7 @@ impl Compiler {
         self.restore_js_new_target(saved_js_new_target);
         self.chunk().emit_end(line); // close the runtime_index_matched `if`
 
-        if has_by_ref_args {
+        if has_by_ref_args && !aliases {
             let mut ref_out_index = 1usize;
             for arg in args {
                 if !arg.by_ref {

@@ -1,0 +1,1258 @@
+//! Shared slice emission for every Vybe language.
+//!
+//! Surface slice syntax differs across languages (Python `a[i:j:k]`,
+//! C# `a[i..j]`, Fortran `a(i:j:k)`, JS `.slice`), but they all reduce to
+//! one canonical operation: given a sequence and `(start, stop, step)`
+//! bounds, produce a new sequence. This module is the single home for that
+//! lowering so every front-end emits compatible bytecode.
+//!
+//! Two entry points:
+//! - [`emit_contiguous`] — no-step `[obj, start, end] -> result`, delegates
+//!   to the polymorphic `ecma:array.slice` host fn (string -> substring,
+//!   array -> array, with negative-index wrap + clamp).
+//! - [`emit_stepped`] — `[obj, lower|null, upper|null, step|null] -> result`,
+//!   the full CPython `PySlice_AdjustIndices` normalization + strided copy,
+//!   emitted inline from shared loop/collection/ops helpers.
+//!
+//! Per-language quirks (negative-index wrap, `step == 0` policy) are captured
+//! by [`Options`]; [`Options::for_language`] holds the quirk table.
+
+use vybe_compiler::primitives::class_slots;
+use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
+
+use vybe_compiler::primitives::collections;
+use vybe_compiler::primitives::errors;
+use vybe_compiler::primitives::loops;
+use vybe_compiler::primitives::ops;
+use vybe_compiler::primitives::tuples;
+
+/// Behavior when the slice `step` evaluates to zero.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ZeroStep {
+    /// Yield an empty sequence (lenient — the retired `__vybe_slicestep`
+    /// helper's behavior, kept as the default for non-Python front-ends).
+    Empty,
+    /// Raise the language value-error (Python: `ValueError: slice step
+    /// cannot be zero`). The concrete type name is [`Options::value_error`].
+    Raise,
+}
+
+/// Per-language slice semantics. Bounds always wrap from the end and clamp
+/// (the canonical, ecma-`slice`-compatible form every front-end already gets
+/// on the no-step path); the one genuine divergence is the `step == 0` policy,
+/// so front-ends build this from their profile properties — never a name check.
+#[derive(Clone, Copy)]
+pub struct Options {
+    /// `step == 0` policy.
+    pub zero_step: ZeroStep,
+    /// Exception type raised when `zero_step == Raise`. Normalized through
+    /// `errors::canonical_exception_name`, so e.g. Python `ValueError` and
+    /// Dart `FormatException` unify for cross-language `catch`.
+    pub value_error: &'static str,
+}
+
+impl Options {
+    /// Build from the `slice_step_zero_raises` profile property. Property-
+    /// driven, so a language opts into Python-style `ValueError` by setting
+    /// the flag in its profile — no per-language branching here.
+    pub const fn new(zero_step_raises: bool) -> Options {
+        Options {
+            zero_step: if zero_step_raises {
+                ZeroStep::Raise
+            } else {
+                ZeroStep::Empty
+            },
+            value_error: "ValueError",
+        }
+    }
+}
+
+/// No-step slice. Stack: `[obj, start, end] -> [result]`.
+///
+/// Routes through `ecma:array.slice`, which dispatches string->substring and
+/// array->array internally with negative-index wrap and out-of-range clamp
+/// (ECMA-262 §23.1.3.28). This is the canonical contiguous slice for every
+/// language; the retired `__vybe_slice` helper had the same contract.
+pub fn emit_contiguous(chunks: &mut [Chunk], current: usize, line: u32) {
+    // Stash [obj, start, end] so the source is reachable after the slice.
+    let base = chunks[current].alloc_scratch(3);
+    let obj = base;
+    let start = base + 1;
+    let end = base + 2;
+    set(chunks, current, end, line);
+    set(chunks, current, start, line);
+    set(chunks, current, obj, line);
+
+    // A typed array (bytes/bytearray = Uint8Array) is a real JS type, not a
+    // tagged array: slice it through the typed-array slice so the result keeps
+    // its type. Everything else (array/string) goes through ecma:array.slice.
+    get(chunks, current, obj, line);
+    let is_view = chunks[current].add_import("ecma:arraybuffer", "isView");
+    chunks[current].emit_call(is_view, 1, line);
+    let cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast, 1, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, obj, line);
+    get(chunks, current, start, line);
+    get(chunks, current, end, line);
+    let ta_slice = chunks[current].add_import("ecma:uint8array", "slice");
+    chunks[current].emit_call(ta_slice, 3, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, obj, line);
+    get(chunks, current, start, line);
+    get(chunks, current, end, line);
+    collections::emit_slice(chunks, current, line);
+    chunks[current].emit_end(line); // [result]
+
+    get(chunks, current, obj, line); // [result, obj]
+    tuples::emit_propagate_tag(chunks, current, line); // [result]
+}
+
+// ── local-slot helpers ──────────────────────────────────────────────────
+
+fn get(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+
+fn set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+}
+
+/// Sentinel bound value: emit `len` at runtime.
+const LEN: i32 = i32::MIN;
+/// Sentinel bound value: emit `len - 1` at runtime.
+const LEN_M1: i32 = i32::MIN + 1;
+
+/// Push a bound value: [`LEN`]/[`LEN_M1`] sentinels resolve to `len`/`len-1`;
+/// any other `v` is a literal. Keeps the `-1` literal (a real Python default)
+/// distinct from the `len-1` default.
+fn emit_bound_const(chunks: &mut [Chunk], current: usize, len: u16, v: i32, line: u32) {
+    match v {
+        LEN => get(chunks, current, len, line),
+        LEN_M1 => {
+            get(chunks, current, len, line);
+            core_wasm::i32_const(&mut chunks[current], line, 1);
+            chunks[current].emit_op(Op::I32_SUB, line);
+        }
+        _ => core_wasm::i32_const(&mut chunks[current], line, v),
+    }
+}
+
+/// Push i32 bool: `slot < 0`.
+fn is_neg(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    get(chunks, current, slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+}
+
+/// Push i32 bool: `obj` is a string (via `wasm:js-string.test`, yields i32).
+fn is_string(chunks: &mut [Chunk], current: usize, obj: u16, line: u32) {
+    get(chunks, current, obj, line);
+    let idx = chunks[current].add_import("wasm:js-string", "test");
+    chunks[current].emit_call(idx, 1, line);
+}
+
+/// Emit `dst = neg ? a : b`, where `a`/`b` are provided as closures that push
+/// one value. Uses step sign as the selector when `neg` names the step slot.
+fn set_by_step_sign(
+    chunks: &mut [Chunk],
+    current: usize,
+    step: u16,
+    dst: u16,
+    line: u32,
+    neg_branch: impl Fn(&mut [Chunk], usize, u32),
+    pos_branch: impl Fn(&mut [Chunk], usize, u32),
+) {
+    is_neg(chunks, current, step, line);
+    chunks[current].emit_if(line);
+    neg_branch(chunks, current, line);
+    set(chunks, current, dst, line);
+    chunks[current].emit_else(line);
+    pos_branch(chunks, current, line);
+    set(chunks, current, dst, line);
+    chunks[current].emit_end(line);
+}
+
+/// Normalize one bound (`raw` -> `dst`) per CPython `PySlice_AdjustIndices`.
+/// `default_neg`/`default_pos` supply the value when `raw` is NULL (absent),
+/// chosen by step sign. `clamp_low_neg`/`clamp_low_pos` supply the value when
+/// the bound underflows (`< 0`); overflow (`>= len`) clamps to `len-1`/`len`.
+#[allow(clippy::too_many_arguments)]
+fn normalize_bound(
+    chunks: &mut [Chunk],
+    current: usize,
+    raw: u16,
+    dst: u16,
+    step: u16,
+    len: u16,
+    line: u32,
+    default_neg: i32,
+    default_pos: i32,
+    clamp_low_neg: i32,
+) {
+    // if raw is NULL -> default by step sign
+    get(chunks, current, raw, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    set_by_step_sign(
+        chunks,
+        current,
+        step,
+        dst,
+        line,
+        move |c, cur, l| emit_bound_const(c, cur, len, default_neg, l),
+        move |c, cur, l| emit_bound_const(c, cur, len, default_pos, l),
+    );
+    chunks[current].emit_else(line);
+    // provided: dst = raw
+    get(chunks, current, raw, line);
+    set(chunks, current, dst, line);
+    // negative wrap: if dst < 0 { dst += len } — canonical, ecma-slice parity.
+    is_neg(chunks, current, dst, line);
+    chunks[current].emit_if(line);
+    get(chunks, current, dst, line);
+    get(chunks, current, len, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(chunks, current, dst, line);
+    chunks[current].emit_end(line);
+    // clamp low: if dst < 0 { dst = (step<0) ? clamp_low_neg : 0 }
+    is_neg(chunks, current, dst, line);
+    chunks[current].emit_if(line);
+    set_by_step_sign(
+        chunks,
+        current,
+        step,
+        dst,
+        line,
+        move |c, cur, l| core_wasm::i32_const(&mut c[cur], l, clamp_low_neg),
+        |c, cur, l| core_wasm::i32_const(&mut c[cur], l, 0),
+    );
+    chunks[current].emit_else(line);
+    // clamp high: else if dst >= len { dst = (step<0) ? len-1 : len }
+    get(chunks, current, dst, line);
+    get(chunks, current, len, line);
+    ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    set_by_step_sign(
+        chunks,
+        current,
+        step,
+        dst,
+        line,
+        move |c, cur, l| {
+            get(c, cur, len, l);
+            core_wasm::i32_const(&mut c[cur], l, 1);
+            c[cur].emit_op(Op::I32_SUB, l); // len - 1
+        },
+        move |c, cur, l| get(c, cur, len, l),
+    );
+    chunks[current].emit_end(line); // end (dst >= len)
+    chunks[current].emit_end(line); // end (dst < 0)
+    chunks[current].emit_end(line); // end (raw NULL?)
+}
+
+/// Fill the `step_n`/`lo`/`hi` slots from the raw `lower_in`/`upper_in`/
+/// `step_in` slots and `len`, per CPython `PySlice_AdjustIndices`. Shared by
+/// strided read, assignment, and deletion. `opts.zero_step` is honored (Raise
+/// emits a throw; Empty forces an empty range).
+#[allow(clippy::too_many_arguments)]
+fn normalize_slice_into(
+    chunks: &mut [Chunk],
+    current: usize,
+    lower_in: u16,
+    upper_in: u16,
+    step_in: u16,
+    len: u16,
+    step_n: u16,
+    lo: u16,
+    hi: u16,
+    opts: Options,
+    line: u32,
+) {
+    // step_n = step_in ?? 1
+    get(chunks, current, step_in, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    set(chunks, current, step_n, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, step_in, line);
+    set(chunks, current, step_n, line);
+    chunks[current].emit_end(line);
+
+    // step == 0 policy (Raise diverges; Empty handled after normalization).
+    if opts.zero_step == ZeroStep::Raise {
+        get(chunks, current, step_n, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        class_slots::emit_class_alloc(&mut chunks[current], line);
+        chunks[current].emit_dup(line);
+        chunks[current].emit_string_const("slice step cannot be zero", line);
+        errors::emit_exception_new_finalize(&mut chunks[current], opts.value_error, line);
+        errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+    }
+
+    // lo default: step<0 ? len-1 : 0 ; clamp low: step<0 ? -1 : 0
+    normalize_bound(
+        chunks, current, lower_in, lo, step_n, len, line, LEN_M1, 0, -1,
+    );
+    // hi default: step<0 ? -1 : len ; clamp low: step<0 ? -1 : 0
+    normalize_bound(
+        chunks, current, upper_in, hi, step_n, len, line, -1, LEN, -1,
+    );
+
+    // Empty policy: if step still 0, force an empty range (lo=hi=0, step=1).
+    if opts.zero_step == ZeroStep::Empty {
+        get(chunks, current, step_n, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        set(chunks, current, lo, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        set(chunks, current, hi, line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        set(chunks, current, step_n, line);
+        chunks[current].emit_end(line);
+    }
+}
+
+/// Strided slice. Stack: `[obj, lower, upper, step] -> [result]`, where any of
+/// `lower`/`upper`/`step` may be NULL (absent bound). Emits one shared CPython
+/// normalization/copy helper per module and policy; strings rejoin to a string.
+pub fn emit_stepped(chunks: &mut Vec<Chunk>, current: usize, line: u32, opts: Options) {
+    let name = format!(
+        "__primitive_slice_step_{}_{}",
+        if opts.zero_step == ZeroStep::Raise {
+            "raise"
+        } else {
+            "empty"
+        },
+        opts.value_error
+    );
+    let helper = if let Some(index) = chunks.iter().position(|chunk| chunk.name == name) {
+        index
+    } else {
+        let mut body = Chunk::new(name.as_str());
+        body.arity = 4;
+        body.param_count = 4;
+        body.local_count = 4;
+        let mut owned = vec![body];
+        emit_guarded_slice(&mut owned, 0, 0, opts, 0);
+        owned[0].emit_op(Op::RETURN, 0);
+        chunks.push(owned.remove(0));
+        chunks.len() - 1
+    };
+    let args = chunks[current].alloc_scratch(4);
+    for slot in (0..4).rev() {
+        set(chunks, current, args + slot, line);
+    }
+    vybe_compiler::primitives::functions::emit_ref_func(&mut chunks[current], helper, 0, line);
+    for slot in 0..4 {
+        get(chunks, current, args + slot, line);
+    }
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 4, line);
+}
+
+fn emit_guarded_slice(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    args: u16,
+    opts: Options,
+    line: u32,
+) {
+    // A Number or absent bound cannot run user coercion callbacks. Every
+    // other value retains the original dynamic normalization and copy body.
+    for slot in 1..4 {
+        get(chunks, current, args + slot, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        get(chunks, current, args + slot, line);
+        let test = chunks[current].add_import("wasm:js-number", "test");
+        chunks[current].emit_call(test, 1, line);
+        chunks[current].emit_op(Op::I32_OR, line);
+        if slot > 1 {
+            chunks[current].emit_op(Op::I32_AND, line);
+        }
+    }
+    // Restrict the sequence to built-in strings and arrays, whose length
+    // is numeric. Custom objects and typed arrays keep the original path.
+    is_string(chunks, current, args, line);
+    get(chunks, current, args, line);
+    let array_test = chunks[current].add_import("ecma:array", "isArray");
+    chunks[current].emit_call(array_test, 1, line);
+    let boolean_cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(boolean_cast, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    emit_numeric_slice(chunks, current, args, opts, line);
+    chunks[current].emit_else(line);
+    emit_stepped_inline(chunks, current, line, opts);
+    chunks[current].emit_end(line);
+}
+
+fn numeric_bound_const(chunks: &mut [Chunk], current: usize, len: u16, v: i32, line: u32) {
+    match v {
+        LEN => get(chunks, current, len, line),
+        LEN_M1 => {
+            get(chunks, current, len, line);
+            core_wasm::i32_const(&mut chunks[current], line, 1);
+            chunks[current].emit_op(Op::I32_SUB, line);
+        }
+        _ => core_wasm::i32_const(&mut chunks[current], line, v),
+    }
+}
+
+/// Push i32 bool: `slot < 0`.
+fn numeric_is_neg(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    get(chunks, current, slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::F64_LT, line);
+}
+
+/// Emit `dst = neg ? a : b`, where `a`/`b` are provided as closures that push
+/// one value. Uses step sign as the selector when `neg` names the step slot.
+fn numeric_set_by_step_sign(
+    chunks: &mut [Chunk],
+    current: usize,
+    step: u16,
+    dst: u16,
+    line: u32,
+    neg_branch: impl Fn(&mut [Chunk], usize, u32),
+    pos_branch: impl Fn(&mut [Chunk], usize, u32),
+) {
+    numeric_is_neg(chunks, current, step, line);
+    chunks[current].emit_if(line);
+    neg_branch(chunks, current, line);
+    set(chunks, current, dst, line);
+    chunks[current].emit_else(line);
+    pos_branch(chunks, current, line);
+    set(chunks, current, dst, line);
+    chunks[current].emit_end(line);
+}
+
+/// Normalize one bound (`raw` -> `dst`) per CPython `PySlice_AdjustIndices`.
+/// `default_neg`/`default_pos` supply the value when `raw` is NULL (absent),
+/// chosen by step sign. `clamp_low_neg`/`clamp_low_pos` supply the value when
+/// the bound underflows (`< 0`); overflow (`>= len`) clamps to `len-1`/`len`.
+#[allow(clippy::too_many_arguments)]
+fn numeric_normalize_bound(
+    chunks: &mut [Chunk],
+    current: usize,
+    raw: u16,
+    dst: u16,
+    step: u16,
+    len: u16,
+    line: u32,
+    default_neg: i32,
+    default_pos: i32,
+    clamp_low_neg: i32,
+) {
+    // if raw is NULL -> default by step sign
+    get(chunks, current, raw, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    numeric_set_by_step_sign(
+        chunks,
+        current,
+        step,
+        dst,
+        line,
+        move |c, cur, l| numeric_bound_const(c, cur, len, default_neg, l),
+        move |c, cur, l| numeric_bound_const(c, cur, len, default_pos, l),
+    );
+    chunks[current].emit_else(line);
+    // provided: dst = raw
+    get(chunks, current, raw, line);
+    set(chunks, current, dst, line);
+    // negative wrap: if dst < 0 { dst += len } — canonical, ecma-slice parity.
+    numeric_is_neg(chunks, current, dst, line);
+    chunks[current].emit_if(line);
+    get(chunks, current, dst, line);
+    get(chunks, current, len, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(chunks, current, dst, line);
+    chunks[current].emit_end(line);
+    // clamp low: if dst < 0 { dst = (step<0) ? clamp_low_neg : 0 }
+    numeric_is_neg(chunks, current, dst, line);
+    chunks[current].emit_if(line);
+    numeric_set_by_step_sign(
+        chunks,
+        current,
+        step,
+        dst,
+        line,
+        move |c, cur, l| core_wasm::i32_const(&mut c[cur], l, clamp_low_neg),
+        |c, cur, l| core_wasm::i32_const(&mut c[cur], l, 0),
+    );
+    chunks[current].emit_else(line);
+    // clamp high: else if dst >= len { dst = (step<0) ? len-1 : len }
+    get(chunks, current, dst, line);
+    get(chunks, current, len, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    chunks[current].emit_if(line);
+    numeric_set_by_step_sign(
+        chunks,
+        current,
+        step,
+        dst,
+        line,
+        move |c, cur, l| {
+            get(c, cur, len, l);
+            core_wasm::i32_const(&mut c[cur], l, 1);
+            c[cur].emit_op(Op::I32_SUB, l); // len - 1
+        },
+        move |c, cur, l| get(c, cur, len, l),
+    );
+    chunks[current].emit_end(line); // end (dst >= len)
+    chunks[current].emit_end(line); // end (dst < 0)
+    chunks[current].emit_end(line); // end (raw NULL?)
+}
+
+/// Fill the `step_n`/`lo`/`hi` slots from the raw `lower_in`/`upper_in`/
+/// `step_in` slots and `len`, per CPython `PySlice_AdjustIndices`. Shared by
+/// strided read, assignment, and deletion. `opts.zero_step` is honored (Raise
+/// emits a throw; Empty forces an empty range).
+#[allow(clippy::too_many_arguments)]
+fn numeric_normalize_slice_into(
+    chunks: &mut [Chunk],
+    current: usize,
+    lower_in: u16,
+    upper_in: u16,
+    step_in: u16,
+    len: u16,
+    step_n: u16,
+    lo: u16,
+    hi: u16,
+    opts: Options,
+    line: u32,
+) {
+    // step_n = step_in ?? 1
+    get(chunks, current, step_in, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    set(chunks, current, step_n, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, step_in, line);
+    set(chunks, current, step_n, line);
+    chunks[current].emit_end(line);
+
+    // step == 0 policy (Raise diverges; Empty handled after normalization).
+    if opts.zero_step == ZeroStep::Raise {
+        get(chunks, current, step_n, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op(Op::F64_EQ, line);
+        chunks[current].emit_if(line);
+        class_slots::emit_class_alloc(&mut chunks[current], line);
+        chunks[current].emit_dup(line);
+        chunks[current].emit_string_const("slice step cannot be zero", line);
+        errors::emit_exception_new_finalize(&mut chunks[current], opts.value_error, line);
+        errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+    }
+
+    // lo default: step<0 ? len-1 : 0 ; clamp low: step<0 ? -1 : 0
+    numeric_normalize_bound(
+        chunks, current, lower_in, lo, step_n, len, line, LEN_M1, 0, -1,
+    );
+    // hi default: step<0 ? -1 : len ; clamp low: step<0 ? -1 : 0
+    numeric_normalize_bound(
+        chunks, current, upper_in, hi, step_n, len, line, -1, LEN, -1,
+    );
+
+    // Empty policy: if step still 0, force an empty range (lo=hi=0, step=1).
+    if opts.zero_step == ZeroStep::Empty {
+        get(chunks, current, step_n, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op(Op::F64_EQ, line);
+        chunks[current].emit_if(line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        set(chunks, current, lo, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        set(chunks, current, hi, line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        set(chunks, current, step_n, line);
+        chunks[current].emit_end(line);
+    }
+}
+
+fn emit_numeric_slice(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    args: u16,
+    opts: Options,
+    line: u32,
+) {
+    let obj = args;
+    let lower_in = args + 1;
+    let upper_in = args + 2;
+    let step_in = args + 3;
+    let base = chunks[current].alloc_scratch(6);
+    let len = base;
+    let step_n = base + 1;
+    let lo = base + 2;
+    let hi = base + 3;
+    let i = base + 4;
+    let result = base + 5;
+    let string_flag = lower_in;
+    // result = []
+    collections::emit_array_new(chunks, current, 0, line);
+    set(chunks, current, result, line);
+
+    // len = length(obj)
+    get(chunks, current, obj, line);
+    collections::emit_len(chunks, current, line);
+    set(chunks, current, len, line);
+
+    numeric_normalize_slice_into(
+        chunks, current, lower_in, upper_in, step_in, len, step_n, lo, hi, opts, line,
+    );
+
+    is_string(chunks, current, obj, line);
+    set(chunks, current, string_flag, line);
+
+    // i = lo
+    get(chunks, current, lo, line);
+    set(chunks, current, i, line);
+
+    // while ( (step>0 && i<hi) || (step<0 && i>hi) ) { result.push(obj[i]); i += step }
+    let st = loops::emit_loop_start(chunks, current, line);
+    // cond = (step_n > 0) ? (i < hi) : (i > hi)
+    get(chunks, current, step_n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if_i32(line);
+    get(chunks, current, i, line);
+    get(chunks, current, hi, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, i, line);
+    get(chunks, current, hi, line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_end(line);
+    loops::emit_loop_cond_from_i32(chunks, current, line); // break when false
+
+    // result.push( is_string(obj) ? charAt(obj,i) : obj[i] )
+    get(chunks, current, result, line);
+    get(chunks, current, string_flag, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, obj, line);
+    get(chunks, current, i, line);
+    {
+        let idx = chunks[current].add_import("ecma:string", "charAt");
+        chunks[current].emit_call(idx, 2, line);
+    }
+    chunks[current].emit_else(line);
+    get(chunks, current, obj, line);
+    get(chunks, current, i, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // i += step_n
+    get(chunks, current, i, line);
+    get(chunks, current, step_n, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(chunks, current, i, line);
+
+    loops::emit_loop_end(chunks, current, st, line);
+
+    // Rejoin strings: is_string(obj) ? result.join("") : result
+    get(chunks, current, string_flag, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, result, line);
+    chunks[current].emit_string_const("", line);
+    collections::emit_join(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, result, line);
+    chunks[current].emit_end(line);
+
+    // Preserve tuple-ness: tuple[i:j:k] stays a tuple (no-op for lists/strings).
+    get(chunks, current, obj, line);
+    tuples::emit_propagate_tag(chunks, current, line);
+}
+
+fn emit_stepped_inline(chunks: &mut [Chunk], current: usize, line: u32, opts: Options) {
+    // The helper's four parameters already hold the evaluated inputs.
+    let obj = 0;
+    let lower_in = 1;
+    let upper_in = 2;
+    let step_in = 3;
+    let base = chunks[current].alloc_scratch(7);
+    let len = base;
+    let step_n = base + 1;
+    let lo = base + 2;
+    let hi = base + 3;
+    let i = base + 4;
+    let result = base + 5;
+    let cond = base + 6;
+
+    // result = []
+    collections::emit_array_new(chunks, current, 0, line);
+    set(chunks, current, result, line);
+
+    // len = length(obj)
+    get(chunks, current, obj, line);
+    collections::emit_len(chunks, current, line);
+    set(chunks, current, len, line);
+
+    normalize_slice_into(
+        chunks, current, lower_in, upper_in, step_in, len, step_n, lo, hi, opts, line,
+    );
+
+    // i = lo
+    get(chunks, current, lo, line);
+    set(chunks, current, i, line);
+
+    // while ( (step>0 && i<hi) || (step<0 && i>hi) ) { result.push(obj[i]); i += step }
+    let st = loops::emit_loop_start(chunks, current, line);
+    // cond = (step_n > 0) ? (i < hi) : (i > hi)
+    get(chunks, current, step_n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    ops::emit_dyn_gt(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    get(chunks, current, i, line);
+    get(chunks, current, hi, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    set(chunks, current, cond, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, i, line);
+    get(chunks, current, hi, line);
+    ops::emit_dyn_gt(&mut chunks[current], line);
+    set(chunks, current, cond, line);
+    chunks[current].emit_end(line);
+    get(chunks, current, cond, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line); // break when false
+
+    // result.push( is_string(obj) ? charAt(obj,i) : obj[i] )
+    get(chunks, current, result, line);
+    is_string(chunks, current, obj, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, obj, line);
+    get(chunks, current, i, line);
+    {
+        let idx = chunks[current].add_import("ecma:string", "charAt");
+        chunks[current].emit_call(idx, 2, line);
+    }
+    chunks[current].emit_else(line);
+    get(chunks, current, obj, line);
+    get(chunks, current, i, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // i += step_n
+    get(chunks, current, i, line);
+    get(chunks, current, step_n, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(chunks, current, i, line);
+
+    loops::emit_loop_end(chunks, current, st, line);
+
+    // Rejoin strings: is_string(obj) ? result.join("") : result
+    is_string(chunks, current, obj, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, result, line);
+    chunks[current].emit_string_const("", line);
+    collections::emit_join(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, result, line);
+    chunks[current].emit_end(line);
+
+    // Preserve tuple-ness: tuple[i:j:k] stays a tuple (no-op for lists/strings).
+    get(chunks, current, obj, line);
+    tuples::emit_propagate_tag(chunks, current, line);
+}
+
+/// Push `(step>0 ? i<hi : i>hi)` as i32: both comparison branches produce i32.
+fn emit_stride_cond(chunks: &mut [Chunk], current: usize, step_n: u16, i: u16, hi: u16, line: u32) {
+    get(chunks, current, step_n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    ops::emit_dyn_gt(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, i, line);
+    get(chunks, current, hi, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    get(chunks, current, i, line);
+    get(chunks, current, hi, line);
+    ops::emit_dyn_gt(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+/// Contiguous slice assignment `obj[lo:hi] = value` (variable length: splice).
+/// Stack: `[obj, lower|null, upper|null, value] -> []`. Bounds wrap from the end
+/// and clamp; the array is mutated in place (remove the range, insert `value`).
+pub fn emit_splice_assign(chunks: &mut [Chunk], current: usize, line: u32) {
+    let b = chunks[current].alloc_scratch(8);
+    let obj = b;
+    let lower_in = b + 1;
+    let upper_in = b + 2;
+    let value = b + 3;
+    let len = b + 4;
+    let one = b + 5;
+    let lo = b + 6;
+    let hi = b + 7;
+
+    set(chunks, current, value, line);
+    set(chunks, current, upper_in, line);
+    set(chunks, current, lower_in, line);
+    set(chunks, current, obj, line);
+
+    get(chunks, current, obj, line);
+    collections::emit_len(chunks, current, line);
+    set(chunks, current, len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    set(chunks, current, one, line);
+
+    // Contiguous (step = 1): reuse the CPython bound normalization.
+    normalize_bound(chunks, current, lower_in, lo, one, len, line, LEN_M1, 0, -1);
+    normalize_bound(chunks, current, upper_in, hi, one, len, line, -1, LEN, -1);
+
+    // count = max(hi - lo, 0)  (stored back into hi)
+    get(chunks, current, hi, line);
+    get(chunks, current, lo, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    vybe_compiler::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, hi);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(chunks, current, hi, line);
+    chunks[current].emit_end(line);
+
+    // remove_range(obj, lo, count)
+    get(chunks, current, obj, line);
+    get(chunks, current, lo, line);
+    get(chunks, current, hi, line);
+    collections::emit_remove_range(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    // insert_range(obj, lo, value)
+    get(chunks, current, obj, line);
+    get(chunks, current, lo, line);
+    get(chunks, current, value, line);
+    collections::emit_insert_range(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+/// Extended slice assignment `obj[lo:hi:step] = value` (positional: each strided
+/// slot gets the matching `value` element). Stack:
+/// `[obj, lower|null, upper|null, step|null, value] -> []`.
+pub fn emit_strided_assign(chunks: &mut [Chunk], current: usize, line: u32, opts: Options) {
+    let b = chunks[current].alloc_scratch(11);
+    let obj = b;
+    let lower_in = b + 1;
+    let upper_in = b + 2;
+    let step_in = b + 3;
+    let value = b + 4;
+    let len = b + 5;
+    let step_n = b + 6;
+    let lo = b + 7;
+    let hi = b + 8;
+    let i = b + 9;
+    let m = b + 10;
+
+    set(chunks, current, value, line);
+    set(chunks, current, step_in, line);
+    set(chunks, current, upper_in, line);
+    set(chunks, current, lower_in, line);
+    set(chunks, current, obj, line);
+
+    get(chunks, current, obj, line);
+    collections::emit_len(chunks, current, line);
+    set(chunks, current, len, line);
+
+    normalize_slice_into(
+        chunks, current, lower_in, upper_in, step_in, len, step_n, lo, hi, opts, line,
+    );
+
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(chunks, current, m, line);
+    get(chunks, current, lo, line);
+    set(chunks, current, i, line);
+
+    let st = loops::emit_loop_start(chunks, current, line);
+    emit_stride_cond(chunks, current, step_n, i, hi, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
+    // obj[i] = value[m]
+    get(chunks, current, obj, line);
+    get(chunks, current, i, line);
+    get(chunks, current, value, line);
+    get(chunks, current, m, line);
+    collections::emit_get(chunks, current, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    // m += 1; i += step
+    get(chunks, current, m, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(chunks, current, m, line);
+    get(chunks, current, i, line);
+    get(chunks, current, step_n, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(chunks, current, i, line);
+    loops::emit_loop_end(chunks, current, st, line);
+}
+
+/// Strided deletion `del obj[lo:hi:step]`. Stack:
+/// `[obj, lower|null, upper|null, step|null] -> []`. Removes each strided index
+/// in place; a running counter keeps positions valid without collecting indices.
+pub fn emit_strided_del(chunks: &mut [Chunk], current: usize, line: u32, opts: Options) {
+    let b = chunks[current].alloc_scratch(11);
+    let obj = b;
+    let lower_in = b + 1;
+    let upper_in = b + 2;
+    let step_in = b + 3;
+    let len = b + 4;
+    let step_n = b + 5;
+    let lo = b + 6;
+    let hi = b + 7;
+    let i = b + 8;
+    let removed = b + 9;
+    let target = b + 10;
+
+    set(chunks, current, step_in, line);
+    set(chunks, current, upper_in, line);
+    set(chunks, current, lower_in, line);
+    set(chunks, current, obj, line);
+
+    get(chunks, current, obj, line);
+    collections::emit_len(chunks, current, line);
+    set(chunks, current, len, line);
+
+    normalize_slice_into(
+        chunks, current, lower_in, upper_in, step_in, len, step_n, lo, hi, opts, line,
+    );
+
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(chunks, current, removed, line);
+    get(chunks, current, lo, line);
+    set(chunks, current, i, line);
+
+    let st = loops::emit_loop_start(chunks, current, line);
+    emit_stride_cond(chunks, current, step_n, i, hi, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
+    // target = (step > 0) ? i - removed : i  (ascending removals shift positions)
+    get(chunks, current, step_n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    ops::emit_dyn_gt(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    get(chunks, current, i, line);
+    get(chunks, current, removed, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    set(chunks, current, target, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, i, line);
+    set(chunks, current, target, line);
+    chunks[current].emit_end(line);
+    // remove_range(obj, target, 1)
+    get(chunks, current, obj, line);
+    get(chunks, current, target, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    collections::emit_remove_range(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    // removed += 1; i += step
+    get(chunks, current, removed, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(chunks, current, removed, line);
+    get(chunks, current, i, line);
+    get(chunks, current, step_n, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(chunks, current, i, line);
+    loops::emit_loop_end(chunks, current, st, line);
+}
+
+// ── Linkable chunk builders ──────────────────────────────────────────────────
+//
+// Linkable chunk builders — the standalone-chunk packaging of what the
+// `emit_*` forms above splice inline. Same concept, same module.
+
+// ── slice(arr, start, end) → array — wraps array_slice opcode
+pub fn build_slice(imports: &mut Chunk) -> Chunk {
+    // Polymorphic slice: handles BOTH strings and arrays. The walker doesn't
+    // know whether `obj[1..3]` operates on a string or an array, so the
+    // canonical slice helper does a runtime type check via `ref_is_string`
+    // and dispatches to `str_substring` or `array_slice` accordingly.
+    //
+    // Used by every language whose surface syntax for slicing is `[start..end]`:
+    // C# `arr[1..3]` / `s[0..5]`, Python `arr[1:3]` / `s[0:5]`, etc.
+    let mut c = Chunk::new("__stdlib_slice");
+    c.arity = 3;
+    c.local_count = 3; // obj + start + end
+    let obj = 0u16;
+    let start = 1u16;
+    let end = 2u16;
+
+    // if ref_is_string(obj) → str_substring; else → array_slice
+    let str_block_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, obj, 0);
+    fixture_is_string(&mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0); // skip string branch if NOT string
+
+    // String branch: [obj, start, end] → str_substring
+    c.emit_op_u16(Op::LOCAL_GET, obj, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    fixture_substring(&mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+
+    // Array branch
+    c.emit_end(0);
+    c.patch_block(str_block_p);
+    c.emit_op_u16(Op::LOCAL_GET, obj, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    vybe_compiler::primitives::collections::emit_slice_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── sliceStep(arr, start, end, step) → array ─────────────────
+pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_slicestep");
+    c.arity = 4;
+    c.local_count = 11; // arr(0) start(1) end(2) step(3) result(4) i(5) cond(6) step(7) start(8) end(9) len(10)
+    let zero = c.add_constant(vybe_runtime::Value::I32(0));
+    let neg_one = c.add_constant(vybe_runtime::Value::I32(-1));
+
+    // result = new array
+    vybe_compiler::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 4, 0);
+
+    // len = arr.length
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    vybe_compiler::primitives::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 10, 0);
+
+    // step = step ?? 1
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_if(0);
+    vybe_compiler::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_end(0);
+
+    // start = start ?? (step > 0 ? 0 : len - 1)
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    vybe_compiler::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    vybe_compiler::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    c.emit_if(0);
+    vybe_compiler::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 8, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 10, 0);
+    vybe_compiler::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 8, 0);
+    c.emit_end(0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 8, 0);
+    c.emit_end(0);
+
+    // end = end ?? (step > 0 ? len : -1)
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    vybe_compiler::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    vybe_compiler::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 10, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 9, 0);
+    c.emit_else(0);
+    vybe_compiler::primitives::expressions::emit_const_index(&mut c, neg_one, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 9, 0);
+    c.emit_end(0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 9, 0);
+    c.emit_end(0);
+
+    // step=0 would otherwise spin forever; return empty slice.
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    vybe_compiler::primitives::ops::emit_dyn_eq_i32_literal(&mut c, 0, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+
+    // i = normalized start
+    c.emit_op_u16(Op::LOCAL_GET, 8, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 5, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    // Compute condition: if step > 0 then i < end else i > end
+    // Store in local 6 (cond) to avoid value-on-stack across branches.
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    vybe_compiler::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    vybe_compiler::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    c.emit_if(0);
+
+    // positive step: cond = i < end
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 9, 0);
+    vybe_compiler::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
+
+    // negative step: cond = i > end
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 9, 0);
+    vybe_compiler::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 6, 0);
+    c.emit_end(0);
+
+    // Check condition — exit if false
+    c.emit_op_u16(Op::LOCAL_GET, 6, 0);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(1, 0); // exit loop (depth 1 = outer block)
+
+    // bounds check: skip push if i < 0 or i >= arr.length
+    // Block must wrap the condition values consumed by br_if inside it
+    let skip_block_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    vybe_compiler::primitives::expressions::emit_const_index(&mut c, zero, 0);
+    vybe_compiler::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // skip push if i < 0
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 10, 0);
+    vybe_compiler::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0); // skip push if i >= length
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    fixture_is_string(&mut c, 0);
+    // wasm:js-string.test already returns a raw i32 predicate.
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    {
+        let idx = c.add_import("ecma:string", "charAt");
+        c.emit_call(idx, 2, 0);
+    }
+    vybe_compiler::primitives::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    vybe_compiler::primitives::collections::emit_get_into(imports, &mut c, 0);
+    vybe_compiler::primitives::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0);
+    c.emit_end(0);
+    c.patch_block(skip_block_p);
+
+    // i = i + step
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    vybe_compiler::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 5, 0);
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    let string_branch = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    fixture_is_string(&mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    let empty = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("")));
+    vybe_compiler::primitives::expressions::emit_const_index(&mut c, empty, 0);
+    vybe_compiler::primitives::collections::emit_join_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(string_branch);
+
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── splice(arr, index, deleteCount) → removed_elements ──────
+// Returns array of removed elements. Mutates arr by removing elements.
+// Pure bytecode: build new array from arr[0:index] + arr[index+deleteCount:end]
+pub fn build_splice(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_splice");
+    c.arity = 3;
+    c.local_count = 6; // arr(0) + index(1) + delete_count(2) + result(3) + i(4) + end(5)
+    let arr = 0u16;
+    let index = 1;
+    let delete_count = 2;
+    let result_local = 3;
+    let i = 4;
+    let end = 5;
+
+    // result = [] (removed elements)
+    vybe_compiler::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result_local, 0);
+
+    // Collect removed elements: arr[index..index+deleteCount]
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_GET, delete_count, 0);
+    vybe_compiler::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, end, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    vybe_compiler::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
+    c.emit_br_if(1, 0); // exit loop
+
+    c.emit_op_u16(Op::LOCAL_GET, result_local, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    vybe_compiler::primitives::collections::emit_get_into(imports, &mut c, 0);
+    vybe_compiler::primitives::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    vybe_compiler::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0);
+    c.patch_loop(loop_p);
+    c.emit_end(0);
+    c.patch_block(block_p);
+
+    // Return removed elements (actual array mutation would need more complex bytecode)
+    c.emit_op_u16(Op::LOCAL_GET, result_local, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn fixture_is_string(c: &mut Chunk, line: u32) {
+    let idx = c.add_import("wasm:js-string", "test");
+    c.emit_call(idx, 1, line);
+}
+fn fixture_substring(c: &mut Chunk, line: u32) {
+    let idx = c.add_import("wasm:js-string", "substring");
+    c.emit_call(idx, 3, line);
+}

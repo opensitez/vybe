@@ -420,7 +420,22 @@ impl Compiler {
                 path.extend(prefix.split('.').filter(|s| !s.is_empty()));
             }
             path.extend_from_slice(&segments);
-            match namespaces::resolve_in(&tree, &path, self.tree_fold()) {
+            let fold = self.tree_fold();
+            let enabled = self.user_namespace_lookup_cache.borrow().enabled();
+            let resolved = if enabled {
+                let cached = self.user_namespace_lookup_cache.borrow().get(&path, fold);
+                match cached {
+                    Some(value) => value,
+                    None => {
+                        let value = namespaces::resolve_in(&tree, &path, fold);
+                        self.user_namespace_lookup_cache.borrow_mut().insert(&path, fold, value.clone());
+                        value
+                    }
+                }
+            } else {
+                namespaces::resolve_in(&tree, &path, fold)
+            };
+            match resolved {
                 Some(ResolutionTarget::UserGlobal { identity, kind }) if kind == want => {
                     Some(identity)
                 }
@@ -673,34 +688,24 @@ impl Compiler {
     /// surface lives in `crate::primitives::namespaces` registrations.
     pub(crate) fn resolve_profile_namespace_chain(&self, parts: &[String]) -> Option<Resolution> {
         let first = parts.first()?;
-        let lower: Vec<String> = parts.iter().map(|s| self.canon(s)).collect();
-        let head_key = self.canon(first);
-        let mounted_tree_head = self.tree_mounts.contains_key(&head_key);
+        // Membership queries need only the head. Resolutions that
+        // return an existing tree target or miss need no canonical tail.
+        // Materialize strings only when the returned resolution owns that tail.
+        let head_key = self.canon_lookup(first);
+        let mounted_tree_head = self.tree_mounts.contains_key(head_key.as_ref());
 
         let is_user_type = |name: &str| -> bool {
-            self.defined_classes.contains(name)
-                || self
-                    .defined_classes
-                    .iter()
-                    .any(|c| c.eq_ignore_ascii_case(name))
+            self.defined_classes.contains_ascii_folded(name)
         };
 
         let head_is_local = !mounted_tree_head
-            && !is_user_type(&lower[0])
-            && (self.scopes.iter().any(|scope| {
-                scope
-                    .locals
-                    .iter()
-                    .any(|l| l.name.eq_ignore_ascii_case(first))
-            }) || self.defined_globals.contains(&lower[0])
-                || self
-                    .defined_globals
-                    .iter()
-                    .any(|g| g.eq_ignore_ascii_case(first)));
+            && !is_user_type(head_key.as_ref())
+            && (self.scopes.iter().any(|scope| scope.contains_ascii_folded_local(first)) || self.defined_globals.contains(head_key.as_ref())
+                || self.defined_globals.contains_ascii_folded(first));
         if head_is_local {
             return Some(Resolution::ScopedMember {
-                local: lower[0].clone(),
-                members: lower[1..].to_vec(),
+                local: head_key.into_owned(),
+                members: parts[1..].iter().map(|part| self.canon(part)).collect(),
             });
         }
 
@@ -709,14 +714,14 @@ impl Compiler {
             .as_ref()
             .and_then(|cn| self.pending_classes.get(cn.as_str()))
             .is_some_and(|pc| pc.fields.iter().any(|f| f.eq_ignore_ascii_case(first)));
-        if head_is_field && lower.len() > 1 {
+        if head_is_field && parts.len() > 1 {
             return Some(Resolution::ScopedMember {
-                local: lower[0].clone(),
-                members: lower[1..].to_vec(),
+                local: head_key.into_owned(),
+                members: parts[1..].iter().map(|part| self.canon(part)).collect(),
             });
         }
 
-        if is_user_type(&lower[0]) {
+        if is_user_type(head_key.as_ref()) {
             return None;
         }
 
@@ -733,8 +738,9 @@ impl Compiler {
         }
 
         for prefix_len in (1..parts.len()).rev() {
-            let prefix_refs: Vec<&str> = parts[..prefix_len].iter().map(String::as_str).collect();
-            let Some(Resolution::Tree(target)) = self.resolve_namespace_path(&prefix_refs) else {
+            // The full path already owns the reference buffer. Prefix probes
+            // can borrow it without rebuilding the same leading references.
+            let Some(Resolution::Tree(target)) = self.resolve_namespace_path(&refs[..prefix_len]) else {
                 continue;
             };
             if matches!(
@@ -745,7 +751,7 @@ impl Compiler {
             ) {
                 return Some(Resolution::ResolvedPrefix {
                     target,
-                    suffix: lower[prefix_len..].to_vec(),
+                    suffix: parts[prefix_len..].iter().map(|part| self.canon(part)).collect(),
                 });
             }
         }

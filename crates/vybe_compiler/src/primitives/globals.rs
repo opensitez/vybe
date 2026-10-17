@@ -378,6 +378,15 @@ impl Compiler {
 ///
 /// Runs AFTER `declare_free_globals`, which is what decides the import half.
 pub fn normalize_global_table(chunks: &mut [Chunk]) {
+    let operands: GlobalOperands = chunks.iter().map(|chunk| {
+        let mut uses = Vec::new();
+        visit_global_operands(chunk, |offset, index, _, write| uses.push((offset, index, write)));
+        uses
+    }).collect();
+    normalize_global_table_with_operands(chunks, &operands);
+}
+
+fn normalize_global_table_with_operands(chunks: &mut [Chunk], operands: &[Vec<(usize, u32, bool)>]) {
     if chunks.is_empty() {
         return;
     }
@@ -386,62 +395,109 @@ pub fn normalize_global_table(chunks: &mut [Chunk]) {
     // string-constant global is referenced by its COMPOSITE key, a host global
     // by its BARE name.
     let mut string_constants: Vec<String> = Vec::new();
-    let mut seen_string_constants: HashSet<String> = HashSet::new();
+    let mut seen_string_constants: HashSet<&str, vybe_runtime::chunk::FxBuildHasher> = HashSet::default();
     let mut host_globals: Vec<String> = Vec::new();
-    let mut seen_host_globals: HashSet<String> = HashSet::new();
+    let mut seen_host_globals: HashSet<&str, vybe_runtime::chunk::FxBuildHasher> = HashSet::default();
     for chunk in chunks.iter() {
         for imp in &chunk.global_imports {
             if imp.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE {
-                if seen_string_constants.insert(imp.name.clone()) {
+                if !seen_string_constants.contains(imp.name.as_str()) {
+                    seen_string_constants.insert(imp.name.as_str());
                     string_constants.push(imp.name.clone());
                 }
-            } else if seen_host_globals.insert(imp.name.clone()) {
+            } else if !seen_host_globals.contains(imp.name.as_str()) {
+                seen_host_globals.insert(imp.name.as_str());
                 host_globals.push(imp.name.clone());
             }
         }
     }
 
+    // Release borrowed import names before rewriting chunks.
+    drop(seen_string_constants);
+    drop(seen_host_globals);
     // Everything else any chunk reads or writes, first-seen, is module-defined.
     let seeded = vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &[]);
-    let mut table_index: HashMap<String, u32> = seeded
+    if std::env::var_os("VYBE_GLOBAL_IMPORT_AUDIT").is_some() {
+        // Diagnostic only: count import identities without publishing names or
+        // values. Ordinary global ordering and index assignment stay unchanged.
+        let imports = chunks.iter().map(|chunk| chunk.global_imports.len()).sum::<usize>();
+        let code_bytes = chunks.iter().map(|chunk| chunk.code.len()).sum::<usize>();
+        let constants = chunks.iter().map(|chunk| chunk.constants.len()).sum::<usize>();
+        let distinct = chunks.iter().flat_map(|chunk| &chunk.global_imports)
+            .map(|import| (import.module.as_str(), import.name.as_str()))
+            .collect::<HashSet<_>>().len();
+        eprintln!(
+            "[global-import-audit] chunks={} imports={imports} distinct={distinct} duplicates={} string_names={} host_names={} seeded_names={} code_bytes={code_bytes} constants={constants}",
+            chunks.len(), imports.saturating_sub(distinct),
+            string_constants.len(), host_globals.len(), seeded.len(),
+        );
+    }
+    // The seed and constant pools remain stable throughout this rewrite.
+    // Borrow lookup keys instead of allocating a second copy of every name.
+    let mut table_index: HashMap<&str, u32, vybe_runtime::chunk::FxBuildHasher> = seeded
         .iter()
         .enumerate()
-        .map(|(index, name)| (name.clone(), index as u32))
+        .map(|(index, name)| (name.as_str(), index as u32))
         .collect();
-    let mut defined: Vec<String> = Vec::new();
-    let mut operands = Vec::with_capacity(chunks.len());
-    for chunk in chunks.iter() {
-        let mut uses = Vec::new();
-        visit_global_operands(chunk, |offset, _const_idx, name| {
-            let index = if let Some(index) = table_index.get(name) {
+    let mut defined: Vec<&str> = Vec::new();
+    for (chunk, uses) in chunks.iter_mut().zip(operands) {
+        if uses.is_empty() {
+            continue;
+        }
+        // Constant indices repeat across global reads. Resolve each name once
+        // per chunk, then rewrite repeated operands by integer lookup. For
+        // sparse pools, keep the ordinary lookup rather than allocate more
+        // cache bytes than the operand records already occupy.
+        let cache_capacity = uses.len()
+            .saturating_mul(std::mem::size_of::<(usize, u32)>())
+            / std::mem::size_of::<Option<u32>>();
+        let cache_len = if chunk.constants.len() <= cache_capacity {
+            chunk.constants.len()
+        } else {
+            0
+        };
+        let mut remap = vec![None; cache_len];
+        for &(offset, const_index, _) in uses {
+            if let Some(index) = remap.get(const_index as usize).copied().flatten() {
+                chunk.code[offset..offset + 4].copy_from_slice(&u32::to_be_bytes(index));
+                continue;
+            }
+            let Some(vybe_runtime::Value::String(name)) = chunk.constants.get(const_index as usize) else {
+                continue;
+            };
+            let index = if let Some(index) = table_index.get(name.as_ref()) {
                 *index
             } else {
                 let index = (seeded.len() + defined.len()) as u32;
-                defined.push(name.to_string());
-                table_index.insert(name.to_string(), index);
+                defined.push(name.as_ref());
+                table_index.insert(name.as_ref(), index);
                 index
             };
-            uses.push((offset, index));
-        });
-        operands.push(uses);
-    }
-
-    let table = vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &defined);
-
-    // Record global operand positions during discovery. Rewriting those
-    // positions needs neither another instruction scan nor a remap of every
-    // string constant. Only global operands participate in this index space.
-    for (chunk, uses) in chunks.iter_mut().zip(operands) {
-        for (offset, index) in uses {
+            if let Some(cached) = remap.get_mut(const_index as usize) {
+                *cached = Some(index);
+            }
             chunk.code[offset..offset + 4].copy_from_slice(&index.to_be_bytes());
         }
     }
+    // Retain the canonical import prefix already built above. The canonical
+    // index space appends module definitions in their first-seen order.
+    drop(table_index);
+    let mut table = seeded;
+    table.extend(defined.into_iter().map(str::to_owned));
+    // Link-time initializers define storage even without a bytecode access.
+    // Append these names after operand-discovered definitions to retain indices.
+    let mut seen: HashSet<&str, vybe_runtime::chunk::FxBuildHasher> = table.iter().map(String::as_str).collect();
+    let initialized: Vec<String> = chunks.iter().flat_map(|chunk| &chunk.global_inits)
+        .filter(|init| seen.insert(init.name.as_str()))
+        .map(|init| init.name.clone()).collect();
+    table.extend(initialized);
 
     // Share the one table with EVERY chunk, not just chunk 0. The index space
     // is module-level, so any chunk holding a `GLOBAL_GET` operand can resolve
     // it — that is what lets `disassemble(chunk)` name globals without being
     // handed the table, and what keeps a single source of truth for the space.
-    let shared = std::sync::Arc::new(table);
+    let shared: std::sync::Arc<vybe_runtime::segmented_global_names::SegmentedGlobalNames> =
+        std::sync::Arc::new(table.into());
     for chunk in chunks.iter_mut() {
         chunk.globals = shared.clone();
     }
@@ -455,16 +511,17 @@ pub fn normalize_global_table(chunks: &mut [Chunk]) {
 /// WordPress-sized PHP chunks have tens of thousands of global reads, and the
 /// old `Vec<(u32, String)>` helper allocated a fresh `String` for each operand
 /// on every finalization pass.
-fn visit_global_operands(chunk: &Chunk, mut visit: impl FnMut(usize, u32, &str)) {
+fn visit_global_operands<'a>(chunk: &'a Chunk, mut visit: impl FnMut(usize, u32, &'a str, bool)) {
     let code = &chunk.code;
+    let formats = super::link::compiler_operand_formats();
     let mut ip = 0usize;
     while ip + 3 < code.len() {
         let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
         let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
-        let Some(op) = Op::decode(group, sub) else {
-            ip += 4;
-            continue;
-        };
+        // Operand formats and validity derive from the same opcode catalog.
+        // An unknown opcode has zero-width operands, preserving the old
+        // four-byte advance without a separate validity lookup.
+        let op = Op::new(group, sub);
         let operand_start = ip + 4;
         if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 3 < code.len() {
             let idx = u32::from_be_bytes([
@@ -474,11 +531,16 @@ fn visit_global_operands(chunk: &Chunk, mut visit: impl FnMut(usize, u32, &str))
                 code[operand_start + 3],
             ]);
             if let Some(vybe_runtime::Value::String(name)) = chunk.constants.get(idx as usize) {
-                visit(operand_start, idx, name);
+                visit(operand_start, idx, name, op == Op::GLOBAL_SET);
             }
         }
-        ip = operand_start + op.operand_format().size_in(code, operand_start);
+        ip = operand_start + super::link::compiler_operand_format(op, formats).size_in(code, operand_start);
     }
+}
+
+fn initialized_globals(chunks: &[Chunk]) -> HashSet<&str> {
+    chunks.iter().flat_map(|chunk| &chunk.global_inits)
+        .map(|init| init.name.as_str()).collect()
 }
 
 /// Declare the module's FREE globals as imports.
@@ -522,7 +584,8 @@ fn visit_global_operands(chunk: &Chunk, mut visit: impl FnMut(usize, u32, &str))
 /// prelude declares `globalThis`, `undefined`, `Function`, `__ctor_Error`
 /// — names whose values the host supplies and no chunk ever assigns.
 /// Subtracting it emptied the set entirely. Whoever writes a global is its
-/// definition; that is a fact about the bytecode.
+/// definition; that is a fact about the bytecode. A `global_inits` entry is
+/// also a definition: its value is supplied by this module at link time.
 pub fn declare_free_globals(chunks: &mut [Chunk]) {
     if chunks.is_empty() {
         return;
@@ -531,7 +594,8 @@ pub fn declare_free_globals(chunks: &mut [Chunk]) {
     // names rather than allocating a String for every repeated read/write.
     let mut read: Vec<&str> = Vec::new();
     let mut seen_read: HashSet<&str> = HashSet::new();
-    let mut written: HashSet<&str> = HashSet::new();
+    let mut written = initialized_globals(chunks);
+    let formats = super::link::compiler_operand_formats();
 
     for chunk in chunks.iter() {
         let code = &chunk.code;
@@ -567,7 +631,7 @@ pub fn declare_free_globals(chunks: &mut [Chunk]) {
                     }
                 }
             }
-            ip = operand_start + op.operand_format().size_in(code, operand_start);
+            ip = operand_start + super::link::compiler_operand_format(op, formats).size_in(code, operand_start);
         }
     }
 
@@ -594,6 +658,102 @@ pub fn declare_free_globals(chunks: &mut [Chunk]) {
     }
 }
 
+
+/// Declare free imports and assign the module-global index space with one
+/// bytecode scan. Discovery records only operand offsets and constant indices;
+/// import insertion does not alter code or existing constant indices.
+pub fn finalize_global_table(chunks: &mut [Chunk]) {
+    if chunks.is_empty() { return; }
+    let mut read = Vec::new();
+    let mut seen_read = HashSet::new();
+    let mut written = initialized_globals(chunks);
+    let operands: GlobalOperands = chunks.iter().map(|chunk| {
+        let mut uses = Vec::new();
+        // Two bits per constant: read and write are independent facts. Cache
+        // only dense pools; sparse pools retain the name-based discovery path.
+        // Operand offsets are always recorded for the later index rewrite.
+        let cache_len = if chunk.constants.len() <= chunk.code.len() / 8 {
+            chunk.constants.len()
+        } else { 0 };
+        let mut access_seen = vec![0u8; cache_len];
+        visit_global_operands(chunk, |offset, index, name, is_write| {
+            uses.push((offset, index, is_write));
+            if let Some(seen) = access_seen.get_mut(index as usize) {
+                let bit = if is_write { 2 } else { 1 };
+                if *seen & bit != 0 { return; }
+                *seen |= bit;
+            }
+            if !name.starts_with(vybe_runtime::chunk::STRING_CONSTANTS_MODULE) {
+                if is_write { written.insert(name); }
+                else if seen_read.insert(name) { read.push(name); }
+            }
+        });
+        uses
+    }).collect();
+    let written_count = written.len();
+    let free: Vec<String> = read.into_iter().filter(|name| !written.contains(name))
+        .map(str::to_owned).collect();
+    drop(seen_read);
+    drop(written);
+    let declared = free.len();
+    for name in free {
+        chunks[0].add_global_import(vybe_runtime::chunk::HOST_GLOBALS_MODULE, &name);
+    }
+    if std::env::var("VYBE_DEBUG_IMPORTS").is_ok() {
+        eprintln!("[free-globals] {} declared, {} written, {} chunks", declared, written_count, chunks.len());
+    }
+    normalize_global_table_with_operands(chunks, &operands);
+}
+
+pub(crate) type GlobalOperands = Vec<Vec<(usize, u32, bool)>>;
+
+
+/// Discover free globals and rewrite global indices from the same operand
+/// records used by host import finalization. Records are unit-local; they
+/// never change guest instructions, scopes, directives or the Wasm ABI.
+pub(crate) fn finalize_global_table_with_operands(chunks: &mut [Chunk], operands: &GlobalOperands) {
+    if chunks.is_empty() { return; }
+    let mut read = Vec::new();
+    let mut seen_read = HashSet::new();
+    let mut written = initialized_globals(chunks);
+    for (chunk,uses) in chunks.iter().zip(operands) {
+        // Two bits per constant: read and write are independent facts. Cache
+        // only dense pools; sparse pools retain the name-based discovery path.
+        // Operand offsets are always recorded for the later index rewrite.
+        let cache_len = if chunk.constants.len() <= chunk.code.len() / 8 {
+            chunk.constants.len()
+        } else { 0 };
+        let mut access_seen = vec![0u8; cache_len];
+        for &(_offset,index,is_write) in uses {
+            let Some(vybe_runtime::Value::String(name))=chunk.constants.get(index as usize) else {continue;};
+            let name=name.as_ref();
+
+            if let Some(seen) = access_seen.get_mut(index as usize) {
+                let bit = if is_write { 2 } else { 1 };
+                if *seen & bit != 0 { continue; }
+                *seen |= bit;
+            }
+            if !name.starts_with(vybe_runtime::chunk::STRING_CONSTANTS_MODULE) {
+                if is_write { written.insert(name); }
+                else if seen_read.insert(name) { read.push(name); }
+            }
+        }
+    }
+    let written_count = written.len();
+    let free: Vec<String> = read.into_iter().filter(|name| !written.contains(name))
+        .map(str::to_owned).collect();
+    drop(seen_read);
+    drop(written);
+    let declared = free.len();
+    for name in free {
+        chunks[0].add_global_import(vybe_runtime::chunk::HOST_GLOBALS_MODULE, &name);
+    }
+    if std::env::var("VYBE_DEBUG_IMPORTS").is_ok() {
+        eprintln!("[free-globals] {} declared, {} written, {} chunks", declared, written_count, chunks.len());
+    }
+    normalize_global_table_with_operands(chunks, &operands);
+}
+
 #[cfg(test)]
 mod global_normalization_tests {
     use super::*;
@@ -601,6 +761,119 @@ mod global_normalization_tests {
 
     fn operand(chunk: &Chunk, offset: usize) -> u32 {
         u32::from_be_bytes(chunk.code[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn recorded_operands_preserve_initializer_ownership_and_metadata_only_globals() {
+        use vybe_runtime::chunk::{ConstExpr, GlobalInit};
+        let mut entry = Chunk::new("entry");
+        emit_read(&mut entry, "module_callable", 1);
+        emit_read(&mut entry, "host_value", 1);
+        entry.global_inits.push(GlobalInit { name: "module_callable".into(), init: ConstExpr::RefFunc(1) });
+        let mut function = Chunk::new("function");
+        function.global_inits.push(GlobalInit { name: "metadata_only".into(), init: ConstExpr::Value(Value::I32(3)) });
+        let mut chunks = vec![entry, function];
+        let operands = chunks.iter().map(|chunk| {
+            let mut uses = Vec::new();
+            visit_global_operands(chunk, |offset, index, _, write| uses.push((offset, index, write)));
+            uses
+        }).collect();
+        let mut expected = chunks.clone();
+        finalize_global_table(&mut expected);
+        finalize_global_table_with_operands(&mut chunks, &operands);
+        for (actual, expected) in chunks.iter().zip(&expected) {
+            assert_eq!(actual.code, expected.code);
+            assert_eq!(actual.global_imports, expected.global_imports);
+            assert_eq!(actual.globals, expected.globals);
+        }
+        assert_eq!(chunks[0].global_imports.len(), 1);
+        assert_eq!(chunks[0].global_imports[0].name, "host_value");
+        assert!(chunks[0].globals.iter().any(|name| name == "metadata_only"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "paired CPU benchmark for global-table finalization"]
+    fn paired_global_finalization_cpu() {
+        fn cpu_ns() -> u128 {
+            unsafe extern "C" { fn clock_gettime(id: i32, time: *mut [i64; 2]) -> i32; }
+            let mut time = [0i64; 2];
+            assert_eq!(unsafe { clock_gettime(16, &mut time) }, 0);
+            time[0] as u128 * 1_000_000_000 + time[1] as u128
+        }
+        let mut entry = Chunk::new("entry");
+        let mut function = Chunk::new("function");
+        for i in 0..30_000 {
+            let free = format!("free_{}", i % 128);
+            let owned = format!("owned_{}", i % 128);
+            emit_read(&mut entry, &free, 1);
+            emit_read(&mut entry, &owned, 1);
+            emit_write(&mut function, &owned, 1);
+        }
+        let original = vec![entry, function];
+        let mut samples = [Vec::new(), Vec::new()];
+        for round in 0..11 {
+            for fused in if round % 2 == 0 { [false, true] } else { [true, false] } {
+                let mut chunks = original.clone();
+                let start = cpu_ns();
+                if fused { finalize_global_table(&mut chunks); }
+                else { declare_free_globals(&mut chunks); normalize_global_table(&mut chunks); }
+                std::hint::black_box(&chunks);
+                drop(chunks);
+                let elapsed = cpu_ns() - start;
+                if round != 0 { samples[fused as usize].push(elapsed); }
+            }
+        }
+        for values in &mut samples { values.sort_unstable(); }
+        eprintln!("global_finalization separate_cpu_ms={:.3} fused_cpu_ms={:.3} ratio={:.3} operands=90000",
+            samples[0][5] as f64 / 1e6, samples[1][5] as f64 / 1e6,
+            samples[1][5] as f64 / samples[0][5] as f64);
+    }
+
+    #[test]
+    fn fused_scan_preserves_unknown_opcode_advances() {
+        let mut chunk = Chunk::new("unknowns");
+        chunk.code.extend_from_slice(&[0xA5, 0xA5, 0x12, 0x34]);
+        chunk.code.extend_from_slice(&[0, 0, 0xFF, 0xFF]);
+        emit_read(&mut chunk, "after_unknowns", 1);
+        let mut baseline = vec![chunk.clone()];
+        let mut fused = vec![chunk];
+        declare_free_globals(&mut baseline);
+        normalize_global_table(&mut baseline);
+        finalize_global_table(&mut fused);
+        assert_eq!(baseline[0].code, fused[0].code);
+        assert_eq!(baseline[0].global_imports, fused[0].global_imports);
+        assert_eq!(fused[0].globals.as_ref(),
+            &vybe_runtime::chunk::global_index_space(&[], &["after_unknowns".to_string()], &[]));
+    }
+
+    #[test]
+    fn fused_finalization_matches_separate_passes_with_wide_indices_and_cross_chunk_writes() {
+        let mut entry = Chunk::new("entry");
+        entry.constants.resize_with(65_536, || Value::Null);
+        entry.emit_string_const("literal", 1);
+        entry.add_global_import(vybe_runtime::chunk::HOST_GLOBALS_MODULE, "Existing");
+        for _ in 0..128 {
+            emit_read(&mut entry, "Free\\name", 1);
+            emit_read(&mut entry, "Owned\\name", 1);
+            emit_read(&mut entry, "Existing", 1);
+        }
+        let mut function = Chunk::new("function");
+        emit_write(&mut function, "Owned\\name", 2);
+        emit_read(&mut function, "Later", 2);
+        let mut baseline = vec![entry, function, Chunk::new("empty")];
+        let mut fused = baseline.clone();
+        declare_free_globals(&mut baseline);
+        normalize_global_table(&mut baseline);
+        finalize_global_table(&mut fused);
+        for (expected, actual) in baseline.iter().zip(&fused) {
+            assert_eq!(actual.code, expected.code);
+            assert_eq!(actual.globals, expected.globals);
+            assert_eq!(actual.global_imports, expected.global_imports);
+            assert_eq!(actual.constants, expected.constants);
+        }
+        assert!(std::sync::Arc::ptr_eq(&fused[0].globals, &fused[1].globals));
+        finalize_global_table(&mut []);
     }
 
     #[test]
@@ -612,7 +885,8 @@ mod global_normalization_tests {
             &["literal".to_owned()], &["host".to_owned()], &[],
         );
         let literal_offset = entry.code.len() + 4;
-        emit_read(&mut entry, &seeded[0], 1);
+        let literal_index = seeded.iter().position(|name| name.ends_with("::literal")).unwrap();
+        emit_read(&mut entry, &seeded[literal_index], 1);
         let host_offset = entry.code.len() + 4;
         emit_read(&mut entry, "host", 1);
         let alpha_offset = entry.code.len() + 4;
@@ -627,7 +901,7 @@ mod global_normalization_tests {
         let shared_offset = function.code.len() + 4;
         emit_read(&mut function, "Alpha\\value", 2);
         let expected = vybe_runtime::chunk::global_index_space(
-            &["literal".to_owned()], &["host".to_owned()],
+            &["literal".to_owned(), "not a global".to_owned()], &["host".to_owned()],
             &["Alpha\\value".to_owned(), "Beta\\value".to_owned()],
         );
         let mut chunks = vec![entry, function];
@@ -635,19 +909,21 @@ mod global_normalization_tests {
 
         assert_eq!(chunks[0].globals.as_ref(), &expected);
         assert!(std::sync::Arc::ptr_eq(&chunks[0].globals, &chunks[1].globals));
-        assert_eq!(operand(&chunks[0], literal_offset), 0);
-        assert_eq!(operand(&chunks[0], host_offset), 1);
-        assert_eq!(operand(&chunks[0], alpha_offset), 2);
-        assert_eq!(operand(&chunks[0], repeated_offset), 2);
-        assert_eq!(operand(&chunks[1], beta_offset), 3);
-        assert_eq!(operand(&chunks[1], shared_offset), 2);
+        let index = |name: &str| expected.iter().position(|value| value == name).unwrap() as u32;
+        assert_eq!(operand(&chunks[0], literal_offset), index(&seeded[literal_index]));
+        assert_eq!(operand(&chunks[0], host_offset), index("host"));
+        assert_eq!(operand(&chunks[0], alpha_offset), index("Alpha\\value"));
+        assert_eq!(operand(&chunks[0], repeated_offset), index("Alpha\\value"));
+        assert_eq!(operand(&chunks[1], beta_offset), index("Beta\\value"));
+        assert_eq!(operand(&chunks[1], shared_offset), index("Alpha\\value"));
     }
 
     #[test]
     fn accepts_constant_indices_above_u16_without_remapping_unrelated_constants() {
         let mut entry = Chunk::new("entry");
         entry.constants.resize_with(65_536, || Value::Null);
-        entry.emit_string_const("ordinary literal", 1);
+        entry.constants.push(Value::String("ordinary literal".into()));
+        entry.emit_i32_const(7, 1);
         let untouched = entry.code.clone();
         let offset = entry.code.len() + 4;
         emit_read(&mut entry, "wide_global", 1);
@@ -655,7 +931,8 @@ mod global_normalization_tests {
         let constants = entry.constants.clone();
         let mut chunks = vec![entry];
         normalize_global_table(&mut chunks);
-        assert_eq!(operand(&chunks[0], offset), 0);
+        assert_eq!(operand(&chunks[0], offset),
+            vybe_runtime::chunk::PRIMITIVE_GLOBAL_IMPORTS.len() as u32);
         assert_eq!(&chunks[0].code[..untouched.len()], untouched.as_slice());
         assert_eq!(chunks[0].constants, constants);
     }
@@ -676,7 +953,7 @@ mod global_normalization_tests {
         assert_eq!(chunks[0].global_imports.len(), 1);
         assert_eq!(chunks[0].global_imports[0].name, "External\\value");
         normalize_global_table(&mut chunks);
-        assert_eq!(chunks[0].globals.as_ref(),
-            &vec!["External\\value".to_owned(), "Owned\\value".to_owned()]);
+        assert_eq!(chunks[0].globals.as_ref(), &vybe_runtime::chunk::global_index_space(
+            &[], &["External\\value".to_owned()], &["Owned\\value".to_owned()]));
     }
 }

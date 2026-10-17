@@ -556,14 +556,22 @@ impl Compiler {
         self.directives().type_resolution.unwrap_or_default()
     }
 
+    pub(crate) fn uses_dynamic_numeric_dispatch(&self) -> bool {
+        self.directives().dynamic_numeric_dispatch.unwrap_or(false)
+    }
+
+    pub(crate) fn uses_ecma_operator_coercion(&self) -> bool {
+        self.directives().ecma_operator_coercion.unwrap_or(false)
+    }
+
     pub(crate) fn operator_dispatch(&self) -> vybe_ast::OperatorDispatch {
         if let Some(dispatch) = self.directives().operator_dispatch {
             return dispatch;
         }
-        if self.profile.ecma_operator_coercion {
+        if self.uses_ecma_operator_coercion() {
             return vybe_ast::OperatorDispatch::Ecma;
         }
-        if self.profile.dynamic_numeric_dispatch {
+        if self.uses_dynamic_numeric_dispatch() {
             return vybe_ast::OperatorDispatch::RuntimeProtocol;
         }
         vybe_ast::OperatorDispatch::StaticBuiltin
@@ -577,13 +585,13 @@ impl Compiler {
     /// numeric-dispatch languages still keep the runtime path because their
     /// operand type is intentionally unresolved until execution.
     pub(crate) fn uses_rich_comparison(&self) -> bool {
-        if self.profile.string_aware_relational {
+        if self.directives().string_aware_relational.unwrap_or(false) {
             return false;
         }
         match self.operator_dispatch() {
             vybe_ast::OperatorDispatch::Ecma | vybe_ast::OperatorDispatch::StaticBuiltin => false,
             vybe_ast::OperatorDispatch::RuntimeProtocol => {
-                self.profile.dynamic_numeric_dispatch
+                self.uses_dynamic_numeric_dispatch()
                     || self.program_has_any_protocol_slot(&[
                         vybe_ast::ProtocolSlot::Eq,
                         vybe_ast::ProtocolSlot::Ne,
@@ -603,7 +611,7 @@ impl Compiler {
         match self.operator_dispatch() {
             vybe_ast::OperatorDispatch::Ecma | vybe_ast::OperatorDispatch::StaticBuiltin => false,
             vybe_ast::OperatorDispatch::RuntimeProtocol => {
-                self.profile.dynamic_numeric_dispatch
+                self.uses_dynamic_numeric_dispatch()
                     || self.program_has_any_protocol_slot(&[
                         vybe_ast::ProtocolSlot::Add,
                         vybe_ast::ProtocolSlot::Sub,
@@ -625,7 +633,6 @@ impl Compiler {
         }
     }
 
-    /// Turn an i32 comparison result into the value shape this profile uses —
     /// unless a CONDITION asked for the raw i32, in which case conversion is
     /// skipped and that is reported.
     ///
@@ -640,12 +647,57 @@ impl Compiler {
             return;
         }
         let line = self.line;
-        if self.profile.ecma_operator_coercion || self.profile.materialize_bool_results {
+        if self.comparison_results_are_boolean(
+            self.uses_ecma_operator_coercion() || self.profile.materialize_bool_results,
+        ) {
             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
         } else {
             let from_i32 = self.import("wasm:js-number", "fromI32");
             self.emit_host_call(from_i32, 1);
         }
+    }
+
+    /// Resolve the nearest explicit predicate-value policy. A frame that does
+    /// not specify it inherits its enclosing frame, including explicit false.
+    /// The caller supplies its prior default for unmigrated frontends.
+    pub(super) fn comparison_results_are_boolean(&self, legacy_default: bool) -> bool {
+        self.directives
+            .iter()
+            .rev()
+            .find_map(|directives| directives.comparison_results_are_boolean)
+            .unwrap_or(legacy_default)
+    }
+
+    /// Physical producer proof, independent of declarations and source names.
+    /// These exact expression arms never return an aggregate/reference wrapper.
+    pub(super) fn expression_emits_nonreference_temporary(expr: &vybe_ast::Expression) -> bool {
+        use vybe_ast::{ExprKind, Literal, UnaryOp, BinOp};
+        // These explicit operators bypass profile/operator protocol dispatch
+        // and emit only scalar Wasm results (or trap). Their operands may be
+        // arbitrary; this proves the result, never a binding's declared type.
+        if crate::primitives::bits::word_scalar_reference_proof_enabled()
+            && matches!(&expr.kind,
+                ExprKind::Binary { op: BinOp::Integer(..) | BinOp::RotL(_) | BinOp::RotR(_), .. }
+                | ExprKind::Unary { op: UnaryOp::PopCount(_) | UnaryOp::LeadingZeros(_)
+                    | UnaryOp::TrailingZeros(_), .. })
+        {
+            return true;
+        }
+        matches!(&expr.kind,
+            ExprKind::Lit(Literal::Int(_) | Literal::Float(_) | Literal::Str(_)
+                | Literal::Char(_) | Literal::Bool(_) | Literal::Null
+                | Literal::Undefined | Literal::Ellipsis)
+            | ExprKind::Unary { op: UnaryOp::Pos | UnaryOp::Not | UnaryOp::Typeof
+                | UnaryOp::Void | UnaryOp::Delete, .. })
+    }
+
+    /// Preserve scratch ownership/release timing while omitting unreachable
+    /// aggregate probing. Use only after an exact nonreference producer proof.
+    fn emit_nonreference_temporary_deref(&mut self) {
+        let line = self.line;
+        crate::primitives::references::emit_nonreference_temporary_to_stack(
+            &mut self.chunks, self.current, line,
+        );
     }
 
     /// Compile `cond` and leave an **i32** 0/1 on the stack.
@@ -668,6 +720,72 @@ impl Compiler {
         &mut self,
         cond: &vybe_ast::Expression,
     ) -> Result<(), String> {
+        if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+            && !self.directives().logical_ops_bitwise_for_integers.unwrap_or(false)
+            && let vybe_ast::ExprKind::Unary { op: vybe_ast::UnaryOp::Not, expr } = &cond.kind
+        {
+            self.compile_condition_to_i32(expr)?;
+            self.emit(Op::I32_EQZ);
+            return Ok(());
+        }
+        // In a condition, a statically built-in short-circuit logical needs
+        // only its operands' predicates, never a boxed intermediate result.
+        // Runtime operator protocols and integer-bitwise logical semantics
+        // retain their existing value-producing path.
+        if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+            && !self.directives().logical_ops_bitwise_for_integers.unwrap_or(false)
+            && let vybe_ast::ExprKind::Binary { op, left, right } = &cond.kind
+            && matches!(op, vybe_ast::BinOp::And | vybe_ast::BinOp::Or)
+        {
+            let line = self.line;
+            self.compile_condition_to_i32(left)?;
+            self.chunk().emit_if_i32(line);
+            if matches!(op, vybe_ast::BinOp::And) {
+                self.compile_condition_to_i32(right)?;
+            } else {
+                self.chunk().emit_i32_const(1, line);
+            }
+            self.chunk().emit_else(line);
+            if matches!(op, vybe_ast::BinOp::And) {
+                self.chunk().emit_i32_const(0, line);
+            } else {
+                self.compile_condition_to_i32(right)?;
+            }
+            self.chunk().emit_end(line);
+            return Ok(());
+        }
+        // Ask explicit word producers for their physical i32 result instead
+        // of boxing it only to coerce it back into a condition. Never infer
+        // this representation from a variable hint or an arbitrary call.
+        if crate::primitives::bits::word_scalar_reference_proof_enabled()
+            && !crate::primitives::polyfills::is_compiling_runtime_helper()
+            // Preserve the protocol lowering's existing value transport and
+            // private slots. A raw-word request is only used by plain truthiness.
+            && !self.protocol_truthiness()
+            && !matches!(&cond.kind, vybe_ast::ExprKind::Binary {
+                op: vybe_ast::BinOp::Integer(operation, _), .. } if operation.is_comparison())
+            && matches!(&cond.kind,
+                vybe_ast::ExprKind::Binary {
+                    op: vybe_ast::BinOp::Integer(_, vybe_ast::BitLane::W32)
+                        | vybe_ast::BinOp::RotL(vybe_ast::BitLane::W32)
+                        | vybe_ast::BinOp::RotR(vybe_ast::BitLane::W32), .. }
+                | vybe_ast::ExprKind::Unary {
+                    op: vybe_ast::UnaryOp::PopCount(vybe_ast::BitLane::W32)
+                        | vybe_ast::UnaryOp::LeadingZeros(vybe_ast::BitLane::W32)
+                        | vybe_ast::UnaryOp::TrailingZeros(vybe_ast::BitLane::W32), .. })
+        {
+            let word = self.compile_word_operand(cond)?;
+            if word {
+                self.emit_nonreference_temporary_deref();
+                self.emit(Op::I32_EQZ);
+                self.emit(Op::I32_EQZ);
+            } else {
+                // The expression has already executed. A producer which did
+                // not honor the word request keeps its normal value protocol.
+                self.emit_condition_truthiness_for_expression(cond);
+            }
+            return Ok(());
+        }
         let cond_is_number = self.builtin_type_of(cond).is_some_and(|ty| {
             matches!(
                 ty,
@@ -684,15 +802,17 @@ impl Compiler {
         if !gave {
             if cond_is_number {
                 let line = self.line;
-                crate::primitives::references::emit_autoderef_to_stack(
-                    &mut self.chunks,
-                    self.current,
-                    line,
-                );
+                if Self::expression_emits_nonreference_temporary(cond) {
+                    self.emit_nonreference_temporary_deref();
+                } else {
+                    crate::primitives::references::emit_autoderef_to_stack(
+                        &mut self.chunks, self.current, line,
+                    );
+                }
                 self.emit_const(vybe_runtime::Value::F64(0.0));
                 self.chunk().emit_op(vybe_runtime::opcode::Op::F64_NE, line);
             } else {
-                self.emit_condition_truthiness_from_stack();
+                self.emit_condition_truthiness_for_expression(cond);
             }
         }
         Ok(())
@@ -712,6 +832,15 @@ impl Compiler {
     /// builtin `[]` is falsy through the SAME `Len` rung a user class with
     /// `__len__` uses, so there is no "empty collections" special case and a
     /// class in any language earns the behaviour by binding the slot.
+    pub(super) fn emit_condition_truthiness_for_expression(&mut self, expr: &vybe_ast::Expression) {
+        if Self::expression_emits_nonreference_temporary(expr) {
+            self.emit_nonreference_temporary_deref();
+            self.emit_condition_truthiness_after_deref();
+        } else {
+            self.emit_condition_truthiness_from_stack();
+        }
+    }
+
     pub(super) fn emit_condition_truthiness_from_stack(&mut self) {
         let line = self.line;
         crate::primitives::references::emit_autoderef_to_stack(
@@ -719,6 +848,11 @@ impl Compiler {
             self.current,
             line,
         );
+        self.emit_condition_truthiness_after_deref();
+    }
+
+    fn emit_condition_truthiness_after_deref(&mut self) {
+        let line = self.line;
         if !self.protocol_truthiness() {
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             return;
@@ -731,8 +865,7 @@ impl Compiler {
         // Nothing below can run on a null: `ecma:value.typeof` traps on one,
         // so the very first probe took the whole ladder down and `if None:`
         // never reached the coercion that would have answered it.
-        self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit(Op::REF_IS_NULL);
+        super::delegates::emit_slot_is_nullish(&mut self.chunks, self.current, value_slot, line);
         self.chunk().emit_if_i32(line);
         inst!(self, core_wasm::i32_const, 0);
         self.chunk().emit_else(line);
@@ -760,8 +893,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, bool_method);
         self.chunk().emit_end(line);
 
-        self.emit_u16(Op::LOCAL_GET, bool_method);
-        self.emit(Op::REF_IS_NULL);
+        super::delegates::emit_slot_is_nullish(&mut self.chunks, self.current, bool_method, line);
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if_i32(line);
         self.emit_u16(Op::LOCAL_GET, bool_method);
@@ -783,8 +915,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, len_method);
         self.chunk().emit_end(line);
 
-        self.emit_u16(Op::LOCAL_GET, len_method);
-        self.emit(Op::REF_IS_NULL);
+        super::delegates::emit_slot_is_nullish(&mut self.chunks, self.current, len_method, line);
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if_i32(line);
         self.emit_u16(Op::LOCAL_GET, len_method);
@@ -1007,7 +1138,6 @@ impl Compiler {
         // the callee means.
         //
         // The tag mechanism is left in place but is no longer read here.
-        let receiver_is_a_parameter = self.chunks[self.current].takes_receiver;
 
         // ⛔ A BOUND RECEIVER IS THE ANSWER, and this test is deliberately not
         // guarded by `receiver_is_a_parameter`: a local named by the self
@@ -1108,13 +1238,19 @@ impl Compiler {
 
     pub(super) fn flatten_member_chain(&self, expr: &Expression) -> Vec<String> {
         match &expr.kind {
-            ExprKind::Ident(name) => Self::strip_global_namespace_prefix(name)
-                .replace("::", ".")
-                .split('.')
-                .map(str::trim)
-                .filter(|part| !part.is_empty())
-                .map(ToString::to_string)
-                .collect(),
+            ExprKind::Ident(name) => {
+                let name = Self::strip_global_namespace_prefix_view(name);
+                let normalized = if name.contains("::") {
+                    std::borrow::Cow::Owned(name.replace("::", "."))
+                } else {
+                    std::borrow::Cow::Borrowed(name)
+                };
+                normalized.split('.')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(ToString::to_string)
+                    .collect()
+            }
             ExprKind::This => vec![self.profile.self_keyword.clone()],
             ExprKind::Super => vec![
                 self.profile

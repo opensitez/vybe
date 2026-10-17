@@ -65,6 +65,7 @@ enum Undo {
 pub struct Ast<'a> {
     source: &'a str,
     pratt: bool,
+    opaque_tokens: bool,
     pratt_origins: std::collections::HashMap<Id, (usize, u8)>,
     // Existing common-AST spans use LF-only lines and byte columns. Preserve
     // that policy here; editor coordinates use source::Index separately.
@@ -139,6 +140,7 @@ impl<'a> Ast<'a> {
         Self {
             source,
             pratt: false,
+            opaque_tokens: false,
             pratt_origins: Default::default(),
             line_starts: std::iter::once(0)
                 .chain(source.match_indices('\n').map(|(offset, _)| offset + 1))
@@ -153,6 +155,10 @@ impl<'a> Ast<'a> {
             pratt: true,
             ..Self::new(source)
         }
+    }
+    pub fn with_opaque_tokens(mut self) -> Self {
+        self.opaque_tokens = true;
+        self
     }
     pub fn into_expression(self) -> Expression {
         assert!(self.frames.is_empty());
@@ -1744,6 +1750,10 @@ fn binop(text: &str) -> BinOp {
     }
 }
 impl Builder for Ast<'_> {
+    fn opaque_rule(&self, id: usize) -> bool {
+        self.opaque_tokens && matches!(rule(id),
+            Rule::name | Rule::number | Rule::string | Rule::long_string_body_0)
+    }
     fn try_pratt_boundary(&mut self, _: usize, offset: usize) -> Result<(), BuildError> {
         let id = *self.values.values().last().unwrap();
         let Value::Expression(value) = self.values.get(id) else {

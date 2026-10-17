@@ -7,6 +7,11 @@ use vybe_runtime::{Chunk, Op, VM, Value};
 mod baseline;
 #[path = "fixtures/numeric_optimization_next_after_candidate.rs"]
 mod candidate;
+#[path = "fixtures/nextafter_ordered_before.rs"]
+mod before_ordered;
+#[path="fixtures/nextafter_copysign_before.rs"]
+mod ordered_stage;
+
 fn instructions(code: &[u8]) -> Vec<Vec<u8>> {
     let mut rows = vec![];
     let mut offset = 0;
@@ -83,10 +88,10 @@ fn only_two_scalar_copies_and_local_relocation_change_the_kernel() {
                 candidate::emit_next_toward(&mut new, up, lane, 37);
                 let mut production = Chunk::new("toward-production");
                 production.local_count = base;
-                math::emit_next_toward(&mut production, up, lane, 37);
+                ordered_stage::emit_next_toward(&mut production, up, lane, 37);
                 assert_eq!(
                     production.code, old.code,
-                    "actual public next_toward stays frozen"
+                    "historical next_toward stage stays frozen"
                 );
                 assert_eq!(production.lines, old.lines);
                 assert_eq!(production.local_count, old.local_count);
@@ -96,7 +101,7 @@ fn only_two_scalar_copies_and_local_relocation_change_the_kernel() {
             }
             let mut actual_ulp = Chunk::new("ulp");
             actual_ulp.local_count = base;
-            math::emit_ulp(&mut actual_ulp, lane, 37);
+            ordered_stage::emit_ulp(&mut actual_ulp, lane, 37);
             let mut proposed_ulp = Chunk::new("ulp-proposed");
             proposed_ulp.local_count = base;
             let x = proposed_ulp.alloc_scratch(1);
@@ -262,8 +267,11 @@ fn actual_production_matches_copy_elimination_and_preserves_frozen_baseline() {
         let mut proposed = actual.clone();
         math::emit_next_after(&mut actual, lane, 37);
         candidate::emit_next_after(&mut proposed, lane, 37);
-        assert_eq!(actual.code, proposed.code);
-        assert_eq!(actual.lines, proposed.lines);
+        let mut prior = Chunk::new("before-ordered-pruning");
+        before_ordered::emit_next_after(&mut prior, lane, 37);
+        assert_eq!(prior.code, proposed.code, "the frozen copy-elimination stage remains exact");
+        assert_eq!(prior.lines, proposed.lines);
+        assert!(actual.code.len() < proposed.code.len(), "ordered upward pruning is verified in nextafter_ordered_operands");
         assert_eq!(actual.local_count, proposed.local_count);
         let old = program(true, lane, 1);
         let new = program(false, lane, 1);
@@ -430,7 +438,7 @@ fn full_capacity_and_existing_offset_metadata_are_preserved() {
         assert!(chunk.block_i32_results.contains(&marker));
         assert_eq!(chunk.block_i32_results, typed);
         assert_eq!(&chunk.code[..prefix.len()], prefix);
-        assert_eq!(&chunk.lines[..lines.len()], lines);
+        assert_eq!(&chunk.lines[..lines.len()], &lines[..]);
         assert!(
             chunk.call_indirect_sigs.is_empty()
                 && chunk.call_indirect_canon.is_empty()

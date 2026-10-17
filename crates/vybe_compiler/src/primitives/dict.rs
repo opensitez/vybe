@@ -13,7 +13,6 @@
 
 use crate::primitives::class_slots;
 use crate::primitives::instructions::core_wasm;
-use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -47,8 +46,7 @@ pub fn emit_canonical_key_slot(
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
     chunks[current].emit_string_const(TUPLE_KEYS_KEY, line);
     call_host(chunks, current, "ecma:object", "get", 2, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, keys, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     call_host(chunks, current, "ecma:map", "new", 0, line);
@@ -66,7 +64,9 @@ pub fn emit_canonical_key_slot(
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, rendered, line);
     call_host(chunks, current, "ecma:map", "has", 2, line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // Map.has has a boolean result, independent of the source language's
+    // truthiness policy. Unbox it without a polymorphic value dispatcher.
+    call_host(chunks, current, "wasm:js-boolean", "cast", 1, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, rendered, line);
@@ -266,9 +266,8 @@ pub fn emit_method_get(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     let dict_slot = chunks[current].local_count;
     let key_slot = dict_slot + 1;
-    let has_slot = key_slot + 1;
-    let keys_slot = has_slot + 1;
-    chunks[current].alloc_scratch(4);
+    let keys_slot = key_slot + 1;
+    chunks[current].alloc_scratch(3);
     let keys_key = class_slots::resolve_interned(
         &mut chunks[current],
         &class_slots::ClassSlot::internal("__keys"),
@@ -276,9 +275,7 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     );
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, dict_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, dict_slot, line);
     class_slots::emit_class_get(
         &mut chunks[current],
         class_slots::ObjSource::Stack,
@@ -286,16 +283,14 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
         class_slots::Dest::Stack,
         line,
     );
-    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, keys_slot, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_if_value(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     crate::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
 
@@ -304,10 +299,9 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::primitives::collections::emit_contains(chunks, current, line);
-    let cast = chunks[current].add_import("wasm:js-boolean", "cast");
-    chunks[current].emit_call(cast, 1, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, has_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, has_slot, line);
+    // includes has the Boolean/i32 predicate ABI. IF consumes that predicate
+    // directly; a strict externref Boolean cast rejects native Wasm's i32.
+
     chunks[current].emit_if_value(line);
 
     chunks[current].emit_bool_const(true, line);
@@ -317,7 +311,7 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     crate::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
 
@@ -693,26 +687,12 @@ pub fn emit_set(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Collect all values. Stack: `[dict]` → `[array_of_values]`.
 ///
-/// `ecma:object.entries(dict)` returns `[[k0,v0], [k1,v1], ...]`;
-/// stdlib chunk `__vybe_dict_values_from_entries` walks that array
-/// and projects out the v slot to give a values-only array. Works
-/// across Map, plain Object, and PHP-array (`__keys`-tracked) shapes
-/// because `entries` itself is polymorphic at the host fn level.
+/// The existing provider enumerates Array, Map, Set and ordinary-object values
+/// in the same order as entries, without allocating pairs and projecting them
+/// through a second guest loop. Getter evaluation remains inside enumeration.
 pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
-    // [dict] → entries → [[k,v], ...]
-    let entries_fn = chunks[current].add_import("ecma:object", "entries");
-    chunks[current].emit_call(entries_fn, 1, line);
-
-    // [[k,v], ...] → call __vybe_dict_values_from_entries → [v0, v1, ...]
-    let entries_local = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, entries_local, line);
-    crate::primitives::globals::emit_read(
-        &mut chunks[current],
-        "__vybe_dict_values_from_entries",
-        line,
-    );
-    chunks[current].emit_op_u16(Op::LOCAL_GET, entries_local, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+    let values_fn = chunks[current].add_import("ecma:object", "values");
+    chunks[current].emit_call(values_fn, 1, line);
 }
 
 /// Get all [key, value] pairs — `Object.entries(obj)` per ECMA-262
@@ -827,42 +807,22 @@ pub fn build_dict_values_from_entries(imports: &mut Chunk) -> Chunk {
 pub fn build_setdefault(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_setdefault");
     c.arity = 3;
-    c.local_count = 5; // dict(0), key(1), default(2), existing(3), result(4)
-    let dict = 0u16;
-    let key = 1u16;
-    let default = 2u16;
-    let existing = 3u16;
-    let result = 4u16;
-
-    // existing = dict[key]
-    c.emit_op_u16(Op::LOCAL_GET, dict, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.local_count = 3; // dict(0), key(1), default(2); one retained lookup below
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op_u16(Op::LOCAL_SET, existing, 0);
-
-    // result = existing (default to existing; overwrite if missing)
-    c.emit_op_u16(Op::LOCAL_GET, existing, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
-    // if existing is null/undefined: assign default + use it as result.
-    let done_block = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, existing, 0);
-    c.emit_op(Op::REF_IS_NULL, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0); // existing not null → keep result, exit
-
-    // dict[key] = default; result = default
-    c.emit_op_u16(Op::LOCAL_GET, dict, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op_u16(Op::LOCAL_GET, default, 0);
+    // Missing keys produce Undefined; stored Null retains the established
+    // overwrite policy. Strict REF_IS_NULL alone cannot detect both forms.
+    let existing = super::delegates::emit_stack_is_nullish_in_chunk(&mut c, 0);
+    c.emit_if_value(0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::ARRAY_SET, 0);
-    c.emit_op_u16(Op::LOCAL_GET, default, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, existing, 0);
     c.emit_end(0);
-    c.patch_block(done_block);
-
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }

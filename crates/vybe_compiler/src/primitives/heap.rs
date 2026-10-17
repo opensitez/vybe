@@ -13,9 +13,7 @@ use vybe_runtime::opcode::Op;
 fn emit_sort_in_place(c: &mut Chunk, h: u16, line: u32) {
     let mut imports = Chunk::new("imports");
     collections::emit_stable_merge_sort(&mut imports, c, h, line, None, |_, c, lhs, rhs, line| {
-        get(c, lhs, line);
-        get(c, rhs, line);
-        ops::emit_comparison_helper_call(c, "__vybe_dyngt", line);
+        ops::emit_comparison_helper_call_from_slots(c, "__vybe_dyngt", lhs, rhs, line);
     });
 }
 
@@ -109,9 +107,7 @@ pub fn emit_heapify(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
 
 fn emit_push_sorted(c: &mut Chunk, h: u16, x: u16, line: u32) {
     emit_binary_insert(c, h, x, line, |c, lhs, rhs, line| {
-        get(c, lhs, line);
-        get(c, rhs, line);
-        ops::emit_comparison_helper_call(c, "__vybe_dyngt", line);
+        ops::emit_comparison_helper_call_from_slots(c, "__vybe_dyngt", lhs, rhs, line);
     });
 }
 
@@ -278,15 +274,41 @@ fn key_better(c: &mut Chunk, largest: bool, line: u32) {
 // A decoration is [key, original index, value]. The index is a proven
 // numeric counter, and makes equal-key selection stable in either direction.
 fn pair_better(c: &mut Chunk, lhs: u16, rhs: u16, largest: bool, line: u32) {
+    // These fixed GC decorations are compiler-owned and never exposed to
+    // callbacks. Their key references cannot change during comparison; the
+    // referenced key objects still undergo the original comparisons in order.
+    #[cfg(feature = "primitive-benchmarks")]
+    if !ops::comparison_slots_reuse_enabled() {
+        field(c, lhs, 0, line);
+        field(c, rhs, 0, line);
+        key_better(c, largest, line);
+        c.emit_if_i32(line);
+        c.emit_i32_const(1, line);
+        c.emit_else(line);
+        field(c, rhs, 0, line);
+        field(c, lhs, 0, line);
+        key_better(c, largest, line);
+        c.emit_if_i32(line);
+        c.emit_i32_const(0, line);
+        c.emit_else(line);
+        field(c, lhs, 1, line);
+        field(c, rhs, 1, line);
+        c.emit_op(Op::F64_LT, line);
+        c.emit_end(line);
+        c.emit_end(line);
+        return;
+    }
+    let keys = c.alloc_scratch(2);
     field(c, lhs, 0, line);
     field(c, rhs, 0, line);
-    key_better(c, largest, line);
+    set(c, keys + 1, line);
+    set(c, keys, line);
+    let global = if largest { "__vybe_dyngt" } else { "__vybe_dynlt" };
+    ops::emit_comparison_helper_call_from_slots(c, global, keys, keys + 1, line);
     c.emit_if_i32(line);
     c.emit_i32_const(1, line);
     c.emit_else(line);
-    field(c, rhs, 0, line);
-    field(c, lhs, 0, line);
-    key_better(c, largest, line);
+    ops::emit_comparison_helper_call_from_slots(c, global, keys + 1, keys, line);
     c.emit_if_i32(line);
     c.emit_i32_const(0, line);
     c.emit_else(line);
@@ -315,8 +337,7 @@ fn sift_down(c: &mut Chunk, arr: u16, len: u16, item: u16, start: u16, largest: 
     c.emit_op(Op::F64_MUL, line);
     c.emit_f64_const(1.0, line);
     c.emit_op(Op::F64_ADD, line);
-    set(c, child, line);
-    get(c, child, line);
+    crate::primitives::instructions::core_wasm::local_tee(c, line, child);
     get(c, len, line);
     c.emit_op(Op::F64_GE, line);
     c.emit_br_if(1, line);
@@ -324,8 +345,7 @@ fn sift_down(c: &mut Chunk, arr: u16, len: u16, item: u16, start: u16, largest: 
     get(c, child, line);
     c.emit_f64_const(1.0, line);
     c.emit_op(Op::F64_ADD, line);
-    set(c, right, line);
-    get(c, right, line);
+    crate::primitives::instructions::core_wasm::local_tee(c, line, right);
     get(c, len, line);
     c.emit_op(Op::F64_LT, line);
     c.emit_if(line);
@@ -402,8 +422,7 @@ fn emit_n_of(chunks: &mut [Chunk], current: usize, argc: u8, largest: bool, line
     get(c, n, line);
     let to_number = c.add_import("ecma:value", "toNumber");
     c.emit_call(to_number, 1, line);
-    set(c, n, line);
-    get(c, n, line);
+    crate::primitives::instructions::core_wasm::local_tee(c, line, n);
     get(c, n, line);
     c.emit_op(Op::F64_EQ, line);
     c.emit_if_value(line);
@@ -478,8 +497,7 @@ fn emit_n_of(chunks: &mut [Chunk], current: usize, argc: u8, largest: bool, line
     c.emit_op(Op::F64_LT, line);
     c.emit_op(Op::I32_AND, line);
     c.emit_op_u16(Op::LOCAL_TEE, need_sift, line);
-    set(c, building, line);
-    get(c, building, line);
+    crate::primitives::instructions::core_wasm::local_tee(c, line, building);
     c.emit_if(line);
     get(c, n, line);
     c.emit_f64_const(2.0, line);

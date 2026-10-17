@@ -15,16 +15,56 @@ pub(super) fn module_address_taken(
     body: &[Statement],
     fold: Option<CaseAlphabet>,
 ) -> HashSet<String> {
-    let mut scan = Scan {
-        frames: vec![Frame {
-            function: true,
-            ..Frame::default()
-        }],
-        globals: HashSet::new(),
-        fold,
-    };
-    scan.body(body);
-    scan.globals
+    let mut bindings = ModuleReferenceBindings::new(fold);
+    bindings.collect(body);
+    let mut preparation = bindings.seal();
+    preparation.consume(body);
+    preparation.finish()
+}
+
+/// First barrier: collect module lexical bindings before inspecting bodies.
+/// Neither phase retains source statements, expressions, or address identities.
+pub(super) struct ModuleReferenceBindings {
+    scan: Scan,
+}
+
+impl ModuleReferenceBindings {
+    pub(super) fn new(fold: Option<CaseAlphabet>) -> Self {
+        Self { scan: Scan {
+            frames: vec![Frame { function: true, ..Frame::default() }],
+            globals: HashSet::new(), fold,
+        } }
+    }
+
+    pub(super) fn collect(&mut self, statements: &[Statement]) {
+        for statement in statements {
+            if let StmtKind::VarDecl { declarations,
+                kind: VarDeclKind::Let | VarDeclKind::Const } = &statement.kind {
+                for declaration in declarations {
+                    self.scan.pattern(&declaration.pattern, false);
+                }
+            }
+        }
+    }
+
+    pub(super) fn seal(self) -> ModuleReferencePreparation {
+        ModuleReferencePreparation { scan: self.scan }
+    }
+}
+
+/// Consume complete top-level statements exactly once in source order, after
+/// all module bindings have been collected. Nested scopes retain their ordinary
+/// whole-block/function analysis; a producer must not split inside those scopes.
+pub(super) struct ModuleReferencePreparation {
+    scan: Scan,
+}
+
+impl ModuleReferencePreparation {
+    pub(super) fn consume(&mut self, statements: &[Statement]) {
+        for statement in statements { self.scan.stmt(statement); }
+    }
+
+    pub(super) fn finish(self) -> HashSet<String> { self.scan.globals }
 }
 
 struct Scan {
@@ -32,6 +72,10 @@ struct Scan {
     globals: HashSet<String>,
     fold: Option<CaseAlphabet>,
 }
+
+#[cfg(test)]
+#[path = "reference_preparation_tests.rs"]
+mod preparation_tests;
 
 impl Scan {
     fn key(&self, name: &str) -> String {

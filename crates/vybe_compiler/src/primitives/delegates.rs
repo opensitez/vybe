@@ -9,13 +9,37 @@ use crate::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-fn emit_slot_is_nullish(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
-    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let idx = chunks[current].add_import("wasm:js-undefined", "test");
-    chunks[current].emit_call(idx, 1, line);
-    chunks[current].emit_op(Op::I32_OR, line);
+/// Consume one cached property result and leave a raw i32 condition.
+pub(super) fn emit_stack_is_nullish_in_chunk(chunk: &mut Chunk, line: u32) -> u16 {
+    let slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_TEE, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let idx = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(idx, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    slot
+}
+
+
+pub(super) fn emit_slot_is_nullish(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_slot_is_nullish_in_chunk(&mut chunks[current], slot, line);
+}
+
+/// Test a previously evaluated slot, with no scratch or getter reads.
+/// Undefined is absent; false and zero remain present method values.
+pub(super) fn emit_slot_is_nullish_in_chunk(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let idx = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(idx, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+/// Consume one value and leave a raw condition for either absent-value shape.
+pub(super) fn emit_stack_is_nullish(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stack_is_nullish_in_chunk(&mut chunks[current], line);
 }
 
 /// Delegate combine semantics compatible with .NET multicast delegates.

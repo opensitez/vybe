@@ -1,6 +1,12 @@
 pub mod fixtures {
     include!(concat!(env!("OUT_DIR"), "/fixtures.rs"));
 }
+pub mod capture_api {
+    include!(concat!(env!("OUT_DIR"), "/capture_api.rs"));
+}
+pub mod hybrid_api {
+    include!(concat!(env!("OUT_DIR"), "/hybrid_api.rs"));
+}
 pub mod islands {
     include!(concat!(env!("OUT_DIR"), "/islands.rs"));
 }
@@ -26,4 +32,21 @@ pub mod all {
 
 pub mod terminal_index {
     include!(concat!(env!("OUT_DIR"), "/terminal_index.rs"));
+}
+
+pub mod quoted {
+    include!(concat!(env!("OUT_DIR"), "/quoted.rs"));
+}
+
+pub mod php {
+    include!(concat!(env!("OUT_DIR"), "/php.rs"));
+}
+pub mod php_baseline {
+    include!(concat!(env!("OUT_DIR"), "/php_baseline.rs"));
+}
+pub mod php_semantic_baseline {
+    include!(concat!(env!("OUT_DIR"), "/php_semantic_baseline.rs"));
+}
+pub mod php_delimited_baseline {
+    include!(concat!(env!("OUT_DIR"), "/php_delimited_baseline.rs"));
 }

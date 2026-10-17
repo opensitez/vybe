@@ -34,7 +34,7 @@ pub fn emit_parse_urlencoded(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // A null or empty body is an empty map, not an error.
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_if(line);
     chunks[current].emit_string_const("", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, src, line);
@@ -318,8 +318,7 @@ pub fn emit_parse_multipart(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_block(block);
 
     super::collections::emit_map_new(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, out, line);
     chunks[current].emit_string_const("fields", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fields, line);
     super::collections::emit_set(chunks, current, line);
@@ -514,8 +513,7 @@ fn emit_next_stop(chunks: &mut [Chunk], current: usize, src: u16, from: u16, lin
 /// drops every `"` rather than tracking the surrounding pair.
 fn emit_strip_quotes(chunks: &mut [Chunk], current: usize, line: u32) {
     let src = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, src, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, src, line);
     chunks[current].emit_string_const("\"", line);
     chunks[current].emit_string_const("", line);
     let replace_all = chunks[current].add_import("ecma:string", "replaceAll");
@@ -545,9 +543,8 @@ pub fn emit_parsed_body(chunks: &mut [Chunk], current: usize, line: u32) {
             let out = chunks[current].alloc_scratch(1);
 
             super::http_request_env::emit_header(chunks, current, "content-type", line);
-            chunks[current].emit_op_u16(Op::LOCAL_SET, content_type, line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, content_type, line);
-            chunks[current].emit_op(Op::REF_IS_NULL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_TEE, content_type, line);
+            super::delegates::emit_stack_is_nullish(chunks, current, line);
             chunks[current].emit_if(line);
             chunks[current].emit_string_const("", line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, content_type, line);
@@ -573,8 +570,7 @@ pub fn emit_parsed_body(chunks: &mut [Chunk], current: usize, line: u32) {
             chunks[current].emit_else(line);
 
             super::collections::emit_map_new(chunks, current, line);
-            chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+            chunks[current].emit_op_u16(Op::LOCAL_TEE, out, line);
             chunks[current].emit_string_const("fields", line);
 
             chunks[current].emit_op_u16(Op::LOCAL_GET, content_type, line);
@@ -585,7 +581,7 @@ pub fn emit_parsed_body(chunks: &mut [Chunk], current: usize, line: u32) {
             chunks[current].emit_call(index_of2, 2, line);
             chunks[current].emit_i32_const(0, line);
             chunks[current].emit_op(Op::I32_GE_S, line);
-            chunks[current].emit_if(line);
+            chunks[current].emit_if_value(line);
             super::http_request_env::emit_body(chunks, current, line);
             emit_parse_urlencoded(chunks, current, line);
             chunks[current].emit_else(line);

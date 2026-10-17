@@ -219,6 +219,7 @@ fn coercible(id: &str, value: f64) -> Value {
     o.properties.insert(
         "valueOf".into(),
         object(Object {
+            descriptor: None,
             kind: ObjectKind::Function(Function {
                 name: Some("valueOf".into()),
                 arity: 0,

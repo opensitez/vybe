@@ -463,8 +463,10 @@ impl Compiler {
     pub(super) fn emit_ensure_global_list(&mut self, name: &str) {
         self.emit_global_read(name);
         inst!(self, core_wasm::dup);
-        self.emit(Op::REF_IS_NULL);
         let line = self.line;
+        let value = self.chunk().alloc_scratch(1);
+        self.emit_u16(Op::LOCAL_SET, value);
+        super::delegates::emit_slot_is_nullish(&mut self.chunks, self.current, value, line);
         // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
         // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
         // WASM block does not. Both arms leave one value — `(1, 1)`.
@@ -479,23 +481,27 @@ impl Compiler {
         self.emit(Op::DROP);
     }
 
-    /// Run every `register_shutdown_function` callback, in registration order,
+    /// Run the module-declared callback registry in its declared order,
     /// then clear the list so a later `exit` cannot run them twice.
     ///
-    /// Emitted at the normal end of a PHP program AND immediately before
-    /// `exit`/`die` terminate it — real php runs shutdown handlers on both
-    /// paths, which is what makes a check registered this way survive an
-    /// `exit(1)` in the middle of a script.
-    pub(super) fn emit_php_run_shutdown_fns(&mut self) {
+    /// Emitted at normal program completion and explicit termination when the
+    /// common AST requests it. Each entry is `[callable, argument, ...]`.
+    pub(super) fn emit_run_shutdown_callbacks(
+        &mut self,
+        registry: &str,
+        order: vybe_ast::ShutdownOrder,
+    ) {
         let line = self.line;
 
-        // `REF_IS_NULL` leaves a RAW i32; running the boxed `dyn_not` /
+        // The nullish guard leaves a RAW i32; running boxed `dyn_not` /
         // `dyn_to_bool` on it corrupts the stack (measured: the handlers ran,
         // then the program threw `RuntimeError: [object]`). Branch on it
         // directly and put the work in the ELSE arm, the way
         // `emit_ensure_global_map` does.
-        self.emit_global_read("__php_shutdown_fns");
-        self.emit(Op::REF_IS_NULL);
+        let list = self.chunk().alloc_scratch(1);
+        self.emit_global_read(registry);
+        self.emit_u16(Op::LOCAL_SET, list);
+        super::delegates::emit_slot_is_nullish(&mut self.chunks, self.current, list, line);
         self.chunk().emit_if(line);
         self.chunk().emit_else(line);
 
@@ -504,26 +510,35 @@ impl Compiler {
         // scope-allocated local is never reserved in the call frame and reads
         // back garbage. Raw chunk slots are folded into the frame size by the
         // `max` the epilogue takes right after.
-        let list = self.chunk().alloc_scratch(1);
-        self.emit_global_read("__php_shutdown_fns");
-        self.emit_u16(Op::LOCAL_SET, list);
         // Clear FIRST: a handler that itself calls `exit` would otherwise
         // re-enter this and run the whole list again.
         self.emit_null();
-        self.emit_global_write("__php_shutdown_fns");
+        self.emit_global_write(registry);
 
         let idx = self.chunk().alloc_scratch(1);
-        self.emit_const(Value::F64(0.0));
+        let reverse = order == vybe_ast::ShutdownOrder::ReverseRegistration;
+        if reverse {
+            self.emit_u16(Op::LOCAL_GET, list);
+            common::collections::emit_len(&mut self.chunks, self.current, line);
+            self.emit_const(Value::F64(1.0));
+            self.emit(Op::F64_SUB);
+        } else {
+            self.emit_const(Value::F64(0.0));
+        }
         self.emit_u16(Op::LOCAL_SET, idx);
 
         let block = self.chunk().emit_block(line);
         let (loop_patch, _) = self.chunk().emit_loop_s(line);
 
         self.emit_u16(Op::LOCAL_GET, idx);
-        self.emit_u16(Op::LOCAL_GET, list);
-        common::collections::emit_len(&mut self.chunks, self.current, line);
-        // Emitter-owned counters and lengths do not invoke source operators.
-        self.emit(Op::F64_LT);
+        if reverse {
+            self.emit_const(Value::F64(0.0));
+            self.emit(Op::F64_GE);
+        } else {
+            self.emit_u16(Op::LOCAL_GET, list);
+            common::collections::emit_len(&mut self.chunks, self.current, line);
+            self.emit(Op::F64_LT);
+        }
         self.chunk().emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
         self.chunk().emit_br_if(1, line);
 
@@ -581,7 +596,7 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, idx);
         self.emit_const(Value::F64(1.0));
-        self.emit(Op::F64_ADD);
+        self.emit(if reverse { Op::F64_SUB } else { Op::F64_ADD });
         self.emit_u16(Op::LOCAL_SET, idx);
 
         self.chunk().emit_br(0, line);
@@ -591,8 +606,8 @@ impl Compiler {
         // are no-ops (the block table replaced size-header patching), so they
         // do NOT close anything; emitting one `end` for three regions left the
         // `if` unterminated, and its else-arm then ran unconditionally. That
-        // made every program in every language execute this php-only runner
-        // over an absent `__php_shutdown_fns`, ending in
+        // made every program in every language execute this shutdown runner
+        // over an absent callback registry, ending in
         // `ecma:object.keys(undefined)` — `RuntimeError: [object]` after
         // otherwise-correct output.
         self.chunk().emit_end(line); // close loop
@@ -605,8 +620,10 @@ impl Compiler {
     pub(super) fn emit_ensure_global_map(&mut self, name: &str) {
         self.emit_global_read(name);
         inst!(self, core_wasm::dup);
-        self.emit(Op::REF_IS_NULL);
         let line = self.line;
+        let value = self.chunk().alloc_scratch(1);
+        self.emit_u16(Op::LOCAL_SET, value);
+        super::delegates::emit_slot_is_nullish(&mut self.chunks, self.current, value, line);
         // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
         // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
         // WASM block does not. Both arms leave one value — `(1, 1)`.
@@ -728,6 +745,7 @@ impl Compiler {
                 if through_reference && self.binding_uses_pointer_cell(name) {
                     let value_slot = self.define_local("__capture_ref_value");
                     self.emit_u16(Op::LOCAL_SET, value_slot);
+                    self.promote_local_binding_to_pointer_cell(name);
                     crate::primitives::closures::emit_env_get(self.chunk(), env_slot, idx, l);
                     let pointer_slot = self.define_local("__capture_ref_pointer");
                     self.emit_u16(Op::LOCAL_SET, pointer_slot);
@@ -744,8 +762,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, value_slot);
             self.emit_global_read(&global_name);
             let ptr_slot = self.define_local("__static_local_ref_ptr");
-            self.emit_u16(Op::LOCAL_SET, ptr_slot);
-            self.emit_u16(Op::LOCAL_GET, ptr_slot);
+            self.emit_u16(Op::LOCAL_TEE, ptr_slot);
             crate::primitives::references::emit_is_reference_to_stack(
                 &mut self.chunks,
                 self.current,
@@ -765,20 +782,17 @@ impl Compiler {
             if through_reference && self.binding_uses_pointer_cell(name) {
                 let value_slot = self.define_local("__ref_cell_set_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
-                // Same rule as the global arm below: the pre-pass may be
-                // answering for a wrap that is still ahead, and the first write
-                // must CREATE the cell rather than store through a missing one.
-                if !self.binding_already_pointer_cell(name) {
-                    self.promote_local_binding_to_pointer_cell(name);
-                }
+                // A compiled promotion can be in an untaken branch. Check
+                // the runtime slot before every write; promotion preserves
+                // the identity of an existing reference.
+                self.promote_local_binding_to_pointer_cell(name);
                 // Shape-polymorphic, matching the load above: a cell-only store
                 // wrote `__value` onto a carray, growing a dead field while the
                 // container it referenced was never touched.
                 self.emit_store_through_pointer(slot, value_slot);
             } else if let Some((args_slot, index)) = self.js_arguments_alias_for_name(name) {
                 let value_slot = self.define_local("__js_arguments_alias_value");
-                self.emit_u16(Op::LOCAL_SET, value_slot);
-                self.emit_u16(Op::LOCAL_GET, value_slot);
+                self.emit_u16(Op::LOCAL_TEE, value_slot);
                 self.emit_u16(Op::LOCAL_SET, slot);
                 self.emit_u16(Op::LOCAL_GET, args_slot);
                 self.emit_const(Value::F64(index as f64));
@@ -1049,6 +1063,18 @@ impl Compiler {
         if let Some(slot) = found_local {
             self.scopes[parent].mark_captured(slot);
             return Some(self.scopes[scope_idx].add_upvalue(slot, true));
+        }
+        // A binding moved into the parent's shared environment no longer
+        // has an ordinary local slot. The incoming environment names were
+        // seeded when this closure frame was entered; capture that environment
+        // instead of treating one of its bindings as an unknown variable.
+        if scope_idx == self.scopes.len() - 1
+            && self.closure_env_names.iter().any(|binding| binding == name)
+        {
+            if let Some(slot) = self.scopes[parent].resolve("__shared_env") {
+                self.scopes[parent].mark_captured(slot);
+                return Some(self.scopes[scope_idx].add_upvalue(slot, true));
+            }
         }
         // Recurse up
         if let Some(uv) = self.resolve_upvalue(parent, name) {

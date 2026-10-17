@@ -36,6 +36,8 @@
 //! code, it cannot be branched over, and its index space is module-level — the
 //! same category as the global index space, which is likewise not an AST node.
 
+use std::sync::Arc;
+
 /// What a `canon lift` / `canon lower` wraps.
 ///
 /// The sort is carried, never inferred. `canon lift $callee` takes a **core**
@@ -66,6 +68,14 @@ pub enum CanonCallee {
     CoreExport { class: String, method: String },
 }
 
+/// A core function named in a canonical option. Source indices and compiled
+/// chunk indices are different spaces, so named exports resolve after emission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CanonCoreFuncRef {
+    Index(u32),
+    CoreExport { class: String, method: String },
+}
+
 /// `opts ::= opt*:vec(<canonopt>)`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CanonOptions {
@@ -78,11 +88,11 @@ pub struct CanonOptions {
     /// `(memory m)` — core memidx.
     pub memory: Option<u32>,
     /// `(realloc f)` — core funcidx.
-    pub realloc: Option<u32>,
+    pub realloc: Option<CanonCoreFuncRef>,
     /// `(post-return f)` — core funcidx, `canon lift` only.
-    pub post_return: Option<u32>,
+    pub post_return: Option<CanonCoreFuncRef>,
     /// `(callback f)` — core funcidx, 🔀 async lift only.
-    pub callback: Option<u32>,
+    pub callback: Option<CanonCoreFuncRef>,
     /// `async` 🔀.
     pub is_async: bool,
 }
@@ -113,6 +123,9 @@ pub struct CanonDecl {
     pub functype: Option<u32>,
     /// `tbl:<core:tableidx>` — `thread.new-indirect`, `thread.spawn-indirect`.
     pub table: Option<u32>,
+    /// Resolved core worker signature: exactly one i32/i64 parameter, no results.
+    /// Separate from the component type space indexed by `ty` on other rows.
+    pub worker_param: Option<ComponentCoreValType>,
     /// `rs:<resultlist>` — `canon task.return`.
     pub results: Vec<u32>,
     /// `(v, i)` — `context.get` / `context.set`. The valtype is the primitive's
@@ -153,7 +166,7 @@ impl CanonDecl {
 /// Same split as `CanonDecl` -> `CanonDef`: the front end states what the
 /// source said, the compiler converts at emission and refuses what it cannot
 /// name.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValSpec {
     /// A primitive, as written: `"u32"`, `"s8"`, `"char"`, `"string"`, `"bool"`,
     /// `"f32"`, `"error-context"` …
@@ -199,6 +212,8 @@ pub enum TypeDecl {
     Func {
         params: Vec<(String, ValSpec)>,
         result: Option<ValSpec>,
+        /// Component function effect, independent of the canonical ABI option.
+        is_async: bool,
     },
     /// `(type $t u32)`, `(type $t (list string))` — a VALUE type.
     Value(ValSpec),
@@ -206,10 +221,10 @@ pub enum TypeDecl {
     /// index; nothing yet reads its shape beyond a resource's NAME. The string
     /// is the form's keyword so a refusal can say which one it met.
     Opaque(String),
-    /// `(type $t (resource (rep i32)))` — a RESOURCE type, carrying the name it
-    /// was bound under.
+    /// `(type $t (resource (rep i32) (dtor ...)))` — a resource's bound name,
+    /// core representation width, and optional destructor.
     ///
-    /// ⛔ Separate from [`Self::Opaque`] because `own`/`borrow` need the NAME,
+    /// Separate from [`Self::Opaque`] because `own`/`borrow` need the NAME,
     /// not the keyword. `component::ValType::Own` is `Own(String)` — a handle
     /// binds to whatever is registered under that name — while the source
     /// names the resource by INDEX. This is the only record of which name that
@@ -218,16 +233,279 @@ pub enum TypeDecl {
     ///
     /// An UNNAMED resource type keeps `None`: it occupies its index, and a
     /// handle to it refuses rather than being given an invented name.
-    Resource(Option<String>),
+    Resource {
+        name: Option<String>,
+        rep: ResourceRep,
+        dtor: Option<CanonCallee>,
+    },
 }
 
-/// A component's declaration sections: the canon section and the type space.
-///
-/// Two `Vec`s and not one, because they are two index spaces. `canon lift`'s
-/// `ft` indexes the TYPE space while its own row sits in the canon space, and
-/// one vector serving both is how a row ends up pointing at itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceRep {
+    I32,
+    I64,
+}
+
+/// Ordered definitions of a component binary. Core modules retain their
+/// validated binary form; their index space is separate from core instances.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ComponentBinary {
+    pub definitions: Vec<ComponentBinaryDef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentBinaryDef {
+    InterfaceType {
+        is_component: bool,
+        declarations: Vec<ComponentInterfaceDecl>,
+    },
+    CoreFuncType {
+        params: Vec<ComponentCoreValType>,
+        results: Vec<ComponentCoreValType>,
+    },
+    Custom {
+        name: String,
+        data: Vec<u8>,
+    },
+    ValueType(ValSpec),
+    FuncType {
+        params: Vec<(String, ValSpec)>,
+        result: Option<ValSpec>,
+        is_async: bool,
+    },
+    ResourceType {
+        rep: ResourceRep,
+        dtor: Option<u32>,
+    },
+    CanonLift {
+        core_func: u32,
+        type_index: u32,
+        options: Vec<ComponentBinaryCanonOption>,
+    },
+    CanonLower {
+        func: u32,
+        options: Vec<ComponentBinaryCanonOption>,
+    },
+    CanonTaskReturn {
+        result: Option<ValSpec>,
+        options: Vec<ComponentBinaryCanonOption>,
+    },
+    CanonAsync {
+        kind: ComponentBinaryAsyncKind,
+        operation: ComponentBinaryAsyncOperation,
+        type_index: u32,
+        options: Vec<ComponentBinaryCanonOption>,
+    },
+    CanonThreadIndex,
+    CanonResourceNew { type_index: u32 },
+    CanonResourceDrop { type_index: u32 },
+    CanonResourceRep { type_index: u32 },
+    CanonErrorContextNew { options: Vec<ComponentBinaryCanonOption> },
+    CanonErrorContextDebugMessage { options: Vec<ComponentBinaryCanonOption> },
+    CanonErrorContextDrop,
+    CanonWaitableSetNew,
+    CanonWaitableSetWait { memory: u32 },
+    CanonWaitableSetPoll { memory: u32 },
+    CanonWaitableSetDrop,
+    CanonWaitableJoin,
+    CanonContext { set: bool, ty: ComponentCoreValType, slot: u32 },
+    CanonTaskCancel,
+    CanonSubtaskCancel { is_async: bool },
+    CanonSubtaskDrop,
+    CanonBackpressureInc,
+    CanonBackpressureDec,
+    CanonThreadResumeLater,
+    CanonThreadSuspend,
+    CanonThreadYield,
+    CanonThreadSuspendThenResume,
+    CanonThreadYieldThenResume,
+    CanonThreadSuspendThenPromote,
+    CanonThreadYieldThenPromote,
+    CanonThreadNewIndirect {
+        type_index: u32,
+        table_index: u32,
+    },
+    ImportFunc {
+        name: String,
+        type_index: u32,
+    },
+    Import {
+        name: String,
+        ty: ComponentInterfaceRef,
+    },
+    ExportFunc {
+        name: String,
+        index: u32,
+        /// Optional function-type ascription in the component type space.
+        type_index: Option<u32>,
+    },
+    NestedComponent(Arc<ComponentBinary>),
+    ComponentInstance {
+        component: u32,
+        args: Vec<ComponentItemRef>,
+    },
+    InstanceFromExports(Vec<ComponentItemRef>),
+    AliasInstanceExport {
+        instance: u32,
+        name: String,
+        kind: ComponentItemKind,
+    },
+    ExportType {
+        name: String,
+        index: u32,
+    },
+    ExportCoreModule {
+        name: String,
+        index: u32,
+    },
+    ExportInstance {
+        name: String,
+        index: u32,
+    },
+    CoreModule(Vec<u8>),
+    CoreInstance {
+        module: u32,
+        /// Import module name and the supplying core instance index.
+        args: Vec<(String, u32)>,
+    },
+    CoreInstanceFromExports(Vec<CoreInstanceExport>),
+    CoreAliasInstanceExport {
+        instance: u32,
+        name: String,
+        kind: CoreExportKind,
+    },
+}
+
+/// Ordered declarations inside a component or instance type. Type indices are
+/// local to this body; outer aliases explicitly cross its lexical boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentInterfaceDecl {
+    Type(Box<ComponentBinaryDef>),
+    AliasOuterType { count: u32, index: u32 },
+    AliasInstanceExport { instance: u32, name: String, kind: ComponentItemKind },
+    Import { name: String, ty: ComponentInterfaceRef },
+    Export { name: String, ty: ComponentInterfaceRef },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentInterfaceRef {
+    Module(u32),
+    Func(u32),
+    Value(ValSpec),
+    TypeEq(u32),
+    TypeSubResource,
+    Component(u32),
+    Instance(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentCoreValType {
+    I32,
+    I64,
+    F32,
+    F64,
+    V128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentItemRef {
+    pub name: String,
+    pub kind: ComponentItemKind,
+    pub index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentItemKind {
+    Module,
+    Func,
+    Value,
+    Type,
+    Component,
+    Instance,
+}
+
+/// Typed exports projected into the executable component's canonical spaces.
+/// These indices are resolved by normalization, not inferred from host names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentInstanceExport {
+    pub item: ComponentItemRef,
+    pub function_type: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentInstanceFunctionImport {
+    pub instance: u32,
+    pub name: String,
+    pub import: u32,
+    pub expected_type: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ComponentInstanceLinks {
+    pub instances: Vec<Vec<ComponentInstanceExport>>,
+    pub imports: Vec<ComponentInstanceFunctionImport>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentBinaryAsyncKind {
+    Stream,
+    Future,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentBinaryAsyncOperation {
+    New,
+    Read,
+    Write,
+    CancelRead { is_async: bool },
+    CancelWrite { is_async: bool },
+    DropReadable,
+    DropWritable,
+    Forward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentBinaryCanonOption {
+    Utf8,
+    Utf16,
+    CompactUtf16,
+    Memory(u32),
+    Realloc(u32),
+    PostReturn(u32),
+    Async,
+    Callback(u32),
+    CoreType(u32),
+    Gc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreInstanceExport {
+    pub name: String,
+    pub kind: CoreExportKind,
+    pub index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreExportKind {
+    Func,
+    Table,
+    Memory,
+    Global,
+    Tag,
+}
+
+/// A component's canonical index spaces and, when fully representable, its
+/// ordered binary definitions. The canonical vectors remain separate because
+/// `canon lift`'s `ft` indexes the TYPE space while its row sits in the canon
+/// space; declaration order does not replace either index space.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ComponentSection {
+    /// Source declared a component, even if its binary form is not yet
+    /// representable. Binary emission must not fall back to a core module.
+    pub component_source: bool,
+    /// A component-layer binary is emitted only when the source can be
+    /// represented without losing any declaration or import wiring.
+    pub binary: Option<Arc<ComponentBinary>>,
     /// The canon section, in canonidx order.
     pub defs: Vec<CanonDecl>,
     /// The component type index space, in typeidx order.
@@ -247,4 +525,16 @@ pub struct ComponentSection {
     /// would silently renumber every function after the import, which is the
     /// same positional-alignment trap `types` avoids the same way.
     pub funcs: Vec<Option<u32>>,
+    /// Bindings installed when a child component is instantiated with function imports.
+    pub func_links: Vec<ComponentFuncLink>,
+    /// Instantiation bindings from typed instances. Ordinary modules carry none.
+    pub instance_links: Option<Arc<ComponentInstanceLinks>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentFuncLink {
+    pub import: u32,
+    pub supplied: u32,
+    pub expected_type: u32,
+    pub supplied_type: u32,
 }

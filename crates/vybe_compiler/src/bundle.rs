@@ -4,27 +4,27 @@
 
 use crate::ast::*;
 use crate::languages::Language;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vybe_runtime::{ExportEntry, ModuleRecord};
 
 /// Language profiles are immutable source embedded in the language plugin.
-/// Clone the parsed definition for each compile because the compiler adjusts
-/// entry settings on its copy; parsing the same TOML for every PHP include (or
-/// every unit of another language) repeats work with no new information.
-fn cached_language_profile(src: &'static str) -> Result<vybe_runtime::profile::LanguageProfile, String> {
-    use std::sync::{Mutex, OnceLock};
+/// Share tables across ordinary compilations; explicit entry overrides obtain
+/// a private copy. Prepare the shared namespace once, before publication.
+pub(crate) fn cached_language_profile(src: &'static str) -> Result<std::sync::Arc<vybe_runtime::profile::LanguageProfile>, String> {
+    use std::sync::{Arc, Mutex, OnceLock};
     static PROFILES: OnceLock<
-        Mutex<HashMap<&'static str, vybe_runtime::profile::LanguageProfile>>,
+        Mutex<HashMap<&'static str, Arc<vybe_runtime::profile::LanguageProfile>>>,
     > = OnceLock::new();
     let cache = PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(profile) = cache.lock().unwrap().get(src) {
         return Ok(profile.clone());
     }
-    let profile = crate::profile::parse_profile(src)?;
-    cache.lock().unwrap().entry(src).or_insert_with(|| profile.clone());
-    Ok(profile)
+    let mut profile = (*crate::profile::parse_profile_shared(src)?).clone();
+    add_shared_gui_namespace(&mut profile);
+    let profile = Arc::new(profile);
+    Ok(cache.lock().unwrap().entry(src).or_insert(profile).clone())
 }
 
 // ── Source-read recording ───────────────────────────────────────────────────
@@ -70,12 +70,16 @@ fn write_bundle_timing(path: &str, label: &str, elapsed: Duration) {
         .append(true)
         .open(path)
     {
-        let _ = writeln!(file, "{label} {elapsed:?}");
+        // Format before appending: formatting directly into File can issue
+        // several writes that interleave with preparation worker records.
+        let record = format!("{label} {elapsed:?}\n");
+        let _ = file.write_all(record.as_bytes());
     }
 }
 
 /// Record that preparation opened `path`, if anyone is collecting.
 pub fn note_source_read(path: &Path) {
+    note_source_observation(path);
     SOURCE_READS.with(|cell| {
         if let Some(list) = cell.borrow_mut().as_mut()
             && !list.iter().any(|p| p == path)
@@ -165,6 +169,16 @@ pub struct WasmFile {
     pub data: Vec<u8>,
 }
 
+/// Inputs used after the frontend has committed a complete common AST.
+/// Source text is deliberately absent: emission must not preprocess or parse
+/// an already prepared unit a second time.
+struct AstCompilationContext<'a> {
+    language: Language,
+    unit_path: Option<&'a Path>,
+    entry_point: &'a EntryPoint,
+    wasm_files: &'a [WasmFile],
+}
+
 /// Everything needed to compile and run.
 pub struct Bundle {
     pub name: String,
@@ -178,8 +192,11 @@ pub struct Bundle {
 /// so the VM setup can install globals for read-as-value imports and
 /// synthesize namespace objects for wildcard imports.
 pub struct CompiledBundle {
+    pub required_libraries: Vec<crate::preparation::LibraryDependency>,
     pub chunks: Vec<vybe_runtime::Chunk>,
     pub host_imports: crate::primitives::HostImportMetadata,
+    pub component_source: bool,
+    pub component_binary: Option<std::sync::Arc<vybe_ast::canon::ComponentBinary>>,
     /// What the entry module DECLARED about presenting a UI — see
     /// [`vybe_ast::Directives::app_shell`]. Carried so the embedder can decide
     /// whether to present a window without re-walking the tree.
@@ -203,6 +220,31 @@ impl Bundle {
         &self,
         php_entry_path_override: Option<&Path>,
     ) -> Result<Module, String> {
+        self.prepared_frontend_with_php_entry_override(php_entry_path_override).map(|prepared|prepared.module)
+    }
+    pub fn prepared_frontend(&self)->Result<crate::frontend_preparation::PreparedModule,String>{
+        self.prepared_frontend_with_php_entry_override(None)
+    }
+    pub fn prepared_frontend_with_php_entry_override(&self,php_entry_path_override:Option<&Path>)
+        ->Result<crate::frontend_preparation::PreparedModule,String>{
+        self.prepared_frontend_with_preparer(php_entry_path_override,crate::frontend_preparation::for_parser(self.language.parse))
+    }
+    pub(crate) fn prepared_frontend_with_preparer(&self,php_entry_path_override:Option<&Path>,preparer:Option<crate::frontend_preparation::FrontendPreparer>)
+        ->Result<crate::frontend_preparation::PreparedModule,String>{
+        let mut emitted=None;
+        let mut prepared=self.prepared_frontend_with_sink(php_entry_path_override,preparer,&mut |hints|emitted=Some(hints))?;
+        if prepared.hints.is_none(){prepared.hints=emitted;}
+        Ok(prepared)
+    }
+    pub(crate) fn prepared_frontend_with_sink(&self,php_entry_path_override:Option<&Path>,preparer:Option<crate::frontend_preparation::FrontendPreparer>,sink:&mut crate::frontend_preparation::PreparationSink<'_>)
+        ->Result<crate::frontend_preparation::PreparedModule,String>{
+        // This preparation API is also called directly by include workers;
+        // compile_full timings alone omit their parsing and normalization.
+        let source_path = self.sources.first().map_or(Path::new("."), |source| source.path.as_path());
+        let _frontend_span = crate::compilation_timeline::span("source_frontend", source_path);
+        let timing = bundle_timing_path();
+        let expansion_started = timing.as_ref().map(|_| Instant::now());
+        let expansion_span = crate::compilation_timeline::span("source_expansion", source_path);
         let debug_expand = vybe_runtime::debugger::DebugPhase::current("source expansion");
         let (combined, php_blocks) = if self.language.name == "php" {
             let expanded = expand_php_bundle_sources_with_map_and_entry_path(
@@ -255,15 +297,25 @@ impl Bundle {
         }
 
         drop(debug_expand);
+        drop(expansion_span);
+        let expansion_elapsed = expansion_started.map(|start| start.elapsed());
+        let parse_started = timing.as_ref().map(|_| Instant::now());
         // Parse → common AST
         let debug_parse = vybe_runtime::debugger::DebugPhase::current("source parse and walk");
-        let mut module = (self.language.parse)(&combined).map_err(|err| {
+        let parse_span = crate::compilation_timeline::span("source_parse_walk", source_path);
+        let caller=self.sources.first().map_or(Path::new("."),|source|source.path.as_path());
+        let mut prepared=crate::frontend_preparation::parse_using_with_sink(&combined,caller,self.language.parse,preparer,sink).map_err(|err| {
             php_blocks
                 .as_ref()
                 .map(|blocks| annotate_php_parse_error(&err, blocks))
                 .unwrap_or(err)
         })?;
+        let module=&mut prepared.module;
         drop(debug_parse);
+        drop(parse_span);
+        let parse_elapsed = parse_started.map(|start| start.elapsed());
+        let resolve_started = timing.as_ref().map(|_| Instant::now());
+        let _resolve_span = crate::compilation_timeline::span("source_resolve_entry", source_path);
 
         // Resolve imports relative to the FIRST source's directory. Correct for
         // one source, and for languages whose sources are one text stream; with
@@ -272,12 +324,31 @@ impl Bundle {
         // the per-source path above instead.
         if let Some(first) = self.sources.first() {
             let base_dir = first.path.parent().unwrap_or(Path::new("."));
-            resolve_imports(&mut module, &self.language, base_dir);
+            resolve_imports(module, &self.language, base_dir);
         }
 
-        self.apply_entry_point(&mut module);
+        self.apply_entry_point(module);
 
-        Ok(module)
+        if let Some(path) = timing.as_deref() {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                // One correlated record keeps concurrent preparation workers'
+                // source identity and disjoint durations together. No source
+                // contents or runtime values are logged.
+                let record = format!(
+                    "source_preparation language={} sources={:?} bytes={} expand_ns={} parse_walk_ns={} resolve_entry_ns={}\n",
+                    self.language.name,
+                    self.sources.iter().map(|source| &source.path).collect::<Vec<_>>(),
+                    combined.len(),
+                    expansion_elapsed.unwrap().as_nanos(),
+                    parse_elapsed.unwrap().as_nanos(),
+                    resolve_started.unwrap().elapsed().as_nanos(),
+                );
+                let _ = file.write_all(record.as_bytes());
+            }
+        }
+
+        Ok(prepared)
     }
 
     /// Entry-point injection + completion-value rewriting, applied to a parsed
@@ -397,12 +468,17 @@ impl Bundle {
         let timing = bundle_timing_path();
         let total_started = Instant::now();
         let prepare_started = Instant::now();
-        let module = self.prepared_module_with_php_entry_override(php_entry_path_override)?;
+        let mut prepared=self.prepared_frontend_with_php_entry_override(php_entry_path_override)?;
+        let production=prepared.statement_production.take();
+        let module=prepared.module;
         if let Some(path) = timing.as_deref() {
             write_bundle_timing(path, "prepared_module", prepare_started.elapsed());
         }
         let compile_started = Instant::now();
-        let result = self.compile_prepared_module_with_module_end_hooks(&module, modules, true);
+        let result=if let Some(production)=production {
+            let registration=crate::frontend_preparation::snapshot(self.language.parse);
+            self.compile_prepared_statement_production(module,production,modules,true,None,None,None,registration.argument_selection())
+        }else{self.compile_prepared_module_with_module_end_hooks(&module, modules, true)};
         if let Some(path) = timing.as_deref() {
             write_bundle_timing(path, "compile_prepared_module", compile_started.elapsed());
             write_bundle_timing(path, "compile_full_total", total_started.elapsed());
@@ -415,12 +491,20 @@ impl Bundle {
         modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
         php_entry_path_override: Option<&Path>,
     ) -> Result<CompiledBundle, String> {
-        let module = {
+        let mut prepared = {
             let _phase = vybe_runtime::debugger::DebugPhase::current("prepare source");
-            self.prepared_module_with_php_entry_override(php_entry_path_override)?
+            self.prepared_frontend_with_php_entry_override(php_entry_path_override)?
         };
         let _phase = vybe_runtime::debugger::DebugPhase::current("lower module");
-        self.compile_prepared_module_with_module_end_hooks(&module, modules, false)
+        if let Some(production) = prepared.statement_production.take() {
+            let registration = crate::frontend_preparation::snapshot(self.language.parse);
+            self.compile_prepared_statement_production(
+                prepared.module, production, modules, false, None, None, None,
+                registration.argument_selection(),
+            )
+        } else {
+            self.compile_prepared_module_with_module_end_hooks(&prepared.module, modules, false)
+        }
     }
 
     /// Compile an already-prepared (possibly transformed) common-AST module with
@@ -446,28 +530,150 @@ impl Bundle {
         self.compile_prepared_module_with_module_end_hooks(module, modules, false)
     }
 
-    fn compile_prepared_module_with_module_end_hooks(
-        &self,
-        module: &Module,
-        modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
-        run_module_end_hooks: bool,
+    fn compile_prepared_module_with_module_end_hooks(&self,module:&Module,modules:&HashMap<String,ModuleRecord>,run_module_end_hooks:bool)->Result<CompiledBundle,String> {
+        self.compile_prepared_certified(module,modules,run_module_end_hooks,None,None)
+    }
+    pub(crate) fn compile_prepared_certified(&self,module:&Module,modules:&HashMap<String,ModuleRecord>,run_module_end_hooks:bool,certificate:Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,profile_snapshot:Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>)->Result<CompiledBundle,String> {
+        self.compile_prepared_certified_with_helpers(module, modules, run_module_end_hooks, certificate, profile_snapshot, None)
+    }
+    /// Explicit opt-in. Unregistered/other selected parsers keep the legacy path.
+    pub fn compile_prepared_with_helpers(&self,module:&Module,modules:&HashMap<String,ModuleRecord>,run_module_end_hooks:bool,selected:&crate::primitives::helper_templates::Selected)->Result<CompiledBundle,String> {
+        self.compile_prepared_certified_with_helpers(module,modules,run_module_end_hooks,None,None,Some(selected))
+    }
+    pub(crate) fn compile_prepared_certified_with_helpers(&self,module:&Module,modules:&HashMap<String,ModuleRecord>,run_module_end_hooks:bool,certificate:Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,profile_snapshot:Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,selected:Option<&crate::primitives::helper_templates::Selected>)->Result<CompiledBundle,String> {
+        let arguments = crate::frontend_preparation::snapshot(self.language.parse).argument_selection();
+        self.compile_prepared_certified_with_emitters(module, modules, run_module_end_hooks,
+            certificate, profile_snapshot, selected, arguments)
+    }
+    pub(crate) fn compile_prepared_certified_with_emitters(&self,module:&Module,modules:&HashMap<String,ModuleRecord>,run_module_end_hooks:bool,certificate:Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,profile_snapshot:Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,selected:Option<&crate::primitives::helper_templates::Selected>,arguments:crate::primitives::argument_emission::Selection)->Result<CompiledBundle,String> {
+        let context = AstCompilationContext {
+            language: self.language,
+            unit_path: (self.sources.len() == 1).then(|| self.sources[0].path.as_path()),
+            entry_point: &self.entry_point,
+            wasm_files: &self.wasm_files,
+        };
+        Self::compile_ast_certified(context, module, modules, run_module_end_hooks,
+            certificate, profile_snapshot, selected, arguments)
+    }
+
+    /// Emit a committed single-source AST without constructing a source bundle.
+    /// Original source ownership stays with the preparation ticket for current
+    /// source validation. This is emission only, never a parsing entry point.
+    pub(crate) fn compile_source_ast_certified(language: Language, path: &Path,
+        module: &Module, modules: &HashMap<String, ModuleRecord>,
+        certificate: Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+        profile_snapshot: Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,
+        selected: Option<&crate::primitives::helper_templates::Selected>,
+        arguments: crate::primitives::argument_emission::Selection,
     ) -> Result<CompiledBundle, String> {
+        Self::compile_ast_certified(AstCompilationContext {
+            language, unit_path: Some(path), entry_point: &EntryPoint::Auto, wasm_files: &[],
+        }, module, modules, false, certificate, profile_snapshot, selected, arguments)
+    }
+
+    pub(crate) fn compile_source_ast_certified_owned(language: Language, path: &Path,
+        module: Module, modules: &HashMap<String, ModuleRecord>,
+        certificate: Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+        profile_snapshot: Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,
+        selected: Option<&crate::primitives::helper_templates::Selected>, arguments: crate::primitives::argument_emission::Selection,
+    ) -> Result<CompiledBundle, String> {
+        Self::compile_ast_certified_input(AstCompilationContext {
+            language, unit_path: Some(path), entry_point: &EntryPoint::Auto, wasm_files: &[],
+        }, std::borrow::Cow::Owned(module), modules, false, certificate, profile_snapshot, selected, arguments)
+    }
+    pub(crate) fn compile_prepared_certified_owned_with_emitters(&self, module: Module,
+        modules: &HashMap<String, ModuleRecord>, run_module_end_hooks: bool,
+        certificate: Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+        profile_snapshot: Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,
+        selected: Option<&crate::primitives::helper_templates::Selected>, arguments: crate::primitives::argument_emission::Selection,
+    ) -> Result<CompiledBundle, String> {
+        Self::compile_ast_certified_input(AstCompilationContext {
+            language: self.language, unit_path: (self.sources.len()==1).then(||self.sources[0].path.as_path()),
+            entry_point: &self.entry_point, wasm_files: &self.wasm_files,
+        }, std::borrow::Cow::Owned(module), modules, run_module_end_hooks, certificate, profile_snapshot, selected, arguments)
+    }
+
+    pub(crate) fn compile_source_statement_production(language:Language,path:&Path,module:Module,
+        production:crate::statement_codegen::Production,modules:&HashMap<String,ModuleRecord>,
+        certificate:Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+        profile_snapshot:Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,
+        selected:Option<&crate::primitives::helper_templates::Selected>,arguments:crate::primitives::argument_emission::Selection,
+    )->Result<CompiledBundle,String>{
+        Self::compile_ast_certified_input_with_production(AstCompilationContext {
+            language,unit_path:Some(path),entry_point:&EntryPoint::Auto,wasm_files:&[],
+        },std::borrow::Cow::Owned(module),modules,false,certificate,profile_snapshot,selected,arguments,Some(production))
+    }
+
+    /// Reuse an owned producer's validated manifest without taking the
+    /// preparation ticket's fallback AST. Independent producers keep cloning.
+    pub(crate) fn compile_source_statement_production_borrowed(language:Language,path:&Path,module:&Module,
+        production:crate::statement_codegen::Production,modules:&HashMap<String,ModuleRecord>,
+        certificate:Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+        profile_snapshot:Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,
+        selected:Option<&crate::primitives::helper_templates::Selected>,arguments:crate::primitives::argument_emission::Selection,
+    )->Result<CompiledBundle,String>{
+        Self::compile_ast_certified_input_with_production(AstCompilationContext{
+            language,unit_path:Some(path),entry_point:&EntryPoint::Auto,wasm_files:&[],
+        },std::borrow::Cow::Borrowed(module),modules,false,certificate,profile_snapshot,selected,arguments,Some(production))
+    }
+
+    fn compile_ast_certified(context: AstCompilationContext<'_>, module: &Module,
+        modules: &HashMap<String, ModuleRecord>, run_module_end_hooks: bool,
+        certificate: Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+        profile_snapshot: Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,
+        selected: Option<&crate::primitives::helper_templates::Selected>,
+        arguments: crate::primitives::argument_emission::Selection,
+    ) -> Result<CompiledBundle, String> {
+        Self::compile_ast_certified_input(context, std::borrow::Cow::Borrowed(module), modules,
+            run_module_end_hooks, certificate, profile_snapshot, selected, arguments)
+    }
+    fn compile_ast_certified_input(context: AstCompilationContext<'_>, module: std::borrow::Cow<'_, Module>,
+        modules: &HashMap<String, ModuleRecord>, run_module_end_hooks: bool,
+        certificate: Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+        profile_snapshot: Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,
+        selected: Option<&crate::primitives::helper_templates::Selected>, arguments: crate::primitives::argument_emission::Selection,
+    ) -> Result<CompiledBundle, String> {
+        Self::compile_ast_certified_input_with_production(context,module,modules,run_module_end_hooks,
+            certificate,profile_snapshot,selected,arguments,None)
+    }
+
+    pub(crate) fn compile_prepared_statement_production(&self,module:Module,
+        production:crate::statement_codegen::Production,modules:&HashMap<String,ModuleRecord>,
+        run_module_end_hooks:bool,
+        certificate:Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+        profile_snapshot:Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,
+        selected:Option<&crate::primitives::helper_templates::Selected>,arguments:crate::primitives::argument_emission::Selection,
+    )->Result<CompiledBundle,String>{
+        Self::compile_ast_certified_input_with_production(AstCompilationContext {
+            language:self.language,unit_path:(self.sources.len()==1).then(||self.sources[0].path.as_path()),
+            entry_point:&self.entry_point,wasm_files:&self.wasm_files,
+        },std::borrow::Cow::Owned(module),modules,run_module_end_hooks,certificate,profile_snapshot,
+            selected,arguments,Some(production))
+    }
+
+    fn compile_ast_certified_input_with_production(context:AstCompilationContext<'_>,module:std::borrow::Cow<'_,Module>,
+        modules:&HashMap<String,ModuleRecord>,run_module_end_hooks:bool,
+        certificate:Option<std::sync::Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+        profile_snapshot:Option<std::sync::Arc<vybe_runtime::profile::LanguageProfile>>,
+        selected:Option<&crate::primitives::helper_templates::Selected>,arguments:crate::primitives::argument_emission::Selection,
+        production:Option<crate::statement_codegen::Production>,
+    )->Result<CompiledBundle,String>{
         let timing = bundle_timing_path();
         let total_started = Instant::now();
         // Load profile + compile source code.
         //
-        // Flatten the VM's module registry into a per-module map of
+        // Flatten linker-reachable rows of the VM's module registry into
         // pre-resolved `(final_module, final_name)` pairs so the
         // compiler Linker can bind `import { X } from "node:http"` in
         // one lookup. Walks the `Indirect` chain from Adapter modules
-        // through to a Synthetic `Function` export.
+        // through to its terminal export in the complete original graph.
         // No seeding step: the profile parser reads platform constants straight
         // from the registry, keeping only those whose platform the profile
         // declares in `type_scopes`. The seed here flattened EVERY registered
         // platform into one list and handed it to every language, which is the
         // opposite of scoping.
         let profile_started = Instant::now();
-        let mut profile = cached_language_profile((self.language.profile_source)())?;
+        let mut profile=match profile_snapshot {Some(profile)=>profile,None=>cached_language_profile((context.language.profile_source)())?};
         if let Some(path) = timing.as_deref() {
             write_bundle_timing(path, "parse_profile", profile_started.elapsed());
         }
@@ -475,25 +681,66 @@ impl Bundle {
         // Entry override, `ld -e` style: the profile's `entry_point` is the
         // linker DEFAULT (C: "main"); an explicit Function entry replaces the
         // symbol the compiler auto-invokes. One mechanism, no double call.
-        if let EntryPoint::Function(ref name) = self.entry_point {
-            profile.entry_point = Some(name.clone());
+        if let EntryPoint::Function(name) = context.entry_point {
+            std::sync::Arc::make_mut(&mut profile).entry_point = Some(name.clone());
         }
 
-        // Add shared GUI namespace automatically to all languages
-        // (replaces per-language profile duplication)
-        add_shared_gui_namespace(&mut profile);
-
         let exports_started = Instant::now();
-        let (module_exports, value_exports) = flatten_module_exports_and_values(modules);
+        let required_exports = required_export_modules(&profile.esm_defaults,
+            &profile.bare_module_aliases, &module.imports, modules);
+        let (module_exports, value_exports) = flatten_export_rows(modules,
+            required_exports.iter().filter_map(|name| modules.get_key_value(name)));
         if let Some(path) = timing.as_deref() {
             write_bundle_timing(path, "flatten_module_exports", exports_started.elapsed());
         }
         let compiler_started = Instant::now();
-        let compile_result = crate::primitives::Compiler::with_profile(profile)
-            .with_run_module_end_hooks(run_module_end_hooks)
-            .with_module_exports(module_exports)
-            .with_module_value_exports(value_exports)
-            .compile_with_imports(module)?;
+        let emission_span = crate::compilation_timeline::span("emission", context.unit_path.unwrap_or(Path::new("<bundle>")));
+        let mut compiler=crate::primitives::Compiler::with_shared_profile(profile)
+            .with_optimizations(vybe_runtime::registry::compiler_optimizations(context.language))
+            .with_run_module_end_hooks(run_module_end_hooks).with_module_exports(module_exports).with_module_value_exports(value_exports);
+        if let Some(selected)=selected.filter(|selected| std::ptr::fn_addr_eq(selected.selection.parser,context.language.parse)) {
+            compiler=compiler.with_selected_helpers(selected);
+        }
+        if arguments.matches_parser(context.language.parse) {
+            compiler = compiler.with_selected_argument_emitters(arguments);
+        }
+        if let Some(certificate)=certificate {compiler=compiler.with_compile_certificate(certificate);}
+        let (compile_result, required_libraries)=if let Some(production)=production {
+            let required=crate::preparation::required_libraries(&module);
+            if production.is_owned() {
+                // Validate before any emission; neither private iterator lets
+                // a frontend callback replace the sealed original statements.
+                production.validate_owned()?;
+                let result=match module {
+                    std::borrow::Cow::Owned(module)=>{
+                        let mut emission=compiler.begin_owned_statement_emission_prepared(module,context.language.parse)?;
+                        while emission.emit_next()?.is_some(){}emission.finish()?
+                    },
+                    std::borrow::Cow::Borrowed(module)=>{
+                        let mut emission=compiler.begin_borrowed_manifest_emission_prepared(module,context.language.parse)?;
+                        while emission.emit_next()?.is_some(){}emission.finish()?
+                    },
+                };
+                (result,required)
+            } else {
+                let module=module.into_owned();
+                let emission=compiler.begin_statement_emission_prepared(&module,context.language.parse)?;
+                (emission.finish_with(|sink| production.emit(module, sink))?,required)
+            }
+        } else {match module {
+            std::borrow::Cow::Borrowed(module) => {
+                let compiled = compiler.compile_with_imports_prepared(module, context.language.parse)?;
+                (compiled, crate::preparation::required_libraries(module))
+            }
+            std::borrow::Cow::Owned(module) => {
+                let required = crate::preparation::required_libraries(&module);
+                // Retain this finalized typed body through one preparation
+                // transaction, then consume those same owned emission slots.
+                let emission = compiler.begin_emission_owned_prepared(module, context.language.parse)?;
+                (emission.finish()?, required)
+            }
+        }};
+        drop(emission_span);
         if let Some(path) = timing.as_deref() {
             write_bundle_timing(path, "compiler_compile_with_imports", compiler_started.elapsed());
         }
@@ -501,11 +748,10 @@ impl Bundle {
         // Do not mislabel a merged multi-source unit as its first input file.
         // Runtime includes/eval and ordinary single-file projects retain their
         // actual compilation-unit path, including when chunks are cached.
-        if self.sources.len() == 1 {
-            let path = &self.sources[0].path;
+        if let Some(path) = context.unit_path {
             let path = path.canonicalize().unwrap_or_else(|_| {
                 if path.is_absolute() {
-                    path.clone()
+                    path.to_path_buf()
                 } else {
                     std::env::current_dir().unwrap_or_default().join(path)
                 }
@@ -517,11 +763,19 @@ impl Bundle {
             }
         }
         let host_imports = compile_result.host_imports;
+        let component_source = compile_result.component_source;
+        let component_binary = if component_source
+            && (!context.wasm_files.is_empty() || !matches!(context.entry_point, EntryPoint::Auto))
+        {
+            None
+        } else {
+            compile_result.component_binary
+        };
         let app_shell = compile_result.app_shell;
 
         // Load and append WASM binary chunks
         let wasm_started = Instant::now();
-        for wf in &self.wasm_files {
+        for wf in context.wasm_files {
             // Through the registry: the platform that can decode this format
             // registered a reader. The compiler does not name `vybe_platform_wasm`.
             let wasm_chunks = vybe_runtime::registry::platform_read_binary_module(&wf.data)
@@ -550,8 +804,11 @@ impl Bundle {
         }
 
         Ok(CompiledBundle {
+            required_libraries,
             chunks,
             host_imports,
+            component_source,
+            component_binary,
             app_shell,
         })
     }
@@ -753,6 +1010,12 @@ fn expand_php_source_file(source_path: &Path, code: &str) -> Result<ExpandedPhpS
         );
     }
 
+    // `lines()` omits the terminal newline. In a PHP file that newline can
+    // be literal HTML output, so retain it when the lines are joined again.
+    if rewritten_code.ends_with('\n') {
+        record_expanded_line(&mut out, source_path, String::new());
+    }
+
     Ok(out)
 }
 
@@ -832,6 +1095,12 @@ fn rewrite_cobol_assign_path_line(line: &str, base_dir: &Path) -> String {
 // question, so the whole subsystem goes with it.
 
 fn parse_php_include_statement(line: &str) -> Option<(PhpIncludeKind, &str)> {
+    // Most source lines cannot be include statements. Reject those before
+    // scanning quoted operands for the terminating semicolon.
+    let head = line.trim_start();
+    if !head.starts_with("include") && !head.starts_with("require") {
+        return None;
+    }
     let statement = php_statement_prefix(line)?;
     let kinds = [
         ("require_once", PhpIncludeKind::RequireOnce),
@@ -857,20 +1126,17 @@ fn parse_php_include_statement(line: &str) -> Option<(PhpIncludeKind, &str)> {
 
 fn php_statement_prefix(line: &str) -> Option<&str> {
     let mut quote: Option<char> = None;
-    let chars: Vec<(usize, char)> = line.char_indices().collect();
-    let mut index = 0usize;
+    let mut chars = line.char_indices();
 
-    while index < chars.len() {
-        let (byte_idx, ch) = chars[index];
+    while let Some((byte_idx, ch)) = chars.next() {
         if let Some(q) = quote {
             if ch == '\\' {
-                index += 2;
+                chars.next();
                 continue;
             }
             if ch == q {
                 quote = None;
             }
-            index += 1;
             continue;
         }
 
@@ -879,10 +1145,34 @@ fn php_statement_prefix(line: &str) -> Option<&str> {
             ';' => return Some(line[..byte_idx].trim()),
             _ => {}
         }
-        index += 1;
     }
 
     None
+}
+
+#[cfg(test)]
+mod php_include_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn include_prefix_preserves_quoted_semicolons_escapes_and_unicode() {
+        for (keyword, kind) in [
+            ("include", PhpIncludeKind::Include),
+            ("include_once", PhpIncludeKind::IncludeOnce),
+            ("require", PhpIncludeKind::Require),
+            ("require_once", PhpIncludeKind::RequireOnce),
+        ] {
+            for operand in ["'a;β.php'", "\"a\\\";😀.php\"", "'a\\\\;b.php'", "$path"] {
+                let line = format!("\u{2003} {keyword} ({operand}); echo 'tail';");
+                assert_eq!(parse_php_include_statement(&line), Some((kind, operand)));
+            }
+            assert_eq!(parse_php_include_statement(&format!("{keyword} 'unterminated;")), None);
+            assert_eq!(parse_php_include_statement(&format!("{keyword}_suffix('x');")), None);
+        }
+        for line in ["$x = 'include;';", "// require 'x';", "echo \"😀;\";", "'require';", ""] {
+            assert_eq!(parse_php_include_statement(line), None);
+        }
+    }
 }
 
 // `is_dynamic_php_include_expression` / `is_dynamic_php_path_atom` decided
@@ -1329,6 +1619,11 @@ fn find_php_include_close_tag(source: &str, start: usize) -> Option<usize> {
 }
 
 fn normalize_php_alternative_control_syntax(line: &str) -> String {
+    rewrite_php_alternative_control_line(line).unwrap_or_else(|| line.to_string())
+}
+
+// An unchanged line can remain borrowed when the caller is assembling source.
+fn rewrite_php_alternative_control_line(line: &str) -> Option<String> {
     #[derive(Copy, Clone, Eq, PartialEq)]
     enum TagMode {
         Bare,
@@ -1348,7 +1643,8 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
     }
 
     fn starts_control_header(prefix: &str, keyword: &str) -> bool {
-        prefix.starts_with(&format!("{keyword} ")) || prefix.starts_with(&format!("{keyword}("))
+        prefix.strip_prefix(keyword)
+            .is_some_and(|rest| rest.starts_with(' ') || rest.starts_with('('))
     }
 
     let indent_len = line.len() - line.trim_start().len();
@@ -1380,19 +1676,18 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
         format!(" #{}", comment)
     };
 
-    for end_keyword in ["endif", "endforeach", "endfor", "endwhile", "endswitch"] {
-        let end_prefix = format!("{end_keyword};");
-        if let Some(rest) = code.strip_prefix(&end_prefix) {
+    for end_prefix in ["endif;", "endforeach;", "endfor;", "endwhile;", "endswitch;"] {
+        if let Some(rest) = code.strip_prefix(end_prefix) {
             let rest = rest.trim_start();
             if !rest.is_empty() {
                 let normalized_rest = normalize_php_alternative_control_syntax(rest);
                 let combined = format!("}} {}", normalized_rest.trim_start());
-                return match tag_mode {
+                return Some(match tag_mode {
                     TagMode::Wrapped => format!("{}<?php {} ?>{}", indent, combined, close_suffix),
                     TagMode::OpenOnly => format!("{}<?php {}{}", indent, combined, comment_suffix),
                     TagMode::CloseOnly => format!("{}{} ?>{}", indent, combined, close_suffix),
                     TagMode::Bare => format!("{}{}{}", indent, combined, comment_suffix),
-                };
+                });
             }
         }
     }
@@ -1404,28 +1699,28 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
             || starts_control_header(prefix, "while")
             || starts_control_header(prefix, "switch")
         {
-            return match tag_mode {
+            return Some(match tag_mode {
                 TagMode::Wrapped => format!("{}<?php {} {{ ?>{}", indent, prefix, close_suffix),
                 TagMode::OpenOnly => format!("{}<?php {} {{{}", indent, prefix, comment_suffix),
                 TagMode::CloseOnly => format!("{}{} {{ ?>{}", indent, prefix, close_suffix),
                 TagMode::Bare => format!("{}{} {{{}", indent, prefix, comment_suffix),
-            };
+            });
         }
         if prefix.starts_with("elseif ") {
-            return match tag_mode {
+            return Some(match tag_mode {
                 TagMode::Wrapped => format!("{}<?php }} {} {{ ?>{}", indent, prefix, close_suffix),
                 TagMode::OpenOnly => format!("{}<?php }} {} {{{}", indent, prefix, comment_suffix),
                 TagMode::CloseOnly => format!("{}}} {} {{ ?>{}", indent, prefix, close_suffix),
                 TagMode::Bare => format!("{}}} {} {{{}", indent, prefix, comment_suffix),
-            };
+            });
         }
         if prefix == "else" {
-            return match tag_mode {
+            return Some(match tag_mode {
                 TagMode::Wrapped => format!("{}<?php }} else {{ ?>{}", indent, close_suffix),
                 TagMode::OpenOnly => format!("{}<?php }} else {{{}", indent, comment_suffix),
                 TagMode::CloseOnly => format!("{}}} else {{ ?>{}", indent, close_suffix),
                 TagMode::Bare => format!("{}}} else {{{}", indent, comment_suffix),
-            };
+            });
         }
     }
 
@@ -1434,20 +1729,21 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
         end_keyword,
         "endif" | "endforeach" | "endfor" | "endwhile" | "endswitch"
     ) {
-        return match tag_mode {
+        return Some(match tag_mode {
             TagMode::Wrapped => format!("{}<?php }} ?>{}", indent, close_suffix),
             TagMode::OpenOnly => format!("{}<?php }}{}", indent, comment_suffix),
             TagMode::CloseOnly => format!("{}}} ?>{}", indent, close_suffix),
             TagMode::Bare => format!("{}}}{}", indent, comment_suffix),
-        };
+        });
     }
 
-    line.to_string()
+    None
 }
 
 fn starts_multiline_php_alternative_control_header(line: &str) -> bool {
     fn starts_control_header(prefix: &str, keyword: &str) -> bool {
-        prefix.starts_with(&format!("{keyword} ")) || prefix.starts_with(&format!("{keyword}("))
+        prefix.strip_prefix(keyword)
+            .is_some_and(|rest| rest.starts_with(' ') || rest.starts_with('('))
     }
 
     let trimmed = line.trim();
@@ -1547,7 +1843,13 @@ fn normalize_multiline_php_alternative_control_syntax(block: &str) -> Option<Str
 
 fn normalize_php_source_for_parser(source: &str) -> String {
     let source = rewrite_php_execution_operator(source);
-    let mut normalized_lines = Vec::new();
+    let mut normalized = String::with_capacity(source.len());
+    let mut has_line = false;
+    let mut append_line = |line: &str| {
+        if has_line { normalized.push('\n'); }
+        normalized.push_str(line);
+        has_line = true;
+    };
     let mut lines = source.lines().peekable();
 
     while let Some(line) = lines.next() {
@@ -1572,19 +1874,17 @@ fn normalize_php_source_for_parser(source: &str) -> String {
                 }
             }
 
-            normalized_lines.extend(
-                normalized_block
-                    .unwrap_or_else(|| header_lines.join("\n"))
-                    .lines()
-                    .map(str::to_string),
-            );
+            let block = normalized_block.unwrap_or_else(|| header_lines.join("\n"));
+            for line in block.lines() { append_line(line); }
             continue;
         }
 
-        normalized_lines.push(normalize_php_alternative_control_syntax(line));
+        match rewrite_php_alternative_control_line(line) {
+            Some(rewritten) => append_line(&rewritten),
+            None => append_line(line),
+        }
     }
 
-    let mut normalized = normalized_lines.join("\n");
     if source.ends_with('\n') {
         normalized.push('\n');
     }
@@ -1593,11 +1893,18 @@ fn normalize_php_source_for_parser(source: &str) -> String {
         Some(f) => f(&normalized),
         None => normalized,
     };
-    let mut normalized = mixed_normalized
-        .lines()
-        .map(normalize_php_alternative_control_syntax)
-        .collect::<Vec<_>>()
-        .join("\n");
+    // Preserve the post-hook normalization order, but borrow unchanged lines
+    // into one buffer instead of allocating every line and then joining them.
+    let mut normalized = String::with_capacity(mixed_normalized.len());
+    for (index, line) in mixed_normalized.lines().enumerate() {
+        if index != 0 {
+            normalized.push('\n');
+        }
+        match rewrite_php_alternative_control_line(line) {
+            Some(rewritten) => normalized.push_str(&rewritten),
+            None => normalized.push_str(line),
+        }
+    }
     if mixed_normalized.ends_with('\n') {
         normalized.push('\n');
     }
@@ -1752,6 +2059,13 @@ fn rewrite_php_execution_operator_in_code(source: &str) -> String {
 fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
     let mut prepend: Vec<Statement> = Vec::new();
     for imp in &module.imports {
+        // PHP `use` declarations bind namespace aliases, not source files.
+        // Keep them for compiler name binding; include/require and Composer
+        // autoloading perform source loading at runtime. A class ending in
+        // `.Js`, for example, must not be mistaken for a JavaScript filename.
+        if lang.name == "php" && matches!(&imp.kind, ImportKind::Simple { .. }) {
+            continue;
+        }
         let path_str = match &imp.kind {
             ImportKind::Named { path, .. } => path.clone(),
             ImportKind::Default { path, .. } => path.clone(),
@@ -1806,6 +2120,10 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
 }
 
 #[cfg(test)]
+#[path = "../tests/fixtures/cm_stdout_capture.rs"]
+mod cm_stdout_capture;
+
+#[cfg(test)]
 mod tests {
     /// Register the frontends these tests need. `vybe_compiler` links no
     /// language crate in production — languages register THEMSELVES through
@@ -1818,6 +2136,70 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn combined_export_snapshot_preserves_terminal_kinds_and_aliases() {
+        let mut leaf = ModuleRecord::new_synthetic("leaf");
+        leaf.exports.insert("function".into(), ExportEntry::Function { idx: 3 });
+        leaf.exports.insert("class".into(), ExportEntry::Class { type_id: 4 });
+        leaf.exports.insert("resource".into(), ExportEntry::ResourceType { type_id: 5 });
+        leaf.exports.insert("value".into(), ExportEntry::Value(vybe_runtime::Value::I32(7)));
+        let mut aliases = ModuleRecord::new_synthetic("aliases");
+        for name in ["function", "class", "resource", "value"] {
+            aliases.exports.insert(name.into(), ExportEntry::Indirect {
+                from: "leaf".into(), name: name.into(),
+            });
+        }
+        aliases.exports.insert("cycle".into(), ExportEntry::Indirect {
+            from: "aliases".into(), name: "cycle".into(),
+        });
+        aliases.exports.insert("missing".into(), ExportEntry::Indirect {
+            from: "absent".into(), name: "value".into(),
+        });
+        let modules = HashMap::from([("leaf".into(), leaf), ("aliases".into(), aliases)]);
+        let (exports, values) = flatten_module_exports_and_values(&modules);
+        assert_eq!(exports, flatten_module_exports(&modules));
+        assert_eq!(values, flatten_module_value_exports(&modules));
+        assert_eq!(values["aliases"]["value"], vybe_runtime::Value::I32(7));
+        assert!(!exports["aliases"].contains_key("cycle"));
+        assert!(!exports["aliases"].contains_key("missing"));
+    }
+
+    #[test]
+    fn demanded_exports_preserve_adapter_presence_and_transitive_values() {
+        let mut terminal = ModuleRecord::new_synthetic("terminal");
+        terminal.exports.insert("value".into(), ExportEntry::Value(vybe_runtime::Value::I32(7)));
+        let mut adapter = ModuleRecord::new_synthetic("adapter");
+        adapter.exports.insert("renamed".into(), ExportEntry::Indirect {
+            from: "terminal".into(), name: "value".into(),
+        });
+        let mut cyclic = ModuleRecord::new_synthetic("cyclic");
+        cyclic.exports.insert("value".into(), ExportEntry::Indirect {
+            from: "cyclic".into(), name: "value".into(),
+        });
+        let modules = HashMap::from([
+            ("terminal".into(), terminal), ("adapter".into(), adapter),
+            ("cyclic".into(), cyclic), ("empty".into(), ModuleRecord::new_synthetic("empty")),
+        ]);
+        let imports = ["bare", "cyclic", "empty", "absent"].map(|path| Import {
+            kind: ImportKind::Named { path: path.into(), names: vec![], level: 0 },
+            span: Span::default(),
+        });
+        let aliases = HashMap::from([("bare".into(), "adapter".into())]);
+        let required = required_export_modules(&[], &aliases, &imports, &modules);
+        let (selected, values) = flatten_export_rows(&modules,
+            required.iter().filter_map(|name| modules.get_key_value(name)));
+        let (mut reference, mut reference_values) = flatten_module_exports_and_values(&modules);
+        reference.retain(|name, _| required.contains(name));
+        reference_values.retain(|name, _| required.contains(name));
+        assert_eq!(selected, reference);
+        assert_eq!(values, reference_values);
+        assert_eq!(selected["adapter"]["renamed"], ("terminal".into(), "value".into()));
+        assert_eq!(values["adapter"]["renamed"], vybe_runtime::Value::I32(7));
+        for missing in ["cyclic", "empty", "absent", "terminal"] {
+            assert!(!selected.contains_key(missing));
+        }
+    }
 
     fn run_php_bundle_prints(bundle: &Bundle) -> Vec<String> {
         use std::sync::{Arc, Mutex};
@@ -1836,24 +2218,7 @@ mod tests {
         // `stdout().write_all` is not captured by libtest either), so its one
         // caller could not fail for the reason it claimed to test. Both are
         // registered: the console one still serves `print`-shaped builtins.
-        let stdout_captured = output.clone();
-        vm.register_host_fn(
-            "wasi:cli/stdout",
-            "write-via-stream",
-            Box::new(move |ctx: &mut HostContext, args: &[Value]| {
-                let stream_val = args.first().cloned().unwrap_or(Value::Null);
-                let bytes = ctx.stream_drain(&stream_val);
-                if !bytes.is_empty() {
-                    stdout_captured
-                        .lock()
-                        .unwrap()
-                        .push(String::from_utf8_lossy(&bytes).into_owned());
-                }
-                let (fut, fut_id) = ctx.create_future();
-                ctx.resolve_future(fut_id, Value::Null);
-                fut
-            }),
-        );
+        super::cm_stdout_capture::register(&mut vm, output.clone());
         vm.register_host_fn(
             "web:console",
             "log",
@@ -3212,22 +3577,81 @@ pub fn flatten_module_value_exports(
 
 /// Resolve both compiler snapshots in one immutable graph walk per export.
 /// Value aliases retain their imported names and cloned terminal identity.
+#[cfg(test)]
 fn flatten_module_exports_and_values(
     modules: &HashMap<String, ModuleRecord>,
 ) -> (
     HashMap<String, HashMap<String, (String, String)>>,
     HashMap<String, HashMap<String, vybe_runtime::Value>>,
 ) {
-    let mut exports = HashMap::with_capacity(modules.len());
+    flatten_export_rows(modules, modules.iter())
+}
+
+/// A superset of the module keys the linker can consult. Namespace member
+/// calls read only aliases established by profile defaults or typed imports;
+/// named imports use the same bare-module normalization as `Compiler::link`.
+/// Re-export resolution still sees the complete graph, and profile overlays
+/// are applied afterward by the linker in their original declaration order.
+fn required_export_modules(
+    defaults: &[crate::profile::EsmDefault],
+    bare_aliases: &HashMap<String, String>,
+    imports: &[Import],
+    modules: &HashMap<String, ModuleRecord>,
+) -> HashSet<String> {
+    let mut required = HashSet::new();
+    for default in defaults {
+        match default {
+            crate::profile::EsmDefault::Named { module, .. }
+            | crate::profile::EsmDefault::Namespace { module, .. }
+            | crate::profile::EsmDefault::ModuleExport { module, .. } => {
+                required.insert(module.clone());
+            }
+            crate::profile::EsmDefault::PackageRoot { module_root, .. } => {
+                required.extend(modules.keys().filter(|name| name.starts_with(module_root)).cloned());
+            }
+            crate::profile::EsmDefault::TreeMount { .. }
+            | crate::profile::EsmDefault::TreeAmbient { .. } => {}
+        }
+    }
+    for import in imports {
+        let path = match &import.kind {
+            ImportKind::Named { path, .. } | ImportKind::Wildcard { path, .. }
+            | ImportKind::Simple { path, .. } | ImportKind::Default { path, .. } => path,
+        };
+        required.insert(path.clone());
+        required.insert(bare_aliases.get(path).unwrap_or(path).clone());
+    }
+    required
+}
+
+fn flatten_export_rows<'a>(
+    modules: &'a HashMap<String, ModuleRecord>,
+    rows: impl Iterator<Item = (&'a String, &'a ModuleRecord)>,
+) -> (
+    HashMap<String, HashMap<String, (String, String)>>,
+    HashMap<String, HashMap<String, vybe_runtime::Value>>,
+) {
+    let mut exports = HashMap::new();
     let mut values: HashMap<String, HashMap<String, vybe_runtime::Value>> = HashMap::new();
     let mut visited = Vec::new();
-    for (specifier, record) in modules {
+    for (specifier, record) in rows {
         let mut resolved = HashMap::with_capacity(record.exports.len());
-        for (name, _) in &record.exports {
-            visited.clear();
-            if let Some((owner, terminal, entry)) =
-                resolve_entry(modules, specifier, name, &mut visited)
-            {
+        for (name, entry) in &record.exports {
+            // Direct entries are already resolved by this immutable iteration.
+            // Only aliases need a second registry lookup and cycle tracking.
+            let terminal = match entry {
+                ExportEntry::Indirect { .. } => {
+                    visited.clear();
+                    resolve_entry(modules, specifier, name, &mut visited)
+                }
+                ExportEntry::Function { .. }
+                | ExportEntry::Value(_)
+                | ExportEntry::ResourceType { .. }
+                | ExportEntry::Class { .. } => {
+                    Some((specifier.as_str(), name.as_str(), entry))
+                }
+            };
+            if let Some((owner, terminal, entry)) = terminal {
                 resolved.insert(name.clone(), (owner.to_string(), terminal.to_string()));
                 if let ExportEntry::Value(value) = entry {
                     values
@@ -3390,4 +3814,30 @@ fn add_shared_gui_namespace(profile: &mut crate::profile::LanguageProfile) {
             module_root: "vybe".to_string(),
         });
     }
+}
+
+// Before-read observations supplement the legacy path-only cache recorder.
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub(crate) enum SourceStamp { Present(u64,std::time::SystemTime), Missing }
+#[derive(Clone,Debug)]
+pub(crate) struct SourceObservation { path:PathBuf, stamp:Option<SourceStamp> }
+impl SourceObservation {
+    pub(crate) fn capture(path:&Path)->Self {
+        let stamp=match std::fs::metadata(path) {
+            Ok(m)=>m.modified().ok().map(|time|SourceStamp::Present(m.len(),time)),
+            Err(e)if e.kind()==std::io::ErrorKind::NotFound=>Some(SourceStamp::Missing),
+            Err(_)=>None,
+        };
+        Self{path:path.to_path_buf(),stamp}
+    }
+    pub(crate) fn valid(&self)->bool {self.stamp.is_some()&&Self::capture(&self.path).stamp==self.stamp}
+}
+thread_local! {static SOURCE_OBSERVATIONS:std::cell::RefCell<Option<Vec<SourceObservation>>>=const{std::cell::RefCell::new(None)};}
+fn note_source_observation(path:&Path){SOURCE_OBSERVATIONS.with(|cell|{
+    let mut state=cell.borrow_mut();if let Some(list)=state.as_mut() && !list.iter().any(|item|item.path==path){list.push(SourceObservation::capture(path));}
+});}
+pub(crate) fn record_source_observations<R>(f:impl FnOnce()->R)->(R,Option<Vec<SourceObservation>>){
+    struct Guard(bool);impl Drop for Guard{fn drop(&mut self){if self.0{SOURCE_OBSERVATIONS.with(|c|{c.borrow_mut().take();});}}}
+    let owns=SOURCE_OBSERVATIONS.with(|cell|{let mut state=cell.borrow_mut();if state.is_some(){false}else{*state=Some(Vec::new());true}});
+    let guard=Guard(owns);let result=f();let observations=if owns{SOURCE_OBSERVATIONS.with(|c|c.borrow_mut().take())}else{None};drop(guard);(result,observations)
 }

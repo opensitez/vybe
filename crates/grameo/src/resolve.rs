@@ -75,6 +75,12 @@ pub struct CompiledGrammar {
     analysis: crate::analysis::Analysis,
     pub(crate) scopes: Vec<crate::program::Scope>,
     pub(crate) rule_scopes: Vec<usize>,
+    pub(crate) empty_success_heads:HashMap<RuleId,crate::program::EmptySuccessHead>,
+    pub(crate) empty_suffix_heads:HashMap<usize,crate::program::EmptySuffixHead>,
+    pub(crate) shared_inner_prefixes: HashMap<usize,crate::program::SharedInnerPrefix>,
+    pub(crate) shared_group_prefixes: HashMap<usize,crate::program::SharedGroupPrefix>,
+    pub(crate) shared_wrapper_prefixes: HashMap<usize, crate::program::SharedWrapperPrefix>,
+    pub(crate) shared_prefixes: HashMap<usize, crate::program::SharedPrefixChoice>,
     pub(crate) pratt: Vec<Option<crate::program::OwnedPratt>>,
     pub(crate) trivia_failure: Vec<Option<crate::lexical::FailurePrefix>>,
     pub(crate) leading_bytes: Vec<Option<crate::lexical::LeadingBytes>>,
@@ -83,6 +89,13 @@ pub struct CompiledGrammar {
     pub(crate) failure_terminals: Vec<Vec<usize>>,
     pub(crate) literal_choices: HashMap<usize, crate::lexical::LiteralChoice>,
     literal_choice_failures: bool,
+    pub(crate) choice_head_rules: Vec<RuleId>,
+    pub(crate) owned_capture_boundaries: HashMap<RuleId,Vec<RuleId>>,
+    pub(crate) source_units: Vec<crate::source_units::OwnedBinding>,
+    pub(crate) code_space: Option<crate::source_units::CodeSpace>,
+    pub(crate) optimization_selection: crate::optimization::OptimizationSelection,
+    pub(crate) native_token_compilation: bool,
+    pub(crate) native_token_failures: bool,
 }
 
 impl CompiledGrammar {
@@ -143,6 +156,25 @@ impl CompiledGrammar {
     }
 }
 
+/// Explicit grammar annotation activation. Ordinary compile leaves both disabled.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CompileOptions {
+    /// Read and validate @grameo ast constructor bindings.
+    pub ast_bindings: bool,
+    /// Read @grameo optimize, pratt and operator performance directives.
+    pub optimizations: bool,
+}
+
+pub fn compile_with_options(source: &str, options: CompileOptions) -> Result<CompiledGrammar, Vec<Diagnostic>> {
+    let (syntax, annotations) = crate::grammar::parse_configured(source, crate::ParseOptions::default(), options.ast_bindings, options.optimizations).map_err(|e| vec![e])?;
+    let mut grammar = resolve(syntax)?;
+    if !grammar.analysis.errors.is_empty() {
+        return Err(grammar.analysis.errors.clone());
+    }
+    crate::optimization::apply(&mut grammar, annotations)?;
+    Ok(grammar)
+}
+
 pub fn compile(source: &str) -> Result<CompiledGrammar, Vec<Diagnostic>> {
     let grammar = resolve(crate::parse(source).map_err(|error| vec![error])?)?;
     if grammar.analysis.errors.is_empty() {
@@ -150,6 +182,13 @@ pub fn compile(source: &str) -> Result<CompiledGrammar, Vec<Diagnostic>> {
     } else {
         Err(grammar.analysis.errors.clone())
     }
+}
+
+/// Compile PEG with explicitly enabled AST annotation validation.
+pub fn compile_with_ast_bindings(source: &str) -> Result<CompiledGrammar, Vec<Diagnostic>> {
+    let grammar = resolve(crate::grammar::parse_with_ast_bindings(source).map_err(|error| vec![error])?)?;
+    if grammar.analysis.errors.is_empty() { Ok(grammar) }
+    else { Err(grammar.analysis.errors.clone()) }
 }
 
 pub fn resolve(mut syntax: GrammarSyntax) -> Result<CompiledGrammar, Vec<Diagnostic>> {
@@ -190,6 +229,12 @@ pub fn resolve(mut syntax: GrammarSyntax) -> Result<CompiledGrammar, Vec<Diagnos
     }
     if diagnostics.is_empty() {
         let mut grammar = CompiledGrammar {
+            shared_prefixes: HashMap::new(),
+            empty_success_heads: HashMap::new(),
+            empty_suffix_heads: HashMap::new(),
+            shared_inner_prefixes: HashMap::new(),
+            shared_group_prefixes: HashMap::new(),
+            shared_wrapper_prefixes: HashMap::new(),
             pratt: vec![None; syntax.rules.len()],
             trivia_failure: vec![None; syntax.rules.len()],
             failure_terminals: vec![Vec::new(); syntax.rules.len()],
@@ -198,6 +243,13 @@ pub fn resolve(mut syntax: GrammarSyntax) -> Result<CompiledGrammar, Vec<Diagnos
             leading_bytes: Vec::new(),
             literal_choices: HashMap::new(),
             literal_choice_failures: false,
+            choice_head_rules: Vec::new(),
+            owned_capture_boundaries: HashMap::new(),
+            source_units: Vec::new(),
+            code_space: None,
+            optimization_selection: crate::optimization::OptimizationSelection::default(),
+            native_token_compilation: false,
+            native_token_failures: false,
             rule_scopes: vec![0; syntax.rules.len()],
             syntax,
             references,
@@ -215,6 +267,8 @@ pub fn resolve(mut syntax: GrammarSyntax) -> Result<CompiledGrammar, Vec<Diagnos
             whitespace_prefix_class,
         };
         grammar.refresh_analysis();
+        let ast_errors = crate::ast::validate(&grammar);
+        if !ast_errors.is_empty() { return Err(ast_errors); }
         Ok(grammar)
     } else {
         Err(diagnostics)

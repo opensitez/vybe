@@ -50,7 +50,7 @@ fn call_ref(chunk: &mut Chunk, argc: u8, line: u32) {
 }
 
 fn add_call(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
-    let idx = chunk.add_import(module.to_string(), name.to_string());
+    let idx = chunk.add_import(module, name);
     chunk.emit_call(idx, argc, line);
 }
 
@@ -88,8 +88,7 @@ fn loop_start(chunk: &mut Chunk, line: u32) -> LoopState {
 fn loop_break_unless_lt(chunk: &mut Chunk, i_slot: u16, n_slot: u16, line: u32) {
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::I32_LT_S, line);
-    chunk.emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_GE_S, line);
     chunk.emit_br_if(1, line);
 }
 
@@ -294,6 +293,9 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         );
         lget(&mut h, role_slot, line);
         h.emit_op(Op::REF_IS_NULL, line);
+        lget(&mut h, role_slot, line);
+        add_call(&mut h, "wasm:js-undefined", "test", 1, line);
+        h.emit_op(Op::I32_OR, line);
         h.emit_op(Op::I32_EQZ, line);
         h.emit_if(line);
         lget(&mut h, role_slot, line);
@@ -310,9 +312,11 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             line,
         );
         dyn_get(&mut h, value_slot, "__type", line);
-        lset(&mut h, keys_slot, line);
-        lget(&mut h, keys_slot, line);
+        h.emit_op_u16(Op::LOCAL_TEE, keys_slot, line);
         h.emit_op(Op::REF_IS_NULL, line);
+        lget(&mut h, keys_slot, line);
+        add_call(&mut h, "wasm:js-undefined", "test", 1, line);
+        h.emit_op(Op::I32_OR, line);
         h.emit_op(Op::I32_EQZ, line);
         h.emit_if(line);
         lget(&mut h, keys_slot, line);
@@ -332,8 +336,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         h.emit_op(Op::I32_OR, line);
         h.emit_if(line);
         dyn_get(&mut h, value_slot, "__time", line);
-        lset(&mut h, role_slot, line);
-        lget(&mut h, role_slot, line);
+        h.emit_op_u16(Op::LOCAL_TEE, role_slot, line);
         add_call(&mut h, "ecma:date", "toISOString", 1, line);
         h.emit_op(Op::RETURN, line);
         h.emit_end(line);
@@ -341,9 +344,15 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
         lget(&mut h, keys_slot, line);
         h.emit_op(Op::REF_IS_NULL, line);
+        lget(&mut h, keys_slot, line);
+        add_call(&mut h, "wasm:js-undefined", "test", 1, line);
+        h.emit_op(Op::I32_OR, line);
         h.emit_op(Op::I32_EQZ, line);
         lget(&mut h, role_slot, line);
         h.emit_op(Op::REF_IS_NULL, line);
+        lget(&mut h, role_slot, line);
+        add_call(&mut h, "wasm:js-undefined", "test", 1, line);
+        h.emit_op(Op::I32_OR, line);
         h.emit_op(Op::I32_EQZ, line);
         h.emit_op(Op::I32_AND, line);
         h.emit_if(line);
@@ -400,9 +409,12 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     h.emit_op(Op::I32_AND, line);
     h.emit_if(line);
     {
-        // default != null ?
+        // An optional callback must be present (neither null nor undefined).
         lget(&mut h, default_slot, line);
         h.emit_op(Op::REF_IS_NULL, line);
+        lget(&mut h, default_slot, line);
+        add_call(&mut h, "wasm:js-undefined", "test", 1, line);
+        h.emit_op(Op::I32_OR, line);
         h.emit_op(Op::I32_EQZ, line);
         h.emit_if(line);
         {
@@ -438,8 +450,13 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // key order.
     dyn_get(&mut h, value_slot, "__ps_key_order", line);
     lset(&mut h, keys_slot, line);
+    // An absent optional order hint is undefined under the common property
+    // lookup contract. Both null and undefined require normal enumeration.
     lget(&mut h, keys_slot, line);
     h.emit_op(Op::REF_IS_NULL, line);
+    lget(&mut h, keys_slot, line);
+    add_call(&mut h, "wasm:js-undefined", "test", 1, line);
+    h.emit_op(Op::I32_OR, line);
     h.emit_if(line);
     lget(&mut h, value_slot, line);
     add_call(&mut h, "ecma:object", "keys", 1, line);

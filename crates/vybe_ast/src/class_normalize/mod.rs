@@ -96,6 +96,27 @@ pub fn from_method_stmt(
     ))
 }
 
+/// Consume a method declaration without cloning its parameters or body. Useful
+/// at a parser reduction or any other boundary that exclusively owns the node.
+/// Invalid member shapes are returned intact to the caller.
+pub fn from_method_stmt_owned(
+    span: Span,
+    stmt: Statement,
+    canonical_name: String,
+    access: Access,
+) -> Result<NormalMethod, Statement> {
+    let StmtKind::FunctionDecl {
+        name, params, return_type, body, modifiers,
+        is_async, is_generator, is_sub, ..
+    } = stmt.kind else { return Err(stmt); };
+    Ok(NormalMethod {
+        span, canonical_name, source_name: name, params, return_type, body, access,
+        is_virtual: modifiers.is_virtual, is_override: modifiers.is_override,
+        is_async, is_generator, is_abstract: modifiers.is_abstract, is_sub,
+        raw_modifiers: modifiers,
+    })
+}
+
 /// The `BaseCall` a constructor performs: what the source SAID, or — when it
 /// said nothing and the class has a parent — the implicit parameterless super
 /// call.
@@ -118,6 +139,23 @@ pub fn base_call_for(
         };
     };
     let args = args.iter().cloned().map(Argument::positional).collect();
+    match target {
+        ConstructorInitializerTarget::Base => BaseCall::Explicit(args),
+        ConstructorInitializerTarget::This => BaseCall::This(args),
+    }
+}
+
+/// Owned counterpart for parser hooks: transfer initializer expressions rather
+/// than cloning their trees. Parent-call policy is identical to `base_call_for`.
+pub fn base_call_for_owned(
+    base_args: Option<Vec<Expression>>,
+    target: ConstructorInitializerTarget,
+    has_parent: bool,
+) -> BaseCall {
+    let Some(args) = base_args else {
+        return if has_parent { BaseCall::Auto } else { BaseCall::None };
+    };
+    let args = args.into_iter().map(Argument::positional).collect();
     match target {
         ConstructorInitializerTarget::Base => BaseCall::Explicit(args),
         ConstructorInitializerTarget::This => BaseCall::This(args),
@@ -158,6 +196,24 @@ pub fn from_constructor_member(
         body: body.clone(),
         base_call: base_call_for(base_args.as_deref(), *initializer_target, has_parent),
         named_name: name.clone(),
+    })
+}
+
+/// Consume a constructor at an owned AST boundary. Bodies, parameters and
+/// initializer expression payloads keep their original storage. Other member
+/// shapes are returned intact so contextual adapters can retain their policy.
+pub fn from_constructor_member_owned(
+    span: Span,
+    member: ClassMember,
+    has_parent: bool,
+) -> Result<NormalConstructor, ClassMember> {
+    let ClassMember::Constructor {
+        name, params, body, base_args, initializer_target, ..
+    } = member else { return Err(member); };
+    Ok(NormalConstructor {
+        span, params, body,
+        base_call: base_call_for_owned(base_args, initializer_target, has_parent),
+        named_name: name,
     })
 }
 

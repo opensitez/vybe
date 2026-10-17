@@ -208,6 +208,8 @@ impl Compiler {
             let builtin = self.import("php:dynamic", "builtinExists");
             self.emit_host_call(builtin, 1);
             let line = self.line;
+            let cast_bool = self.import("wasm:js-boolean", "cast");
+            self.emit_host_call(cast_bool, 1);
             self.chunk().emit_if_value(line);
             self.emit_const(Value::Bool(true));
             self.chunk().emit_else(line);
@@ -301,8 +303,7 @@ impl Compiler {
             let lookup = self.import("php:dynamic", "functionByName");
             self.emit_host_call(lookup, 1);
             let resolved = self.define_local("__source_string_callee_resolved");
-            self.emit_u16(Op::LOCAL_SET, resolved);
-            self.emit_u16(Op::LOCAL_GET, resolved);
+            self.emit_u16(Op::LOCAL_TEE, resolved);
             self.emit(Op::REF_IS_NULL);
             self.emit(Op::I32_EQZ);
             self.chunk().emit_if(line);
@@ -507,4 +508,36 @@ pub fn emit_spread_push_arg(chunks: &mut [Chunk], current: usize, line: u32) {
 /// the accumulator local with the result.
 pub fn emit_spread_concat_arg(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::collections::emit_concat(chunks, current, line);
+}
+
+/// Standard direct module-local call; callee's logical callable identity is never
+/// allocated as a side effect. No globals/tables/imports added.
+/// Try the compact call edge for a helper whose already-stacked arguments
+/// exactly match its generic signature. False leaves the caller unchanged.
+/// Capture/continuation restrictions are enforced by the shared direct emitter.
+pub fn try_emit_direct_helper_call(
+    chunks: &mut [Chunk], current: usize, target: usize, argc: u8, line: u32,
+) -> bool {
+    let Some(callee) = chunks.get(target) else { return false; };
+    if callee.arity != argc || callee.func_sig.is_some() || callee.result_arity != 1 {
+        return false;
+    }
+    let Ok(index) = u32::try_from(target) else { return false; };
+    // A helper body can be large. Borrow it rather than cloning its bytecode,
+    // constant pool and imports just to read the call signature.
+    if current < target {
+        let (caller_side, callee_side) = chunks.split_at_mut(target);
+        caller_side[current].emit_direct_defined_call(index, &callee_side[0], false, line).is_ok()
+    } else if current > target {
+        let (callee_side, caller_side) = chunks.split_at_mut(current);
+        caller_side[0].emit_direct_defined_call(index, &callee_side[target], false, line).is_ok()
+    } else {
+        emit_direct_defined_call(chunks, current, target, false, line).is_ok()
+    }
+}
+
+pub fn emit_direct_defined_call(chunks: &mut [Chunk], current: usize, target: usize, tail: bool, line: u32) -> Result<(), String> {
+    let index=u32::try_from(target).map_err(|_|"direct defined target exceeds u32")?;
+    let callee=chunks.get(target).ok_or("direct defined target absent")?.clone();
+    chunks[current].emit_direct_defined_call(index,&callee,tail,line)
 }

@@ -1,0 +1,2 @@
+// @grameo ast integer = Integer(text: source, span: rule)
+integer = @{ ASCII_DIGIT+ }

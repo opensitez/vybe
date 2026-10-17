@@ -12,7 +12,7 @@ readme = "README.md"
 documentation = "https://docs.rs/grameo"
 keywords = ["parser", "grammar", "peg", "compiler", "parsing"]
 categories = ["parsing", "compilers"]
-include = ["src/**", "tests/**", "!tests/repository_grammars.rs", "examples/**", "Cargo.toml", "README.md", "LICENSE.md", "LICENSE-GPL-3.0.txt"]
+include = ["src/**", "tests/**", "!tests/repository_grammars.rs", "examples/**", "Cargo.toml", "README.md", "AST.md", "LICENSE.md", "LICENSE-GPL-3.0.txt"]
 
 # Deliberately independent: core development must not resolve/build the
 # compiler, runtime, language plugins, pest, or a JS toolchain.

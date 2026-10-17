@@ -135,7 +135,7 @@ fn wasm_heap_type_ref(expr: Option<&Expression>) -> (String, bool) {
 
 /// As [`wasm_heap_type_ref`], plus whether the reftype was spelled
 /// `(ref null? (exact $t))` — Custom Descriptors' exact types.
-fn wasm_heap_type_ref_exact(expr: Option<&Expression>) -> (String, bool, bool) {
+pub(super) fn wasm_heap_type_ref_exact(expr: Option<&Expression>) -> (String, bool, bool) {
     let Some(e) = expr else {
         return (String::new(), false, false);
     };
@@ -750,8 +750,7 @@ impl Compiler {
                 if let Some(arg) = args.first() {
                     self.compile_expr(arg)?;
                     let obj_slot = self.define_local("__js_len_obj");
-                    self.emit_u16(Op::LOCAL_SET, obj_slot);
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_TEE, obj_slot);
                     if self.uses_proxy {
                         // `.length` must fire the proxy get trap like any
                         // other member read (the dotted form normalizes to
@@ -769,8 +768,7 @@ impl Compiler {
                     // AsyncFunction.prototype.length inherits
                     // %Function.prototype%'s 0).
                     let val_slot = self.define_local("__js_len_val");
-                    self.emit_u16(Op::LOCAL_SET, val_slot);
-                    self.emit_u16(Op::LOCAL_GET, val_slot);
+                    self.emit_u16(Op::LOCAL_TEE, val_slot);
                     fn_call!(self, "wasm:js-undefined", "test", 1);
                     self.chunk().emit_if_value(line);
                     self.emit_member_get_from_value(obj_slot, "length");
@@ -944,7 +942,14 @@ impl Compiler {
             self.audit_builtin_slot_census(receiver, name, &def.emit);
         }
 
-        if let Some(def) = builtin {
+        if let Some(mut def) = builtin {
+            // The profile owns any discard-only implementation. Reset the
+            // representation request before compiling arguments or dispatching:
+            // their values are still observed normally by the selected call.
+            let request = if request == EmitRequest::DiscardedValue {
+                if let Some(emit) = def.discarded_emit.take() { def.emit = emit; }
+                EmitRequest::Value
+            } else { request };
             let mut typed_provider_handled = false;
             let result = (|| -> Result<bool, String> {
             match &def.emit {
@@ -1158,6 +1163,13 @@ impl Compiler {
                     self.emit_intrinsic(intrinsic_name, args)?;
                 }
                 BuiltinEmit::Common(common_name) => {
+                    let argument_emitter = matches!(request, EmitRequest::Value | EmitRequest::DiscardedValue)
+                        .then(|| self.argument_emitters.resolve(common_name.as_str())).flatten();
+                    let mut argument_proofs = argument_emitter.map(|_| Vec::with_capacity(args.len()));
+                    let memory_word_arguments = argument_emitter.is_none()
+                        && common::dispatch::owned_memory_word_arguments(common_name, args.len());
+                    let mut memory_words = [false; 2];
+                    let mut plain_string_run = None;
                     // Compile args, then dispatch to compiler_common emitter.
                     // Console.WriteLine/Write should preserve enum names instead
                     // of writing raw ordinals, and apply .NET numeric formatting.
@@ -1166,8 +1178,25 @@ impl Compiler {
                         && args.len() == 1
                     {
                         self.emit_dotnet_console_arg(args[0])?;
+                        if let Some(proofs) = &mut argument_proofs {
+                            proofs.push(argument_emission::ProducedValueProof::Unknown);
+                        }
                     } else {
-                        let declared_modes = self
+                        let declared_modes = if self.profile.builtin_signatures.is_empty() {
+                            None
+                        } else if self.defined_functions.folded_index_enabled() {
+                            // Selected lookup optimization: most common calls have
+                            // no declared modes. Avoid scanning/canonicalizing every
+                            // signature for those misses. Keep the signature gate
+                            // for user-method entries which share a builtin name.
+                            let key = self.canon_lookup(name);
+                            self.function_param_modes.get(key.as_ref()).and_then(|modes| {
+                                self.profile.builtin_signatures.iter().any(|member| {
+                                    matches!(member, InterfaceMember::Method { name: sig_name, .. }
+                                        if self.canon_lookup(sig_name).as_ref() == key.as_ref())
+                                }).then(|| modes.clone())
+                            })
+                        } else { self
                             .profile
                             .builtin_signatures
                             .iter()
@@ -1177,24 +1206,55 @@ impl Compiler {
                                 }
                                 _ => false,
                             })
-                            .then(|| self.function_param_modes.get(&self.canon(name)).cloned())
-                            .flatten();
+                            .then(|| self.function_param_modes.get(self.canon_lookup(name).as_ref()).cloned())
+                            .flatten() };
                         for (index, a) in args.iter().enumerate() {
                             let mode = declared_modes
                                 .as_ref()
                                 .and_then(|modes| modes.get(index).copied());
+                            if index == 0 && common_name.as_str() == "sprintf.format" && !matches!(mode, Some(PassBy::Ref | PassBy::Out)) {
+                                if let ExprKind::Lit(Literal::Str(format)) = &a.kind {
+                                    plain_string_run = common::sprintf::plain_string_run_count(format);
+                                }
+                            }
+                            let proof_start = argument_emitter.map(|_| (self.current, self.chunks[self.current].code.len()));
                             if matches!(mode, Some(PassBy::Ref | PassBy::Out)) {
                                 self.compile_address_of_expr(a)?;
+                            } else if memory_word_arguments {
+                                memory_words[index] = self.compile_builtin_word_argument(a, mode)?;
                             } else {
                                 self.compile_builtin_argument(a, mode)?;
+                            }
+                            if let Some(proofs) = &mut argument_proofs {
+                                let proof = match (&a.kind, proof_start) {
+                                    (ExprKind::Lit(Literal::Str(text)), Some((current, start)))
+                                        if current == self.current && !matches!(mode, Some(PassBy::Ref | PassBy::Out)) =>
+                                        argument_emission::string_literal_proof(&self.chunks[current], start, text),
+                                    _ => argument_emission::ProducedValueProof::Unknown,
+                                };
+                                proofs.push(proof);
                             }
                         }
                     }
                     let line = self.line;
-                    let (representation, typed_handled) = self.emit_common_with_emit_request(
-                        common_name.as_str(), args.len() as u8, line, request,
-                    );
+                    let specialized = args.len() <= u8::MAX as usize && plain_string_run.is_some_and(|count|
+                        common::sprintf::emit_sprintf_known_plain(&mut self.chunks, self.current, args.len() as u8, count, line));
+                    let (representation, typed_handled) = if specialized {
+                        self.sync_scope_slots_with_chunk();
+                        (ResultRepresentation::Unknown, false)
+                    } else {
+                        let mut representation = ResultRepresentation::Unknown;
+                        let mut handled = false;
+                        self.emit_common_requested(common_name.as_str(), args.len() as u8, line,
+                            request, &mut representation, &mut handled,
+                            argument_emitter.zip(argument_proofs.as_deref()),
+                            memory_word_arguments.then(|| &memory_words[..args.len()]));
+                        (representation, handled)
+                    };
                     typed_provider_handled = typed_handled;
+                    if request == EmitRequest::I32Word {
+                        self.gave_i32_word = representation == ResultRepresentation::RawI32Word;
+                    }
                     if matches!(request, EmitRequest::I32Condition) {
                         match representation {
                             ResultRepresentation::RawI32Boolean => {
@@ -1204,7 +1264,7 @@ impl Compiler {
                                 fn_call!(self, "wasm:js-boolean", "cast", 1);
                                 self.gave_i32_condition = true;
                             }
-                            ResultRepresentation::Unknown => {}
+                            ResultRepresentation::Unknown | ResultRepresentation::RawI32Word => {}
                         }
                     }
                 }
@@ -1985,7 +2045,44 @@ impl Compiler {
         self.emit_common_with_emit_request(name, argc, line, EmitRequest::Value);
     }
 
-    fn emit_common_with_emit_request(
+    /// Reuse the shared formatter only when the evaluated format operand is
+    /// physically emitted from a literal; all other formats keep normal dispatch.
+    fn emit_formatter_with_literal(
+        &mut self,
+        format: &Expression,
+        array_args: bool,
+        argc: usize,
+        line: u32,
+    ) {
+        let count = match &format.kind {
+            ExprKind::Lit(Literal::Str(format)) => common::sprintf::plain_string_run_count(format),
+            _ => None,
+        };
+        let specialized = count.is_some_and(|count| {
+            if array_args {
+                common::sprintf::emit_sprintf_known_plain_from_array(
+                    &mut self.chunks, self.current, count, line,
+                )
+            } else if argc <= u8::MAX as usize {
+                common::sprintf::emit_sprintf_known_plain(
+                    &mut self.chunks, self.current, argc as u8, count, line,
+                )
+            } else {
+                false
+            }
+        });
+        if specialized {
+            self.sync_scope_slots_with_chunk();
+        } else {
+            self.emit_common(
+                if array_args { "sprintf.format_array" } else { "sprintf.format" },
+                argc as u8,
+                line,
+            );
+        }
+    }
+
+    pub(super) fn emit_common_with_emit_request(
         &mut self,
         name: &str,
         argc: u8,
@@ -1995,7 +2092,7 @@ impl Compiler {
         let mut representation = ResultRepresentation::Unknown;
         let mut typed_provider_handled = false;
         self.emit_common_requested(
-            name, argc, line, request, &mut representation, &mut typed_provider_handled,
+            name, argc, line, request, &mut representation, &mut typed_provider_handled, None, None,
         );
         (representation, typed_provider_handled)
     }
@@ -2008,7 +2105,24 @@ impl Compiler {
         request: EmitRequest,
         representation: &mut ResultRepresentation,
         typed_provider_handled: &mut bool,
+        argument_emitter: Option<(&argument_emission::Definition, &[argument_emission::ProducedValueProof])>,
+        memory_words: Option<&[bool]>,
     ) {
+        if let Some((load, signed)) = match name {
+            "pointers.linear_i64_value_load_s" => Some((true, true)),
+            "pointers.linear_i64_value_load_u" => Some((true, false)),
+            "pointers.linear_i64_value_store_s" => Some((false, true)),
+            "pointers.linear_i64_value_store_u" => Some((false, false)),
+            _ => None,
+        } {
+            let transport = self.directives().wide_integer_transport();
+            if load {
+                common::pointers::emit_linear_i64_value_load(&mut self.chunks, self.current, signed, transport, line);
+            } else {
+                common::pointers::emit_linear_i64_value_store(&mut self.chunks, self.current, signed, transport, line);
+            }
+            return;
+        }
         // `control_flow.exit` is THE exit primitive. It is handled here rather
         // than in the common dispatch because the lowering needs the compiler
         // itself — an import index for `wasi:cli/exit` AND the chunk list, to
@@ -2211,13 +2325,54 @@ impl Compiler {
                 return;
             }
         }
+        // Specialization follows compiler-owned dispatch, using facts recorded
+        // after argument adapters. Declining invokes the normal emitter once.
+        if let Some((definition, proofs)) = argument_emitter {
+            if matches!(request, EmitRequest::Value | EmitRequest::DiscardedValue)
+                && proofs.len() == usize::from(argc) {
+                if let EmitOutcome::Handled(result) = (definition.dispatch)(name,
+                    &mut self.chunks, self.current, argc, line, request, proofs) {
+                    *representation = result;
+                    *typed_provider_handled = true;
+                    self.sync_scope_slots_with_chunk();
+                    let chunk = &mut self.chunks[self.current];
+                    chunk.scratch_high_water = chunk.scratch_high_water.max(chunk.local_count);
+                    return;
+                }
+            }
+        }
         // Then the pure (chunk + line) common ops.
+        if let Some(receipt)=self.try_owned_helper(name, argc, line, request) {
+            if receipt.frame==super::helper_templates::FramePolicy::ReserveScope {
+                self.sync_scope_slots_with_chunk();
+            }
+            if let Some(result)=receipt.result {
+                *representation=result;
+                *typed_provider_handled=true;
+            }
+            let chunk = &mut self.chunks[self.current];
+            chunk.scratch_high_water = chunk.scratch_high_water.max(chunk.local_count);
+            return;
+        }
+        if let Some(result) = memory_words.and_then(|words|
+            common::dispatch::emit_owned_memory_word_arguments(name,
+                &mut self.chunks, self.current, line, request, words))
+        {
+            *representation = result;
+            *typed_provider_handled = true;
+            self.sync_scope_slots_with_chunk();
+            let chunk = &mut self.chunks[self.current];
+            chunk.scratch_high_water = chunk.scratch_high_water.max(chunk.local_count);
+            return;
+        }
         let line2 = line;
         let handled = match request {
-            EmitRequest::Value => {
+            EmitRequest::Value | EmitRequest::DiscardedValue => {
                 common::dispatch::emit_common(name, &mut self.chunks, self.current, argc, line2)
             }
-            EmitRequest::I32Condition => {
+            EmitRequest::I32Condition | EmitRequest::I32Word
+                | EmitRequest::StringLiteralRhs { .. } | EmitRequest::NullLiteralRhs
+                | EmitRequest::ScalarLiteralOperand => {
                 let (outcome, typed_handled) =
                     common::dispatch::emit_common_with_result_provenance(
                         name, &mut self.chunks, self.current, argc, line2, request,
@@ -2239,7 +2394,7 @@ impl Compiler {
             }
         }
         if !handled {
-            eprintln!("Unknown common emit: {}", name);
+            self.compiler_diagnostic(format!("Unknown common emit: {}", name));
         }
     }
 
@@ -3391,6 +3546,17 @@ impl Compiler {
     ) -> Result<(), String> {
         let line = self.line;
         match name {
+            "wasm_i32_const" | "wasm_i64_const" => {
+                let value = match args.first().map(|arg| &arg.kind) {
+                    Some(ExprKind::Lit(Literal::Int(n) | Literal::BigInt(n))) if args.len() == 1 => *n,
+                    _ => return Err(format!("{name} requires one integer literal")),
+                };
+                if name == "wasm_i32_const" {
+                    self.emit_const(Value::I32((value as u32) as i32));
+                } else {
+                    self.emit_const(Value::I64(value));
+                }
+            }
             "format_map" => {
                 if args.len() != 2 {
                     return Err(format!("format_map expects receiver and mapping, got {}", args.len()));
@@ -3510,8 +3676,7 @@ impl Compiler {
                     crate::primitives::class_slots::Dest::Stack,
                     line,
                 );
-                self.emit_u16(Op::LOCAL_SET, method_slot);
-                self.emit_u16(Op::LOCAL_GET, method_slot);
+                self.emit_u16(Op::LOCAL_TEE, method_slot);
                 self.emit(Op::REF_IS_NULL);
                 self.emit(Op::I32_EQZ);
                 self.chunk().emit_if_value(line);
@@ -3654,8 +3819,7 @@ impl Compiler {
                     } else {
                         self.compile_expr(arg)?;
                         let value_slot = self.define_local("__vb_isobject_value");
-                        self.emit_u16(Op::LOCAL_SET, value_slot);
-                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit_u16(Op::LOCAL_TEE, value_slot);
                         fn_call!(self, "ecma:array", "isArray", 1);
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -3683,7 +3847,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         fn_call!(self, "wasm:js-string", "test", 1);
                         let line = self.line;
-                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::primitives::ops::emit_proven_i32_condition(self.chunk(), line);
                         self.chunk().emit_if_value(line);
                         self.emit_const(Value::Bool(true));
                         self.chunk().emit_else(line);
@@ -3832,11 +3996,10 @@ impl Compiler {
                 if !args.is_empty() {
                     self.compile_expr(args[0])?;
                     let v_slot = self.define_local("__php_isf_v");
-                    self.emit_u16(Op::LOCAL_SET, v_slot);
-                    self.emit_u16(Op::LOCAL_GET, v_slot);
+                    self.emit_u16(Op::LOCAL_TEE, v_slot);
                     fn_call!(self, "wasm:js-number", "test", 1);
                     let line = self.line;
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::primitives::ops::emit_proven_i32_condition(self.chunk(), line);
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, v_slot);
                     let is_int_idx = self.import("ecma:number", "isInteger");
@@ -4107,8 +4270,7 @@ impl Compiler {
                     self.emit_constructor_global_ref(&global_name, name);
                     let line = self.line;
                     let resolved = self.define_local("__symbol_probe");
-                    self.emit_u16(Op::LOCAL_SET, resolved);
-                    self.emit_u16(Op::LOCAL_GET, resolved);
+                    self.emit_u16(Op::LOCAL_TEE, resolved);
                     {
                         let idx = self.chunk().add_import("wasm:js-undefined", "test");
                         self.chunk().emit_call(idx, 1, line);
@@ -4239,15 +4401,31 @@ impl Compiler {
                 if args.len() < 2 {
                     self.emit_const(Value::Bool(false));
                 } else if let ExprKind::Lit(Literal::Str(name)) = &args[0].kind {
-                    if let Some(ignore_case) = args.get(2) {
-                        self.compile_expr(ignore_case)?;
+                    let value_slot = self.define_local("__php_define_value");
+                    self.compile_expr(args[1])?;
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    for argument in args.iter().skip(2) {
+                        self.compile_expr(argument)?;
                         self.emit(Op::DROP);
                     }
-                    self.compile_expr(args[1])?;
                     let global_name = self.canon(name);
-                    self.emit_global_write(&global_name);
-                    self.defined_globals.insert(global_name);
-                    self.emit_const(Value::Bool(true));
+                    if is_php_builtin_constant_name(&global_name) {
+                        self.emit_const(Value::Bool(false));
+                    } else {
+                        self.emit_global_read(&global_name);
+                        fn_call!(self, "ecma:value", "typeof", 1);
+                        self.emit_const(Value::String(Arc::from("undefined")));
+                        fn_call!(self, "wasm:js-string", "equals", 2);
+                        let line = self.line;
+                        self.chunk().emit_if_value(line);
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit_global_write(&global_name);
+                        self.emit_const(Value::Bool(true));
+                        self.chunk().emit_else(line);
+                        self.emit_const(Value::Bool(false));
+                        self.chunk().emit_end(line);
+                        self.defined_globals.insert(global_name);
+                    }
                 } else {
                     self.compile_expr(args[0])?;
                     self.emit(Op::DROP);
@@ -4370,7 +4548,7 @@ impl Compiler {
                     for arg in args {
                         self.compile_expr(arg)?;
                     }
-                    self.emit_common("sprintf.format", args.len() as u8, line);
+                    self.emit_formatter_with_literal(args[0], false, args.len(), line);
                     self.emit_common("php.echo_stringify", 1, line);
                     self.emit_u16(Op::LOCAL_SET, result_slot);
 
@@ -4399,7 +4577,7 @@ impl Compiler {
 
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    self.emit_common("sprintf.format_array", 2, line);
+                    self.emit_formatter_with_literal(args[0], true, 2, line);
                     self.emit_common("php.echo_stringify", 1, line);
                     self.emit_u16(Op::LOCAL_SET, result_slot);
 
@@ -4422,17 +4600,19 @@ impl Compiler {
                 } else {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
-                    self.emit_common("sprintf.format_array", 2, line);
+                    self.emit_formatter_with_literal(args[0], true, 2, line);
                 }
             }
-            // `register_shutdown_function(cb, ...args)` — the callbacks used to
-            // be DISCARDED here, so the function was a silent no-op: a
-            // registered handler never ran, with or without `exit`. They are
-            // now collected into `__php_shutdown_fns` and invoked by
-            // `emit_php_run_shutdown_fns` at end of program and on exit/die.
-            "php_register_shutdown_function" => {
-                self.emit_ensure_global_list("__php_shutdown_fns");
-                self.emit_global_read("__php_shutdown_fns");
+            // The AST declares registry storage and termination order. Source
+            // frontends bind their registration spelling to this shared intrinsic.
+            "register_shutdown_callback" => {
+                let Some(vybe_ast::ShutdownPolicy::Callbacks { registry, .. }) =
+                    self.directives().shutdown_callbacks.clone()
+                else {
+                    return Err("shutdown callback registration requires an AST registry policy".into());
+                };
+                self.emit_ensure_global_list(&registry);
+                self.emit_global_read(&registry);
                 // One entry per registration: [callback, ...extra args].
                 let line = self.line;
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
@@ -4525,8 +4705,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, n_slot);
                     self.emit(Op::I32_SUB);
                     let start_slot = self.define_local("__right_start");
-                    self.emit_u16(Op::LOCAL_SET, start_slot);
-                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit_u16(Op::LOCAL_TEE, start_slot);
                     inst!(self, core_wasm::i32_const, 0);
                     {
                         let line = self.line;
@@ -4968,8 +5147,7 @@ impl Compiler {
                     self.compile_expr(args[2])?;
                     common::strings::emit_index_of(self.chunk(), line);
                     let idx_slot = self.define_local("__instr_idx");
-                    self.emit_u16(Op::LOCAL_SET, idx_slot);
-                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_u16(Op::LOCAL_TEE, idx_slot);
                     inst!(self, core_wasm::i32_const, 0);
                     {
                         let line = self.line;
@@ -5051,8 +5229,7 @@ impl Compiler {
                         self.compile_expr(args[1])?;
                         common::strings::emit_last_index_of(self.chunk(), line);
                         let idx_slot = self.define_local("__instrrev_idx");
-                        self.emit_u16(Op::LOCAL_SET, idx_slot);
-                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_u16(Op::LOCAL_TEE, idx_slot);
                         inst!(self, core_wasm::i32_const, 0);
                         {
                             let line = self.line;
@@ -5790,8 +5967,7 @@ impl Compiler {
                 if args.len() == 2 {
                     self.compile_expr(args[0])?;
                     let s_slot = self.define_local("__rs_s");
-                    self.emit_u16(Op::LOCAL_SET, s_slot);
-                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    self.emit_u16(Op::LOCAL_TEE, s_slot);
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     common::strings::emit_length(self.chunk(), line);
                     self.compile_expr(args[1])?;
@@ -5847,8 +6023,7 @@ impl Compiler {
                     self.emit_host_call(to_f64, 1);
                     self.emit(Op::I32_TRUNC_SAT_F64_S);
                     let i = self.define_local("__pt_i");
-                    self.emit_u16(Op::LOCAL_SET, i);
-                    self.emit_u16(Op::LOCAL_GET, i);
+                    self.emit_u16(Op::LOCAL_TEE, i);
                     self.emit_const(Value::I32(0));
                     self.emit(Op::I32_LT_S);
                     self.chunk().emit_if_value(line);
@@ -5974,8 +6149,7 @@ impl Compiler {
                 if let Some(arg) = args.first() {
                     let s_slot = self.define_local("__chop_s");
                     self.compile_expr(arg)?;
-                    self.emit_u16(Op::LOCAL_SET, s_slot);
-                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    self.emit_u16(Op::LOCAL_TEE, s_slot);
                     inst!(self, core_wasm::i32_const, 0);
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     common::strings::emit_length(self.chunk(), line);

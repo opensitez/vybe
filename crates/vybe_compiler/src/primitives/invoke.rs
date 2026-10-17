@@ -145,8 +145,7 @@ pub fn emit_invoke_method(
     // the host, in §7.3.14's OTHER shape, with the arguments as ONE list. Both
     // arms leave a value, and BOTH import arities stay constant.
     let method_slot = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_SET, method_slot, line);
-    c.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    c.emit_op_u16(Op::LOCAL_TEE, method_slot, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if_value(line);
 
@@ -186,8 +185,7 @@ pub fn emit_invoke_method(
         .checked_add(1)
         .expect("emit_invoke_method: local slot overflow");
     let c = &mut chunks[current];
-    c.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    c.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    c.emit_op_u16(Op::LOCAL_TEE, result_slot, line);
 }
 
 /// Emit a receiver-once protocol method call.

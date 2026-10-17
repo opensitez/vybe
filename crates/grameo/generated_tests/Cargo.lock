@@ -24,7 +24,15 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "vybe_ast"
-version = "0.6.2"
+version = "0.7.0"
+
+[[package]]
+name = "vybe_ast_bindings"
+version = "0.1.0"
+dependencies = [
+ "grameo",
+ "vybe_ast",
+]
 
 [[package]]
 name = "vybe_parser_generated_tests"
@@ -33,6 +41,7 @@ dependencies = [
  "grameo",
  "grameo_codegen",
  "vybe_ast",
+ "vybe_ast_bindings",
 ]
 
 [[patch.unused]]

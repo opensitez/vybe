@@ -162,7 +162,7 @@ impl Compiler {
         }
     }
 
-    pub(super) fn collect_reflection_metadata(&mut self, body: &[Statement]) {
+    pub(super) fn collect_reflection_metadata<'a>(&mut self, body: impl IntoIterator<Item = &'a Statement>) {
         self.reflection_types.clear();
         self.attribute_usage.clear();
         self.reflection_bindings.clear();
@@ -711,15 +711,13 @@ impl Compiler {
     /// normalization changed. Answering the source spelling makes the two sides
     /// agree by construction.
     ///
-    /// ⚠ SIGNEDNESS IS NOT RECOVERABLE. `ValType` has `I32`/`I64` and no
-    /// `S32`/`U32`, so `int` and `uint` both arrive as `I32` and both read back
-    /// `int`. A parallel framework-name field would recover it and would defeat
-    /// the point of a CM-typed descriptor, so the limit is stated instead.
     fn valtype_source_name(ty: &vybe_runtime::component::ValType) -> Option<String> {
         use vybe_runtime::component::ValType;
         Some(match ty {
             ValType::I32 => "int".into(),
+            ValType::U32 => "uint".into(),
             ValType::I64 => "long".into(),
+            ValType::U64 => "ulong".into(),
             ValType::F64 => "double".into(),
             ValType::F32 => "float".into(),
             ValType::Bool => "bool".into(),
@@ -1097,6 +1095,29 @@ impl Compiler {
             .unwrap_or_default()
     }
 
+    /// Interface membership includes interfaces inherited through other
+    /// interfaces and base classes. Keep direct-declaration reflection separate.
+    pub(crate) fn reflection_interface_closure(&self, type_name: &str) -> Vec<String> {
+        let mut pending = vec![(type_name.to_string(), false)];
+        let mut visited = HashSet::new();
+        let mut interfaces = Vec::new();
+        let mut emitted = HashSet::new();
+        while let Some((current, is_interface)) = pending.pop() {
+            let key = self.reflection_type_lookup_name(&current);
+            if !visited.insert((key.clone(), is_interface)) {
+                continue;
+            }
+            if is_interface && emitted.insert(key.clone()) {
+                interfaces.push(current.clone());
+            }
+            if let Some(meta) = self.reflection_type_metadata(&current) {
+                pending.extend(meta.parents.iter().cloned().map(|parent| (parent, is_interface)));
+                pending.extend(meta.interfaces.iter().cloned().map(|interface| (interface, true)));
+            }
+        }
+        interfaces
+    }
+
     pub(crate) fn reflection_is_assignable_from(
         &self,
         target_type: &str,
@@ -1191,7 +1212,7 @@ impl Compiler {
     pub(super) fn is_direct_generator_call(&self, iter: &Expression) -> bool {
         if let ExprKind::Call { callee, .. } = &iter.kind {
             if let ExprKind::Ident(n) = &callee.kind {
-                return self.generator_functions.contains(&self.canon(n));
+                return self.generator_functions.contains(self.canon_lookup(n).as_ref());
             }
         }
         false
@@ -1208,7 +1229,7 @@ impl Compiler {
     /// here, so this deliberately does not walk `parent`.
     pub(super) fn class_declares_private_member(&self, class_name: &str, member: &str) -> bool {
         use crate::primitives::class_normalize::Access;
-        let Some(nc) = self.normalized_classes.get(&self.canon(class_name)) else {
+        let Some(nc) = self.normalized_classes.get(self.canon_lookup(class_name).as_ref()) else {
             return false;
         };
         let want = self.canon(member);
@@ -1299,9 +1320,42 @@ impl Compiler {
     /// site asks when it has no receiver and no enclosing class to resolve
     /// against — an access from outside every class body.
     pub(super) fn any_class_declares_private_member(&self, member: &str) -> bool {
-        self.normalized_classes
-            .keys()
-            .any(|class_name| self.class_declares_private_member(class_name, member))
+        use crate::primitives::class_normalize::Access;
+        if self.normalized_classes.is_empty() { return false; }
+        let namespace_body = self.variable_namespace.map(|namespace| namespace.body as usize);
+        let mut cache = self.normalized_classes.1.lock().unwrap_or_else(|poison| poison.into_inner());
+        if cache.as_ref().is_none_or(|index| {
+            index.case_sensitive != self.case_sensitive || index.namespace_body != namespace_body
+        }) {
+            let mut members = HashSet::new();
+            // Resolve keys exactly as the former per-class query did. This
+            // also preserves behavior if a fold policy changes before a
+            // registry has been rebuilt under its new canonical spelling.
+            for key in self.normalized_classes.keys() {
+                let Some(class) = self.normalized_classes.get(self.canon_lookup(key).as_ref()) else {
+                    continue;
+                };
+                for field in class.instance_fields.iter().chain(&class.static_fields) {
+                    if field.access == Access::Private { members.insert(self.canon(&field.name)); }
+                }
+                for method in class.instance_methods.iter().chain(&class.static_methods) {
+                    if method.access == Access::Private { members.insert(self.canon(&method.source_name)); }
+                }
+                for property in &class.properties {
+                    if property.getter.as_ref().is_some_and(|method| method.access == Access::Private)
+                        || property.setter.as_ref().is_some_and(|method| method.access == Access::Private)
+                    {
+                        members.insert(self.canon(&property.source_name));
+                    }
+                }
+            }
+            *cache = Some(super::PrivateMemberIndex {
+                case_sensitive: self.case_sensitive,
+                namespace_body,
+                members: Arc::new(members),
+            });
+        }
+        cache.as_ref().unwrap().members.contains(self.canon_lookup(member).as_ref())
     }
 
     pub(super) fn js_private_member_storage_name_for_class(
@@ -1331,7 +1385,7 @@ impl Compiler {
     /// two independent private slots that merely share a name.
     fn declares_private_both_ways(&self, class_name: &str, member: &str) -> bool {
         use crate::primitives::class_normalize::Access;
-        let Some(nc) = self.normalized_classes.get(&self.canon(class_name)) else {
+        let Some(nc) = self.normalized_classes.get(self.canon_lookup(class_name).as_ref()) else {
             return false;
         };
         let want = self.canon(member);
@@ -1363,13 +1417,16 @@ impl Compiler {
         field: &str,
     ) -> String {
         if self.separate_property_method_namespace() {
-            if let Some(class) = self.normalized_classes.get(&self.canon(owner_class)) {
+            if let Some(class) = self.normalized_classes.get(self.canon_lookup(owner_class).as_ref()) {
                 let key = self.canon(field);
                 let is_constant = class.raw_extra_members.iter().any(|member| {
                     matches!(member, vybe_ast::ClassMember::Const { name, .. }
                         if self.canon(name) == key)
                 });
-                if !is_constant && class.static_methods.iter().any(|method| {
+                // Instance methods are also exposed on the class object for
+                // explicit class-method calls. They must not overwrite a
+                // same-named static property in separate-namespace profiles.
+                if !is_constant && class.instance_methods.iter().chain(&class.static_methods).any(|method| {
                     self.canon(&method.source_name) == key
                 }) {
                     return format!("__prop${key}");
@@ -1566,7 +1623,7 @@ impl Compiler {
     /// and so indexes nothing through this path, which is the conservative
     /// answer rather than a gap to close by loosening it.
     fn pending_field_is_plain_storage(&self, class: &str, field: &str) -> bool {
-        let Some(pending) = self.pending_classes.get(&self.canon(class)) else {
+        let Some(pending) = self.pending_classes.get(self.canon_lookup(class).as_ref()) else {
             return false;
         };
         let field_canon = self.canon(field);
@@ -1661,6 +1718,15 @@ impl Compiler {
             if guard > 64 {
                 break;
             }
+            // Declaration order must not decide whether a field hides an
+            // ancestor. The normalized declarations exist before bodies do.
+            if let Some(normal) = self.normalized_classes.get(&class_key) {
+                if normal.instance_fields.iter().any(|field| self.canon(&field.name) == field_canon)
+                    || normal.properties.iter().any(|property| !property.is_static && self.canon(&property.source_name) == field_canon)
+                {
+                    return true;
+                }
+            }
             let Some(pending) = self.pending_classes.get(&class_key) else {
                 break;
             };
@@ -1672,7 +1738,9 @@ impl Compiler {
             {
                 return true;
             }
-            current = pending.parent.as_ref().map(|p| self.canon(p));
+            current = self.normalized_classes.get(&class_key)
+                .and_then(|class| class.parent.as_ref()).or(pending.parent.as_ref())
+                .map(|p| self.canon(p));
         }
         false
     }
@@ -1717,7 +1785,7 @@ impl Compiler {
         let class_key = self.canon(class_name);
         self.pending_classes
             .get(&class_key)
-            .and_then(|pending| pending.field_storage_names.get(&self.canon(field)).cloned())
+            .and_then(|pending| pending.field_storage_names.get(self.canon_lookup(field).as_ref()).cloned())
     }
 
     /// Resolve the storage slot for a source-level instance field visible
@@ -1783,7 +1851,7 @@ impl Compiler {
             ExprKind::Super => self
                 .current_class
                 .as_deref()
-                .and_then(|class_name| self.pending_classes.get(&self.canon(class_name)))
+                .and_then(|class_name| self.pending_classes.get(self.canon_lookup(class_name).as_ref()))
                 .and_then(|pending| pending.parent.clone())
                 .and_then(|parent| {
                     self.visible_instance_field_storage_name_for_class(&parent, field)

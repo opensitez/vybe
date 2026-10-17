@@ -5,10 +5,10 @@
 //! the single compiler-side surface for WebAssembly stack-switching generator
 //! opcodes.
 
-use crate::primitives::class_context::{ReceiverAbi, StdlibFrame};
+use std::sync::Arc;
+use crate::primitives::class_context::{StdlibFrame};
 use crate::primitives::class_slots;
 use crate::primitives::instructions::{core_wasm, host, recipes};
-use std::sync::Arc;
 use vybe_runtime::chunk::StackSwitchHandler;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -49,7 +49,16 @@ pub fn emit_resume_throw_tagged(chunk: &mut Chunk, tag: u16, line: u32) {
 /// Stack before: `[continuation, resume_value]`
 /// Stack after: `[yielded_or_returned_value]`
 pub fn emit_resume(chunk: &mut Chunk, line: u32) {
+    // Native-only producer provenance; original VM opcode and operand order
+    // remain [continuation, value]. Reserve metadata storage only in a frame
+    // which has no declared local/parameter at all.
+    if chunk.local_count == 0 && chunk.arity == 0 { chunk.alloc_scratch(1); }
+    let start = chunk.code.len();
     emit_resume_tagged(chunk, 0, line);
+    chunk.local_names.push(vybe_runtime::chunk::LocalName::new(
+        0, format!("<native-generator-resume:{}:{}>", start, chunk.code.len()),
+        vybe_runtime::chunk::LocalOrigin::Compiler,
+    ));
 }
 
 /// `resume_throw`: resume a continuation by throwing into it.
@@ -84,6 +93,9 @@ const GEN_YIELD_TAG: u16 = 0;
 /// Both arms converge through a result-2 `block` so the `[value, has_more]`
 /// stack contract the drivers below consume is unchanged.
 pub fn emit_next(chunk: &mut Chunk, line: u32) {
+    // Native writer provenance; runtime instructions/handler IP stay unchanged.
+    let native_next_start = chunk.code.len();
+
     // The continuation must not straddle the BLOCK boundary: the VM records a
     // block's entry stack height, and `resume` consumes the continuation inside
     // the block, which would desync that height. Park it in a fresh local and
@@ -113,8 +125,8 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
         &done_key,
         class_slots::Dest::Stack,
         line,
-    ); // null if never set, else I32(1)
-    chunk.emit_op(Op::REF_IS_NULL, line); // i32: 1 if not-yet-done
+    ); // Null/Undefined if never set, else a present completion marker.
+    super::delegates::emit_stack_is_nullish_in_chunk(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if already done
     let done_if = chunk.emit_if(line); // if already done {
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -146,6 +158,18 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     core_wasm::i32_const(chunk, line, 1); // has_more = 1 → [yieldval, 1]
     chunk.emit_end(line); // end $block → [value, has_more]
     chunk.patch_block(block_p);
+
+    chunk.local_names.push(vybe_runtime::chunk::LocalName::new(
+        cont_slot,
+        format!(
+            "<native-generator-next:{}:{}:{}:{}>",
+            native_next_start,
+            resume_ip,
+            handler_ip,
+            chunk.code.len()
+        ),
+        vybe_runtime::chunk::LocalOrigin::Compiler,
+    ));
 
     chunk.stack_switch_handlers.insert(
         resume_ip,
@@ -228,7 +252,9 @@ pub fn emit_drain_into_array_into(_imports: &mut Chunk, code: &mut Chunk, line: 
     let val_slot = code.local_count;
     code.alloc_scratch(1);
 
-    code.emit_array_new_fixed(0, 0, line); // empty array
+    let allocation = code.code.len();
+    code.emit_array_new_fixed(0, 0, line); // VM private growable buffer remains unchanged
+    code.local_names.push(vybe_runtime::chunk::LocalName::new(result_slot, format!("<native-growable-array:{allocation}>"), vybe_runtime::chunk::LocalOrigin::Compiler));
     code.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     emit_drain_loop(cont_slot, result_slot, val_slot, code, line);
@@ -247,7 +273,9 @@ pub fn emit_drain_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
 
-    chunks[current].emit_array_new_fixed(0, 0, line); // empty array
+    let allocation = chunks[current].code.len();
+    chunks[current].emit_array_new_fixed(0, 0, line); // VM private growable buffer remains unchanged
+    chunks[current].local_names.push(vybe_runtime::chunk::LocalName::new(result_slot, format!("<native-growable-array:{allocation}>"), vybe_runtime::chunk::LocalOrigin::Compiler));
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     emit_drain_loop(cont_slot, result_slot, val_slot, &mut chunks[current], line);
@@ -477,7 +505,7 @@ pub fn emit_entry_control(
     );
     chunk.emit_string_const("throw", line);
     host::emit(chunk, "wasm:js-string", "equals", 2, line);
-    ops::emit_dyn_to_bool(chunk, line);
+    // String.equals already produces the i32 predicate consumed by IF.
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
@@ -506,7 +534,7 @@ pub fn emit_entry_control(
     );
     chunk.emit_string_const("return", line);
     host::emit(chunk, "wasm:js-string", "equals", 2, line);
-    ops::emit_dyn_to_bool(chunk, line);
+    // String.equals already produces the i32 predicate consumed by IF.
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
@@ -577,7 +605,7 @@ pub fn emit_resume_dispatch(
     );
     chunk.emit_string_const("throw", line);
     host::emit(chunk, "wasm:js-string", "equals", 2, line);
-    ops::emit_dyn_to_bool(chunk, line);
+    // String.equals already produces the i32 predicate consumed by IF.
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
@@ -606,7 +634,7 @@ pub fn emit_resume_dispatch(
     );
     chunk.emit_string_const("return", line);
     host::emit(chunk, "wasm:js-string", "equals", 2, line);
-    ops::emit_dyn_to_bool(chunk, line);
+    // String.equals already produces the i32 predicate consumed by IF.
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
@@ -659,7 +687,6 @@ pub fn emit_resolve_async_iterator(
     iter_slot: u16,
     line: u32,
 ) {
-    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let fn_slot = chunk.alloc_scratch(1);
 
@@ -724,8 +751,7 @@ pub fn emit_resolve_async_iterator(
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     let result_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, result_slot, line);
     let is_gen_idx = chunk.add_import("ecma:value", "isGenerator");
     chunk.emit_call(is_gen_idx, 1, line);
     crate::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -747,7 +773,6 @@ pub fn emit_drain_async_iterable(chunks: &mut [Chunk], current: usize, line: u32
 }
 
 fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, async_iter: bool) {
-    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
     let chunk = &mut chunks[current];
     let obj_slot = chunk.alloc_scratch(1);
     let iter_fn_slot = chunk.alloc_scratch(1);
@@ -786,8 +811,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     );
     chunk.emit_op_u16(Op::LOCAL_SET, next_fn_slot, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, next_fn_slot, line);
     chunk.emit_if(line);
 
     // No "next" → get iterator method
@@ -805,8 +829,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
             class_slots::Dest::Local(iter_fn_slot),
             line,
         );
-        chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
-        chunk.emit_op(Op::REF_IS_NULL, line);
+        super::delegates::emit_slot_is_nullish_in_chunk(chunk, iter_fn_slot, line);
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         let slot = class_slots::resolve(
@@ -823,8 +846,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
         chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
         chunk.emit_end(line);
 
-        chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
-        chunk.emit_op(Op::REF_IS_NULL, line);
+        super::delegates::emit_slot_is_nullish_in_chunk(chunk, iter_fn_slot, line);
         chunk.emit_if(line);
     }
     // Sync: try @@iterator
@@ -843,8 +865,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
 
     // Fallback: walker-normalized "iterator" key for custom classes
-    chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, iter_fn_slot, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let slot = class_slots::resolve(
@@ -866,8 +887,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
 
     // No iterator → skip to end of this IF; the iterForOf fallback
     // after the IF handles array-likes and other non-iterables.
-    chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, iter_fn_slot, line);
     chunk.emit_br_if(0, line); // BR to end of IF(no next), not outer_block
 
     // iter = iter_fn(obj) — §7.4.2 step 4: Call(method, obj)
@@ -903,8 +923,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     // no next → pure WASM array-like fallback (§23.1.2.1 step 5)
     // Check for "length" property and iterate by numeric index.
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, next_fn_slot, line);
     chunk.emit_if(line);
 
     let length_key = class_slots::resolve_interned(
@@ -942,8 +961,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     // reached the arity-1 draining body with nothing on the stack; the silent
     // exit swallowed it and the corpus went green on a fake pass. 21 classes
     // still register more than one constructor.
-    chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, done_slot, line);
     chunk.emit_if(line);
     crate::primitives::class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
@@ -1021,8 +1039,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
         class_slots::Dest::Stack,
         line,
     );
-    chunk.emit_op_u16(Op::LOCAL_SET, done_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, done_slot, line);
     crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_br_if(1, line);
 
@@ -1185,11 +1202,14 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, done_local, 0);
     c.emit_else(0);
 
-    // next() vs next(v): REF_IS_NULL is true for both Null and the
-    // Undefined the VM pads missing args with — and §27.6.1.2 treats
+    // next() vs next(v): missing args are Undefined, and §27.6.1.2 treats
     // next() and next(undefined) identically.
     c.emit_op_u16(Op::LOCAL_GET, v_local, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v_local, 0);
+    let undefined_test = c.add_import("wasm:js-undefined", "test");
+    c.emit_call(undefined_test, 1, 0);
+    c.emit_op(Op::I32_OR, 0);
     c.emit_if(0);
     // next() — drive one step; emit_next pushes [value, has_more].
     frame.emit_receiver(&mut c, 0);
@@ -1274,8 +1294,7 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::RETURN, 0);
 
     crate::primitives::errors::emit_handler_block_end(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, err_local, 0);
-    c.emit_op_u16(Op::LOCAL_GET, err_local, 0);
+    c.emit_op_u16(Op::LOCAL_TEE, err_local, 0);
     c.emit_call(reject_idx, 1, 0);
     c.emit_op(Op::RETURN, 0);
     frame.finish(&mut c, 1);
@@ -1321,13 +1340,6 @@ impl Compiler {
         );
     }
 
-    fn emit_buffered_generator_mark_started(
-        &mut self,
-        obj_slot: u16,
-        started_key: &class_slots::ResolvedSlot,
-    ) {
-        self.emit_buffered_generator_set_bool_property(obj_slot, started_key, true);
-    }
 
     fn emit_buffered_generator_store_yielded_state(
         &mut self,
@@ -1458,46 +1470,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, result_slot);
     }
 
-    fn emit_buffered_generator_apply_next_result(
-        &mut self,
-        obj_slot: u16,
-        value_slot: u16,
-        has_more_slot: u16,
-        result_slot: u16,
-        mode: BufferedGeneratorStepMode,
-        done_key: &class_slots::ResolvedSlot,
-        current_key: &class_slots::ResolvedSlot,
-        return_key: &class_slots::ResolvedSlot,
-    ) {
-        self.emit_u16(Op::LOCAL_GET, has_more_slot);
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        };
-        let line = self.line;
-        self.chunk().emit_if(line);
-
-        self.emit_buffered_generator_store_yielded_state(
-            obj_slot,
-            value_slot,
-            done_key,
-            current_key,
-        );
-        self.emit_buffered_generator_set_step_result(value_slot, result_slot, mode, true);
-
-        self.chunk().emit_else(line);
-
-        self.emit_buffered_generator_store_completed_state(
-            obj_slot,
-            value_slot,
-            done_key,
-            current_key,
-            return_key,
-        );
-        self.emit_buffered_generator_set_step_result(value_slot, result_slot, mode, false);
-
-        self.chunk().emit_end(line);
-    }
 
     fn emit_buffered_generator_apply_resume_result(
         &mut self,
@@ -1610,10 +1582,12 @@ impl Compiler {
         );
 
         self.emit_u16(Op::LOCAL_GET, has_more_slot);
-        {
+        // Only emit_next's proven i32 flag reaches this slot.
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.integer_truthiness_reuse {
             let line = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        };
+        }
         let line = self.line;
         self.chunk().emit_if(line);
 
@@ -1743,7 +1717,9 @@ impl Compiler {
                 self.class_get_resolved(class_slots::ObjSource::Local(obj_tmp), &done_key);
                 let line = self.line;
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if(line);
+                // Both arms produce the key stored below. Declare that value
+                // in the Wasm control signature so it survives the join.
+                self.chunk().emit_if_value(line);
                 self.emit_null();
                 self.chunk().emit_else(line);
                 self.class_get(
@@ -1800,14 +1776,7 @@ impl Compiler {
                         line,
                     );
                 }
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                };
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                };
+                self.emit_negated_condition();
                 self.emit_u16(Op::LOCAL_SET, result_slot);
 
                 self.chunk().emit_else(line);
@@ -2213,17 +2182,23 @@ pub(crate) fn build_generator_yield_value() -> Chunk {
     ops::emit_dyn_to_bool(&mut chunks[0], line);
     chunks[0].emit_if_value(line);
     emit_yield_packet_field(&mut chunks[0], "payload_id", line);
-    chunks[0].emit_op_u16(Op::LOCAL_SET, payload_id, line);
-    chunks[0].emit_op_u16(Op::LOCAL_GET, payload_id, line);
+    chunks[0].emit_op_u16(Op::LOCAL_TEE, payload_id, line);
     chunks[0].emit_op(Op::REF_IS_NULL, line);
+    chunks[0].emit_op_u16(Op::LOCAL_GET, payload_id, line);
+    let undefined_test = chunks[0].add_import("wasm:js-undefined", "test");
+    chunks[0].emit_call(undefined_test, 1, line);
+    chunks[0].emit_op(Op::I32_OR, line);
     chunks[0].emit_if_value(line);
     emit_yield_packet_field(&mut chunks[0], "value", line);
     chunks[0].emit_else(line);
 
     crate::primitives::globals::emit_read(&mut chunks[0], "__vybe_generator_payloads", line);
-    chunks[0].emit_op_u16(Op::LOCAL_SET, store, line);
-    chunks[0].emit_op_u16(Op::LOCAL_GET, store, line);
+    chunks[0].emit_op_u16(Op::LOCAL_TEE, store, line);
     chunks[0].emit_op(Op::REF_IS_NULL, line);
+    chunks[0].emit_op_u16(Op::LOCAL_GET, store, line);
+    let undefined_test = chunks[0].add_import("wasm:js-undefined", "test");
+    chunks[0].emit_call(undefined_test, 1, line);
+    chunks[0].emit_op(Op::I32_OR, line);
     chunks[0].emit_if(line);
     crate::primitives::dict::emit_new(&mut chunks, 0, line);
     chunks[0].emit_dup(line);
@@ -2381,7 +2356,6 @@ fn emit_generator_state_local(chunk: &mut Chunk, field: &str, value: u16, line: 
 }
 
 pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
-    use std::sync::Arc;
     let mut c = Chunk::new("__stdlib_iter_drain");
     // ⛔ `plain`, NOT `method`. Its one call site is hand-built
     // (`build_pyiter` in `collections.rs`) and pushes no receiver under either
@@ -2506,7 +2480,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let try_sym = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_string_const("Symbol(@@iterator)", 0);
@@ -2525,7 +2499,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let try_alt = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     class_slots::emit_class_get(
@@ -2542,7 +2516,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let try_async = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     class_slots::emit_class_get(
@@ -2564,7 +2538,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let try_slot = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     class_slots::emit_class_get(
@@ -2607,7 +2581,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let it_ok = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, it, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
@@ -2680,8 +2654,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, counter, 0);
     c.emit_i32_const(1_000_000, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
+    c.emit_op(Op::I32_GE_S, 0);
     c.emit_br_if(1, 0); // counter >= cap → break
 
     // step = it.method() — the receiver is `it`
@@ -2719,7 +2692,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, counter, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, counter, 0);
 
     c.emit_br(0, 0); // continue loop

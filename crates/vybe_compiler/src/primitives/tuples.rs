@@ -22,10 +22,9 @@
 //! [`emit_named_tuple`].
 
 use crate::primitives::class_slots;
-use std::sync::Arc;
 use vybe_ast::{ExprKind, Expression};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 use crate::primitives::instructions::core_wasm;
 
@@ -71,11 +70,24 @@ pub fn emit_tuple(chunks: &mut [Chunk], current: usize, n: u16, line: u32) {
     let base = chunks[current].alloc_scratch(n.max(1));
     crate::primitives::collections::emit_pack_n(chunks, current, n, base, line);
     emit_tag(chunks, current, line);
-    emit_positional_item_fields(chunks, current, n as usize, line);
+    // Packing already saved every computed element. The fresh tuple has not
+    // escaped and its own data-property writes cannot mutate those values;
+    // reuse them rather than reading each element back twice through ARRAY_GET.
+    for i in 0..n {
+        for name in [format!("Item{}", i + 1), format!("item{}", i + 1)] {
+            let c = &mut chunks[current];
+            c.emit_dup(line);
+            let key = class_slots::resolve_interned(
+                c, &class_slots::ClassSlot::internal(name), &class_slots::PlainNames,
+            );
+            class_slots::emit_class_set(c, class_slots::ObjSource::Stack, &key,
+                class_slots::ValueSource::Local(base + i), line);
+        }
+    }
 }
 
 /// Push an i32 truthiness flag for "is the value on TOS a tagged tuple".
-/// Stack: `[value] -> [i32]`. A plain list (no tag) reads null → falsy.
+/// Stack: `[value] -> [i32]`. A plain list reads Null/Undefined → falsy.
 pub fn emit_is_tuple(chunks: &mut [Chunk], current: usize, line: u32) {
     let c = &mut chunks[current];
     let k = class_slots::resolve(
@@ -89,8 +101,8 @@ pub fn emit_is_tuple(chunks: &mut [Chunk], current: usize, line: u32) {
         class_slots::Dest::Stack,
         line,
     );
-    c.emit_op(Op::REF_IS_NULL, line);
-    c.emit_op(Op::I32_EQZ, line); // 1 when tag present (non-null)
+    super::delegates::emit_stack_is_nullish_in_chunk(c, line);
+    c.emit_op(Op::I32_EQZ, line); // 1 when a non-nullish tag is present
 }
 
 /// Tuple-aware value equality, for a language whose tuples compare by value but

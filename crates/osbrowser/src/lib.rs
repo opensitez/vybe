@@ -39,6 +39,44 @@ struct WireCommand {
     args: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     assigned_node: Option<u64>,
+    #[serde(skip)]
+    pixels: Option<Bytes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary_range: Option<[usize; 2]>,
+}
+
+fn command_response(mut commands: Vec<WireCommand>) -> Response<Body> {
+    if !commands.iter().any(|command| command.pixels.is_some()) {
+        return response(
+            StatusCode::OK,
+            serde_json::to_vec(&commands).unwrap_or_default(),
+            "application/json",
+        );
+    }
+    let mut offset = 0;
+    for command in &mut commands {
+        if let Some(pixels) = &command.pixels {
+            command.binary_range = Some([offset, pixels.len()]);
+            offset += pixels.len();
+        }
+    }
+    let header = serde_json::to_vec(&commands).expect("serializable commands");
+    let Ok(header_len) = u32::try_from(header.len()) else {
+        return response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "command header too large",
+            "text/plain",
+        );
+    };
+    let mut body = Vec::with_capacity(4 + header.len() + offset);
+    body.extend_from_slice(&header_len.to_le_bytes());
+    body.extend_from_slice(&header);
+    for command in commands {
+        if let Some(pixels) = command.pixels {
+            body.extend_from_slice(&pixels);
+        }
+    }
+    response(StatusCode::OK, body, "application/octet-stream")
 }
 
 #[derive(Deserialize)]
@@ -47,6 +85,13 @@ struct WireReply {
     result: Value,
     #[serde(default)]
     error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum EventPacket {
+    Batch(Vec<BrowserEvent>),
+    Single(BrowserEvent),
 }
 
 struct State {
@@ -169,14 +214,14 @@ impl BrowserSession {
         let url = self.url();
         #[cfg(target_os = "macos")]
         let status = if std::path::Path::new("/Applications/Google Chrome.app").exists() {
-            Command::new("open").args(["-a", "Google Chrome", &url]).status()
+            Command::new("open")
+                .args(["-a", "Google Chrome", &url])
+                .status()
         } else {
             Command::new("open").arg(&url).status()
         };
         #[cfg(target_os = "windows")]
-        let status = Command::new("cmd")
-            .args(["/C", "start", "", &url])
-            .status();
+        let status = Command::new("cmd").args(["/C", "start", "", &url]).status();
         #[cfg(all(unix, not(target_os = "macos")))]
         let status = Command::new("xdg-open").arg(&url).status();
         #[cfg(not(any(unix, target_os = "windows")))]
@@ -192,7 +237,9 @@ impl BrowserSession {
     pub fn is_connected(&self) -> bool {
         self.state.lock().is_ok_and(|state| {
             state.connected
-                && state.last_seen.is_some_and(|at| at.elapsed() < Duration::from_secs(10))
+                && state
+                    .last_seen
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(10))
         })
     }
 
@@ -214,6 +261,26 @@ impl BrowserSession {
 
     /// Send a DOM operation and wait for the browser's reply.
     pub fn call(&self, document: u64, operation: &str, args: Value) -> Result<Value, String> {
+        self.call_payload(document, operation, args, None)
+    }
+
+    /// Upload raw RGBA bytes using standard Canvas ImageData metadata.
+    pub fn call_with_pixels(
+        &self,
+        document: u64,
+        args: Value,
+        pixels: Bytes,
+    ) -> Result<Value, String> {
+        self.call_payload(document, "CanvasApply", args, Some(pixels))
+    }
+
+    fn call_payload(
+        &self,
+        document: u64,
+        operation: &str,
+        args: Value,
+        pixels: Option<Bytes>,
+    ) -> Result<Value, String> {
         let (tx, rx) = mpsc::channel();
         let id = {
             let mut state = self.state.lock().map_err(|e| e.to_string())?;
@@ -226,6 +293,8 @@ impl BrowserSession {
                 operation: operation.to_string(),
                 args,
                 assigned_node: None,
+                pixels,
+                binary_range: None,
             });
             state.flush_requested = true;
             id
@@ -250,6 +319,27 @@ impl BrowserSession {
         args: Value,
         assigned_node: Option<u64>,
     ) -> Result<(), String> {
+        self.enqueue_payload(document, operation, args, assigned_node, None)
+    }
+
+    /// Queue a raw RGBA upload in the same ordered stream as DOM mutations.
+    pub fn enqueue_with_pixels(
+        &self,
+        document: u64,
+        args: Value,
+        pixels: Bytes,
+    ) -> Result<(), String> {
+        self.enqueue_payload(document, "CanvasApply", args, None, Some(pixels))
+    }
+
+    fn enqueue_payload(
+        &self,
+        document: u64,
+        operation: &str,
+        args: Value,
+        assigned_node: Option<u64>,
+        pixels: Option<Bytes>,
+    ) -> Result<(), String> {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
         state.commands.push_back(WireCommand {
             id: 0,
@@ -257,6 +347,8 @@ impl BrowserSession {
             operation: operation.to_string(),
             args,
             assigned_node,
+            pixels,
+            binary_range: None,
         });
         let ready = state.batch_depth == 0;
         drop(state);
@@ -286,7 +378,11 @@ impl BrowserSession {
 
 type Body = Full<Bytes>;
 
-fn response(status: StatusCode, body: impl Into<Bytes>, content_type: &'static str,) -> Response<Body> {
+fn response(
+    status: StatusCode,
+    body: impl Into<Bytes>,
+    content_type: &'static str,
+) -> Response<Body> {
     Response::builder()
         .status(status)
         .header("content-type", content_type)
@@ -321,10 +417,14 @@ async fn serve(
             "text/javascript; charset=utf-8",
         ),
         (&Method::GET, "/next") => {
-            let mut commands = state.lock().ok().map(|mut state| {
-                state.connected = true;
-                state.take_ready_commands()
-            }).unwrap_or_default();
+            let mut commands = state
+                .lock()
+                .ok()
+                .map(|mut state| {
+                    state.connected = true;
+                    state.take_ready_commands()
+                })
+                .unwrap_or_default();
             if commands.is_empty() {
                 let _ = tokio::time::timeout(Duration::from_secs(1), wake.notified()).await;
                 commands = state
@@ -336,11 +436,7 @@ async fn serve(
             if commands.is_empty() {
                 response(StatusCode::NO_CONTENT, Bytes::new(), "application/json")
             } else {
-                response(
-                    StatusCode::OK,
-                    serde_json::to_vec(&commands).unwrap_or_default(),
-                    "application/json",
-                )
+                command_response(commands)
             }
         }
         (&Method::POST, "/reply") => {
@@ -364,9 +460,12 @@ async fn serve(
         (&Method::POST, "/event") => {
             let body = request.into_body().collect().await;
             if let Ok(body) = body {
-                if let Ok(event) = serde_json::from_slice::<BrowserEvent>(&body.to_bytes()) {
+                if let Ok(packet) = serde_json::from_slice::<EventPacket>(&body.to_bytes()) {
                     if let Ok(mut state) = state.lock() {
-                        state.events.push_back(event);
+                        match packet {
+                            EventPacket::Batch(events) => state.events.extend(events),
+                            EventPacket::Single(event) => state.events.push_back(event),
+                        }
                         event_ready.notify_one();
                     }
                 }
@@ -391,7 +490,59 @@ mod tests {
             operation: operation.into(),
             args: serde_json::Value::Null,
             assigned_node: None,
+            pixels: None,
+            binary_range: None,
         }
+    }
+
+    #[test]
+    fn event_packets_accept_legacy_and_ordered_batches() {
+        let down = serde_json::json!({"document": 1, "node": 2,
+            "kind": "keydown", "fields": {"key": "ArrowUp"}});
+        let up = serde_json::json!({"document": 1, "node": 2,
+            "kind": "keyup", "fields": {"key": "ArrowUp"}});
+        let single: super::EventPacket = serde_json::from_value(down.clone()).unwrap();
+        assert!(matches!(single, super::EventPacket::Single(event) if event.kind == "keydown"));
+        let batch: super::EventPacket =
+            serde_json::from_value(serde_json::json!([down, up])).unwrap();
+        let super::EventPacket::Batch(events) = batch else {
+            panic!("expected batch")
+        };
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            ["keydown", "keyup"]
+        );
+    }
+
+    #[test]
+    fn binary_response_preserves_order_and_raw_pixel_ranges() {
+        use http_body_util::BodyExt;
+        let mut first = command(1, "CanvasApply");
+        first.pixels = Some(bytes::Bytes::from_static(&[1, 2, 3, 255]));
+        let second = command(2, "Title");
+        let mut third = command(3, "CanvasApply");
+        third.pixels = Some(bytes::Bytes::from_static(&[4, 5, 6, 255]));
+        let response = super::command_response(vec![first, second, third]);
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/octet-stream"
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let body = runtime
+            .block_on(response.into_body().collect())
+            .unwrap()
+            .to_bytes();
+        let length = u32::from_le_bytes(body[..4].try_into().unwrap()) as usize;
+        let commands: serde_json::Value = serde_json::from_slice(&body[4..4 + length]).unwrap();
+        assert_eq!(commands[0]["binary_range"], serde_json::json!([0, 4]));
+        assert!(commands[1].get("binary_range").is_none());
+        assert_eq!(commands[2]["binary_range"], serde_json::json!([4, 4]));
+        assert_eq!(&body[4 + length..], &[1, 2, 3, 255, 4, 5, 6, 255]);
     }
 
     #[test]
@@ -433,9 +584,15 @@ mod tests {
         state.commands.push_back(command(0, "AppendChild"));
         state.commands.push_back(command(7, "QuerySelector"));
         state.flush_requested = true;
-        let operations: Vec<_> = state.take_ready_commands()
-            .into_iter().map(|command| command.operation).collect();
-        assert_eq!(operations, ["CreateElement", "AppendChild", "QuerySelector"]);
+        let operations: Vec<_> = state
+            .take_ready_commands()
+            .into_iter()
+            .map(|command| command.operation)
+            .collect();
+        assert_eq!(
+            operations,
+            ["CreateElement", "AppendChild", "QuerySelector"]
+        );
         state.commands.push_back(command(0, "SetStyleProperty"));
         assert!(state.take_ready_commands().is_empty());
     }

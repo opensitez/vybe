@@ -189,6 +189,7 @@ fn coercible() -> Value {
     o.properties.insert(
         "valueOf".into(),
         object(Object {
+            descriptor: None,
             kind: ObjectKind::Function(Function {
                 name: Some("forbidden".into()),
                 arity: 0,
@@ -351,7 +352,8 @@ fn compact_path_bounded_complete_call_benchmark() {
 
 fn identity_function(index: usize, arity: u8) -> Value {
     object(Object {
-        kind: ObjectKind::Function(Function {
+        descriptor: None,
+            kind: ObjectKind::Function(Function {
             name: Some("identity-probe".into()),
             arity,
             chunk_index: index,

@@ -250,3 +250,158 @@ fn aliased_list_children_are_rejected_before_any_ownership_changes() {
         assert_eq!(arena.get(child), "unchanged");
     }
 }
+
+#[test]
+fn flat_binary_metadata_restores_exact_owned_children_and_commits_multiple_roots() {
+    use grameo::arena::MetadataArena;
+    struct Value { text: String, offset: usize }
+    let mut arena = MetadataArena::<Value, (usize, usize)>::default();
+    let left = arena.alloc(Value { text: "left".into(), offset: 7 });
+    let right = arena.alloc(Value { text: "right".into(), offset: 31 });
+    let mark = arena.checkpoint();
+    let parent = arena.binary_with_metadata(left, right, |left, right| {
+        (Value { text: format!("{}|{}", left.text, right.text), offset: 0 }, (left.offset, right.offset))
+    }, |value, (left, right)| {
+        let (a, b) = value.text.split_once('|').unwrap();
+        (Value { text: a.into(), offset: left }, Value { text: b.into(), offset: right })
+    });
+    assert_eq!(arena.get(parent).text, "left|right");
+    arena.rollback(mark);
+    assert_eq!((&*arena.get(left).text, arena.get(left).offset), ("left", 7));
+    assert_eq!((&*arena.get(right).text, arena.get(right).offset), ("right", 31));
+    let values: Vec<_> = arena.into_live_nodes().map(|v| (v.text, v.offset)).collect();
+    assert_eq!(values, [("left".into(), 7), ("right".into(), 31)]);
+}
+
+#[test]
+fn list_lowering_inverse_restores_owned_children_after_nested_speculation() {
+    use grameo::arena::MetadataArena;
+    // Deliberately non-Clone. Lowering changes the values and discards their
+    // source offsets; the journal retains only the offsets needed for reversal.
+    struct Value { values: Vec<i64>, offsets: Vec<usize> }
+    let mut arena = MetadataArena::<Value, Vec<usize>>::default();
+    let children: Vec<_> = [(3, 7), (5, 19), (8, 31)].into_iter()
+        .map(|(n, offset)| arena.alloc(Value { values: vec![n], offsets: vec![offset] }))
+        .collect();
+    let mark = arena.checkpoint();
+    let parent = arena.list_with_metadata(children.clone(), |children| {
+        let offsets = children.iter().map(|v| v.offsets[0]).collect();
+        (Value { values: children.into_iter().map(|v| v.values[0] + 10).collect(), offsets: vec![] }, offsets)
+    }, |value, offsets| {
+        value.values.into_iter().zip(offsets)
+            .map(|(n, offset)| Value { values: vec![n - 10], offsets: vec![offset] }).collect()
+    });
+    let nested = arena.checkpoint();
+    let wrapper = arena.list_with_metadata(vec![parent], |values| {
+        (values.into_iter().next().unwrap(), vec![])
+    }, |value, _| vec![value]);
+    assert_eq!(arena.get(wrapper).values, [13, 15, 18]);
+    arena.rollback(nested);
+    assert_eq!(arena.get(parent).values, [13, 15, 18]);
+    arena.rollback(mark);
+    for (id, (n, offset)) in children.into_iter().zip([(3, 7), (5, 19), (8, 31)]) {
+        assert_eq!(arena.get(id).values, [n]);
+        assert_eq!(arena.get(id).offsets, [offset]);
+    }
+    arena.rollback(mark);
+}
+
+#[test]
+fn separate_edit_payload_restores_interleaved_edits_and_compositions() {
+    use grameo::arena::EditArena;
+    // Distinct payload sizes share one cursor. The values are deliberately
+    // non-Clone; composing and undoing must preserve exclusive ownership.
+    enum Value { Leaf(Box<u8>, u32), Pair(Box<Value>, Box<Value>, u32) }
+    fn edit(value: &mut Value, span: u32) -> u32 {
+        let (Value::Leaf(_, current) | Value::Pair(_, _, current)) = value;
+        std::mem::replace(current, span)
+    }
+    fn restore(value: &mut Value, previous: u32) { edit(value, previous); }
+    let mut arena = EditArena::<Value, [u8; 128], u32>::default();
+    let left = arena.alloc(Value::Leaf(Box::new(3), 10));
+    let right = arena.alloc(Value::Leaf(Box::new(7), 20));
+    arena.push(left);
+    arena.push(right);
+    let original = arena.checkpoint();
+    arena.edit(left, |value| edit(value, 11), restore);
+    let edited = arena.checkpoint();
+    arena.pop();
+    arena.pop();
+    let parent = arena.binary_with_metadata(left, right, |left, right| {
+        (Value::Pair(Box::new(left), Box::new(right), 0), [0; 128])
+    }, |value, _| {
+        let Value::Pair(left, right, _) = value else { panic!("pair") };
+        (*left, *right)
+    });
+    arena.push(parent);
+    let composed = arena.checkpoint();
+    arena.edit(parent, |value| edit(value, 99), restore);
+    arena.rollback(composed);
+    assert!(matches!(arena.get(parent), Value::Pair(_, _, 0)));
+    arena.rollback(edited);
+    assert!(matches!(arena.get(left), Value::Leaf(value, 11) if **value == 3));
+    assert_eq!(arena.values(), &[left, right]);
+    arena.rollback(original);
+    assert!(matches!(arena.get(left), Value::Leaf(value, 10) if **value == 3));
+    assert!(matches!(arena.get(right), Value::Leaf(value, 20) if **value == 7));
+    arena.rollback(original);
+}
+
+#[derive(Debug)]
+struct PrefixNode {
+    kind: PrefixKind,
+    span: (usize, usize),
+}
+#[derive(Debug)]
+enum PrefixKind {
+    Leaf(String),
+    Prefix(Box<PrefixNode>),
+}
+fn wrap_prefix(mut child: PrefixNode) -> (PrefixNode, (usize, usize)) {
+    let previous = child.span;
+    child.span = (0, 0);
+    (PrefixNode { kind: PrefixKind::Prefix(Box::new(child)), span: (previous.0 - 1, previous.1) }, previous)
+}
+fn unwrap_prefix(parent: PrefixNode, previous: (usize, usize)) -> PrefixNode {
+    let PrefixKind::Prefix(child) = parent.kind else { panic!("prefix inverse"); };
+    let mut child = *child;
+    child.span = previous;
+    child
+}
+#[test]
+fn metadata_prefix_rollback_restores_nested_owned_operands_and_stack() {
+    let mut arena = grameo::arena::MetadataArena::<PrefixNode, (usize, usize)>::default();
+    let leaf = arena.alloc(PrefixNode { kind: PrefixKind::Leaf("operand".into()), span: (64, 72) });
+    arena.push(leaf);
+    let mut states = Vec::new();
+    for _ in 0..32 {
+        let child = *arena.values().last().unwrap();
+        states.push((arena.checkpoint(), child, format!("{:?}", arena.get(child))));
+        assert_eq!(arena.pop(), Some(child));
+        let parent = arena.unary_with_metadata(child, wrap_prefix, unwrap_prefix);
+        arena.push(parent);
+    }
+    for (mark, child, expected) in states.into_iter().rev() {
+        arena.rollback(mark);
+        assert_eq!(arena.values(), &[child]);
+        assert_eq!(format!("{:?}", arena.get(child)), expected);
+    }
+    let PrefixKind::Leaf(name) = &arena.get(leaf).kind else { panic!("leaf restored"); };
+    assert_eq!(name, "operand");
+}
+#[test]
+fn metadata_prefix_commit_keeps_owned_tree_for_later_speculation() {
+    let mut arena = grameo::arena::MetadataArena::<PrefixNode, (usize, usize)>::default();
+    let leaf = arena.alloc(PrefixNode { kind: PrefixKind::Leaf("operand".into()), span: (64, 72) });
+    let committed = arena.unary_with_metadata(leaf, wrap_prefix, unwrap_prefix);
+    arena.push(committed);
+    arena.commit();
+    let before = format!("{:?}", arena.get(committed));
+    let mark = arena.checkpoint();
+    arena.pop();
+    let speculative = arena.unary_with_metadata(committed, wrap_prefix, unwrap_prefix);
+    arena.push(speculative);
+    arena.rollback(mark);
+    assert_eq!(arena.values(), &[committed]);
+    assert_eq!(format!("{:?}", arena.get(committed)), before);
+}

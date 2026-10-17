@@ -306,7 +306,7 @@ fn source_pair(kind: usize) -> [Vec<Chunk>; 2] {
     // Restore existing module globalidx operands to their original named
     // constant-pool form, then rebuild ONE genuine module global index space.
     // Instruction widths and every offset-bearing metadata key stay fixed.
-    before[index].globals = Arc::new(vec![]);
+    before[index].globals = Arc::new(Default::default());
     for chunk in &mut before {
         if chunk.globals.is_empty() {
             continue;
@@ -322,7 +322,7 @@ fn source_pair(kind: usize) -> [Vec<Chunk>; 2] {
             }
             pc += size;
         }
-        chunk.globals = Arc::new(vec![]);
+        chunk.globals = Arc::new(Default::default());
     }
     globals::declare_free_globals(&mut before);
     globals::normalize_global_table(&mut before);

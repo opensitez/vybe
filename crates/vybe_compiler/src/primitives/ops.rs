@@ -8,8 +8,8 @@
 //!   `Op::IF` (0x04) / `Op::ELSE` (0x05) / `Op::END` (0x0B)
 //! No flat-offset BR_IF_FALSE / BR_IF_TRUE / BR_IF_NULL custom opcodes.
 
-use crate::primitives::class_slots;
 use std::sync::Arc;
+use crate::primitives::class_slots;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -30,11 +30,11 @@ fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
 /// Convert the i32 (or Bool) on top of stack to a canonical JS Bool.
 /// Stack: [i32 or Bool] → [Bool(true) if nonzero/true, Bool(false) otherwise]
 fn i32_to_bool(chunk: &mut Chunk, line: u32) {
-    chunk.emit_if_value(line);
-    chunk.emit_bool_const(true, line);
-    chunk.emit_else(line);
-    chunk.emit_bool_const(false, line);
-    chunk.emit_end(line);
+    // The constructor handles both a direct i32 and one carried through a
+    // value-result join. A conditional here requires a raw i32 at the join
+    // and expands every Boolean materialization into two constructor calls.
+    let constructor = chunk.add_import("wasm:js-boolean", "fromI32");
+    call1(chunk, constructor, line);
 }
 
 /// Convert an `i32` (0 or 1) on the stack to a JS `Value::Bool`.
@@ -119,14 +119,6 @@ fn emit_bigint_neg(chunk: &mut Chunk, line: u32) {
     call1(chunk, op, line); // [a] -> BigInt
 }
 
-/// Emit `0n`. ECMA-262 §7.1.2 ToBoolean is "false when the BigInt is `0n`",
-/// so the truthiness arms need a zero to compare against — and with no
-/// `fromI64` they cannot conjure one from an `i64.const`.
-fn emit_bigint_zero(chunk: &mut Chunk, line: u32) {
-    i32_const(chunk, 0, line);
-    let ctor = chunk.add_import("ecma:bigint", "BigInt");
-    call1(chunk, ctor, line); // 0 -> 0n
-}
 
 /// The `ecma:bigint` spelling of a relational operator — the host twin of
 /// [`i64_cmp_op`], which is now only for real i64 operands.
@@ -143,9 +135,6 @@ fn i32_const(chunk: &mut Chunk, v: i32, line: u32) {
     chunk.emit_i32_const(v, line);
 }
 
-fn i64_const(chunk: &mut Chunk, v: i64, line: u32) {
-    chunk.emit_i64_const(v, line);
-}
 
 fn f64_const(chunk: &mut Chunk, v: f64, line: u32) {
     chunk.emit_f64_const(v, line);
@@ -291,6 +280,52 @@ pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
     call1(chunk, cast, line);
 }
 
+/// Consume a condition whose producer already guarantees an i32 predicate.
+/// This marker emits no guest instructions in production. Benchmark builds
+/// can recreate the former generic conversion while compiling the same source.
+#[inline(always)]
+pub fn emit_proven_i32_condition(_code: &mut Chunk, _line: u32) {
+    #[cfg(feature = "primitive-benchmarks")]
+    if !REUSE_PROVEN_I32_CONDITIONS.with(|v| v.get()) {
+        emit_dyn_to_bool(_code, _line);
+    }
+}
+
+/// Compile-time control for recipes whose old predicate was a literal true.
+#[inline(always)]
+pub(crate) fn proven_i32_conditions_enabled() -> bool {
+    #[cfg(feature = "primitive-benchmarks")]
+    { REUSE_PROVEN_I32_CONDITIONS.with(|v| v.get()) }
+    #[cfg(not(feature = "primitive-benchmarks"))]
+    { true }
+}
+
+/// A compile-time true branch condition, with the same legacy benchmark arm.
+pub fn emit_proven_true_condition(code: &mut Chunk, line: u32) {
+    #[cfg(feature = "primitive-benchmarks")]
+    if !REUSE_PROVEN_I32_CONDITIONS.with(|v| v.get()) {
+        code.emit_bool_const(true, line);
+        emit_dyn_to_bool(code, line);
+        return;
+    }
+    code.emit_i32_const(1, line);
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+thread_local! {
+    static REUSE_PROVEN_I32_CONDITIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_with_proven_i32_conditions<R>(enabled: bool, build: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { REUSE_PROVEN_I32_CONDITIONS.with(|v| v.set(self.0)); }
+    }
+    let _restore = Restore(REUSE_PROVEN_I32_CONDITIONS.with(|v| v.replace(enabled)));
+    build()
+}
+
 /// Lua truthiness — only `nil` and `false` are falsy (§3.3.3).
 /// Stack: [v] → [i32: 0 or 1]
 pub fn emit_lua_to_bool(chunk: &mut Chunk, line: u32) {
@@ -353,7 +388,9 @@ fn retain_other_null_operand(chunk: &mut Chunk, null_on_left: bool, line: u32) {
 /// Specialize the nullish arms of emit_dyn_eq for a literal null operand.
 pub fn emit_dyn_eq_null_operand(chunk: &mut Chunk, null_on_left: bool, line: u32) {
     retain_other_null_operand(chunk, null_on_left, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    let value = alloc_locals(chunk, 1);
+    save(chunk, value, line);
+    emit_slot_is_null_or_undefined(chunk, value, line);
 }
 
 fn emit_dyn_eq_inline(chunk: &mut Chunk, line: u32) {
@@ -362,6 +399,20 @@ fn emit_dyn_eq_inline(chunk: &mut Chunk, line: u32) {
     let a_slot = slots + 1;
     let b_time_slot = slots + 2;
     let a_time_slot = slots + 3;
+
+    save(chunk, b_slot, line);
+    save(chunk, a_slot, line);
+    emit_dyn_eq_slots(chunk, a_slot, b_slot, a_time_slot, b_time_slot, line);
+}
+
+fn emit_dyn_eq_slots(
+    chunk: &mut Chunk,
+    a_slot: u16,
+    b_slot: u16,
+    a_time_slot: u16,
+    b_time_slot: u16,
+    line: u32,
+) {
 
     let test_num = chunk.add_import("wasm:js-number", "test");
     let to_f64 = chunk.add_import("wasm:js-number", "toF64");
@@ -372,26 +423,6 @@ fn emit_dyn_eq_inline(chunk: &mut Chunk, line: u32) {
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
     let abstract_eq = chunk.add_import("ecma:value", "abstractEq");
 
-    save(chunk, b_slot, line);
-    save(chunk, a_slot, line);
-
-    // a is null/undefined?
-    load(chunk, a_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line); // i32
-    chunk.emit_if_i32(line);
-    // a is null → true iff b is also null
-    load(chunk, b_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line); // i32
-    chunk.emit_else(line);
-
-    // The symmetric null case is common in property guards. Neither
-    // primitive comparisons nor a non-null wrapper payload can equal null.
-    load(chunk, b_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_if_i32(line);
-    i32_const(chunk, 0, line);
-    chunk.emit_else(line);
-
     // both number?
     load(chunk, a_slot, line);
     call1(chunk, test_num, line);
@@ -400,9 +431,7 @@ fn emit_dyn_eq_inline(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I32_AND, line); // i32: 1 if both numbers
     chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
-    call1(chunk, to_f64, line);
     load(chunk, b_slot, line);
-    call1(chunk, to_f64, line);
     chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_else(line);
 
@@ -443,6 +472,17 @@ fn emit_dyn_eq_inline(chunk: &mut Chunk, line: u32) {
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
     emit_bigint_cmp(chunk, "eq", line);
+    chunk.emit_else(line);
+    // Matching primitive pairs are necessarily non-null. Keep nullish checks
+    // on the fallback path so common primitive comparisons avoid those calls.
+    // All preceding type tests are pure; object-field access order stays intact.
+    emit_slot_is_null_or_undefined(chunk, a_slot, line);
+    chunk.emit_if_i32(line);
+    emit_slot_is_null_or_undefined(chunk, b_slot, line);
+    chunk.emit_else(line);
+    emit_slot_is_null_or_undefined(chunk, b_slot, line);
+    chunk.emit_if_i32(line);
+    i32_const(chunk, 0, line);
     chunk.emit_else(line);
     // DateTime-like comparable objects carry a numeric `__time` field.
     emit_both_object_field_present(
@@ -513,25 +553,19 @@ fn emit_dyn_eq_inline(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line); // a.__value wrapper
     chunk.emit_end(line); // __value object
     chunk.emit_end(line); // comparable object
+    chunk.emit_end(line); // b null
+    chunk.emit_end(line); // a null
     chunk.emit_end(line); // bigint
     chunk.emit_end(line); // boolean
     chunk.emit_end(line); // string
     chunk.emit_end(line); // number
-    chunk.emit_end(line); // b null
-    chunk.emit_end(line); // a null
     // Result is i32 (0 or 1) — WASM-compliant for IF conditions
 }
 
 fn emit_slot_is_null_only(chunk: &mut Chunk, slot: u16, line: u32) {
+    // Standard ref.is_null already excludes the non-null Undefined externref.
     load(chunk, slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    load(chunk, slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_call(idx, 1, line);
-    }
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_op(Op::I32_AND, line);
 }
 
 /// Specialize strict ECMA equality against null, excluding undefined.
@@ -548,7 +582,6 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
     let a_slot = slots + 1;
 
     let test_num = chunk.add_import("wasm:js-number", "test");
-    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
     let test_str = chunk.add_import("wasm:js-string", "test");
     let str_eq = chunk.add_import("wasm:js-string", "equals");
     let test_bool = chunk.add_import("wasm:js-boolean", "test");
@@ -583,9 +616,7 @@ pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
-    call1(chunk, to_f64, line);
     load(chunk, b_slot, line);
-    call1(chunk, to_f64, line);
     chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_else(line);
 
@@ -668,14 +699,6 @@ fn i32_cmp_op(op: &CmpOp) -> Op {
     }
 }
 
-fn i64_cmp_op(op: &CmpOp) -> Op {
-    match op {
-        CmpOp::Lt => Op::I64_LT_S,
-        CmpOp::Gt => Op::I64_GT_S,
-        CmpOp::Le => Op::I64_LE_S,
-        CmpOp::Ge => Op::I64_GE_S,
-    }
-}
 
 fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     if !crate::primitives::polyfills::is_compiling_runtime_helper() {
@@ -717,9 +740,7 @@ fn emit_dyn_cmp_inline(chunk: &mut Chunk, line: u32, op: CmpOp) {
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
-    call1(chunk, to_f64, line);
     load(chunk, b_slot, line);
-    call1(chunk, to_f64, line);
     chunk.emit_op(f64_cmp_op(&op), line);
     chunk.emit_else(line);
 
@@ -842,7 +863,6 @@ fn emit_js_relational_cmp(
         let a_slot = slots + 1;
 
         let test_num = chunk.add_import("wasm:js-number", "test");
-        let to_f64 = chunk.add_import("wasm:js-number", "toF64");
         let to_number = chunk.add_import("ecma:value", "toNumber");
 
         save(chunk, b_slot, line);
@@ -852,14 +872,10 @@ fn emit_js_relational_cmp(
         load(chunk, if a_known_num { b_slot } else { a_slot }, line);
         call1(chunk, test_num, line);
         chunk.emit_if_i32(line);
+        // F64 comparison consumes Number operands directly; the test above
+        // proves the unknown operand and the other is a numeric literal.
         load(chunk, a_slot, line);
-        if !a_known_num {
-            call1(chunk, to_f64, line);
-        }
         load(chunk, b_slot, line);
-        if !b_known_num {
-            call1(chunk, to_f64, line);
-        }
         chunk.emit_op(f64_cmp_op(&op), line);
         chunk.emit_else(line);
         // Mixed: ToNumber the unknown side (NaN-safe — `"foo" < 0` is false).
@@ -881,7 +897,6 @@ fn emit_js_relational_cmp(
     let a_slot = slots + 1;
 
     let test_num = chunk.add_import("wasm:js-number", "test");
-    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
     let test_str = chunk.add_import("wasm:js-string", "test");
     let str_compare = chunk.add_import("wasm:js-string", "compare");
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
@@ -890,6 +905,8 @@ fn emit_js_relational_cmp(
     save(chunk, b_slot, line);
     save(chunk, a_slot, line);
 
+    // Both numbers: F64 comparison performs the required extraction itself.
+    // Avoid explicit host calls that only re-prove/return the same Number.
     // both number?
     load(chunk, a_slot, line);
     call1(chunk, test_num, line);
@@ -898,9 +915,7 @@ fn emit_js_relational_cmp(
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
-    call1(chunk, to_f64, line);
     load(chunk, b_slot, line);
-    call1(chunk, to_f64, line);
     chunk.emit_op(f64_cmp_op(&op), line);
     chunk.emit_else(line);
 
@@ -1042,6 +1057,14 @@ pub fn emit_dyn_add_with_bool_text(
     line: u32,
 ) {
     emit_dyn_add_inner(chunk, line, false, false, bool_text);
+}
+
+/// Render the non-string operand of a legacy shared-helper string addition.
+/// The caller proves the other operand is a string. Reuse the original
+/// numeric/Boolean/null/undefined rendering and strict error behavior; this
+/// is not the language-level String constructor or a new coercion policy.
+pub fn emit_add_string_operand_from_local(chunk: &mut Chunk, slot: u16, line: u32) {
+    emit_add_operand_as_string(chunk, slot, false, None, line);
 }
 
 /// Push operand `slot` coerced to a string, for the concat arm of `+`.
@@ -1323,14 +1346,11 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     save(code, b_slot, line);
     save(code, a_slot, line);
 
-    load(code, a_slot, line);
-    code.emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(code, a_slot, line);
     code.emit_if_i32(line);
-    load(code, b_slot, line);
-    code.emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(code, b_slot, line);
     code.emit_else(line);
-    load(code, b_slot, line);
-    code.emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(code, b_slot, line);
     code.emit_if_i32(line);
     i32_const(code, 0, line);
     code.emit_else(line);
@@ -1411,6 +1431,91 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     // Result is i32 — WASM-compliant
 }
 
+/// Dynamic equality against a string literal emitted by this primitive.
+/// Preserve the general fallback's field reads and reference comparison for
+/// non-string values; only impossible number/Boolean/BigInt pairs are removed.
+pub fn emit_dyn_eq_string_literal(chunk: &mut Chunk, literal: &str, line: u32) {
+    let slots = alloc_locals(chunk, 4);
+    let b = slots;
+    let a = slots + 1;
+    let b_time = slots + 2;
+    let a_time = slots + 3;
+    chunk.emit_string_const(literal, line);
+    save(chunk, b, line);
+    save(chunk, a, line);
+    emit_slot_is_null_or_undefined(chunk, a, line);
+    chunk.emit_if_i32(line);
+    i32_const(chunk, 0, line);
+    chunk.emit_else(line);
+    load(chunk, a, line);
+    let test = chunk.add_import("wasm:js-string", "test");
+    call1(chunk, test, line);
+    chunk.emit_if_i32(line);
+    load(chunk, a, line);
+    load(chunk, b, line);
+    let equals = chunk.add_import("wasm:js-string", "equals");
+    call2(chunk, equals, line);
+    chunk.emit_else(line);
+    emit_both_object_field_present(chunk, a, b, a_time, b_time, "Ticks", line);
+    chunk.emit_if_i32(line);
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    load(chunk, a_time, line);
+    call1(chunk, to_f64, line);
+    load(chunk, b_time, line);
+    call1(chunk, to_f64, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_else(line);
+    load(chunk, a, line);
+    load(chunk, b, line);
+    chunk.emit_op(Op::REF_EQ, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+/// Dynamic equality against an emitted i32 literal, preserving the generic
+/// fallback's field reads and reference identity for non-number operands.
+pub fn emit_dyn_eq_i32_literal(chunk: &mut Chunk, literal: i32, line: u32) {
+    let slots = alloc_locals(chunk, 4);
+    let b = slots;
+    let a = slots + 1;
+    let b_time = slots + 2;
+    let a_time = slots + 3;
+    chunk.emit_i32_const(literal, line);
+    save(chunk, b, line);
+    save(chunk, a, line);
+    emit_slot_is_null_or_undefined(chunk, a, line);
+    chunk.emit_if_i32(line);
+    i32_const(chunk, 0, line);
+    chunk.emit_else(line);
+    load(chunk, a, line);
+    let test = chunk.add_import("wasm:js-number", "test");
+    call1(chunk, test, line);
+    chunk.emit_if_i32(line);
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    load(chunk, a, line);
+    call1(chunk, to_f64, line);
+    chunk.emit_f64_const(f64::from(literal), line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_else(line);
+    emit_both_object_field_present(chunk, a, b, a_time, b_time, "Ticks", line);
+    chunk.emit_if_i32(line);
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    load(chunk, a_time, line);
+    call1(chunk, to_f64, line);
+    load(chunk, b_time, line);
+    call1(chunk, to_f64, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_else(line);
+    load(chunk, a, line);
+    load(chunk, b, line);
+    chunk.emit_op(Op::REF_EQ, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+
 pub fn emit_dyn_ne_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     emit_dyn_eq_into(_imports, code, line); // i32
     code.emit_op(Op::I32_EQZ, line); // negate: 1 if not-equal, i32
@@ -1418,22 +1523,45 @@ pub fn emit_dyn_ne_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
 
 fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpOp) {
     let slots = alloc_locals(code, 4);
-    let b_slot = slots;
-    let a_slot = slots + 1;
-    let b_time_slot = slots + 2;
-    let a_time_slot = slots + 3;
-
-    let test_num = code.add_import("wasm:js-number", "test");
-    let to_f64 = code.add_import("wasm:js-number", "toF64");
-    let test_str = code.add_import("wasm:js-string", "test");
-    let str_compare = code.add_import("wasm:js-string", "compare");
-    let test_bool = code.add_import("wasm:js-boolean", "test");
-    let cast_bool = code.add_import("wasm:js-boolean", "cast");
-    let test_bigint = code.add_import("wasm:js-bigint", "test");
-
+    let (b_slot, a_slot, b_time_slot, a_time_slot) = (slots, slots + 1, slots + 2, slots + 3);
     save(code, b_slot, line);
     save(code, a_slot, line);
+    emit_dyn_cmp_slots(code, line, op, a_slot, b_slot, a_time_slot, b_time_slot);
+}
 
+/// Only for a compiler-private RHS local that callbacks cannot assign. Source
+/// locals are not eligible: coercion may mutate captured source bindings.
+fn emit_dyn_cmp_private_rhs(code: &mut Chunk, rhs: u16, line: u32, op: CmpOp) {
+    assert!(rhs < code.local_count);
+    let slots = alloc_locals(code, 3);
+    let (a, a_time, b_time) = (slots, slots + 1, slots + 2);
+    save(code, a, line);
+    emit_dyn_cmp_slots(code, line, op, a, rhs, a_time, b_time);
+}
+pub(crate) fn emit_dyn_lt_private_rhs_into(code: &mut Chunk, rhs: u16, line: u32) {
+    emit_dyn_cmp_private_rhs(code, rhs, line, CmpOp::Lt);
+}
+pub(crate) fn emit_dyn_gt_private_rhs_into(code: &mut Chunk, rhs: u16, line: u32) {
+    emit_dyn_cmp_private_rhs(code, rhs, line, CmpOp::Gt);
+}
+/// Both operands are compiler-private retained values, not mutable source
+/// bindings. Comparator/coercion callbacks cannot assign these local slots.
+pub(crate) fn emit_dyn_gt_private_slots_into(code: &mut Chunk, lhs: u16, rhs: u16, line: u32) {
+    assert!(lhs < code.local_count && rhs < code.local_count);
+    #[cfg(feature = "primitive-benchmarks")]
+    if !comparison_slots_reuse_enabled() {
+        load(code, lhs, line);
+        load(code, rhs, line);
+        let mut imports = Chunk::new("imports");
+        emit_dyn_gt_into(&mut imports, code, line);
+        return;
+    }
+    let temps = alloc_locals(code, 2);
+    emit_dyn_cmp_slots(code, line, CmpOp::Gt, lhs, rhs, temps, temps + 1);
+}
+fn emit_dyn_cmp_slots(code: &mut Chunk, line: u32, op: CmpOp, a_slot: u16, b_slot: u16, a_time_slot: u16, b_time_slot: u16) {
+    let test_num = code.add_import("wasm:js-number", "test");
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
     load(code, a_slot, line);
     call1(code, test_num, line);
     load(code, b_slot, line);
@@ -1446,6 +1574,17 @@ fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpO
     call1(code, to_f64, line);
     code.emit_op(f64_cmp_op(&op), line);
     code.emit_else(line);
+    emit_dyn_cmp_fallback_slots(code, line, op, a_slot, b_slot, a_time_slot, b_time_slot);
+    code.emit_end(line);
+}
+fn emit_dyn_cmp_fallback_slots(code: &mut Chunk, line: u32, op: CmpOp, a_slot: u16, b_slot: u16, a_time_slot: u16, b_time_slot: u16) {
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
+    let test_str = code.add_import("wasm:js-string", "test");
+    let str_compare = code.add_import("wasm:js-string", "compare");
+    let test_bool = code.add_import("wasm:js-boolean", "test");
+    let cast_bool = code.add_import("wasm:js-boolean", "cast");
+    let test_bigint = code.add_import("wasm:js-bigint", "test");
+
 
     load(code, a_slot, line);
     call1(code, test_str, line);
@@ -1492,13 +1631,103 @@ fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpO
     code.emit_end(line);
     code.emit_end(line);
     code.emit_end(line);
+}
+/// Legacy dynamic less-than with a physically proven Number left operand.
+/// Preserve fallback Ticks property reads: prototype getters can observe them.
+pub fn emit_dyn_lt_number_lhs_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    let slots = alloc_locals(code, 4);
+    let (b, a, b_time, a_time) = (slots, slots + 1, slots + 2, slots + 3);
+    save(code, b, line);
+    save(code, a, line);
+    let test_num = code.add_import("wasm:js-number", "test");
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
+    let test_bool = code.add_import("wasm:js-boolean", "test");
+    let cast_bool = code.add_import("wasm:js-boolean", "cast");
+    load(code, b, line);
+    call1(code, test_num, line);
+    code.emit_if_i32(line);
+    load(code, a, line);
+    call1(code, to_f64, line);
+    load(code, b, line);
+    call1(code, to_f64, line);
+    code.emit_op(Op::F64_LT, line);
+    code.emit_else(line);
+    // Number x non-Number cannot enter string-pair or BigInt-pair branches.
+    emit_both_object_field_present(code, a, b, a_time, b_time, "Ticks", line);
+    code.emit_if_i32(line);
+    load(code, a_time, line);
+    call1(code, to_f64, line);
+    load(code, b_time, line);
+    call1(code, to_f64, line);
+    code.emit_op(Op::F64_LT, line);
+    code.emit_else(line);
+    load(code, a, line);
+    call1(code, to_f64, line);
+    emit_js_to_number_f64(code, b, to_f64, test_bool, cast_bool, line);
+    code.emit_op(Op::F64_LT, line);
     code.emit_end(line);
-    // Result is i32 — WASM-compliant
+    code.emit_end(line);
 }
 
 pub fn emit_dyn_lt_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     emit_dyn_cmp_into(_imports, code, line, CmpOp::Lt);
 }
+/// Legacy `value > Number(0)`, with a physically emitted zero RHS.
+/// Primitive prototype Ticks getters remain observable in fallback order.
+pub fn emit_dyn_gt_zero_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    #[cfg(feature = "primitive-benchmarks")]
+    if !ZERO_COMPARISON_REUSE.with(|v| v.get()) {
+        code.emit_i32_const(0, line);
+        emit_dyn_gt_into(imports, code, line);
+        return;
+    }
+    let slots = alloc_locals(code, 3);
+    let (a, a_time, b_time) = (slots, slots + 1, slots + 2);
+    save(code, a, line);
+    let test_num = code.add_import("wasm:js-number", "test");
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
+    let test_bool = code.add_import("wasm:js-boolean", "test");
+    let cast_bool = code.add_import("wasm:js-boolean", "cast");
+    load(code, a, line);
+    call1(code, test_num, line);
+    code.emit_if_i32(line);
+    load(code, a, line);
+    call1(code, to_f64, line);
+    code.emit_f64_const(0.0, line);
+    code.emit_op(Op::F64_GT, line);
+    code.emit_else(line);
+    // A Number RHS excludes string/string and BigInt/BigInt branches.
+    // The RHS work slot becomes its Ticks payload after its last operand read.
+    code.emit_i32_const(0, line);
+    save(code, b_time, line);
+    emit_both_object_field_present(code, a, b_time, a_time, b_time, "Ticks", line);
+    code.emit_if_i32(line);
+    load(code, a_time, line);
+    call1(code, to_f64, line);
+    load(code, b_time, line);
+    call1(code, to_f64, line);
+    code.emit_op(Op::F64_GT, line);
+    code.emit_else(line);
+    emit_js_to_number_f64(code, a, to_f64, test_bool, cast_bool, line);
+    code.emit_f64_const(0.0, line);
+    code.emit_op(Op::F64_GT, line);
+    code.emit_end(line);
+    code.emit_end(line);
+}
+#[cfg(feature = "primitive-benchmarks")]
+thread_local! {
+    static ZERO_COMPARISON_REUSE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_with_zero_comparison<R>(reuse: bool, build: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { ZERO_COMPARISON_REUSE.with(|v| v.set(self.0)); }
+    }
+    let _restore = Restore(ZERO_COMPARISON_REUSE.with(|v| v.replace(reuse)));
+    build()
+}
+
 pub fn emit_dyn_gt_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     emit_dyn_cmp_into(_imports, code, line, CmpOp::Gt);
 }
@@ -1510,64 +1739,156 @@ pub fn emit_dyn_ge_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
 }
 
 pub fn emit_dyn_add_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    let slots = alloc_locals(code, 2);
-    let b_slot = slots;
-    let a_slot = slots + 1;
+    emit_dyn_add_into_impl(code, line, false);
+}
 
-    let test_str = code.add_import("wasm:js-string", "test");
-    let str_cast = code.add_import("wasm:js-string", "cast");
-    let str_concat = code.add_import("wasm:js-string", "concat");
-    let str_from_f64 = code.add_import("wasm:js-string", "fromF64");
-    let test_bigint = code.add_import("wasm:js-bigint", "test");
+/// Same legacy addition contract, with a physically proven Number RHS.
+/// Call only for numeric constants/private counters, never advisory hints.
+pub fn emit_dyn_add_number_rhs_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_dyn_add_into_impl(code, line, true);
+}
+
+fn emit_dyn_add_into_impl(code: &mut Chunk, line: u32, number_rhs: bool) {
+    let slots = alloc_locals(code, if number_rhs { 3 } else { 4 });
+    let (b, a, a_string, b_string) = (slots, slots + 1, slots + 2, slots + 3);
+    save(code, b, line);
+    save(code, a, line);
+    let number_test = code.add_import("wasm:js-number", "test");
     let to_f64 = code.add_import("wasm:js-number", "toF64");
-    let from_f64 = code.add_import("wasm:js-number", "fromF64");
-    let test_bool = code.add_import("wasm:js-boolean", "test");
-    let cast_bool = code.add_import("wasm:js-boolean", "cast");
-
-    save(code, b_slot, line);
-    save(code, a_slot, line);
-
-    load(code, a_slot, line);
-    call1(code, test_str, line);
-    load(code, b_slot, line);
-    call1(code, test_str, line);
-    code.emit_op(Op::I32_OR, line);
+    load(code, a, line);
+    call1(code, number_test, line);
+    if !number_rhs {
+        load(code, b, line);
+        call1(code, number_test, line);
+        code.emit_op(Op::I32_AND, line);
+    }
     code.emit_if_value(line);
-    load(code, a_slot, line);
-    call1(code, test_str, line);
-    code.emit_if_value(line);
-    load(code, a_slot, line);
-    call1(code, str_cast, line);
+    load(code, a, line);
+    load(code, b, line);
+    code.emit_op(Op::F64_ADD, line);
     code.emit_else(line);
-    emit_js_to_number_f64(code, a_slot, to_f64, test_bool, cast_bool, line);
-    call1(code, str_from_f64, line);
+    if !number_rhs {
+        let bigint_test = code.add_import("wasm:js-bigint", "test");
+        load(code, a, line);
+        call1(code, bigint_test, line);
+        load(code, b, line);
+        call1(code, bigint_test, line);
+        code.emit_op(Op::I32_AND, line);
+        code.emit_if_value(line);
+        load(code, a, line);
+        load(code, b, line);
+        emit_bigint_binop(code, "add", line);
+        code.emit_else(line);
+    }
+    // Preserve strings; normalize every other operand once, in left-to-right
+    // order. Both concatenation and arithmetic consume that same number.
+    let string_test = code.add_import("wasm:js-string", "test");
+    let bool_test = code.add_import("wasm:js-boolean", "test");
+    let bool_cast = code.add_import("wasm:js-boolean", "cast");
+    for (value, is_string) in [(a, a_string), (b, b_string)] {
+        if number_rhs && value == b { continue; }
+        load(code, value, line);
+        call1(code, string_test, line);
+        code.emit_op_u16(Op::LOCAL_TEE, is_string, line);
+        code.emit_op(Op::I32_EQZ, line);
+        code.emit_if(line);
+        emit_js_to_number_f64(code, value, to_f64, bool_test, bool_cast, line);
+        save(code, value, line);
+        code.emit_end(line);
+    }
+    load(code, a_string, line);
+    if !number_rhs {
+        load(code, b_string, line);
+        code.emit_op(Op::I32_OR, line);
+    }
+    code.emit_if_value(line);
+    let string_cast = code.add_import("wasm:js-string", "cast");
+    let string_from_f64 = code.add_import("wasm:js-string", "fromF64");
+    for (value, is_string) in [(a, a_string), (b, b_string)] {
+        if number_rhs && value == b {
+            load(code, value, line);
+            call1(code, string_from_f64, line);
+            continue;
+        }
+        load(code, is_string, line);
+        code.emit_if_value(line);
+        load(code, value, line);
+        call1(code, string_cast, line);
+        code.emit_else(line);
+        load(code, value, line);
+        call1(code, string_from_f64, line);
+        code.emit_end(line);
+    }
+    let concat = code.add_import("wasm:js-string", "concat");
+    call2(code, concat, line);
+    code.emit_else(line);
+    load(code, a, line);
+    load(code, b, line);
+    code.emit_op(Op::F64_ADD, line);
     code.emit_end(line);
-    load(code, b_slot, line);
-    call1(code, test_str, line);
-    code.emit_if_value(line);
-    load(code, b_slot, line);
-    call1(code, str_cast, line);
-    code.emit_else(line);
-    emit_js_to_number_f64(code, b_slot, to_f64, test_bool, cast_bool, line);
-    call1(code, str_from_f64, line);
+    if !number_rhs { code.emit_end(line); }
     code.emit_end(line);
-    call2(code, str_concat, line);
+}
 
-    code.emit_else(line);
-    load(code, a_slot, line);
-    call1(code, test_bigint, line);
-    load(code, b_slot, line);
-    call1(code, test_bigint, line);
+/// Accumulate into a private total initialized to Number(0). Legacy addition
+/// preserves the invariant Number-or-String; once String it remains String.
+/// `string_total` is an exact private i32 tag, initially0, maintained here.
+/// RHS is already evaluated on stack. No advisory source type hints are used.
+pub(crate) fn emit_sum_accumulate(code: &mut Chunk, total: u16, string_total: u16, line: u32) {
+    assert!(total < code.local_count && string_total < code.local_count);
+    let slots = alloc_locals(code, 2);
+    let (b, b_string) = (slots, slots + 1);
+    save(code, b, line);
+    let number_test = code.add_import("wasm:js-number", "test");
+    let to_f64 = code.add_import("wasm:js-number", "toF64");
+    load(code, string_total, line);
+    code.emit_op(Op::I32_EQZ, line);
+    load(code, b, line);
+    call1(code, number_test, line);
     code.emit_op(Op::I32_AND, line);
     code.emit_if_value(line);
-    load(code, a_slot, line);
-    load(code, b_slot, line);
-    emit_bigint_binop(code, "add", line);
-    code.emit_else(line);
-    emit_js_to_number_f64(code, a_slot, to_f64, test_bool, cast_bool, line);
-    emit_js_to_number_f64(code, b_slot, to_f64, test_bool, cast_bool, line);
+    load(code, total, line);
+    load(code, b, line);
     code.emit_op(Op::F64_ADD, line);
-    call1(code, from_f64, line);
+    code.emit_else(line);
+    // A Number-or-String total cannot enter the BigInt-pair branch and never
+    // needs ToNumber normalization. Preserve the original RHS normalization.
+    let string_test = code.add_import("wasm:js-string", "test");
+    let bool_test = code.add_import("wasm:js-boolean", "test");
+    let bool_cast = code.add_import("wasm:js-boolean", "cast");
+    load(code, b, line);
+    call1(code, string_test, line);
+    code.emit_op_u16(Op::LOCAL_TEE, b_string, line);
+    code.emit_op(Op::I32_EQZ, line);
+    code.emit_if(line);
+    emit_js_to_number_f64(code, b, to_f64, bool_test, bool_cast, line);
+    save(code, b, line);
+    code.emit_end(line);
+    load(code, string_total, line);
+    load(code, b_string, line);
+    code.emit_op(Op::I32_OR, line);
+    code.emit_if_value(line);
+    let string_cast = code.add_import("wasm:js-string", "cast");
+    let string_from_f64 = code.add_import("wasm:js-string", "fromF64");
+    for (value, is_string) in [(total, string_total), (b, b_string)] {
+        load(code, is_string, line);
+        code.emit_if_value(line);
+        load(code, value, line);
+        call1(code, string_cast, line);
+        code.emit_else(line);
+        load(code, value, line);
+        call1(code, string_from_f64, line);
+        code.emit_end(line);
+    }
+    let concat = code.add_import("wasm:js-string", "concat");
+    call2(code, concat, line);
+    // Update only after successful concatenation; leave its result on stack.
+    code.emit_i32_const(1, line);
+    save(code, string_total, line);
+    code.emit_else(line);
+    load(code, total, line);
+    load(code, b, line);
+    code.emit_op(Op::F64_ADD, line);
     code.emit_end(line);
     code.emit_end(line);
 }
@@ -1603,22 +1924,69 @@ pub(crate) fn emit_comparison_helper_call(chunk: &mut Chunk, global: &str, line:
     let base = alloc_locals(chunk, 2);
     save(chunk, base + 1, line);
     save(chunk, base, line);
+    emit_comparison_helper_call_from_slots_impl(chunk, global, base, base + 1, line);
+}
+
+/// Operands already reside in caller locals. Reading locals cannot invoke user
+/// code; keep the global lookup and invocation at the original call point.
+pub(crate) fn emit_comparison_helper_call_from_slots(
+    chunk: &mut Chunk, global: &str, lhs: u16, rhs: u16, line: u32,
+) {
+    #[cfg(feature = "primitive-benchmarks")]
+    if !comparison_slots_reuse_enabled() {
+        load(chunk, lhs, line);
+        load(chunk, rhs, line);
+        emit_comparison_helper_call(chunk, global, line);
+        return;
+    }
+    emit_comparison_helper_call_from_slots_impl(chunk, global, lhs, rhs, line);
+}
+
+fn emit_comparison_helper_call_from_slots_impl(
+    chunk: &mut Chunk, global: &str, lhs: u16, rhs: u16, line: u32,
+) {
+    assert!(lhs < chunk.local_count && rhs < chunk.local_count);
     crate::primitives::globals::emit_read(chunk, global, line);
-    load(chunk, base, line);
-    load(chunk, base + 1, line);
+    load(chunk, lhs, line);
+    load(chunk, rhs, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
     let to_i32 = chunk.add_import("wasm:js-number", "toI32");
     call1(chunk, to_i32, line);
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+thread_local! {
+    static COMPARISON_SLOTS_REUSE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+#[cfg(feature = "primitive-benchmarks")]
+pub(crate) fn comparison_slots_reuse_enabled() -> bool {
+    COMPARISON_SLOTS_REUSE.with(|v| v.get())
+}
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_with_comparison_slots<R>(reuse: bool, build: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { COMPARISON_SLOTS_REUSE.with(|v| v.set(self.0)); }
+    }
+    let _restore = Restore(COMPARISON_SLOTS_REUSE.with(|v| v.replace(reuse)));
+    build()
 }
 
 pub fn build_dyn_comparison(name: &str) -> Chunk {
     let mut chunk = Chunk::new(name);
     chunk.arity = 2;
     chunk.local_count = 2;
+    if name == "__stdlib_dyneq" {
+        // Parameters already occupy locals 0/1. Only wrapper payloads need
+        // scratch space; avoid loading and spilling both operands on entry.
+        let temps = alloc_locals(&mut chunk, 2);
+        emit_dyn_eq_slots(&mut chunk, 0, 1, temps, temps + 1, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        return chunk;
+    }
     load(&mut chunk, 0, 0);
     load(&mut chunk, 1, 0);
     match name {
-        "__stdlib_dyneq" => emit_dyn_eq_inline(&mut chunk, 0),
         "__stdlib_dynlt" => emit_dyn_cmp_inline(&mut chunk, 0, CmpOp::Lt),
         "__stdlib_dyngt" => emit_dyn_cmp_inline(&mut chunk, 0, CmpOp::Gt),
         "__stdlib_dynle" => emit_dyn_cmp_inline(&mut chunk, 0, CmpOp::Le),
@@ -1634,8 +2002,7 @@ pub fn build_dyn_comparison(name: &str) -> Chunk {
 // frontend first needed a linkable chunk, not a language-specific meaning.
 
 // ── dynMul(a, b) → string repeat or numeric multiply ─────────
-pub fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
-    use std::sync::Arc;
+pub fn build_dyn_mul() -> Chunk {
     let mut c = Chunk::new("__stdlib_dynmul");
     c.arity = 2;
     c.local_count = 2;

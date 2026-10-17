@@ -6,8 +6,167 @@
 use super::*;
 use crate::primitives::class_slots;
 
+#[cfg(feature = "primitive-benchmarks")]
+thread_local! {
+    static ELIDE_IMPORT_META_DUPLICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Recreate the former duplicate initializer only while compiling a benchmark.
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_with_import_meta_elision<R>(enabled: bool, build: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { ELIDE_IMPORT_META_DUPLICATE.with(|v| v.set(self.0)); }
+    }
+    let _restore = Restore(ELIDE_IMPORT_META_DUPLICATE.with(|v| v.replace(enabled)));
+    build()
+}
+
+// Proposal: exact AST identity for call tails, including source locations.
+// Unsupported nodes reject folding; this does not infer value equivalence.
+fn same_call_tail(a: &Expression, b: &Expression, allow_arrays: bool, allow_interpolation: bool) -> bool {
+    let sa = a.span; let sb = b.span;
+    if (sa.start_line, sa.start_col, sa.end_line, sa.end_col)
+        != (sb.start_line, sb.start_col, sb.end_line, sb.end_col) { return false; }
+    match (&a.kind, &b.kind) {
+        (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
+        (ExprKind::Lit(a), ExprKind::Lit(b)) => match (a, b) {
+            (Literal::Int(a), Literal::Int(b)) | (Literal::BigInt(a), Literal::BigInt(b)) => a == b,
+            (Literal::Float(a), Literal::Float(b)) => a.to_bits() == b.to_bits(),
+            (Literal::Str(a), Literal::Str(b)) => a == b,
+            (Literal::Bool(a), Literal::Bool(b)) => a == b,
+            (Literal::Char(a), Literal::Char(b)) => a == b,
+            (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
+            (Literal::Null, Literal::Null) | (Literal::Undefined, Literal::Undefined)
+                | (Literal::Ellipsis, Literal::Ellipsis) => true,
+            _ => false,
+        },
+        (ExprKind::Member { object:a, field:af, null_safe:an },
+         ExprKind::Member { object:b, field:bf, null_safe:bn }) => af == bf && an == bn && same_call_tail(a,b, allow_arrays,allow_interpolation),
+        (ExprKind::Index { object:a, index:ai, null_safe:an },
+         ExprKind::Index { object:b, index:bi, null_safe:bn }) => an == bn && same_call_tail(a,b, allow_arrays,allow_interpolation) && same_call_tail(ai,bi, allow_arrays,allow_interpolation),
+        (ExprKind::Call { callee:a, args:aa, optional:ao },
+         ExprKind::Call { callee:b, args:ba, optional:bo }) => ao == bo && same_call_tail(a,b, allow_arrays,allow_interpolation)
+            && aa.len() == ba.len() && aa.iter().zip(ba).all(|(a,b)|
+                a.name == b.name && a.by_ref == b.by_ref && a.spread == b.spread && same_call_tail(&a.value,&b.value, allow_arrays,allow_interpolation)),
+        (ExprKind::Binary { op:a, left:al, right:ar },
+         ExprKind::Binary { op:b, left:bl, right:br }) => a == b && same_call_tail(al,bl, allow_arrays,allow_interpolation) && same_call_tail(ar,br, allow_arrays,allow_interpolation),
+        (ExprKind::Unary { op:a, expr:ae }, ExprKind::Unary { op:b, expr:be }) => a == b && same_call_tail(ae,be, allow_arrays,allow_interpolation),
+        (ExprKind::Assign { target:a, value:av }, ExprKind::Assign { target:b, value:bv }) => same_call_tail(a,b, allow_arrays,allow_interpolation) && same_call_tail(av,bv, allow_arrays,allow_interpolation),
+        (ExprKind::Ternary { cond:a, then:at, else_:ae },
+         ExprKind::Ternary { cond:b, then:bt, else_:be }) => same_call_tail(a,b, allow_arrays,allow_interpolation) && same_call_tail(at,bt, allow_arrays,allow_interpolation) && same_call_tail(ae,be, allow_arrays,allow_interpolation),
+        (ExprKind::Sequence(a), ExprKind::Sequence(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a,b)|same_call_tail(a,b, allow_arrays,allow_interpolation)),
+        (ExprKind::TypeOf(a), ExprKind::TypeOf(b)) => same_call_tail(a,b, allow_arrays,allow_interpolation),
+        (ExprKind::Array(a), ExprKind::Array(b)) if allow_arrays => a.len() == b.len()
+            && a.iter().zip(b).all(|(a,b)| a.spread == b.spread && a.by_ref == b.by_ref
+                && match (&a.key, &b.key) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => same_call_tail(a,b,allow_arrays,allow_interpolation),
+                    _ => false,
+                } && same_call_tail(&a.value,&b.value,allow_arrays,allow_interpolation)),
+        (ExprKind::Interpolation(a), ExprKind::Interpolation(b)) if allow_interpolation =>
+            a.len() == b.len() && a.iter().zip(b).all(|(a,b)| match (a,b) {
+                (InterpolPart::Text(a), InterpolPart::Text(b)) => a == b,
+                (InterpolPart::Expr(a), InterpolPart::Expr(b)) =>
+                    same_call_tail(a,b,allow_arrays,allow_interpolation),
+                (InterpolPart::Formatted(a,af), InterpolPart::Formatted(b,bf)) =>
+                    af == bf && same_call_tail(a,b,allow_arrays,allow_interpolation),
+                _ => false,
+            }),
+        _ => false,
+    }
+}
+
+
 impl Compiler {
-    fn emit_step_for_expr(&mut self, operand: &Expression, add: bool) -> Option<Expression> {
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_comparison_bool_reuse(&mut self, enabled: bool) {
+        self.comparison_bool_reuse = enabled;
+    }
+
+    fn emitted_boolean_value_since(&self, start: usize) -> bool {
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.comparison_bool_reuse {
+            return false;
+        }
+        let chunk = &self.chunks[self.current];
+        let mut at = start;
+        let mut last = None;
+        // Decode instruction boundaries; operand bytes can resemble opcodes.
+        while at < chunk.code.len() {
+            if at + 4 > chunk.code.len() { return false; }
+            let op = Op::from_code_at(&chunk.code, at);
+            last = Some((at, op));
+            at += 4 + op.operand_format().size_in(&chunk.code, at + 4);
+        }
+        let Some((offset, Op::CALL)) = last else { return false; };
+        if at != chunk.code.len() || offset + 7 != at || chunk.code[offset + 6] != 1 {
+            return false;
+        }
+        let index = u16::from_be_bytes([chunk.code[offset + 4], chunk.code[offset + 5]]) as usize;
+        chunk.imports.get(index).is_some_and(|import|
+            import.module == "wasm:js-boolean" && import.name == "fromI32")
+    }
+    fn exact_wide_integer_transport(&self) -> bool {
+        self.directives().wide_integer_transport() == vybe_ast::WideIntegerTransport::Exact
+    }
+
+    fn exact_word_expression(&self, value: &Expression) -> bool {
+        matches!(&value.kind,
+            ExprKind::Lit(Literal::BigInt(_))
+            | ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W64), .. })
+            || self.infer_expr_type_hint(value).is_some_and(|hint| {
+                self.profile.integer_cast_widths.get(self.canon_lookup(&hint).as_ref())
+                    .is_some_and(|width| width.bits == Some(64))
+            })
+    }
+
+    fn number_backed_word32(&self, value: &Expression) -> bool {
+        matches!(&value.kind,
+            ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. })
+            || self.infer_expr_type_hint(value).is_some_and(|hint| {
+                self.profile.integer_cast_widths.get(self.canon_lookup(&hint).as_ref())
+                    .is_some_and(|width| matches!(width.bits, Some(1..=32)))
+            })
+    }
+
+    fn compile_exact_i64_operand(&mut self, value: &Expression) -> Result<(), String> {
+        let line = self.line;
+        match &value.kind {
+            ExprKind::Lit(Literal::Int(word) | Literal::BigInt(word)) => {
+                self.chunk().emit_i64_const(*word, line);
+            }
+            ExprKind::Binary { op: BinOp::Integer(operation, vybe_ast::BitLane::W64), left, right }
+                if !operation.is_comparison() => {
+                self.compile_exact_i64_operand(left)?;
+                self.compile_exact_i64_operand(right)?;
+                self.emit(crate::primitives::bits::integer_opcode(vybe_ast::BitLane::W64, *operation));
+            }
+            ExprKind::Cast { expr, type_name }
+                if self.profile.integer_cast_widths.get(self.canon_lookup(type_name).as_ref())
+                    .is_some_and(|width| width.bits == Some(64)) => {
+                self.compile_exact_i64_operand(expr)?;
+            }
+            _ if self.number_backed_word32(value) => {
+                // Every signed/unsigned 32-bit value is exact in Number and
+                // fits signed i64. No BigInt transport is needed here.
+                self.compile_expr(value)?;
+                self.emit(Op::I64_TRUNC_F64_S);
+            }
+            _ => {
+                self.compile_expr(value)?;
+                crate::primitives::exact_integer::emit_normalize_value(
+                    &mut self.chunks, self.current, false, line,
+                );
+                crate::primitives::exact_integer::emit_unbox_i64(
+                    &mut self.chunks, self.current, line,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn emit_step_for_expr(&mut self, operand: &Expression, add: bool) -> Option<Expression> {
         if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
             && self.type_resolution() == vybe_ast::TypeResolution::Static
             && self.expr_is_provably_number(operand)
@@ -17,6 +176,7 @@ impl Compiler {
             self.compile_binop_operands(
                 if add { &BinOp::Add } else { &BinOp::Sub },
                 Some((operand, &one)),
+                (false, false),
             );
             Some(Expression::new(ExprKind::Binary {
                 op: if add { BinOp::Add } else { BinOp::Sub },
@@ -464,6 +624,9 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, meta_slot);
         self.emit(Op::REF_IS_NULL);
+        self.emit_u16(Op::LOCAL_GET, meta_slot);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
+        self.emit(Op::I32_OR);
         let line = self.line;
         self.chunk().emit_if(line);
         common::dict::emit_new(&mut self.chunks, self.current, line);
@@ -484,29 +647,35 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, init_slot);
         self.emit_u16(Op::LOCAL_SET, meta_slot);
 
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, meta_slot);
-        fn_call!(self, "wasm:js-undefined", "test", 1);
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-        common::dict::emit_new(&mut self.chunks, self.current, line);
-        let init_slot = self.define_local("__js_import_meta_init");
-        self.emit_u16(Op::LOCAL_SET, init_slot);
-
-        self.emit_u16(Op::LOCAL_GET, init_slot);
-        self.emit_const(Value::String(Arc::from("")));
-        self.class_set(
-            class_slots::ObjSource::Stack,
-            &class_slots::ClassSlot::internal("url"),
-            class_slots::ValueSource::Stack,
-        );
-
-        self.emit_u16(Op::LOCAL_GET, init_slot);
-        self.emit_global_write(global_name);
-        self.emit_u16(Op::LOCAL_GET, init_slot);
-        self.emit_u16(Op::LOCAL_SET, meta_slot);
-
-        self.chunk().emit_end(line);
+        // The outer false arm proves this private cached value is neither
+        // null nor undefined. Re-testing it and emitting a second initializer
+        // cannot affect execution. Retain the old recipe for paired benchmarks.
+        #[cfg(feature = "primitive-benchmarks")]
+        if !ELIDE_IMPORT_META_DUPLICATE.with(|v| v.get()) {
+            self.chunk().emit_else(line);
+            self.emit_u16(Op::LOCAL_GET, meta_slot);
+            fn_call!(self, "wasm:js-undefined", "test", 1);
+            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+            self.chunk().emit_if(line);
+            common::dict::emit_new(&mut self.chunks, self.current, line);
+            let init_slot = self.define_local("__js_import_meta_init");
+            self.emit_u16(Op::LOCAL_SET, init_slot);
+    
+            self.emit_u16(Op::LOCAL_GET, init_slot);
+            self.emit_const(Value::String(Arc::from("")));
+            self.class_set(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal("url"),
+                class_slots::ValueSource::Stack,
+            );
+    
+            self.emit_u16(Op::LOCAL_GET, init_slot);
+            self.emit_global_write(global_name);
+            self.emit_u16(Op::LOCAL_GET, init_slot);
+            self.emit_u16(Op::LOCAL_SET, meta_slot);
+    
+            self.chunk().emit_end(line);
+        }
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, meta_slot);
     }
@@ -594,12 +763,15 @@ impl Compiler {
             let l = self.line;
             crate::primitives::instructions::recipes::is_object(self.chunk(), l);
         }
-        {
+        // The ref.test / string.equals producer already returns i32.
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.generator_predicate_reuse {
             let l = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         let line = self.line;
         self.chunk().emit_if(line);
+        self.label_depth += 1;
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
         self.class_get(
@@ -611,6 +783,7 @@ impl Compiler {
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
+        self.label_depth += 1;
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
         let op_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("op"));
@@ -626,11 +799,14 @@ impl Compiler {
                 l,
             );
         }
-        {
+        // The ref.test / string.equals producer already returns i32.
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.generator_predicate_reuse {
             let l = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
+        self.label_depth += 1;
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
         let value_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("value"));
@@ -641,6 +817,7 @@ impl Compiler {
         }
 
         self.chunk().emit_end(line);
+        self.label_depth -= 1;
         self.emit_u16(Op::LOCAL_GET, control_slot);
         self.class_get_resolved(class_slots::ObjSource::Stack, &op_key);
         self.emit_const(Value::String(Arc::from("return")));
@@ -654,19 +831,27 @@ impl Compiler {
                 l,
             );
         }
-        {
+        // The ref.test / string.equals producer already returns i32.
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.generator_predicate_reuse {
             let l = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
+        self.label_depth += 1;
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
         self.class_get_resolved(class_slots::ObjSource::Stack, &value_key);
+        // These dispatch IFs are real Wasm labels. Completion routing must
+        // count them when branching to a surrounding finally join.
         self.emit_return_through_finally(1)?;
 
         self.chunk().emit_end(line);
+        self.label_depth -= 1;
         self.chunk().emit_end(line);
+        self.label_depth -= 1;
         self.chunk().emit_end(line);
+        self.label_depth -= 1;
         Ok(())
     }
 
@@ -684,11 +869,14 @@ impl Compiler {
             let l = self.line;
             crate::primitives::instructions::recipes::is_object(self.chunk(), l);
         }
-        {
+        // The ref.test / string.equals producer already returns i32.
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.generator_predicate_reuse {
             let l = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
+        self.label_depth += 1;
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.class_get(
@@ -700,6 +888,7 @@ impl Compiler {
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
+        self.label_depth += 1;
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let op_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("op"));
@@ -715,11 +904,14 @@ impl Compiler {
                 l,
             );
         }
-        {
+        // The ref.test / string.equals producer already returns i32.
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.generator_predicate_reuse {
             let l = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
+        self.label_depth += 1;
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let value_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("value"));
@@ -730,6 +922,7 @@ impl Compiler {
         }
 
         self.chunk().emit_end(line);
+        self.label_depth -= 1;
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.class_get_resolved(class_slots::ObjSource::Stack, &op_key);
         self.emit_const(Value::String(Arc::from("return")));
@@ -743,19 +936,27 @@ impl Compiler {
                 l,
             );
         }
-        {
+        // The ref.test / string.equals producer already returns i32.
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.generator_predicate_reuse {
             let l = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
+        self.label_depth += 1;
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.class_get_resolved(class_slots::ObjSource::Stack, &value_key);
+        // These dispatch IFs are real Wasm labels. Completion routing must
+        // count them when branching to a surrounding finally join.
         self.emit_return_through_finally(1)?;
 
         self.chunk().emit_end(line);
+        self.label_depth -= 1;
         self.chunk().emit_end(line);
+        self.label_depth -= 1;
         self.chunk().emit_end(line);
+        self.label_depth -= 1;
         self.emit_u16(Op::LOCAL_GET, result_slot);
         Ok(())
     }
@@ -802,6 +1003,9 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, store_slot);
         self.emit(Op::REF_IS_NULL);
+        self.emit_u16(Op::LOCAL_GET, store_slot);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
+        self.emit(Op::I32_OR);
         let line = self.line;
         self.chunk().emit_if(line);
         common::dict::emit_new(&mut self.chunks, self.current, line);
@@ -820,6 +1024,9 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, id_slot);
         self.emit(Op::REF_IS_NULL);
+        self.emit_u16(Op::LOCAL_GET, id_slot);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
+        self.emit(Op::I32_OR);
         let line = self.line;
         self.chunk().emit_if(line);
         self.emit_const(Value::F64(0.0));
@@ -907,8 +1114,11 @@ impl Compiler {
     /// each member's `Modifiers.visibility` — so it holds for any frontend
     /// that normalizes to a module, with no language name anywhere in it.
     pub(super) fn ambiguous_module_member_error(&self, name: &str) -> Option<String> {
-        let canon = self.canon(name);
-        let contributors = self.module_member_contributors.get(&canon)?;
+        if self.module_member_contributors.is_empty() {
+            return None;
+        }
+        let canon = self.canon_lookup(name);
+        let contributors = self.module_member_contributors.get(canon.as_ref())?;
         if contributors.len() < 2 {
             return None;
         }
@@ -929,7 +1139,9 @@ impl Compiler {
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<(), String> {
         let want_i32_condition = std::mem::take(&mut self.want_i32_condition);
         let previous_report = std::mem::take(&mut self.gave_i32_condition);
-        let result = self.compile_expr_requested(expr, want_i32_condition);
+        let previous_word = std::mem::take(&mut self.gave_i32_word);
+        let result = self.compile_expr_requested(expr, want_i32_condition, false);
+        self.gave_i32_word = previous_word;
         let report = std::mem::take(&mut self.gave_i32_condition);
         self.want_i32_condition = false;
         self.gave_i32_condition = if want_i32_condition && result.is_ok() {
@@ -948,10 +1160,24 @@ impl Compiler {
         }
     }
 
+    pub(super) fn compile_word_operand(&mut self, expr: &Expression) -> Result<bool, String> {
+        // Preserve normal call lowering (optional calls, array indexing,
+        // multi-values) and isolate nested argument emission reports.
+        let previous = std::mem::take(&mut self.gave_i32_word);
+        let previous_condition = std::mem::take(&mut self.gave_i32_condition);
+        let result = self.compile_expr_requested(expr, false, true);
+        let word = std::mem::replace(&mut self.gave_i32_word, previous);
+        self.want_i32_condition = false;
+        self.gave_i32_condition = previous_condition;
+        result?;
+        Ok(word)
+    }
+
     fn compile_expr_requested(
         &mut self,
         expr: &Expression,
         want_i32_condition: bool,
+        want_i32_word: bool,
     ) -> Result<(), String> {
         // TAKE the condition's "I'd rather have an i32" request. Every arm
         // below therefore compiles its sub-expressions with the request clear,
@@ -1101,20 +1327,20 @@ impl Compiler {
                 }
 
                 // Bare enum member: `Green` → `TColor.Green`
-                if !is_local {
-                    let canon_name = self.canon(name);
-                    if let Some(enum_type) = self.enum_members.get(&canon_name).cloned() {
+                if !is_local && !self.enum_members.is_empty() {
+                    let canon_name = self.canon_lookup(name);
+                    if let Some(enum_type) = self.enum_members.get(canon_name.as_ref()).cloned() {
                         self.emit_global_read(&enum_type);
                         self.class_get(
                             class_slots::ObjSource::Stack,
-                            &class_slots::ClassSlot::internal(&canon_name),
+                            &class_slots::ClassSlot::internal(canon_name.as_ref()),
                         );
                         return Ok(());
                     }
                 }
 
                 // Bare profile namespace constant (e.g. Pascal `MaxInt`, `Pi`)
-                if !is_local && !self.defined_globals.contains(&self.canon(name)) {
+                if !is_local && !self.defined_globals.contains(self.canon_lookup(name).as_ref()) {
                     if let Some(cv) = self.profile.lookup_constant(name) {
                         match cv {
                             ConstantValue::Bool(b) => self.emit_const(Value::Bool(*b)),
@@ -1140,7 +1366,6 @@ impl Compiler {
                 // name may only auto-invoke when the function takes no
                 // parameters. `map_or(true, …)` keeps languages that do not
                 // populate `function_min_arity` behaving as before.
-                let canon_name = self.canon(name);
                 // A NESTED declaration is a local binding, so `!is_local`
                 // excluded it and `defined_functions` never held it — pascal's
                 // `function Inner: Integer` inside a procedure returned the
@@ -1149,25 +1374,22 @@ impl Compiler {
                 // (`Local::declared_arity`), which is the only record that can
                 // tell a nested function from a local variable that merely
                 // shares a name with one.
-                let local_parameterless_fn = is_local
-                    && self
-                        .scopes
-                        .iter()
-                        .rev()
-                        .find_map(|scope| scope.resolve_declared_arity(&canon_name))
-                        == Some(0);
-                if self.profile.bare_name_invokes_parameterless_function
-                    && (local_parameterless_fn
+                if self.profile.bare_name_invokes_parameterless_function {
+                    let canon_name = self.canon_lookup(name);
+                    let local_parameterless_fn = is_local
+                        && self.scopes.iter().rev()
+                            .find_map(|scope| scope.resolve_declared_arity(canon_name.as_ref()))
+                            == Some(0);
+                    if local_parameterless_fn
                         || !is_local
-                            && self.defined_functions.contains(&canon_name)
-                            && self
-                                .function_min_arity
-                                .get(&canon_name)
-                                .is_none_or(|arity| *arity == 0))
-                {
-                    self.emit_var_get(name);
-                    self.emit_direct_callable_invoke(0);
-                    return Ok(());
+                            && self.defined_functions.contains(canon_name.as_ref())
+                            && self.function_min_arity.get(canon_name.as_ref())
+                                .is_none_or(|arity| *arity == 0)
+                    {
+                        self.emit_var_get(name);
+                        self.emit_direct_callable_invoke(0);
+                        return Ok(());
+                    }
                 }
 
                 // ESM named import of a constant Value (e.g. `ecma:math::PI`).
@@ -1175,9 +1397,9 @@ impl Compiler {
                 // constants from `host_const_bindings` populated during
                 // `collect_host_imports`. Function imports stay in
                 // `host_import_bindings` and route through CALL_IMPORT.
-                if !is_local {
-                    let cname = self.canon(name);
-                    if let Some(val) = self.host_const_bindings.get(&cname).cloned() {
+                if !is_local && !self.host_const_bindings.is_empty() {
+                    let cname = self.canon_lookup(name);
+                    if let Some(val) = self.host_const_bindings.get(cname.as_ref()).cloned() {
                         self.emit_const(val);
                         return Ok(());
                     }
@@ -1432,11 +1654,12 @@ impl Compiler {
                 // NullCoalesce as binary op
                 if *op == BinOp::NullCoalesce {
                     self.compile_expr(left)?;
-                    let value_slot = self.define_local("__null_coalesce_left");
+                    let value_slot = self.chunk().alloc_scratch(1);
                     self.emit_u16(Op::LOCAL_SET, value_slot);
-                    self.emit_u16(Op::LOCAL_GET, value_slot);
-                    self.emit(Op::REF_IS_NULL);
                     let line = self.line;
+                    super::delegates::emit_slot_is_nullish(
+                        &mut self.chunks, self.current, value_slot, line,
+                    );
                     self.chunk().emit_if_value(line);
                     self.compile_expr(right)?;
                     self.chunk().emit_else(line);
@@ -1446,7 +1669,6 @@ impl Compiler {
                 }
                 // Pow → BigInt fast path, then canonical stdlib path.
                 if *op == BinOp::Pow {
-                    let line = self.line;
                     if self.bigint_semantics()
                         && self.hint_is_bigint(self.infer_expr_type_hint(left).as_deref())
                         && self.hint_is_bigint(self.infer_expr_type_hint(right).as_deref())
@@ -1713,11 +1935,9 @@ impl Compiler {
                     return Ok(());
                 }
 
-                // `int / int` truncates. ONE branch for every language that
-                // says so: C now declares `integer_division_on_slash = true`
-                // like C# always did, and each brings its own integer
-                // spellings, so the second copy of this block — the one gated
-                if self.profile.integer_division_on_slash
+                // Integral slash policy belongs to the current AST region.
+                // Operand type facts still decide whether the rule applies.
+                if self.directives().integer_division_on_slash.unwrap_or(false)
                     && *op == BinOp::Div
                     && expr_is_integral(self, left)
                     && expr_is_integral(self, right)
@@ -1729,7 +1949,9 @@ impl Compiler {
                 }
 
                 // `xor` resolves by operand type — bitwise on integers,
-                if self.profile.xor_is_logical_for_non_integers && *op == BinOp::BitXor {
+                if self.directives().xor_is_logical_for_non_integers.unwrap_or(false)
+                    && *op == BinOp::BitXor
+                {
                     let integer_xor =
                         self.expr_is_integer_like(left) && self.expr_is_integer_like(right);
                     self.compile_expr(left)?;
@@ -1750,7 +1972,9 @@ impl Compiler {
                 // `"Array"`, none of which is ECMA `String()` — so the
                 // language supplies it through `concat_stringify` and the
                 // shared `to_string` is the default.
-                if self.profile.concat_stringifies_operands && *op == BinOp::Concat {
+                if self.directives().concat_stringifies_operands.unwrap_or(false)
+                    && *op == BinOp::Concat
+                {
                     let line = self.line;
                     // `to_string`, resolved PER OPERAND — was
                     // `LanguageHooks::concat_stringify`, looked up by language
@@ -1934,8 +2158,111 @@ impl Compiler {
                     }
                 }
 
-                self.compile_expr(left)?;
-                self.compile_expr(right)?;
+                if self.exact_wide_integer_transport()
+                    && let BinOp::Integer(operation, vybe_ast::BitLane::W64) = op
+                {
+                    self.compile_exact_i64_operand(left)?;
+                    self.compile_exact_i64_operand(right)?;
+                    self.emit(crate::primitives::bits::integer_opcode(vybe_ast::BitLane::W64, *operation));
+                    if operation.is_comparison() {
+                        self.gave_i32_condition = want_i32_condition;
+                    } else {
+                        let line = self.line;
+                        crate::primitives::exact_integer::emit_box_i64(
+                            &mut self.chunks, self.current, true, line,
+                        );
+                    }
+                    self.want_i32_condition = false;
+                    return Ok(());
+                }
+
+                if let BinOp::Integer(operation, vybe_ast::BitLane::W32) = op
+                    && let (ExprKind::Lit(Literal::Int(a)), ExprKind::Lit(Literal::Int(b))) = (&left.kind, &right.kind)
+                    && let Some(value) = crate::primitives::bits::fold_literal_word(*operation, *a, *b)
+                {
+                    let line = self.line;
+                    self.chunk().emit_i32_const(value, line);
+                    self.want_i32_condition = false;
+                    self.gave_i32_condition = operation.is_comparison() && want_i32_condition;
+                    self.gave_i32_word = want_i32_word;
+                    return Ok(());
+                }
+
+                let wide_comparison = matches!(op,
+                    BinOp::Integer(operation, vybe_ast::BitLane::W64) if operation.is_comparison())
+                    && crate::primitives::bits::wide_signed_words_enabled();
+                let wide_arithmetic = matches!(op, BinOp::Integer(
+                    vybe_ast::IntOp::And | vybe_ast::IntOp::Or | vybe_ast::IntOp::Xor
+                    | vybe_ast::IntOp::Add | vybe_ast::IntOp::Sub,
+                    vybe_ast::BitLane::W64))
+                    && crate::primitives::bits::wide_signed_words_enabled()
+                    && [left.as_ref(), right.as_ref()].into_iter().all(|expr| {
+                        matches!(&expr.kind, ExprKind::Lit(Literal::Int(n))
+                            if i32::try_from(*n).is_ok())
+                            || self.proven_signed_word_operand(expr)
+                    });
+                let wide_signed_words = wide_comparison || wide_arithmetic;
+                // A word request may change an unsigned Number's representation.
+                // Wide comparisons keep ordinary emission except signed literals.
+                let word_operation = !wide_signed_words && (matches!(op,
+                    BinOp::Integer(_, vybe_ast::BitLane::W32)
+                    | BinOp::RotL(vybe_ast::BitLane::W32) | BinOp::RotR(vybe_ast::BitLane::W32))
+                    || self.static_builtin_operator_consumes_i32(op, left, right));
+                let w32_literal = |expr: &Expression| match &expr.kind {
+                    ExprKind::Lit(Literal::Int(n)) if word_operation || wide_signed_words => {
+                        // Every signed/unsigned word is exact in f64. Match the
+                        // existing i64 truncation + i32 wrap, not a saturating cast.
+                        // W64 comparisons admit only signed-range literals here;
+                        // unsigned Number literals must keep their positive value.
+                        (i64::from(i32::MIN)..=if wide_signed_words { i64::from(i32::MAX) } else { i64::from(u32::MAX) })
+                            .contains(n)
+                            .then_some(*n as i32)
+                    }
+                    _ => None,
+                };
+                let left_i32 = w32_literal(left);
+                let right_i32 = w32_literal(right);
+                let mut left_word = left_i32.is_some();
+                let mut right_word = right_i32.is_some();
+                let line = self.line;
+                let operands_start = self.chunks[self.current].code.len();
+                if let Some(value) = left_i32 {
+                    self.chunk().emit_i32_const(value, line);
+                } else if word_operation {
+                    left_word = self.compile_word_operand(left)?;
+                } else {
+                    self.compile_expr(left)?;
+                }
+                let right_start = self.chunks[self.current].code.len();
+                if let Some(value) = right_i32 {
+                    self.chunk().emit_i32_const(value, line);
+                } else if word_operation {
+                    right_word = self.compile_word_operand(right)?;
+                } else {
+                    self.compile_expr(right)?;
+                }
+                if word_operation && crate::primitives::bits::fold_emitted_word_binary(
+                    self.chunk(), operands_start, right_start, op, line,
+                ) {
+                    self.want_i32_condition = false;
+                    self.gave_i32_condition = matches!(op,
+                        BinOp::Integer(operation, _) if operation.is_comparison()) && want_i32_condition;
+                    self.gave_i32_word = want_i32_word;
+                    return Ok(());
+                }
+                let left_is_word = left_word || matches!(&left.kind,
+                    ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. });
+                if word_operation && right_word && (left_is_word || !self.proven_boxed_signed_word(left))
+                    && crate::primitives::bits::emit_word_right_constant(
+                        self.chunk(), right_start, op, left_is_word, line,
+                    )
+                {
+                    self.want_i32_condition = false;
+                    self.gave_i32_condition = matches!(op,
+                        BinOp::Integer(operation, _) if operation.is_comparison()) && want_i32_condition;
+                    self.gave_i32_word = want_i32_word;
+                    return Ok(());
+                }
                 // The operands are in scope here and nowhere below, so this is
                 // where a fact about what the emitter itself just pushed can
                 // still reach the operator.
@@ -1943,7 +2270,21 @@ impl Compiler {
                 // operands above compiled with it clear.
                 self.want_i32_condition = want_i32_condition;
                 self.gave_i32_condition = false;
-                self.compile_binop_operands(op, Some((left, right)));
+                let operator_start = self.chunks[self.current].code.len();
+                self.compile_binop_operands_with_spans(
+                    op,
+                    Some((left, right)),
+                    (left_word, right_word),
+                    Some((operands_start, right_start)),
+                    want_i32_word,
+                );
+                if want_i32_word && matches!(op,
+                    BinOp::RotL(vybe_ast::BitLane::W32)
+                    | BinOp::RotR(vybe_ast::BitLane::W32))
+                {
+                    // Report the word only after the rotate producer emitted it.
+                    self.gave_i32_word = true;
+                }
                 self.want_i32_condition = false;
                 // `materialize_bool_results` would box the i32 straight back
                 // up, so a honoured request has to suppress it — otherwise the
@@ -1963,6 +2304,7 @@ impl Compiler {
                             | BinOp::In
                             | BinOp::NotIn
                     )
+                    && !self.emitted_boolean_value_since(operator_start)
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -2062,6 +2404,45 @@ impl Compiler {
                                 }
                             }
                         }
+                        if let UnaryOp::PopCount(vybe_ast::BitLane::W32)
+                            | UnaryOp::LeadingZeros(vybe_ast::BitLane::W32)
+                            | UnaryOp::TrailingZeros(vybe_ast::BitLane::W32) = op
+                        {
+                            let literal = match &inner.kind {
+                                ExprKind::Lit(Literal::Int(n)) =>
+                                    (i64::from(i32::MIN)..=i64::from(u32::MAX))
+                                        .contains(n).then_some(*n as i32),
+                                _ => None,
+                            };
+                            let line = self.line;
+                            let operand_start = self.chunks[self.current].code.len();
+                            let normalized = if let Some(value) = literal {
+                                self.chunk().emit_i32_const(value, line);
+                                true
+                            } else {
+                                self.compile_word_operand(inner)?
+                                    || self.proven_boxed_signed_word(inner)
+                                    || matches!(&inner.kind, ExprKind::Binary {
+                                        op: BinOp::Integer(operation, vybe_ast::BitLane::W32), ..
+                                    } if !operation.is_comparison())
+                            };
+                            if normalized && crate::primitives::bits::fold_emitted_word_count(
+                                self.chunk(), operand_start, op, line,
+                            ) {
+                                if want_i32_word { self.gave_i32_word = true; }
+                                return Ok(());
+                            }
+                            let (w32, w64) = match op {
+                                UnaryOp::PopCount(_) => (Op::I32_POPCNT, Op::I64_POPCNT),
+                                UnaryOp::LeadingZeros(_) => (Op::I32_CLZ, Op::I64_CLZ),
+                                _ => (Op::I32_CTZ, Op::I64_CTZ),
+                            };
+                            crate::primitives::bits::emit_count_with_normalized_operand(
+                                self.chunk(), vybe_ast::BitLane::W32, w32, w64, normalized, line,
+                            );
+                            if want_i32_word { self.gave_i32_word = true; }
+                            return Ok(());
+                        }
                         self.compile_expr(inner)?;
                         match op {
                             UnaryOp::Neg => {
@@ -2127,7 +2508,7 @@ impl Compiler {
                                     // The python walker worked around it by
                                     // lowering user `not` to a ternary; that
                                     // workaround is gone with this line.
-                                    self.emit_condition_truthiness_from_stack();
+                                    self.emit_condition_truthiness_for_expression(inner);
                                     self.emit(Op::I32_EQZ);
                                 }
                                 // `expr_is_integer_like` already answers false
@@ -2138,7 +2519,19 @@ impl Compiler {
                                     || self.profile.materialize_bool_results)
                                     && !self.expr_is_integer_like(inner)
                                 {
-                                    crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                                    if want_i32_condition
+                                        && !crate::primitives::polyfills::is_compiling_runtime_helper()
+                                    {
+                                        // Negation has already evaluated the active
+                                        // truthiness protocol and produced a Wasm
+                                        // i32 predicate. Preserve scratch replacement
+                                        // without boxing and immediately unboxing it.
+                                        let value = self.chunk().autoderef_scratch();
+                                        self.emit_u16(Op::LOCAL_TEE, value);
+                                        self.gave_i32_condition = true;
+                                    } else {
+                                        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                                    }
                                 }
                             }
                             UnaryOp::Reinterpret(repr) => {
@@ -2254,27 +2647,52 @@ impl Compiler {
 
             // ── Ternary ─────────────────────────────────────────────────
             ExprKind::Ternary { cond, then, else_ } => {
-                self.compile_condition_to_i32(cond)?;
-                let line = self.line;
-                // Only literal Boolean arms avoid conversion altogether.
-                // Dynamic arms share the original post-join coercion, rather
-                // than duplicating slot dispatch and scratch locals per arm.
-                let raw_bool_arms = matches!(&then.kind, ExprKind::Lit(Literal::Bool(_)))
-                    && matches!(&else_.kind, ExprKind::Lit(Literal::Bool(_)));
-                if want_i32_condition && raw_bool_arms {
-                    self.chunk().emit_if_i32(line);
-                    self.compile_condition_to_i32(then)?;
-                    self.chunk().emit_else(line);
-                    self.compile_condition_to_i32(else_)?;
+                if let ExprKind::Ternary { cond: inner_cond, then: inner_then, else_: inner_else } = &else_.kind
+                    && matches!(&then.kind, ExprKind::Call { .. })
+                    && same_call_tail(then, inner_else, self.array_call_tail_identity, self.interpolation_call_tail_identity)
+                {
+                    // A ? F : B ? G : F: branch to F when A is true.
+                    // Evaluate predicates inside the parameterless blocks so
+                    // every operand belongs to its proper Wasm control frame.
+                    let line = self.line;
+                    self.chunk().emit_block_typed(line, 1);
+                    self.chunk().emit_block(line);
+                    self.compile_condition_to_i32(cond)?;
+                    self.chunk().emit_br_if(0, line);
+                    self.compile_condition_to_i32(inner_cond)?;
+                    self.chunk().emit_if(line);
+                    self.compile_expr(inner_then)?;
+                    self.chunk().emit_br(2, line);
                     self.chunk().emit_end(line);
-                    self.want_i32_condition = true;
-                    self.emit_i32_to_bool_or_report();
-                } else {
-                    self.chunk().emit_if_value(line);
+                    self.chunk().emit_end(line);
                     self.compile_expr(then)?;
-                    self.chunk().emit_else(line);
-                    self.compile_expr(else_)?;
                     self.chunk().emit_end(line);
+                } else {
+                    self.compile_condition_to_i32(cond)?;
+                    let line = self.line;
+                    // Boolean literals and canonical integer predicates have Boolean
+                    // results. Their condition consumer can retain the raw i32 lane.
+                    // Other arms keep the shared post-join coercion.
+                    let raw_bool_arm = |arm: &Expression| {
+                        matches!(&arm.kind, ExprKind::Lit(Literal::Bool(_)))
+                            || matches!(&arm.kind, ExprKind::Binary { op: BinOp::Integer(operation, _), .. } if operation.is_comparison())
+                    };
+                    let raw_bool_arms = raw_bool_arm(then) && raw_bool_arm(else_);
+                    if want_i32_condition && raw_bool_arms {
+                        self.chunk().emit_if_i32(line);
+                        self.compile_condition_to_i32(then)?;
+                        self.chunk().emit_else(line);
+                        self.compile_condition_to_i32(else_)?;
+                        self.chunk().emit_end(line);
+                        self.want_i32_condition = true;
+                        self.emit_i32_to_bool_or_report();
+                    } else {
+                        self.chunk().emit_if_value(line);
+                        self.compile_expr(then)?;
+                        self.chunk().emit_else(line);
+                        self.compile_expr(else_)?;
+                        self.chunk().emit_end(line);
+                    }
                 }
             }
 
@@ -2289,8 +2707,7 @@ impl Compiler {
                     // Per ECMA-262 §13.5.9: the result is `undefined` (not null) when short-circuiting.
                     self.compile_expr(callee)?;
                     let tmp = self.define_local("__optional_callee");
-                    self.emit_u16(Op::LOCAL_SET, tmp);
-                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_u16(Op::LOCAL_TEE, tmp);
                     self.emit(Op::REF_IS_NULL);
                     let line = self.line;
                     self.chunk().emit_if_value(line);
@@ -2354,10 +2771,16 @@ impl Compiler {
                     let multi_return_arity = self.multi_return_arity_for_callee(callee);
                     let request = if want_i32_condition && multi_return_arity.is_none() {
                         EmitRequest::I32Condition
+                    } else if want_i32_word && multi_return_arity.is_none() {
+                        EmitRequest::I32Word
                     } else {
                         EmitRequest::Value
                     };
-                    self.compile_call_with_emit_request(callee, args, request)?;
+                    if self.profile.function_references && multi_return_arity.is_some() {
+                        self.compile_call_raw(expr)?;
+                    } else {
+                        self.compile_call_with_emit_request(callee, args, request)?;
+                    }
                     // Multi-value result repack: when the callee is one of
                     // the pre-scanned multi-return functions, CALL leaves
                     // N values on the stack. A destructure-assign consumes
@@ -2414,14 +2837,12 @@ impl Compiler {
                     let obj_slot = self.define_local("__dotnet_task_result_obj");
                     let value_slot = self.define_local("__dotnet_task_result_value");
                     self.compile_expr(object)?;
-                    self.emit_u16(Op::LOCAL_SET, obj_slot);
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_TEE, obj_slot);
                     self.class_get(
                         class_slots::ObjSource::Stack,
                         &class_slots::ClassSlot::internal("Result"),
                     );
-                    self.emit_u16(Op::LOCAL_SET, value_slot);
-                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.emit_u16(Op::LOCAL_TEE, value_slot);
                     let undef_idx = self.import("wasm:js-undefined", "test");
                     self.emit_host_call(undef_idx, 1);
                     let line = self.line;
@@ -3134,8 +3555,7 @@ impl Compiler {
                         self.emit_js_super_home_base();
                         self.class_get_resolved(class_slots::ObjSource::Stack, &getter_key);
                         let getter_slot = self.define_local("__js_super_prop_getter");
-                        self.emit_u16(Op::LOCAL_SET, getter_slot);
-                        self.emit_u16(Op::LOCAL_GET, getter_slot);
+                        self.emit_u16(Op::LOCAL_TEE, getter_slot);
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
                         self.chunk().emit_if_value(line);
@@ -3233,8 +3653,7 @@ impl Compiler {
                     if *null_safe {
                         self.compile_expr(object)?;
                         let nullsafe_obj_slot = self.define_local("__js_member_nullsafe_obj");
-                        self.emit_u16(Op::LOCAL_SET, nullsafe_obj_slot);
-                        self.emit_u16(Op::LOCAL_GET, nullsafe_obj_slot);
+                        self.emit_u16(Op::LOCAL_TEE, nullsafe_obj_slot);
                         self.emit(Op::REF_IS_NULL);
                         let line = self.line;
                         self.chunk().emit_if_value(line);
@@ -3267,8 +3686,7 @@ impl Compiler {
                                 .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
                             self.class_get(class_slots::ObjSource::Local(obj_slot), &slot);
                             let val_slot = self.define_local("__js_member_val");
-                            self.emit_u16(Op::LOCAL_SET, val_slot);
-                            self.emit_u16(Op::LOCAL_GET, val_slot);
+                            self.emit_u16(Op::LOCAL_TEE, val_slot);
                             fn_call!(self, "wasm:js-undefined", "test", 1);
                             let lookup_line = self.line;
                             self.chunk().emit_if_value(lookup_line);
@@ -3332,8 +3750,7 @@ impl Compiler {
                             // other key (e.g. AsyncFunction.prototype
                             // .length inherits %Function.prototype%'s 0).
                             let val_slot = self.define_local("__js_member_len");
-                            self.emit_u16(Op::LOCAL_SET, val_slot);
-                            self.emit_u16(Op::LOCAL_GET, val_slot);
+                            self.emit_u16(Op::LOCAL_TEE, val_slot);
                             fn_call!(self, "wasm:js-undefined", "test", 1);
                             let lookup_line = self.line;
                             self.chunk().emit_if_value(lookup_line);
@@ -3385,8 +3802,7 @@ impl Compiler {
                             .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
                         self.class_get(class_slots::ObjSource::Local(obj_slot), &slot);
                         let val_slot = self.define_local("__js_member_val");
-                        self.emit_u16(Op::LOCAL_SET, val_slot);
-                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.emit_u16(Op::LOCAL_TEE, val_slot);
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                         let lookup_line = self.line;
                         self.chunk().emit_if_value(lookup_line);
@@ -3463,8 +3879,7 @@ impl Compiler {
                                 .scope()
                                 .resolve("__pascal_member_fn")
                                 .unwrap_or_else(|| self.define_local("__pascal_member_fn"));
-                            self.emit_u16(Op::LOCAL_SET, fn_slot);
-                            self.emit_u16(Op::LOCAL_GET, fn_slot);
+                            self.emit_u16(Op::LOCAL_TEE, fn_slot);
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit_direct_callable_invoke(1);
                             return Ok(());
@@ -3591,8 +4006,6 @@ impl Compiler {
                     // an untyped receiver reading it means size. A receiver
                     // whose type IS known never reaches this default.
                     let unknown_receiver_default = reads_size_property;
-                    let type_scopes = &self.profile.namespaces.type_scopes;
-                    let fold = self.tree_fold();
                     let is_collection_like_type = |type_hint: &str| {
                         // The tree is the authority: a registered type that
                         // declares `Count` IS a collection, whichever platform
@@ -3720,6 +4133,21 @@ impl Compiler {
                     self.compile_expr(object)?;
                     common::sets::emit_size(&mut self.chunks, self.current, self.line);
                     return Ok(());
+                }
+
+                if !*null_safe {
+                    if let Some(getter) = self.declared_property_getter_for_receiver(object, field) {
+                        let call = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: object.clone(),
+                                field: getter,
+                                null_safe: false,
+                            })),
+                            args: Vec::new(),
+                            optional: false,
+                        });
+                        return self.compile_expr(&call);
+                    }
                 }
 
                 if !*null_safe && matches!(&object.kind, ExprKind::Super) {
@@ -4038,8 +4466,8 @@ impl Compiler {
                     // The GUARD is the nullish test, not an object test:
                     // ECMA-262 §13.3.9.1 short-circuits `a?.b` on undefined and
                     // null and evaluates the member read for everything else,
-                    // which is exactly `REF_IS_NULL` (the VM answers it for
-                    // `Null | TypedNull | Undefined`). Guarding on `is_object`
+                    // which requires both `ref.is_null` and `js-undefined:test`.
+                    // Guarding on `is_object`
                     // instead made `"abc"?.length` answer null — a primitive
                     // receiver is not nullish, and its member read is ordinary.
                     //
@@ -4048,9 +4476,11 @@ impl Compiler {
                     // arms resolved it, so whether `?.` found a renamed field
                     // depended on which language compiled the file.
                     let obj_slot = self.define_local("__member_nullsafe_obj");
-                    self.emit_u16(Op::LOCAL_SET, obj_slot);
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_TEE, obj_slot);
                     self.emit(Op::REF_IS_NULL);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
+                    self.emit(Op::I32_OR);
                     let line = self.line;
                     self.emit(Op::I32_EQZ);
                     self.chunk().emit_if_value(line);
@@ -4137,7 +4567,6 @@ impl Compiler {
                     && !matches!(index.kind, ExprKind::Range { .. } | ExprKind::Slice { .. })
                     && self.expr_has_user_indexer(object)
                 {
-                    let line = self.line;
                     let obj_slot = self.define_local("__idx_recv");
                     let key_slot = self.define_local("__idx_key");
                     self.compile_expr(object)?;
@@ -4480,8 +4909,7 @@ impl Compiler {
                 } else if self.profile.dynamic_member_access && *null_safe {
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__js_index_obj");
-                    self.emit_u16(Op::LOCAL_SET, obj_slot);
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_TEE, obj_slot);
                     self.emit(Op::REF_IS_NULL);
                     let line = self.line;
                     self.chunk().emit_if_value(line);
@@ -6456,8 +6884,7 @@ impl Compiler {
                             // Object spread mutates the in-progress object and must
                             // leave that object on the stack for the remaining literal.
                             let target_tmp = self.define_local("__obj_spread_target");
-                            self.emit_u16(Op::LOCAL_SET, target_tmp);
-                            self.emit_u16(Op::LOCAL_GET, target_tmp);
+                            self.emit_u16(Op::LOCAL_TEE, target_tmp);
                             self.compile_expr(expr)?;
                             let idx = self.import("ecma:object", "assign");
                             self.emit_host_call(idx, 2);
@@ -6466,19 +6893,12 @@ impl Compiler {
                         }
                         ObjectProperty::Method { key, value } => {
                             inst!(self, core_wasm::dup);
-                            if let StmtKind::FunctionDecl {
-                                params,
-                                body,
-                                is_generator,
-                                is_async,
-                                ..
-                            } = &value.kind
+                            if let StmtKind::FunctionDecl { params, body, is_async, is_generator, .. } = &value.kind
                             {
                                 if self.profile.ecma_object_literals {
-                                    self.compile_lambda_with_flags(
+                                    self.compile_lambda_block_with_flags(
                                         params,
-                                        &LambdaBody::Block(body.clone()),
-                                        &[],
+                                        body,
                                         *is_async,
                                         *is_generator,
                                         false,
@@ -6496,10 +6916,9 @@ impl Compiler {
                                         is_nullable: false,
                                     }];
                                     method_params.extend(params.iter().cloned());
-                                    self.compile_lambda_with_flags(
+                                    self.compile_lambda_block_with_flags(
                                         &method_params,
-                                        &LambdaBody::Block(body.clone()),
-                                        &[],
+                                        body,
                                         *is_async,
                                         *is_generator,
                                         false,
@@ -6526,13 +6945,7 @@ impl Compiler {
                         }
                         ObjectProperty::Accessor { kind, key, value } => {
                             inst!(self, core_wasm::dup);
-                            if let StmtKind::FunctionDecl {
-                                params,
-                                body,
-                                is_generator,
-                                is_async,
-                                ..
-                            } = &value.kind
+                            if let StmtKind::FunctionDecl { .. } = &value.kind
                             {
                                 // How the accessor's RECEIVER arrives — which
                                 // is `receiver_binding`, not a property of
@@ -6657,8 +7070,7 @@ impl Compiler {
                                 // `String(sym)` constructor — throws a TypeError
                                 // for a Symbol. Guard for that before the concat.
                                 let v_slot = self.define_local("__interp_to_string");
-                                self.emit_u16(Op::LOCAL_SET, v_slot);
-                                self.emit_u16(Op::LOCAL_GET, v_slot);
+                                self.emit_u16(Op::LOCAL_TEE, v_slot);
                                 let sym_test = self.import("wasm:js-symbol", "test");
                                 self.emit_host_call(sym_test, 1);
                                 let line = self.line;
@@ -6678,8 +7090,7 @@ impl Compiler {
                                 let interp_to_string = self.to_string_target(e);
                                 self.compile_expr(e)?;
                                 let value_slot = self.define_local("__interp_value");
-                                self.emit_u16(Op::LOCAL_SET, value_slot);
-                                self.emit_u16(Op::LOCAL_GET, value_slot);
+                                self.emit_u16(Op::LOCAL_TEE, value_slot);
                                 let line = self.line;
                                 self.emit_to_string_slot(interp_to_string.as_deref(), line);
                             }
@@ -6999,8 +7410,7 @@ impl Compiler {
                 self.emit(Op::I32_EQZ);
                 self.chunk().emit_if(line);
                 let types_slot = self.define_local("__type_test_types");
-                self.emit_u16(Op::LOCAL_SET, types_slot);
-                self.emit_u16(Op::LOCAL_GET, types_slot);
+                self.emit_u16(Op::LOCAL_TEE, types_slot);
                 self.emit_const(Value::String(Arc::from(canon_type.as_str())));
                 common::collections::emit_contains(&mut self.chunks, self.current, line);
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7201,6 +7611,60 @@ impl Compiler {
                     if let Some(width) = self.profile.integer_cast_widths.get(&cast_spelling) {
                         let bits = width.bits;
                         let signed = width.signed;
+                        if self.exact_wide_integer_transport() && bits == Some(64) {
+                            self.compile_exact_i64_operand(inner)?;
+                            let line = self.line;
+                            crate::primitives::exact_integer::emit_box_i64(
+                                &mut self.chunks, self.current, signed, line,
+                            );
+                            return Ok(());
+                        }
+                        if self.exact_wide_integer_transport()
+                            && let Some(bits @ 1..=32) = bits
+                            && self.exact_word_expression(inner)
+                        {
+                            self.compile_exact_i64_operand(inner)?;
+                            self.emit(Op::I32_WRAP_I64);
+                            if bits < 32 {
+                                let shift = 32 - bits;
+                                let line = self.line;
+                                self.chunk().emit_i32_const(shift as i32, line);
+                                self.emit(Op::I32_SHL);
+                                self.chunk().emit_i32_const(shift as i32, line);
+                                self.emit(if signed { Op::I32_SHR_S } else { Op::I32_SHR_U });
+                            } else if !signed {
+                                let line = self.line;
+                                crate::primitives::bits::emit_as_unsigned32(self.chunk(), line);
+                            }
+                            return Ok(());
+                        }
+                        if let (Some(bits @ 1..=32), ExprKind::Lit(Literal::Int(value))) =
+                            (bits, &inner.kind)
+                        {
+                            let fits = if signed {
+                                let bound = 1i64 << (bits - 1);
+                                *value >= -bound && *value < bound
+                            } else {
+                                *value >= 0 && (*value as u64) < (1u64 << bits)
+                            };
+                            if fits {
+                                self.compile_expr(inner)?;
+                                return Ok(());
+                            }
+                        }
+                        if bits == Some(32) && matches!(&inner.kind,
+                            ExprKind::Binary { op: BinOp::Integer(op, vybe_ast::BitLane::W32), .. }
+                                if signed || !op.is_comparison()
+                        ) {
+                            // The word already has i32 bits; unsigned casts only
+                            // change their numeric interpretation.
+                            self.compile_expr(inner)?;
+                            if !signed {
+                                let line = self.line;
+                                crate::primitives::bits::emit_as_unsigned32(self.chunk(), line);
+                            }
+                            return Ok(());
+                        }
                         self.compile_expr(inner)?;
                         let num = self.import("ecma:number", "Number");
                         self.emit_host_call(num, 1);
@@ -7231,7 +7695,7 @@ impl Compiler {
                     // spellings — the hardcoded `"integer" | "int" | "longint"`
                     // list that used to be here was a per-language table in
                     // shared code.
-                    if self.profile.integer_cast_truncates {
+                    if self.directives().integer_cast_truncates.unwrap_or(false) {
                         // `canon` folds case per the profile — pascal is
                         // case-insensitive, so `Integer` must match the
                         // lowercase spelling table.
@@ -7388,8 +7852,7 @@ impl Compiler {
                                             self.chunk().emit_if(object_line);
                                             let types_slot =
                                                 self.define_local("__vb_trycast_types");
-                                            self.emit_u16(Op::LOCAL_SET, types_slot);
-                                            self.emit_u16(Op::LOCAL_GET, types_slot);
+                                            self.emit_u16(Op::LOCAL_TEE, types_slot);
                                             self.emit_const(Value::String(Arc::from(
                                                 expected.as_str(),
                                             )));
@@ -7593,13 +8056,16 @@ impl Compiler {
             // ── NullCoalesce ────────────────────────────────────────────
             ExprKind::NullCoalesce { left, right } => {
                 self.compile_expr(left)?;
-                inst!(self, core_wasm::dup);
-                self.emit(Op::REF_IS_NULL);
+                let value_slot = self.chunk().alloc_scratch(1);
+                self.emit_u16(Op::LOCAL_SET, value_slot);
                 let line = self.line;
-                self.chunk().emit_if_params(line, 1, 1);
-                self.emit(Op::DROP);
+                super::delegates::emit_slot_is_nullish(
+                    &mut self.chunks, self.current, value_slot, line,
+                );
+                self.chunk().emit_if_value(line);
                 self.compile_expr(right)?;
                 self.chunk().emit_else(line);
+                self.emit_u16(Op::LOCAL_GET, value_slot);
                 self.chunk().emit_end(line);
             }
 
@@ -8077,8 +8543,7 @@ impl Compiler {
                     {
                         let line = self.line;
                         let src_slot = self.define_local("__comp_src");
-                        self.emit_u16(Op::LOCAL_SET, src_slot);
-                        self.emit_u16(Op::LOCAL_GET, src_slot);
+                        self.emit_u16(Op::LOCAL_TEE, src_slot);
                         let is_gen = self.import("ecma:value", "isGenerator");
                         self.emit_host_call(is_gen, 1);
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -8330,8 +8795,7 @@ impl Compiler {
                     }
                     if self.in_strict {
                         let result_slot = self.define_local("__strict_delete_result");
-                        self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                        self.emit_u16(Op::LOCAL_TEE, result_slot);
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.emit(Op::I32_EQZ);
@@ -8355,8 +8819,7 @@ impl Compiler {
                     }
                     if self.in_strict {
                         let result_slot = self.define_local("__strict_delete_result");
-                        self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                        self.emit_u16(Op::LOCAL_TEE, result_slot);
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.emit(Op::I32_EQZ);
@@ -8492,7 +8955,11 @@ impl Compiler {
                         handles,
                         *is_async,
                     )?;
-                    self.emit_var_get(&fn_name);
+                    if let Some(callable_global) = self.source_function_callable_global_name(&fn_name) {
+                        self.emit_global_read(&callable_global);
+                    } else {
+                        self.emit_var_get(&fn_name);
+                    }
                 } else {
                     self.emit_null();
                 }
@@ -8560,7 +9027,21 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, class_slot);
                     let field_name = match &class.kind {
                         ExprKind::Ident(class_name) => {
-                            self.js_member_storage_name_for_class(class_name, name)
+                            let is_static_property = self
+                                .normalized_classes
+                                .get(self.canon_lookup(class_name).as_ref())
+                                .is_some_and(|owner| {
+                                    owner.static_fields.iter().any(|field| {
+                                        self.canon(&field.name) == self.canon(name)
+                                    })
+                                });
+                            if is_static_property {
+                                self.js_member_storage_name_for_static(class_name, name)
+                            } else {
+                                // Static method references and class constants
+                                // do not use property namespace storage keys.
+                                self.js_member_storage_name_for_class(class_name, name)
+                            }
                         }
                         _ => self.canon(name),
                     };
@@ -8602,8 +9083,7 @@ impl Compiler {
                     }
                 } else {
                     let class_slot = self.define_local("__static_property_read_class");
-                    self.emit_u16(Op::LOCAL_SET, class_slot);
-                    self.emit_u16(Op::LOCAL_GET, class_slot);
+                    self.emit_u16(Op::LOCAL_TEE, class_slot);
                     self.emit_static_property_key(class_slot, member)?;
                     {
                         let l = self.line;
@@ -8795,9 +9275,12 @@ impl Compiler {
         left: &Expression,
         right: &Expression,
     ) -> Result<bool, String> {
-        // Redundant name check removed: `resolve_fortran_operator_target`
-        // resolves through the interface-overload map, empty for every other
-        // profile.
+        // The registry is the capability check. Most compilation units have
+        // no declared operator interfaces; do not deep-copy operand trees just
+        // to discover that the lookup cannot resolve any target.
+        if self.fortran_operator_overloads.is_empty() {
+            return Ok(false);
+        }
         let arg_exprs = vec![left.clone(), right.clone()];
         let Some(target_name) = self.resolve_fortran_operator_target(op, &arg_exprs) else {
             return Ok(false);
@@ -9059,22 +9542,11 @@ use vybe_runtime::{Chunk, Value};
 // across all languages. Helpers emit structured WASM control constructs so
 // callers can compile language-specific sub-expressions in between.
 
-// ── Undefined sentinel ─────────────────────────────────────────────────
-//
-// JS `undefined` is not a WASM concept. We represent it as a global sentinel
-// `__undefined` that is set up at bundle time. All compilers that need
-// undefined semantics emit `global_get "__undefined"` via this helper.
-// Languages that don't have undefined (VB, C#, Pascal, Python) never call this.
-//
-// This centralizes all undefined emission so the opcode `Op::undefined` can
-// eventually be removed — every site that used to emit that opcode should
-// call this function instead.
-
 /// Emit the JS `undefined` value onto the stack.
-/// Uses `global_get "__undefined"` — a sentinel wired at bundle time.
+/// Uses the shared emitter's registered host binding, not a private sentinel.
 /// Stack: [] → [undefined]
 pub fn emit_undefined(chunk: &mut Chunk, line: u32) {
-    crate::primitives::globals::emit_read(chunk, "__undefined", line);
+    crate::primitives::instructions::core_wasm::undefined(chunk, line);
 }
 
 /// Emit bitwise NOT (i32). WASM equivalent: i32.const -1, i32.xor.
@@ -9346,8 +9818,7 @@ pub fn emit_rich_arithmetic(
     );
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, method_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
@@ -9401,8 +9872,7 @@ pub fn emit_rich_unary(
     );
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, method_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
@@ -9458,8 +9928,7 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
         line,
     );
 
-    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, method_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
     // ⛔ A VALUE BLOCK, NOT A VOID ONE. Both arms leave one value — the
     // `ToString` slot's return on the then side, `ecma:string.String`'s on the
@@ -9468,11 +9937,7 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     // block`, and it made EVERY module that stringifies through the rich path
     // invalid: a two-line C# `Console.WriteLine(1 + 2)` reproduces it.
     //
-    // ⛔ The CONDITION here is already correct (`REF_IS_NULL; I32_EQZ` leaves a
-    // raw i32). That is why this site survives a scan for boxed conditions —
-    // the defect is the BLOCK TYPE, the same distinction that separated the
-    // private-field fix (arms already i32, block wrongly declared a value)
-    // from the `toString` ladder (arms fine, condition wrongly boxed).
+    // Slot absence includes Undefined; the predicate remains a raw i32.
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -9510,10 +9975,9 @@ pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     );
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, method_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
@@ -9675,8 +10139,7 @@ pub fn emit_rich_compare_locals(
     );
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, method_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
     // Found method: call it with self=left, arg=right → result
@@ -9708,8 +10171,7 @@ pub fn emit_rich_compare_locals(
         );
         chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
 
-        chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-        chunk.emit_op(Op::REF_IS_NULL, line);
+        super::delegates::emit_slot_is_nullish_in_chunk(chunk, method_slot, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
@@ -9771,8 +10233,7 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     // and carries no slot, and a plain array carries neither. So the slot is an
     // additional key here, not a replacement: substituting it would fix
     // `__len__` and break every property-based length.
-    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, method_slot, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let slot = class_slots::resolve(
@@ -9789,10 +10250,9 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
     chunk.emit_end(line);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_slot_is_nullish_in_chunk(chunk, method_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
@@ -9810,7 +10270,7 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 /// known at build time, so the indirection buys nothing. Panics on
 /// non-primitive constants: an `Object`/`WeakRef`/`V128` has no
 /// immediate encoding and must stay pool-resident.
-pub(crate) fn emit_const_index(chunk: &mut Chunk, idx: u32, line: u32) {
+pub fn emit_const_index(chunk: &mut Chunk, idx: u32, line: u32) {
     match chunk.constants[idx as usize].clone() {
         Value::Null | Value::TypedNull(_) => {
             chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line)

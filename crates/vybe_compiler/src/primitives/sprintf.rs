@@ -81,9 +81,87 @@ fn ensure_chunk(chunks: &mut Vec<Chunk>) -> usize {
     }
     // Build the imports chunk (chunk 0 is the module-level import table).
     let imports = &mut chunks[0];
-    let helper = build_sprintf(imports);
+    let mut helper = build_sprintf(imports);
+    helper.local_names.push(vybe_runtime::chunk::LocalName::new(0, PLAIN_GENERAL_OWNER, vybe_runtime::chunk::LocalOrigin::Compiler));
     chunks.push(helper);
     chunks.len() - 1
+}
+
+const PLAIN_GENERAL_OWNER: &str = "<sprintf-owned-general-body>";
+const PLAIN_RUN_MARKER: &str = "<sprintf-plain-string-run-body>";
+
+/// This proof comes from an emitted string literal, never from a type hint.
+pub fn plain_string_run_count(format: &str) -> Option<usize> {
+    let bytes = format.as_bytes();
+    if bytes.len() < 4 || bytes.len() > i32::MAX as usize || bytes.len() % 2 != 0 {
+        return None;
+    }
+    bytes.chunks_exact(2).all(|part| part == b"%s").then_some(bytes.len() / 2)
+}
+
+fn build_run()->Chunk {
+ use vybe_runtime::chunk::{LocalName, LocalOrigin};
+ let mut c=Chunk::new("__primitive_sprintf_plain_string_run");c.arity=3;c.param_count=3;c.local_count=5;
+ let at=c.add_import("ecma:array","at");let string=c.add_import("ecma:string","String");let push=c.add_import("ecma:array","push");let join=c.add_import("ecma:array","join");let to_i32=c.add_import("wasm:js-number","toI32");
+ c.emit_op_u16(Op::LOCAL_GET,2,0);c.emit_call(to_i32,1,0);c.emit_op_u16(Op::LOCAL_SET,2,0);
+ let mut imports=Chunk::new("mutable-array-imports");crate::primitives::collections::emit_array_new_into(&mut imports,&mut c,0,0);c.emit_op_u16(Op::LOCAL_SET,3,0);c.emit_i32_const(0,0);c.emit_op_u16(Op::LOCAL_SET,4,0);
+ c.emit_block(0);c.emit_loop_s(0);c.emit_op_u16(Op::LOCAL_GET,4,0);c.emit_op_u16(Op::LOCAL_GET,2,0);c.emit_op(Op::I32_GE_S,0);c.emit_br_if(1,0);
+ c.emit_op_u16(Op::LOCAL_GET,3,0);c.emit_op_u16(Op::LOCAL_GET,1,0);c.emit_op_u16(Op::LOCAL_GET,4,0);c.emit_call(at,2,0);c.emit_call(string,1,0);c.emit_call(push,2,0);c.emit_op(Op::DROP,0);
+ c.emit_op_u16(Op::LOCAL_GET,4,0);c.emit_i32_const(1,0);c.emit_op(Op::I32_ADD,0);c.emit_op_u16(Op::LOCAL_SET,4,0);c.emit_br(0,0);c.emit_end(0);c.emit_end(0);
+ c.emit_op_u16(Op::LOCAL_GET,3,0);c.emit_string_const("",0);c.emit_call(join,2,0);c.emit_op(Op::RETURN,0);c.local_names.push(LocalName::new(0,PLAIN_RUN_MARKER,LocalOrigin::Compiler));c
+}
+
+fn ensure_plain_run(chunks: &mut Vec<Chunk>, count: usize) -> Option<(usize, usize)> {
+    use vybe_runtime::chunk::LocalOrigin;
+    if count < 2 || count > (i32::MAX as usize) / 2 || chunks.len() >= u16::MAX as usize - 1 {
+        return None;
+    }
+    if crate::languages::emit_dispatch_for("sprintf").is_some() { return None; }
+    let general = ensure_chunk(chunks);
+    if !chunks[general].local_names.iter().any(|n| n.slot == 0 && n.origin == LocalOrigin::Compiler && n.name == PLAIN_GENERAL_OWNER) {
+        return None;
+    }
+    let target = if let Some(index) = chunks.iter().position(|c| c.arity == 3 && c.local_names.iter().any(|n| n.slot == 0 && n.origin == LocalOrigin::Compiler && n.name == PLAIN_RUN_MARKER)) {
+        index
+    } else {
+        let index = chunks.len(); chunks.push(build_run()); index
+    };
+    Some((general, target))
+}
+
+fn emit_plain_run_call(chunks: &mut Vec<Chunk>, current: usize, general: usize, target: usize, count: usize, line: u32) {
+    let c = &mut chunks[current];
+    let base = c.alloc_scratch(2);
+    c.emit_op_u16(Op::LOCAL_SET, base + 1, line);
+    c.emit_op_u16(Op::LOCAL_SET, base, line);
+    // Retain the original reference so public function-table order is stable.
+    crate::primitives::functions::emit_ref_func(c, general, 0, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op_u16(Op::LOCAL_GET, base, line);
+    c.emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    c.emit_i32_const(count as i32, line);
+    if current < target {
+        let (callers, callees) = chunks.split_at_mut(target);
+        callers[current].emit_direct_defined_call(target as u32, &callees[0], false, line).expect("uncaptured formatter helper");
+    } else {
+        let (callees, callers) = chunks.split_at_mut(current);
+        callers[0].emit_direct_defined_call(target as u32, &callees[target], false, line).expect("uncaptured formatter helper");
+    }
+}
+
+/// Operands have already been evaluated in the original argument order.
+pub fn emit_sprintf_known_plain(chunks: &mut Vec<Chunk>, current: usize, argc: u8, count: usize, line: u32) -> bool {
+    if argc == 0 { return false; }
+    let Some((general, target)) = ensure_plain_run(chunks, count) else { return false; };
+    crate::primitives::collections::emit_array_new(chunks, current, u16::from(argc - 1), line);
+    emit_plain_run_call(chunks, current, general, target, count, line);
+    true
+}
+
+pub fn emit_sprintf_known_plain_from_array(chunks: &mut Vec<Chunk>, current: usize, count: usize, line: u32) -> bool {
+    let Some((general, target)) = ensure_plain_run(chunks, count) else { return false; };
+    emit_plain_run_call(chunks, current, general, target, count, line);
+    true
 }
 
 const SSCANF_CHUNK: &str = "__fmt_sscanf";
@@ -196,7 +274,6 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     let str_chat = c.add_import("ecma:string", "charAt");
     let str_slice = c.add_import("ecma:string", "slice");
     let str_index = c.add_import("ecma:string", "indexOf");
-    let str_last_index = c.add_import("ecma:string", "lastIndexOf");
     let str_tostr = c.add_import("ecma:string", "String");
     let str_fcc = c.add_import("ecma:string", "fromCharCode");
     let str_cat = c.add_import("ecma:string", "concat");
@@ -213,60 +290,29 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     let math_pow = c.add_import("ecma:math", "pow");
     let arr_at = c.add_import("ecma:array", "at");
 
-    // init
+    // Exact %s needs only argument conversion, without scanning or copying
+    // the format. Extra arguments are ignored by the general path too.
     lg(&mut c, FMT);
-    hc(&mut c, str_len, 1);
-    ls(&mut c, FLEN);
-
-    // A single, unmodified %s is common in generated templates. Avoid the
-    // general character-by-character formatter while leaving flags, escaped
-    // percent signs, and multiple conversions to the full parser below.
-    lg(&mut c, FMT);
-    cs(&mut c, "%");
-    hc(&mut c, str_index, 2);
-    c.emit_op(Op::I32_FROM_F64, 0);
-    ls(&mut c, POS);
-    lg(&mut c, POS);
-    ci(&mut c, -1);
-    c.emit_op(Op::I32_NE, 0);
-    lg(&mut c, ARGS);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
-    ci(&mut c, 1);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_AND, 0);
-    lg(&mut c, FMT);
-    cs(&mut c, "%s");
-    hc(&mut c, str_index, 2);
-    c.emit_op(Op::I32_FROM_F64, 0);
-    lg(&mut c, POS);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_AND, 0);
-    lg(&mut c, FMT);
-    cs(&mut c, "%");
-    hc(&mut c, str_last_index, 2);
-    c.emit_op(Op::I32_FROM_F64, 0);
-    lg(&mut c, POS);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_AND, 0);
+    let str_test = c.add_import("wasm:js-string", "test");
+    hc(&mut c, str_test, 1);
     c.emit_if(0);
     lg(&mut c, FMT);
-    ci(&mut c, 0);
-    lg(&mut c, POS);
-    hc(&mut c, str_slice, 3);
+    cs(&mut c, "%s");
+    let str_equals = c.add_import("wasm:js-string", "equals");
+    hc(&mut c, str_equals, 2);
+    c.emit_if(0);
     lg(&mut c, ARGS);
     ci(&mut c, 0);
     hc(&mut c, arr_at, 2);
     hc(&mut c, str_tostr, 1);
-    hc(&mut c, str_cat, 2);
-    lg(&mut c, FMT);
-    lg(&mut c, POS);
-    ci(&mut c, 2);
-    c.emit_op(Op::I32_ADD, 0);
-    lg(&mut c, FLEN);
-    hc(&mut c, str_slice, 3);
-    hc(&mut c, str_cat, 2);
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0);
+    c.emit_end(0);
+
+    // init
+    lg(&mut c, FMT);
+    hc(&mut c, str_len, 1);
+    ls(&mut c, FLEN);
 
     cs(&mut c, "");
     ls(&mut c, OUT);
@@ -292,27 +338,37 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
 
     // non-% path (depth: plain_blk=0, ol=1, ob=2)
     {
-        let pb = c.emit_block(0);
         lg(&mut c, CH);
         ci(&mut c, 37);
-        c.emit_op(Op::I32_EQ, 0);
-        c.emit_br_if(0, 0);
+        c.emit_op(Op::I32_NE, 0);
+        c.emit_if(0);
+        // Copy the complete literal run in one operation, preserving UTF-16
+        // surrogate pairs and avoiding repeated copies of the growing output.
         lg(&mut c, OUT);
         lg(&mut c, FMT);
         lg(&mut c, I);
-        hc(&mut c, str_chat, 2);
+        lg(&mut c, FMT);
+        cs(&mut c, "%");
+        lg(&mut c, I);
+        hc(&mut c, str_index, 3);
+        c.emit_op(Op::I32_FROM_F64, 0);
+        c.emit_op_u16(Op::LOCAL_TEE, I, 0);
+        ci(&mut c, 0);
+        c.emit_op(Op::I32_LT_S, 0);
+        c.emit_if(0);
+        lg(&mut c, FLEN);
+        ls(&mut c, I);
+        c.emit_end(0);
+        lg(&mut c, I);
+        hc(&mut c, str_slice, 3);
         hc(&mut c, str_cat, 2);
         ls(&mut c, OUT);
-        inc(&mut c, I);
         c.emit_br(1, 0); // continue ol
         c.emit_end(0);
-        c.patch_block(pb);
     }
     inc(&mut c, I); // skip '%'
 
-    // Fast paths for the two most common simple cases. This avoids
-    // entering the full flag/width/precision parser for plain "%%" and
-    // "%c" specifiers.
+    // Plain %%/%s/%c skip the general flag/width/precision parser.
     {
         let fp = c.emit_block(0);
         lg(&mut c, I);
@@ -341,6 +397,28 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
             c.emit_br(2, 0); // continue outer loop
             c.emit_end(0);
             c.patch_block(pct);
+        }
+
+        // Plain %s -> next argument as a string. This handles every plain
+        // string conversion without the separate single-%s scan and recipe.
+        {
+            let string = c.emit_block(0);
+            lg(&mut c, CH);
+            ci(&mut c, 115);
+            c.emit_op(Op::I32_NE, 0);
+            c.emit_br_if(0, 0);
+            lg(&mut c, OUT);
+            lg(&mut c, ARGS);
+            lg(&mut c, AIDX);
+            hc(&mut c, arr_at, 2);
+            hc(&mut c, str_tostr, 1);
+            hc(&mut c, str_cat, 2);
+            ls(&mut c, OUT);
+            inc(&mut c, AIDX);
+            inc(&mut c, I);
+            c.emit_br(2, 0);
+            c.emit_end(0);
+            c.patch_block(string);
         }
 
         // %c -> next arg as character
@@ -527,7 +605,6 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         c.emit_end(0);
         c.patch_block(fl);
     }
-    read_ch(&mut c, FMT, I, FLEN, CH, str_ccat);
 
     // width loop
     {
@@ -558,7 +635,6 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         c.emit_end(0);
         c.patch_block(wl);
     }
-    read_ch(&mut c, FMT, I, FLEN, CH, str_ccat);
 
     // precision
     {
@@ -600,7 +676,6 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         c.patch_loop(plp);
         c.emit_end(0);
         c.patch_block(pl);
-        read_ch(&mut c, FMT, I, FLEN, CH, str_ccat);
         c.emit_end(0);
         c.patch_block(dot);
     }
@@ -670,10 +745,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         c.emit_end(0);
         c.patch_block(eof);
     }
-    lg(&mut c, FMT);
-    lg(&mut c, I);
-    hc(&mut c, str_ccat, 2);
-    c.emit_op(Op::I32_FROM_F64, 0);
+    lg(&mut c, CH);
     ls(&mut c, CONV);
     inc(&mut c, I);
 
@@ -705,26 +777,104 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     cs(&mut c, "");
     ls(&mut c, RAW);
 
-    // conversions
+    // A table selects exactly the former conversion case; argument Number
+    // conversion and RAW initialization still occur before dispatch.
     conv_s(&mut c, str_tostr, str_slice);
-    conv_d(&mut c, math_trunc, math_abs, num_radix, str_cat);
-    conv_u(&mut c, num_radix);
-    conv_f(&mut c, num_fixed, str_cat, math_pow);
-    conv_e(&mut c, num_exp, str_upper, str_cat);
-    conv_radix(
-        &mut c, math_trunc, num_radix, str_upper, str_cat, 120, 16, false, "0x",
-    );
-    conv_radix(
-        &mut c, math_trunc, num_radix, str_upper, str_cat, 88, 16, true, "0X",
-    );
-    conv_radix(
-        &mut c, math_trunc, num_radix, str_upper, str_cat, 111, 8, false, "0",
-    );
-    conv_radix(
-        &mut c, math_trunc, num_radix, str_upper, str_cat, 98, 2, false, "",
-    );
-    conv_g(&mut c, num_prec, str_upper, str_cat);
-    conv_c(&mut c, num_num, str_fcc);
+    let done = c.emit_block(0);
+    let radix_join = c.emit_block(0);
+    let mut labels = [0usize; 11];
+    for index in (1..11).rev() {
+        labels[index] = c.emit_block(0);
+    }
+    let mut table = [11u32; 52];
+    for (code, case) in [
+        (100, 1),
+        (105, 1),
+        (117, 2),
+        (102, 3),
+        (70, 3),
+        (101, 4),
+        (69, 4),
+        (120, 5),
+        (88, 6),
+        (111, 7),
+        (98, 8),
+        (103, 9),
+        (71, 9),
+        (99, 10),
+    ] {
+        table[(code - 69) as usize] = case - 1;
+    }
+    lg(&mut c, CONV);
+    ci(&mut c, 69);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_br_table(&table, 11, 0);
+    for case in 1..11 {
+        c.emit_end(0);
+        c.patch_block(labels[case]);
+        let remaining = 10 - case;
+        if (5..=8).contains(&case) {
+            let (radix, prefix, upper) = match case {
+                5 => (16.0, "0x", 0),
+                6 => (16.0, "0X", 1),
+                7 => (8.0, "0", 0),
+                _ => (2.0, "", 0),
+            };
+            cf(&mut c, radix);
+            ls(&mut c, POS);
+            cs(&mut c, prefix);
+            ls(&mut c, CH);
+            ci(&mut c, upper);
+            ls(&mut c, SAVEI);
+            c.emit_br(remaining as u32, 0);
+        } else {
+            match case {
+                1 => conv_d(&mut c, math_trunc, math_abs, num_radix, str_cat),
+                2 => conv_u(&mut c, num_radix),
+                3 => conv_f(&mut c, num_fixed, str_cat, math_pow),
+                4 => conv_e(&mut c, num_exp, str_upper, str_cat),
+                9 => conv_g(&mut c, num_prec, str_upper, str_cat),
+                10 => conv_c(&mut c, num_num, str_fcc),
+                _ => unreachable!(),
+            }
+            c.emit_br((remaining + 1) as u32, 0);
+        }
+    }
+    c.emit_end(0);
+    c.patch_block(radix_join);
+    // POS/CH/SAVEI parser work slots are dead after ARG has been selected.
+    lg(&mut c, N);
+    hc(&mut c, math_trunc, 1);
+    lg(&mut c, POS);
+    hc(&mut c, num_radix, 2);
+    ls(&mut c, RAW);
+    lg(&mut c, SAVEI);
+    c.emit_if(0);
+    lg(&mut c, RAW);
+    hc(&mut c, str_upper, 1);
+    ls(&mut c, RAW);
+    c.emit_end(0);
+    let prefix = c.emit_block(0);
+    lg(&mut c, FALT);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0);
+    lg(&mut c, N);
+    cf(&mut c, 0.0);
+    c.emit_op(Op::F64_EQ, 0);
+    c.emit_br_if(0, 0);
+    lg(&mut c, CONV);
+    ci(&mut c, 98);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_br_if(0, 0);
+    lg(&mut c, CH);
+    lg(&mut c, RAW);
+    hc(&mut c, str_cat, 2);
+    ls(&mut c, RAW);
+    c.emit_end(0);
+    c.patch_block(prefix);
+    c.emit_end(0);
+    c.patch_block(done);
+    c.emit_end(0); // original string case
 
     // pad char: custom `'X` wins; else if fzero && !fleft → "0" else " "
     {
@@ -874,21 +1024,6 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     c
 }
 
-fn read_ch(c: &mut Chunk, fmt: u16, i: u16, flen: u16, ch: u16, ccat: u16) {
-    let b = c.emit_block(0);
-    lg(c, i);
-    lg(c, flen);
-    c.emit_op(Op::I32_GE_S, 0);
-    c.emit_br_if(0, 0);
-    lg(c, fmt);
-    lg(c, i);
-    hc(c, ccat, 2);
-    c.emit_op(Op::I32_FROM_F64, 0);
-    ls(c, ch);
-    c.emit_end(0);
-    c.patch_block(b);
-}
-
 // If CH not in '0'..'9', branch to break the caller's loop.
 // `depth` is counted from inside this function's own block.
 fn digit_or_break(c: &mut Chunk, ch: u16, depth: u32) {
@@ -921,11 +1056,10 @@ fn flag_arm(c: &mut Chunk, ch: u16, code: i32, flag: u16) {
 }
 
 fn conv_s(c: &mut Chunk, str_tostr: u16, str_slice: u16) {
-    let b = c.emit_block(0);
     lg(c, CONV);
     ci(c, 115);
-    c.emit_op(Op::I32_NE, 0);
-    c.emit_br_if(0, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_if(0);
     lg(c, ARG);
     hc(c, str_tostr, 1);
     ls(c, RAW);
@@ -945,119 +1079,67 @@ fn conv_s(c: &mut Chunk, str_tostr: u16, str_slice: u16) {
         c.emit_end(0);
         c.patch_block(pb);
     }
-    c.emit_end(0);
-    c.patch_block(b);
+    c.emit_else(0);
 }
 
 fn conv_d(c: &mut Chunk, math_trunc: u16, math_abs: u16, num_radix: u16, str_cat: u16) {
-    let b = c.emit_block(0);
-    lg(c, CONV);
-    ci(c, 100);
-    c.emit_op(Op::I32_EQ, 0);
-    lg(c, CONV);
-    ci(c, 105);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_OR, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
     lg(c, N);
     hc(c, math_trunc, 1);
-    ls(c, N);
-    lg(c, N);
+    c.emit_op_u16(Op::LOCAL_TEE, N, 0);
     hc(c, math_abs, 1);
     cf(c, 10.0);
     hc(c, num_radix, 2);
     ls(c, RAW);
     suppress_zero_digits_for_zero_precision(c);
-    // sign
-    {
-        let nb = c.emit_block(0);
-        lg(c, N);
-        cf(c, 0.0);
-        c.emit_op(Op::F64_LT, 0);
-        c.emit_br_if(0, 0);
-        // non-negative: fsign?
-        {
-            let sb = c.emit_block(0);
-            lg(c, FSIGN);
-            c.emit_op(Op::I32_EQZ, 0);
-            c.emit_br_if(0, 0);
-            cs(c, "+");
-            lg(c, RAW);
-            hc(c, str_cat, 2);
-            ls(c, RAW);
-            // Exit the whole conv block (depth: sb=0, nb=1, b=2) so the
-            // trailing "-" append after `end nb` is skipped. br(1) would
-            // only exit nb and land on the "-", producing "-+42".
-            c.emit_br(2, 0);
-            c.emit_end(0);
-            c.patch_block(sb);
-        }
-        // fspace?
-        {
-            let spb = c.emit_block(0);
-            lg(c, FSPACE);
-            c.emit_op(Op::I32_EQZ, 0);
-            c.emit_br_if(0, 0);
-            cs(c, " ");
-            lg(c, RAW);
-            hc(c, str_cat, 2);
-            ls(c, RAW);
-            c.emit_end(0);
-            c.patch_block(spb);
-        }
-        c.emit_br(1, 0); // skip negative "-"
-        c.emit_end(0);
-        c.patch_block(nb);
-    }
+    // Keep sign priority and exactly the original concat calls. Structured
+    // alternatives avoid the wrapper blocks and branches around each sign.
+    lg(c, N);
+    cf(c, 0.0);
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_if(0);
     cs(c, "-");
     lg(c, RAW);
     hc(c, str_cat, 2);
     ls(c, RAW);
+    c.emit_else(0);
+    lg(c, FSIGN);
+    c.emit_if(0);
+    cs(c, "+");
+    lg(c, RAW);
+    hc(c, str_cat, 2);
+    ls(c, RAW);
+    c.emit_else(0);
+    lg(c, FSPACE);
+    c.emit_if(0);
+    cs(c, " ");
+    lg(c, RAW);
+    hc(c, str_cat, 2);
+    ls(c, RAW);
     c.emit_end(0);
-    c.patch_block(b);
+    c.emit_end(0);
+    c.emit_end(0);
 }
 
 fn conv_u(c: &mut Chunk, num_radix: u16) {
-    let b = c.emit_block(0);
-    lg(c, CONV);
-    ci(c, 117);
-    c.emit_op(Op::I32_NE, 0);
-    c.emit_br_if(0, 0);
     // C `%u` expects a 32-bit unsigned view of the argument.
     // Keep positive values as-is; for negatives, add 2^32 (e.g. -1 -> 4294967295).
     lg(c, N);
-    ls(c, SAVEI);
-    lg(c, SAVEI);
     cf(c, 0.0);
     c.emit_op(Op::F64_LT, 0);
     c.emit_if_value(0);
-    lg(c, SAVEI);
+    lg(c, N);
     cf(c, 4294967296.0);
     c.emit_op(Op::F64_ADD, 0);
     c.emit_else(0);
-    lg(c, SAVEI);
+    lg(c, N);
     c.emit_end(0);
     cf(c, 10.0);
     hc(c, num_radix, 2);
     ls(c, RAW);
     suppress_zero_digits_for_zero_precision(c);
-    c.emit_end(0);
-    c.patch_block(b);
 }
 
 fn conv_f(c: &mut Chunk, num_fixed: u16, str_cat: u16, math_pow: u16) {
-    let b = c.emit_block(0);
-    lg(c, CONV);
-    ci(c, 102);
-    c.emit_op(Op::I32_EQ, 0);
-    lg(c, CONV);
-    ci(c, 70);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_OR, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-
     cf(c, 10.0);
     push_precision_or_default(c, 6.0);
     hc(c, math_pow, 2);
@@ -1084,8 +1166,6 @@ fn conv_f(c: &mut Chunk, num_fixed: u16, str_cat: u16, math_pow: u16) {
     ls(c, RAW);
     normalize_negative_zero_raw(c);
     sign_pos(c, str_cat);
-    c.emit_end(0);
-    c.patch_block(b);
 }
 
 fn push_precision_or_default(c: &mut Chunk, default_precision: f64) {
@@ -1167,16 +1247,6 @@ fn suppress_zero_digits_for_zero_precision(c: &mut Chunk) {
 }
 
 fn conv_e(c: &mut Chunk, num_exp: u16, str_upper: u16, str_cat: u16) {
-    let b = c.emit_block(0);
-    lg(c, CONV);
-    ci(c, 101);
-    c.emit_op(Op::I32_EQ, 0);
-    lg(c, CONV);
-    ci(c, 69);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_OR, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
     lg(c, N);
     {
         lg(c, PREC);
@@ -1204,25 +1274,12 @@ fn conv_e(c: &mut Chunk, num_exp: u16, str_upper: u16, str_cat: u16) {
         c.patch_block(ub);
     }
     sign_pos(c, str_cat);
-    c.emit_end(0);
-    c.patch_block(b);
 }
 
 // %g / %G — shortest of %e/%f at `precision` significant digits, with
 // trailing zeros (and a bare trailing '.') removed. Uses Number.toPrecision
 // then strips, which matches PHP for the common fixed-notation cases.
 fn conv_g(c: &mut Chunk, num_prec: u16, str_upper: u16, str_cat: u16) {
-    let b = c.emit_block(0);
-    lg(c, CONV);
-    ci(c, 103);
-    c.emit_op(Op::I32_EQ, 0);
-    lg(c, CONV);
-    ci(c, 71);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_OR, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-
     // RAW = N.toPrecision(prec) ; prec = PREC>=0 ? max(PREC,1) : 6
     lg(c, N);
     {
@@ -1368,66 +1425,13 @@ fn conv_g(c: &mut Chunk, num_prec: u16, str_upper: u16, str_cat: u16) {
     }
 
     sign_pos(c, str_cat);
-    c.emit_end(0);
-    c.patch_block(b);
-}
-
-fn conv_radix(
-    c: &mut Chunk,
-    math_trunc: u16,
-    num_radix: u16,
-    str_upper: u16,
-    str_cat: u16,
-    code: i32,
-    radix: u16,
-    uppercase: bool,
-    prefix: &str,
-) {
-    let b = c.emit_block(0);
-    lg(c, CONV);
-    ci(c, code);
-    c.emit_op(Op::I32_NE, 0);
-    c.emit_br_if(0, 0);
-    lg(c, N);
-    hc(c, math_trunc, 1);
-    cf(c, radix as f64);
-    hc(c, num_radix, 2);
-    if uppercase {
-        hc(c, str_upper, 1);
-    }
-    ls(c, RAW);
-    if !prefix.is_empty() {
-        let ab = c.emit_block(0);
-        lg(c, FALT);
-        c.emit_op(Op::I32_EQZ, 0);
-        c.emit_br_if(0, 0);
-        lg(c, N);
-        cf(c, 0.0);
-        c.emit_op(Op::F64_EQ, 0);
-        c.emit_br_if(0, 0);
-        cs(c, prefix);
-        lg(c, RAW);
-        hc(c, str_cat, 2);
-        ls(c, RAW);
-        c.emit_end(0);
-        c.patch_block(ab);
-    }
-    c.emit_end(0);
-    c.patch_block(b);
 }
 
 fn conv_c(c: &mut Chunk, num_num: u16, str_fcc: u16) {
-    let b = c.emit_block(0);
-    lg(c, CONV);
-    ci(c, 99);
-    c.emit_op(Op::I32_NE, 0);
-    c.emit_br_if(0, 0);
     lg(c, ARG);
     hc(c, num_num, 1);
     hc(c, str_fcc, 1);
     ls(c, RAW);
-    c.emit_end(0);
-    c.patch_block(b);
 }
 
 fn sign_pos(c: &mut Chunk, str_cat: u16) {

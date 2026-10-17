@@ -251,6 +251,28 @@ impl crate::Compiler {
         }
         let source_key = self.define_local("__static_property_source_key");
         self.emit_u16(Op::LOCAL_SET, source_key);
+        // PHP property access carries the called class, but an inherited
+        // static belongs to its declaring class. Replace only the storage
+        // receiver, not the late-static-bound method receiver.
+        self.emit_u16(Op::LOCAL_GET, class_local);
+        self.emit_const(Value::String(Arc::from("__static_property_owner$")));
+        self.emit_u16(Op::LOCAL_GET, source_key);
+        let owner_concat = self.import("ecma:string", "concat");
+        self.emit_host_call(owner_concat, 2);
+        let owner_get = self.import("ecma:object", "get");
+        self.emit_host_call(owner_get, 2);
+        let owner = self.define_local("__static_property_owner");
+        self.emit_u16(Op::LOCAL_SET, owner);
+        let owner_line = self.line;
+        super::delegates::emit_slot_is_nullish(
+            &mut self.chunks, self.current, owner, owner_line,
+        );
+        self.chunk().emit_if(owner_line);
+        self.chunk().emit_else(owner_line);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, owner);
+        self.emit_u16(Op::LOCAL_TEE, class_local);
+        self.chunk().emit_end(owner_line);
         self.emit_u16(Op::LOCAL_GET, class_local);
         let metadata_key = match &member.kind {
             ExprKind::Lit(vybe_ast::Literal::Str(name)) => {
@@ -275,9 +297,10 @@ impl crate::Compiler {
         self.emit_host_call(get, 2);
         let mapped_key = self.define_local("__static_property_storage_key");
         self.emit_u16(Op::LOCAL_SET, mapped_key);
-        self.emit_u16(Op::LOCAL_GET, mapped_key);
-        self.emit(Op::REF_IS_NULL);
         let line = self.line;
+        super::delegates::emit_slot_is_nullish(
+            &mut self.chunks, self.current, mapped_key, line,
+        );
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, source_key);
         self.chunk().emit_else(line);
@@ -328,9 +351,8 @@ pub enum ResolvedSlot {
 /// Resolve a slot and intern its key into `chunk` immediately.
 ///
 /// Use this — not [`resolve`] — wherever the original code hoisted the key
-/// above its emit sites. Interning once preserves both the constant-pool
-/// CONTENTS and its ORDER; resolving lazily at each emit would append a
-/// duplicate entry per use, because `add_constant` does not de-duplicate.
+/// above its emit sites. The immutable string interner reuses the first pool
+/// entry for the same storage key; subsequent reads retain that index.
 pub fn resolve_interned(
     chunk: &mut Chunk,
     slot: &ClassSlot,
@@ -338,7 +360,7 @@ pub fn resolve_interned(
 ) -> ResolvedSlot {
     match storage_key(slot, names) {
         Some(key) => {
-            let idx = chunk.add_constant(Value::String(Arc::from(key.as_str())));
+            let idx = chunk.intern_string_constant(&key);
             ResolvedSlot::Interned(idx)
         }
         None => {
@@ -474,14 +496,14 @@ fn push_value(chunk: &mut Chunk, val: &ValueSource, line: u32) {
 /// here, the name is in `global_imports` before `normalize_global_table` runs,
 /// so both numberings come from one list.
 fn declare_key_string(chunk: &mut Chunk, name: &str) {
-    chunk.add_global_import(vybe_runtime::chunk::STRING_CONSTANTS_MODULE, name);
+    chunk.intern_global_import(vybe_runtime::chunk::STRING_CONSTANTS_MODULE, name);
 }
 
 fn push_key(chunk: &mut Chunk, slot: &ResolvedSlot, line: u32) -> Option<u32> {
     match slot {
         ResolvedSlot::Key(name) => {
             declare_key_string(chunk, name);
-            Some(chunk.add_constant(Value::String(Arc::from(name.as_str()))))
+            Some(chunk.intern_string_constant(name))
         }
         ResolvedSlot::Interned(idx) => {
             if let Some(Value::String(text)) = chunk.constants.get(*idx as usize).cloned() {
@@ -536,6 +558,69 @@ fn finish_dest(chunk: &mut Chunk, dest: Dest, line: u32) {
         Dest::Stack => {}
         Dest::Local(slot) => chunk.emit_op_u16(Op::LOCAL_SET, slot, line),
     }
+}
+
+/// Guard an indexed GC read while retaining name-based fallback semantics.
+/// A receiver already in a local remains rooted there throughout the guard;
+/// no user expression or callback runs between the test and fast-path read.
+pub fn emit_guarded_indexed_read(
+    chunk: &mut Chunk, obj: ObjSource, typeidx: u32, field: u32,
+    fallback: &ResolvedSlot, dest: Dest, line: u32,
+) {
+    let recv = match obj {
+        ObjSource::Local(slot) => slot,
+        ObjSource::Stack => {
+            let slot = chunk.alloc_scratch(1);
+            chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+            slot
+        }
+    };
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunk.emit_ref_type_op(Op::REF_TEST,
+        vybe_runtime::opcode::heaptype::HeapType::Concrete(typeidx), line);
+    let guard = chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, typeidx, field, line);
+    chunk.emit_else(line);
+    emit_class_get(chunk, ObjSource::Local(recv), fallback, Dest::Stack, line);
+    chunk.emit_end(line);
+    chunk.patch_block(guard);
+    finish_dest(chunk, dest, line);
+}
+
+/// Guard an indexed write while preserving the pre-evaluated operands.
+/// Local operands need no additional spill: ref.test does not run callbacks,
+/// and both operands are loaded before the dynamic fallback can call a setter.
+pub fn emit_guarded_indexed_write(
+    chunk: &mut Chunk, obj: ObjSource, typeidx: u32, field: u32,
+    fallback: &ResolvedSlot, val: &ValueSource, line: u32,
+) {
+    let boxed_local = |slot: u16| chunk.func_sig.is_none() && !chunk.i64_locals.contains(&slot);
+    let local_value = match val { ValueSource::Local(slot) if boxed_local(*slot) => Some(*slot), _ => None };
+    let local_receiver = match obj { ObjSource::Local(slot) if boxed_local(slot) => Some(slot), _ => None };
+    // A stacked value is above a stacked receiver. Preserve that pop order.
+    let value = local_value.unwrap_or_else(|| {
+        let slot = chunk.alloc_scratch(1);
+        push_value(chunk, val, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        slot
+    });
+    let recv = local_receiver.unwrap_or_else(|| {
+        let slot = chunk.alloc_scratch(1);
+        push_obj(chunk, obj, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        slot
+    });
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunk.emit_ref_type_op(Op::REF_TEST,
+        vybe_runtime::opcode::heaptype::HeapType::Concrete(typeidx), line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, typeidx, field, line);
+    chunk.emit_else(line);
+    emit_class_set(chunk, ObjSource::Local(recv), fallback, ValueSource::Local(value), line);
+    chunk.emit_end(line);
 }
 
 /// Read a slot.
@@ -815,20 +900,9 @@ impl crate::Compiler {
 
     /// An indexed READ, guarded by `ref.test` against the declaring class.
     ///
-    /// ⛔ A DECLARED TYPE IS NOT A GUARANTEE ABOUT THE RUNTIME OBJECT, and an
-    /// unguarded `struct.get <typeidx>` on something that is not that type
-    /// TRAPS rather than answering `undefined`. `seam3_indexable` rules out
-    /// subclassing (`!has_parent`) and nothing else — not a `with`-expression
-    /// copy built by a helper, not a platform value, not `null`. Measured: 11
-    /// csharp tests, `trap: struct.get field index out of range` and
-    /// `trap: struct.get on a non-struct`.
-    ///
-    /// The WRITE side needs no guard: it runs inside the constructor, where the
-    /// receiver is `this` and therefore exact and non-null.
-    ///
-    /// `ref.test` is the spec instruction for exactly this question, so the
-    /// fast path stays a real `struct.get` and the miss falls back to the
-    /// string key the read would have used anyway.
+    /// A declared type does not prove the receiver's runtime type. Copies,
+    /// platform values, and null still need the ordinary named lookup. Test
+    /// the declaring GC type before reading its indexed field.
     ///
     /// Returns whether it emitted; `false` means the caller takes the ordinary
     /// path.
@@ -859,29 +933,9 @@ impl crate::Compiler {
         let fallback = self.resolve_slot_interned(&ClassSlot::internal(
             self.js_member_storage_name_for_class(&class, field),
         ));
-        // Compiler temporary: live only inside this guarded access.
-        let recv = self.chunks[self.current].alloc_scratch(1);
-        push_obj(&mut self.chunks[self.current], obj, line);
-        self.emit_u16(Op::LOCAL_SET, recv);
-
-        self.emit_u16(Op::LOCAL_GET, recv);
-        self.emit_ref_type_test(Op::REF_TEST, &class, line);
-        self.chunk().emit_if_value(line);
-        self.emit_u16(Op::LOCAL_GET, recv);
-        self.chunk()
-            .emit_struct_field_op(Op::STRUCT_GET, typeidx, fieldidx, line);
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, recv);
-        emit_class_get(
-            &mut self.chunks[self.current],
-            ObjSource::Stack,
-            &fallback,
-            Dest::Stack,
-            line,
+        emit_guarded_indexed_read(
+            &mut self.chunks[self.current], obj, typeidx, fieldidx, &fallback, dest, line,
         );
-        self.chunk().emit_end(line);
-
-        finish_dest(&mut self.chunks[self.current], dest, line);
         true
     }
 
@@ -919,33 +973,9 @@ impl crate::Compiler {
         let fallback = self.resolve_slot_interned(&ClassSlot::internal(
             self.js_member_storage_name_for_class(&class, field),
         ));
-        let recv = self.chunks[self.current].alloc_scratch(1);
-        let value = self.chunks[self.current].alloc_scratch(1);
-        // ⛔ VALUE FIRST. Where both operands are already stacked the value is
-        // on TOP, so taking the receiver first stores the value in `recv` and
-        // `ref.test` then tests an integer — it fails, every write takes the
-        // key path, and reads of the same field index a slot nothing wrote.
-        push_value(&mut self.chunks[self.current], val, line);
-        self.emit_u16(Op::LOCAL_SET, value);
-        push_obj(&mut self.chunks[self.current], obj, line);
-        self.emit_u16(Op::LOCAL_SET, recv);
-
-        self.emit_u16(Op::LOCAL_GET, recv);
-        self.emit_ref_type_test(Op::REF_TEST, &class, line);
-        self.chunk().emit_if(line);
-        self.emit_u16(Op::LOCAL_GET, recv);
-        self.emit_u16(Op::LOCAL_GET, value);
-        self.chunk()
-            .emit_struct_field_op(Op::STRUCT_SET, typeidx, fieldidx, line);
-        self.chunk().emit_else(line);
-        emit_class_set(
-            &mut self.chunks[self.current],
-            ObjSource::Local(recv),
-            &fallback,
-            ValueSource::Local(value),
-            line,
+        emit_guarded_indexed_write(
+            &mut self.chunks[self.current], obj, typeidx, fieldidx, &fallback, val, line,
         );
-        self.chunk().emit_end(line);
         true
     }
 
@@ -988,8 +1018,7 @@ impl crate::Compiler {
     /// and resolve plainly. `storage_key` routes on the variant, so this only
     /// has to answer for the member cases.
     /// Resolve and intern in one step, for a key the original code hoisted
-    /// above its emit sites. See [`resolve_interned`] — `add_constant` does not
-    /// de-duplicate, so a hoisted key must intern exactly once.
+    /// above its emit sites. See [`resolve_interned`] for immutable key reuse.
     /// Allocate a bare object. See [`emit_class_alloc`].
     pub(crate) fn class_alloc(&mut self) {
         let line = self.line;
@@ -1001,7 +1030,7 @@ impl crate::Compiler {
         match resolved {
             ResolvedSlot::Key(name) => {
                 let idx =
-                    self.chunks[self.current].add_constant(Value::String(Arc::from(name.as_str())));
+                    self.chunks[self.current].intern_string_constant(&name);
                 ResolvedSlot::Interned(idx)
             }
             other => other,
@@ -1095,21 +1124,6 @@ impl crate::Compiler {
         found.map(str::to_string)
     }
 
-    pub(crate) fn indexed_owner_of_storage(&self, storage: &str) -> Option<String> {
-        let mut found: Option<&str> = None;
-        for entry in &self.chunks[0].types {
-            if !self.seam3_indexable.contains(&self.canon(&entry.name)) {
-                continue;
-            }
-            if entry.fields.iter().any(|f| f == storage) {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(&entry.name);
-            }
-        }
-        found.map(str::to_string)
-    }
 
     pub(crate) fn resolve_slot(&self, slot: &ClassSlot) -> ResolvedSlot {
         // ▶▶ SEAM 3.
@@ -1190,6 +1204,114 @@ impl crate::Compiler {
 /// Borrowed view of the compiler for name resolution, so `class_set` can hold
 /// `&mut self.chunks` and a `&self` resolver at the same time.
 struct CompilerNames<'a>(&'a crate::Compiler);
+
+#[cfg(test)]
+mod indexed_guard_tests {
+    use super::*;
+    use vybe_runtime::chunk::{CompositeKind, TypeEntry};
+
+    #[test]
+    fn indexed_guards_use_resolved_layout_even_for_builtin_type_names() {
+        // Exercise the shared guard under real frontend profiles, without
+        // claiming parser coverage or changing their field-indexing policy.
+        for profile_source in [
+            vybe_language_c::profile_source(),
+            vybe_language_vb::profile_source(),
+            vybe_language_js::profile_source(),
+        ] {
+            for name in ["object", "struct", "array", "number", "Record"] {
+                for concrete_receiver in [false, true] {
+                    let profile = crate::profile::parse_profile(profile_source).unwrap();
+                    let mut compiler = crate::Compiler::with_profile(profile);
+                    let canonical_name = compiler.canon(name);
+                    compiler.chunks[0].types.push(TypeEntry {
+                        name: "unrelated".into(),
+                        kind: CompositeKind::Struct,
+                        fields: vec!["other".into()],
+                        ..Default::default()
+                    });
+                    compiler.chunks[0].types.push(TypeEntry {
+                        name: canonical_name.clone(),
+                        kind: CompositeKind::Struct,
+                        fields: vec!["value".into()],
+                        ..Default::default()
+                    });
+                    compiler.seam3_indexable.insert(canonical_name);
+                    compiler.chunks[0].local_count = 1;
+                    if concrete_receiver {
+                        compiler.chunks[0].emit_op_u16(Op::STRUCT_NEW_DEFAULT, 2, 0);
+                    } else {
+                        crate::primitives::globals::emit_read(
+                            &mut compiler.chunks[0],
+                            "receiver",
+                            0,
+                        );
+                    }
+                    compiler.chunks[0].emit_op_u16(Op::LOCAL_SET, 0, 0);
+                    let slot = ClassSlot::InstanceField {
+                        class: Some(name.into()),
+                        field: "value".into(),
+                    };
+                    assert!(compiler.emit_guarded_indexed_set(
+                        ObjSource::Local(0),
+                        &slot,
+                        &ValueSource::ConstI32(91),
+                        0,
+                    ));
+                    assert!(compiler.emit_guarded_indexed_get(
+                        ObjSource::Local(0),
+                        &slot,
+                        Dest::Stack,
+                        0,
+                    ));
+                    compiler.chunks[0].emit_op(Op::RETURN, 0);
+                    let mut chunks = compiler.chunks;
+                    crate::primitives::globals::declare_free_globals(&mut chunks);
+                    crate::primitives::globals::normalize_global_table(&mut chunks);
+                    let mut at = 0;
+                    let mut tests = 0;
+                    while at < chunks[0].code.len() {
+                        let op = Op::from_code_at(&chunks[0].code, at);
+                        if op == Op::REF_TEST {
+                            // The concrete index 2 is a one-byte signed LEB.
+                            assert_eq!(chunks[0].code[at + 4], 2, "{name}");
+                            tests += 1;
+                        }
+                        at += 4 + op.operand_format().size_in(&chunks[0].code, at + 4);
+                    }
+                    assert_eq!(tests, 2, "both read and write must be guarded");
+                    let bytes = vybe_platform_wasm::write_wasm_with_options(
+                        &chunks,
+                        vybe_platform_wasm::WasmWriteOptions {
+                            include_vybe_metadata: false,
+                            include_name_section: true,
+                        },
+                    );
+                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                        .validate_all(&bytes)
+                        .expect("indexed guards must emit valid WASM");
+                    let receiver = Value::Object(vybe_runtime::heap::alloc(
+                        vybe_runtime::value::Object::new(),
+                    ));
+                    let mut vm = vybe_runtime::VM::new();
+                    crate::primitives::platforms::register_platforms_all(&mut vm);
+                    vm.set_global("receiver", receiver.clone());
+                    assert_eq!(vm.run(chunks).unwrap(), Value::I32(91), "{name}");
+                    if !concrete_receiver {
+                        let Value::Object(receiver) = receiver else {
+                            unreachable!()
+                        };
+                        assert_eq!(
+                            receiver.lock().unwrap().properties.get("value"),
+                            Some(&Value::I32(91)),
+                            "generic fallback must preserve named storage"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
 
 impl SlotNames for CompilerNames<'_> {
     /// ⛔ DELEGATES. This re-implemented `impl SlotNames for Compiler`

@@ -12,6 +12,11 @@
 //! Each sibling is a separate `impl Compiler { ... }` block; the public
 //! surface is unchanged (`Compiler::with_profile`, `Compiler::compile`).
 
+#[cfg(test)]
+std::thread_local! {
+    static COPY_MODULE_BODY_BASELINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 // ── Chunk-level emit surface ────────────────────────────────────────────
 // The former `emitter` module. Its free functions over `&mut Chunk` and the
 // `impl Compiler` walkers alongside them are one layer now — this crate IS
@@ -42,6 +47,7 @@ pub mod dynamic_invoke;
 pub mod dynamic_symbols;
 pub mod enum_lowering;
 pub mod errors;
+pub mod exact_integer;
 pub mod fs_path;
 pub mod functions;
 pub mod generators;
@@ -56,6 +62,10 @@ pub mod json;
 pub mod loops;
 pub mod math;
 pub mod memory;
+pub mod memory_compare;
+pub mod memory_find;
+pub mod memory_scan;
+pub mod memory_span;
 pub mod multivalue;
 pub mod object;
 pub mod ops;
@@ -109,7 +119,11 @@ mod arrays;
 pub mod async_ops;
 mod bindings;
 mod builtins;
+pub mod helper_templates;
+pub mod argument_emission;
 mod calls;
+mod immutable_calls;
+mod body_symbols;
 pub mod canonical;
 mod case_insensitive_collections;
 pub mod channels;
@@ -118,9 +132,11 @@ mod class_augmentation;
 // The shared bind has to be reachable from where receivers are actually
 // bound, or a frontend re-invents a channel of its own.
 pub mod class_context;
+pub mod deferred_class_bodies;
 pub mod class_normalize; // cross-language class normalisation (was crate::common::classes)
 pub mod class_slots;
 pub mod classes;
+mod closure_analysis;
 pub mod closures;
 pub mod components;
 // `pub` for `lower_gotos`: `goto`/label lowering is shared machinery every
@@ -141,17 +157,25 @@ mod lambdas;
 mod link;
 mod metadata;
 pub mod namespaces;
+mod user_tree_cache;
 mod operators;
 mod overloads;
 pub mod prototypes;
 pub mod records;
 mod reference_analysis;
+mod atomic_preparation;
+mod source_feature_preparation;
+mod declaration_preparation;
+mod function_preparation;
+mod unit_preparation;
 pub mod references;
 pub mod reflection;
 mod resolver;
 mod scope;
 pub mod slices;
 mod statements;
+mod statement_stream;
+pub use statement_stream::{StatementEmission, StatementProgress};
 mod type_inference;
 
 use crate::ast::*;
@@ -164,7 +188,6 @@ use crate::profile::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vybe_runtime::chunk::Import as BytecodeImport;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::registry::emitter_results::{EmitOutcome, EmitRequest, ResultRepresentation};
 use vybe_runtime::{Chunk, Value};
@@ -188,7 +211,10 @@ fn write_compiler_timing(path: &str, label: &str, elapsed: Duration) {
         .append(true)
         .open(path)
     {
-        let _ = writeln!(file, "{label} {elapsed:?}");
+        // Keep concurrent worker records whole: formatting into File can issue
+        // separate writes for the label and duration, corrupting phase totals.
+        let record = format!("{label} {elapsed:?}\n");
+        let _ = file.write_all(record.as_bytes());
     }
 }
 
@@ -320,13 +346,21 @@ struct PendingMethodOverload {
     is_virtual: bool,
 }
 
+// Signature names are immutable declaration metadata, shared across overload
+// selection/call staging copies. The empty declaration shape needs no fresh
+// allocation at each registration.
+fn empty_signature_param_names() -> std::sync::Arc<[String]> {
+    static EMPTY: std::sync::OnceLock<std::sync::Arc<[String]>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| std::sync::Arc::from([])).clone()
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CallSignature {
-    param_names: Vec<String>,
+    param_names: std::sync::Arc<[String]>,
     /// The declared default expression for each param (positionally aligned
     /// with `param_names`), so named-arg reordering can fill an OMITTED
     /// optional param with its real default instead of `null`.
-    param_defaults: Vec<Option<Expression>>,
+    param_defaults: std::sync::Arc<[Option<Expression>]>,
     min_arity: usize,
     has_rest: bool,
     /// The last param is a `**kwargs`-style collector: named args that match no
@@ -343,10 +377,11 @@ pub(crate) struct CallSignature {
 impl CallSignature {
     pub(crate) fn from_params(params: &[Param]) -> Self {
         Self {
-            param_names: params
-                .iter()
-                .map(|param| param.name.trim_start_matches('$').to_string())
-                .collect(),
+            param_names: if params.is_empty() {
+                empty_signature_param_names()
+            } else {
+                params.iter().map(|param| param.name.trim_start_matches('$').to_string()).collect()
+            },
             param_defaults: params.iter().map(|param| param.default.clone()).collect(),
             min_arity: params
                 .iter()
@@ -369,8 +404,12 @@ impl CallSignature {
             return None;
         }
         Some(Self {
-            param_names: sig.params.iter().map(|param| param.name.clone()).collect(),
-            param_defaults: vec![None; sig.params.len()],
+            param_names: if sig.params.is_empty() {
+                empty_signature_param_names()
+            } else {
+                sig.params.iter().map(|param| param.name.clone()).collect()
+            },
+            param_defaults: vec![None; sig.params.len()].into(),
             min_arity: sig.min_arity(),
             has_rest: false,
             has_kwargs: false,
@@ -495,6 +534,7 @@ struct StaticLocalBinding {
     global_name: String,
     init_flag_name: String,
     type_hint: Option<String>,
+    declaration_scope_depth: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -542,7 +582,7 @@ pub fn set_dump_classes(on: bool) {
     DUMP_CLASSES.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-fn dump_classes_enabled() -> bool {
+pub(crate) fn dump_classes_enabled() -> bool {
     DUMP_CLASSES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
@@ -556,7 +596,82 @@ fn join_or_none(items: &[String]) -> String {
     }
 }
 
+/// Declaration storage shared only while read-only publication runs. Ordinary
+/// declaration updates have a unique owner; copy-on-write protects snapshots if
+/// a later phase ever mutates the registry while one is retained.
+#[derive(Default)]
+struct NormalizedClasses(
+    std::sync::Arc<HashMap<String, vybe_ast::class_normalize::NormalClass>>,
+    std::sync::Mutex<Option<PrivateMemberIndex>>,
+);
+
+#[derive(Clone)]
+struct PrivateMemberIndex {
+    case_sensitive: bool,
+    namespace_body: Option<usize>,
+    members: std::sync::Arc<HashSet<String>>,
+}
+
+impl Clone for NormalizedClasses {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), std::sync::Mutex::new(
+            self.1.lock().unwrap_or_else(|poison| poison.into_inner()).clone(),
+        ))
+    }
+}
+
+impl std::ops::Deref for NormalizedClasses {
+    type Target = HashMap<String, vybe_ast::class_normalize::NormalClass>;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+impl std::ops::DerefMut for NormalizedClasses {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // All declaration writes, including in-place member/augmentation
+        // updates, pass through this boundary. Snapshots retain their own
+        // cache and declaration view; only this owner's index is invalidated.
+        self.1.get_mut().unwrap_or_else(|poison| poison.into_inner()).take();
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
+#[cfg(test)]
+mod normalized_class_index_tests {
+    use super::{NormalizedClasses, PrivateMemberIndex};
+    use std::sync::Arc;
+
+    #[test]
+    fn private_index_snapshots_invalidate_on_each_declaration_write() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<NormalizedClasses>();
+        let mut classes = NormalizedClasses::default();
+        classes.insert("owner".into(), vybe_ast::class_normalize::NormalClass::default());
+        *classes.1.lock().unwrap() = Some(PrivateMemberIndex {
+            case_sensitive: true,
+            namespace_body: None,
+            members: Arc::new(["secret".to_string()].into_iter().collect()),
+        });
+        let snapshot = classes.clone();
+        assert!(Arc::ptr_eq(&classes.0, &snapshot.0));
+        classes.get_mut("owner").unwrap().name = "Changed".into();
+        assert!(classes.1.lock().unwrap().is_none());
+        assert!(snapshot.1.lock().unwrap().as_ref().unwrap().members.contains("secret"));
+        assert_ne!(classes.get("owner").unwrap().name, snapshot.get("owner").unwrap().name);
+        assert!(!Arc::ptr_eq(&classes.0, &snapshot.0));
+        *classes.1.lock().unwrap() = snapshot.1.lock().unwrap().clone();
+        classes.remove("owner");
+        assert!(classes.1.lock().unwrap().is_none());
+        assert!(snapshot.contains_key("owner"));
+    }
+}
+
+/// Diagnostic environment is captured per consumed module compilation.
+/// Changes between compilations remain visible; no process-global cache.
+struct StatementTraceConfig { path: String, function: String }
+
 pub struct Compiler {
+    argument_emitters: argument_emission::Selection,
+    helper_parser: Option<vybe_runtime::registry::ParseFn>,
+    helper_templates: helper_templates::Owner,
     pub(crate) chunks: Vec<Chunk>,
     scopes: Vec<Scope>,
     pub(crate) current: usize,
@@ -568,7 +683,7 @@ pub struct Compiler {
     label_depth: u32,
     function_label_base: u32,
     pub(crate) line: u32,
-    pub(crate) defined_globals: HashSet<String>,
+    pub(crate) defined_globals: body_symbols::BodySymbols,
     /// Module-level VARIABLE names, as written. Separate from
     /// `defined_globals` (classes/functions/modules) because a language whose
     /// script-scope variables are implicit — PHP's `$x = 5` — records them
@@ -598,12 +713,13 @@ pub struct Compiler {
     /// the compile and published to every chunk at emission. Empty for every
     /// language that is not a Component Model front end.
     canon_section: Vec<vybe_runtime::canon_def::CanonDef>,
-    /// The DECLARED rows, kept alongside the lowered ones because a
-    /// `CoreExport` callee can only be resolved once every chunk exists.
-    canon_decls: Vec<vybe_ast::canon::CanonDecl>,
+    /// Named core callees kept until their emitted chunks have indices.
+    core_export_callees: Vec<common::canon::CoreExportCallee>,
     canon_functypes: Vec<Option<vybe_runtime::canon_def::CanonFuncType>>,
     canon_valtypes: Vec<Option<vybe_runtime::component::ValType>>,
     component_funcs: Vec<Option<u32>>,
+    component_func_links: Vec<vybe_runtime::canon_def::ComponentFuncLink>,
+    component_instance_links: Option<Arc<vybe_runtime::component_instance_link::InstanceLinkMetadata>>,
     /// True while compiling the operand of a `typeof`. `typeof undeclaredName`
     /// must evaluate to `"undefined"`, never throw — so the unresolvable-binding
     /// ReferenceError in `emit_var_get` is suppressed in this context.
@@ -613,6 +729,7 @@ pub struct Compiler {
     /// the top of `compile_expr` — so it reaches the outermost operator and
     /// can never leak into a nested operand, where the boxed value is what the
     /// surrounding expression is entitled to.
+    has_discarded_builtin_emits: bool,
     want_i32_condition: bool,
     /// The request above was honoured: the value on the stack is an i32.
     /// Written by `emit_i32_to_bool_or_report` or a terminal typed builtin
@@ -624,6 +741,8 @@ pub struct Compiler {
     /// direction is a report without a skip: `BR_IF` accepts a `Bool` happily,
     /// so the loop would key on the wrong thing in silence.
     gave_i32_condition: bool,
+    /// Set only by a resolved terminal emitter for an explicit word request.
+    gave_i32_word: bool,
     /// Every name the program lexically declares (`let`/`const`/`var`/params/
     /// etc.) as a local, across all scopes — populated only for languages with
     /// `unresolved_reference_throws`. A name in this set that is unresolvable in
@@ -638,23 +757,26 @@ pub struct Compiler {
     /// function names from the program being compiled, in the compiler's own
     /// table — SipHash's resistance to attacker-chosen keys buys nothing here.
     /// See [`vybe_runtime::chunk::FxBuildHasher`].
-    pub(crate) defined_functions: HashSet<String, vybe_runtime::chunk::FxBuildHasher>,
+    pub(crate) defined_functions: body_symbols::FunctionSymbols,
+    immutable_function_bindings: immutable_calls::Bindings,
     /// Whether this compiled module owns whole-program end-of-module hooks.
     ///
     /// Normal entry modules do. Dynamic fragments/includes do not: they run in
     /// the caller's request and must not fire request-end hooks or flush every
     /// output buffer just because one included file reached EOF.
     run_module_end_hooks: bool,
-    function_param_modes: HashMap<String, Vec<PassBy>>,
-    function_param_types: HashMap<String, Vec<Option<String>>>,
-    function_min_arity: HashMap<String, usize>,
-    function_signatures: HashMap<String, Vec<CallSignature>>,
+    // These private symbol tables are queried by key, never emitted in hash
+    // iteration order. Share the fast hasher already used for function identity.
+    function_param_modes: HashMap<String, Vec<PassBy>, vybe_runtime::chunk::FxBuildHasher>,
+    function_param_types: HashMap<String, Vec<Option<String>>, vybe_runtime::chunk::FxBuildHasher>,
+    function_min_arity: HashMap<String, usize, vybe_runtime::chunk::FxBuildHasher>,
+    function_signatures: HashMap<String, Vec<CallSignature>, vybe_runtime::chunk::FxBuildHasher>,
     rest_fixed_arities: BTreeSet<u8>,
-    function_return_types: HashMap<String, String>,
+    function_return_types: HashMap<String, String, vybe_runtime::chunk::FxBuildHasher>,
     fortran_interface_overloads: HashMap<String, Vec<FortranInterfaceOverload>>,
     fortran_operator_overloads: HashMap<String, Vec<FortranInterfaceOverload>>,
     constructor_signatures: HashMap<String, Vec<CallSignature>>,
-    pub(crate) defined_classes: HashSet<String>,
+    pub(crate) defined_classes: body_symbols::BodySymbols,
     pub(crate) abstract_classes: HashSet<String>,
     /// Names of methods defined on any user class — used to avoid value method
     /// hijacking (e.g. user class `Calc.Add()` shouldn't match array `add`).
@@ -792,8 +914,9 @@ pub struct Compiler {
     /// takes a mutex and linear-scans, and `canon` is called on nearly every
     /// name the compiler touches.
     variable_namespace: Option<&'static vybe_runtime::registry::VariableNamespace>,
-    pub(crate) profile: LanguageProfile,
+    pub(crate) profile: std::sync::Arc<LanguageProfile>,
     current_func_name: Option<String>,
+    statement_trace: Option<std::sync::Arc<StatementTraceConfig>>,
     current_result_slot: Option<u16>,
     current_ref_out_params: Option<Vec<u16>>,
     pending_classes: HashMap<String, PendingClass>,
@@ -808,6 +931,30 @@ pub struct Compiler {
     /// and trapped. Membership here is the ONLY licence to emit an indexed
     /// access.
     pub(crate) seam3_indexable: std::collections::HashSet<String>,
+    /// Local derived constructors with a proven fixed parent initializer ABI.
+    pub(crate) receiver_preserving_classes: std::collections::HashSet<String>,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) inherited_gc_fields: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) compact_parent_forwarding: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) static_class_member_writes: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) console_string_producers: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) console_fixed_numeric: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) compound_numeric_proof: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) comparison_bool_reuse: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) generator_predicate_reuse: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) generator_plain_control_packets: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) condition_truthiness_reuse: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) integer_truthiness_reuse: bool,
     /// Canonical names of classes whose OWN typeidx is what `struct.new_default`
     /// actually used, so `ref.test` against them answers "was this object
     /// constructed by this class".
@@ -830,7 +977,8 @@ pub struct Compiler {
     /// body compiles, so a class's member set is knowable regardless of
     /// compilation order, and augmenting types (traits / mixins / promoted
     /// fields) can be resolved by name. See flexclassplan.md §3a, §4c.
-    normalized_classes: HashMap<String, vybe_ast::class_normalize::NormalClass>,
+    normalized_classes: NormalizedClasses,
+    deferred_class_bodies: Option<deferred_class_bodies::Owner>,
     /// For the class being emitted: bound method name → the PROTOCOL SLOT key
     /// that method also publishes under (`__vybe_slot_<id>`).
     ///
@@ -895,6 +1043,10 @@ pub struct Compiler {
     /// shared word at declaration, exactly where the pointer-cell promotion
     /// would have run.
     current_atomic_word_locals: HashSet<String>,
+    /// Source body receipts are valid only during this consumed Compiler's
+    /// compile_with_imports call, while its borrowed immutable Module is alive.
+    /// Cloned/normalized/generated bodies never inherit a source receipt.
+    source_atomic_free_bodies: HashSet<(usize, usize)>,
     current_closure_captured_locals: HashSet<String>,
 
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
@@ -1001,6 +1153,7 @@ pub struct Compiler {
     /// `RefCell` because resolution takes `&self` and must be able to read it
     /// from the middle of a query.
     user_namespace_tree: std::cell::RefCell<crate::primitives::namespaces::Subtree>,
+    user_namespace_lookup_cache: std::cell::RefCell<user_tree_cache::UserTreeCache>,
     /// Snapshot of the current module's source imports.
     ///
     /// Used for narrow source-shape decisions that depend on the ambient
@@ -1016,6 +1169,10 @@ pub struct Compiler {
     /// for runtime trap dispatch. Off → direct `STRUCT_GET` / `ARRAY_GET`
     /// (zero overhead for non-Proxy code paths).
     pub(crate) uses_proxy: bool,
+    compact_source_lines: bool,
+    array_call_tail_identity: bool,
+    interpolation_call_tail_identity: bool,
+    fused_closure_analysis: bool,
     /// BigInt values are POSSIBLE in this compile — derived at
     /// `compile_with_imports` from the three declarations that can produce
     /// one: a `[builtin_types] bigint` spelling (Kotlin `Long`), a builtin
@@ -1034,6 +1191,8 @@ pub struct Compiler {
     /// Stored by specifier → per-module name → (final module, final
     /// name). Empty map when the caller didn't supply one (Bundle's
     /// legacy compile path, tests that don't use adapters).
+    compile_certificate: Option<Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>>,
+    local_module_export_overlays: HashSet<(String,String)>,
     module_exports: HashMap<String, HashMap<String, (String, String)>>,
     /// Constant-value snapshot of host module exports — `ExportEntry::Value`
     /// entries from `flatten_module_value_exports`. Populated at compile time
@@ -1478,13 +1637,13 @@ fn collect_addr_taken_in_expr(expr: &Expression, out: &mut HashSet<String>) {
 ///
 /// A place this scan misses is LOUD, not wrong: the binding stays unpromoted
 /// and `emit_atomic` refuses it at compile time.
-fn collect_atomic_place_idents(stmts: &[Statement], out: &mut HashSet<String>) {
+fn collect_atomic_place_idents(stmts: &[Statement], out: &mut impl AtomicPlaceSink) {
     for stmt in stmts {
         collect_atomic_place_in_stmt(stmt, out);
     }
 }
 
-fn collect_atomic_place_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+fn collect_atomic_place_in_stmt(stmt: &Statement, out: &mut impl AtomicPlaceSink) {
     match &stmt.kind {
         StmtKind::Expr(e) => collect_atomic_place_in_expr(e, out),
         StmtKind::Return(opt) => {
@@ -1522,10 +1681,14 @@ fn collect_atomic_place_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
         StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
             collect_atomic_place_idents(stmts, out)
         }
-        StmtKind::FunctionDecl { body, .. } => collect_atomic_place_idents(body, out),
+        StmtKind::FunctionDecl { body, .. } => {
+            out.source_body(body);
+            collect_atomic_place_idents(body, out)
+        }
         StmtKind::ClassDecl { members, .. }
         | StmtKind::StructDecl { members, .. }
         | StmtKind::ModuleDecl { members, .. } => {
+            out.begin_class();
             for m in members {
                 match m {
                     vybe_ast::ClassMember::Method(inner)
@@ -1549,6 +1712,7 @@ fn collect_atomic_place_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
                     _ => {}
                 }
             }
+            out.end_class();
         }
         StmtKind::If {
             cond,
@@ -1624,7 +1788,7 @@ fn collect_atomic_place_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
     }
 }
 
-fn collect_atomic_place_in_expr(expr: &Expression, out: &mut HashSet<String>) {
+fn collect_atomic_place_in_expr(expr: &Expression, out: &mut impl AtomicPlaceSink) {
     if let ExprKind::Atomic(op) = &expr.kind {
         // The point of the scan: record the place's root name.
         for child in op.children() {
@@ -1639,7 +1803,7 @@ fn collect_atomic_place_in_expr(expr: &Expression, out: &mut HashSet<String>) {
         };
         if let Some(place) = place {
             if let ExprKind::Ident(name) = &place.kind {
-                out.insert(name.clone());
+                out.place_name(name);
             }
         }
         return;
@@ -1710,6 +1874,58 @@ fn collect_atomic_place_in_expr(expr: &Expression, out: &mut HashSet<String>) {
     }
 }
 
+// The module prescan and function prescan share one visitor. Only source
+// procedure bodies keep their identity through emission; class bodies are
+// normalized/copied, so their per-function scan must remain unconditional.
+trait AtomicPlaceSink {
+    fn begin_class(&mut self) {}
+    fn end_class(&mut self) {}
+    fn place_name(&mut self, name: &str);
+    fn source_body(&mut self, _body: &[Statement]) {}
+}
+impl AtomicPlaceSink for HashSet<String> {
+    fn place_name(&mut self, name: &str) {
+        self.insert(name.to_owned());
+    }
+}
+struct AtomicModuleScan<'a> {
+    class_depth: usize,
+    names: &'a mut HashSet<String>,
+    bodies: &'a mut HashSet<(usize, usize)>,
+}
+impl AtomicPlaceSink for AtomicModuleScan<'_> {
+    fn begin_class(&mut self) {
+        self.class_depth += 1;
+    }
+    fn end_class(&mut self) {
+        self.class_depth -= 1;
+    }
+    fn place_name(&mut self, name: &str) {
+        self.names.insert(name.to_owned());
+    }
+    fn source_body(&mut self, body: &[Statement]) {
+        if self.class_depth == 0 {
+            self.bodies.insert((body.as_ptr() as usize, body.len()));
+        }
+    }
+}
+
+struct AtomicReceiptRetirement<'a>(&'a mut HashSet<(usize, usize)>);
+impl AtomicPlaceSink for AtomicReceiptRetirement<'_> {
+    fn place_name(&mut self, _: &str) {}
+    fn source_body(&mut self, body: &[Statement]) {
+        self.0.remove(&(body.as_ptr() as usize, body.len()));
+    }
+}
+
+impl Compiler {
+    fn retire_source_body_receipts(&mut self, stmt: &Statement) {
+        if self.source_atomic_free_bodies.is_empty()
+            || matches!(stmt.kind, StmtKind::ClassDecl { .. }
+                | StmtKind::StructDecl { .. } | StmtKind::ModuleDecl { .. }) { return; }
+        collect_atomic_place_in_stmt(stmt, &mut AtomicReceiptRetirement(&mut self.source_atomic_free_bodies));
+    }
+}
 /// Pre-scan: collect identifiers referenced inside nested function/lambda
 /// bodies. These are potential closure captures — the declaring function
 /// wraps them in a cell object so mutations propagate through shared refs.
@@ -1846,16 +2062,9 @@ fn collect_closure_captured_in_class_members(members: &[ClassMember], out: &mut 
         match member {
             ClassMember::Method(stmt) => collect_closure_captured_in_stmt(stmt, out),
             ClassMember::Constructor { params, body, .. } => {
-                let mut all_idents = HashSet::new();
-                collect_all_idents_in_stmts(body, &mut all_idents);
-                let mut local_names: HashSet<String> =
-                    params.iter().map(|p| p.name.clone()).collect();
+                let mut local_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
                 collect_declared_names(body, &mut local_names);
-                for name in all_idents {
-                    if !local_names.contains(&name) {
-                        out.insert(name);
-                    }
-                }
+                collect_all_idents_in_stmts(body, &mut Filtered { locals: &local_names, out });
             }
             ClassMember::Field {
                 init: Some(init), ..
@@ -1868,15 +2077,9 @@ fn collect_closure_captured_in_class_members(members: &[ClassMember], out: &mut 
 fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
     match &stmt.kind {
         StmtKind::FunctionDecl { params, body, .. } => {
-            let mut all_idents = HashSet::new();
-            collect_all_idents_in_stmts(body, &mut all_idents);
             let mut local_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
             collect_declared_names(body, &mut local_names);
-            for name in all_idents {
-                if !local_names.contains(&name) {
-                    out.insert(name);
-                }
-            }
+            collect_all_idents_in_stmts(body, &mut Filtered { locals: &local_names, out });
         }
         // A class body closes over the enclosing frame exactly like a nested
         // function does: its methods can read an enclosing local, so those
@@ -2099,7 +2302,7 @@ pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
             _ => false,
         }),
         ExprKind::Interpolation(parts) => parts.iter().any(|p| match p {
-            crate::ast::InterpolPart::Expr(e) | crate::ast::InterpolPart::Formatted(e, _) => {
+            vybe_ast::InterpolPart::Expr(e) | vybe_ast::InterpolPart::Formatted(e, _) => {
                 expr_contains_this(e)
             }
             _ => false,
@@ -2241,42 +2444,38 @@ pub(crate) fn expr_has_closure_with_this(expr: &Expression) -> bool {
 
 pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut HashSet<String>) {
     match &expr.kind {
+        ExprKind::RefOf(place) => match &**place {
+            PlaceExpr::Ident(_) => {}
+            PlaceExpr::Member { object, .. } | PlaceExpr::Deref(object) => {
+                collect_closure_captured_in_expr(object, out);
+            }
+            PlaceExpr::Index { object, index, .. } => {
+                collect_closure_captured_in_expr(object, out);
+                collect_closure_captured_in_expr(index, out);
+            }
+        },
         // `const K = class { m(){ return msg; } }` closes over the enclosing
         // frame just as the declaration form does — same members, same rule.
         ExprKind::ClassExpr { members, .. } => {
             collect_closure_captured_in_class_members(members, out);
         }
         ExprKind::Lambda { params, body, .. } => {
-            let mut all_idents = HashSet::new();
-            match body {
-                LambdaBody::Block(stmts) => collect_all_idents_in_stmts(stmts, &mut all_idents),
-                LambdaBody::Expr(e) => collect_all_idents_in_expr(e, &mut all_idents),
-            }
             let mut local_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
-            if let LambdaBody::Block(stmts) = body {
-                collect_declared_names(stmts, &mut local_names);
-            }
-            for name in all_idents {
-                if !local_names.contains(&name) {
-                    out.insert(name);
-                }
-            }
+            if let LambdaBody::Block(stmts) = body { collect_declared_names(stmts, &mut local_names); }
+            let mut filtered = Filtered { locals: &local_names, out };
+            match body { LambdaBody::Block(stmts) => collect_all_idents_in_stmts(stmts, &mut filtered), LambdaBody::Expr(e) => collect_all_idents_in_expr(e, &mut filtered) }
         }
         ExprKind::FunctionExpr(stmt) => {
             if let StmtKind::FunctionDecl { params, body, .. } = &stmt.kind {
-                let mut all_idents = HashSet::new();
-                collect_all_idents_in_stmts(body, &mut all_idents);
-                let mut local_names: HashSet<String> =
-                    params.iter().map(|p| p.name.clone()).collect();
+                let mut local_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
                 collect_declared_names(body, &mut local_names);
-                for name in all_idents {
-                    if !local_names.contains(&name) {
-                        out.insert(name);
-                    }
-                }
+                collect_all_idents_in_stmts(body, &mut Filtered { locals: &local_names, out });
             }
         }
-        ExprKind::Unary { expr, .. } => collect_closure_captured_in_expr(expr, out),
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::RefLoad(expr) => collect_closure_captured_in_expr(expr, out),
         ExprKind::Binary { left, right, .. } => {
             collect_closure_captured_in_expr(left, out);
             collect_closure_captured_in_expr(right, out);
@@ -2319,31 +2518,24 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
                     ObjectProperty::Method { value, .. }
                     | ObjectProperty::Accessor { value, .. } => {
                         if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
-                            let mut all_idents = HashSet::new();
-                            collect_all_idents_in_stmts(body, &mut all_idents);
-                            let mut local_names: HashSet<String> =
-                                params.iter().map(|p| p.name.clone()).collect();
+                            let mut local_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
                             collect_declared_names(body, &mut local_names);
-                            for name in all_idents {
-                                if !local_names.contains(&name) {
-                                    out.insert(name);
-                                }
-                            }
+                            collect_all_idents_in_stmts(body, &mut Filtered { locals: &local_names, out });
                         }
                     }
                     _ => {}
                 }
             }
         }
-        ExprKind::Sequence(exprs) => {
+        ExprKind::Sequence(exprs) | ExprKind::Tuple(exprs) => {
             for e in exprs {
                 collect_closure_captured_in_expr(e, out);
             }
         }
         ExprKind::Interpolation(parts) => {
             for part in parts {
-                if let crate::ast::InterpolPart::Expr(e)
-                | crate::ast::InterpolPart::Formatted(e, _) = part
+                if let vybe_ast::InterpolPart::Expr(e)
+                | vybe_ast::InterpolPart::Formatted(e, _) = part
                 {
                     collect_closure_captured_in_expr(e, out);
                 }
@@ -2378,13 +2570,16 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
     }
 }
 
-fn collect_all_idents_in_stmts(stmts: &[Statement], out: &mut HashSet<String>) {
+// The identifier visitor writes to a sink. Capture discovery filters locals
+// directly; nested class-member discovery can still use a temporary borrowed
+// set. Both paths use the same traversal, preserving syntax coverage.
+fn collect_all_idents_in_stmts<'ast>(stmts: &'ast [Statement], out: &mut impl IdentSink<'ast>) {
     for stmt in stmts {
         collect_all_idents_in_stmt(stmt, out);
     }
 }
 
-fn collect_all_idents_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+fn collect_all_idents_in_stmt<'ast>(stmt: &'ast Statement, out: &mut impl IdentSink<'ast>) {
     match &stmt.kind {
         StmtKind::Expr(e) => collect_all_idents_in_expr(e, out),
         StmtKind::Return(opt) => {
@@ -2493,12 +2688,25 @@ fn collect_all_idents_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
     }
 }
 
-fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
+fn collect_all_idents_in_expr<'ast>(expr: &'ast Expression, out: &mut impl IdentSink<'ast>) {
     match &expr.kind {
+        ExprKind::RefOf(place) => match &**place {
+            PlaceExpr::Ident(name) => { out.insert(name.as_str()); }
+            PlaceExpr::Member { object, .. } | PlaceExpr::Deref(object) => {
+                collect_all_idents_in_expr(object, out);
+            }
+            PlaceExpr::Index { object, index, .. } => {
+                collect_all_idents_in_expr(object, out);
+                collect_all_idents_in_expr(index, out);
+            }
+        },
         ExprKind::Ident(name) => {
-            out.insert(name.clone());
+            out.insert(name.as_str());
         }
-        ExprKind::Unary { expr, .. } => collect_all_idents_in_expr(expr, out),
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::RefLoad(expr) => collect_all_idents_in_expr(expr, out),
         ExprKind::Binary { left, right, .. } => {
             collect_all_idents_in_expr(left, out);
             collect_all_idents_in_expr(right, out);
@@ -2541,13 +2749,13 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
                     ObjectProperty::Method { value, .. }
                     | ObjectProperty::Accessor { value, .. } => {
                         if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
-                            let mut all_idents = HashSet::new();
+                            let mut all_idents: HashSet<&str> = HashSet::new();
                             collect_all_idents_in_stmts(body, &mut all_idents);
                             let mut local_names: HashSet<String> =
                                 params.iter().map(|p| p.name.clone()).collect();
                             collect_declared_names(body, &mut local_names);
                             for name in all_idents {
-                                if !local_names.contains(&name) {
+                                if !local_names.contains(name) {
                                     out.insert(name);
                                 }
                             }
@@ -2557,15 +2765,15 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
                 }
             }
         }
-        ExprKind::Sequence(exprs) => {
+        ExprKind::Sequence(exprs) | ExprKind::Tuple(exprs) => {
             for e in exprs {
                 collect_all_idents_in_expr(e, out);
             }
         }
         ExprKind::Interpolation(parts) => {
             for part in parts {
-                if let crate::ast::InterpolPart::Expr(e)
-                | crate::ast::InterpolPart::Formatted(e, _) = part
+                if let vybe_ast::InterpolPart::Expr(e)
+                | vybe_ast::InterpolPart::Formatted(e, _) = part
                 {
                     collect_all_idents_in_expr(e, out);
                 }
@@ -2602,6 +2810,13 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
         _ => {}
     }
 }
+
+
+struct Filtered<'a> { locals: &'a HashSet<String>, out: &'a mut HashSet<String> }
+impl<'ast> IdentSink<'ast> for Filtered<'_> { fn insert(&mut self, name: &'ast str) -> bool { if self.locals.contains(name) || self.out.contains(name) { false } else { self.out.insert(name.to_owned()) } } }
+
+trait IdentSink<'ast> { fn insert(&mut self, name: &'ast str) -> bool; }
+impl<'ast> IdentSink<'ast> for HashSet<&'ast str> { fn insert(&mut self, name: &'ast str) -> bool { HashSet::insert(self,name) } }
 
 fn stmt_uses_proxy(stmt: &Statement) -> bool {
     match &stmt.kind {
@@ -2922,13 +3137,31 @@ pub struct HostImportMetadata {
 #[derive(Debug, Default)]
 pub struct CompileResult {
     pub chunks: Vec<Chunk>,
+    /// Advisory final-bytecode proofs for an explicitly proof-aware backend.
+    /// Existing writers/VM consumers ignore these and preserve boxed storage.
+    pub word_local_proofs: Vec<vybe_ast::word_local_transport::WordLocalChunkProof>,
     pub host_imports: HostImportMetadata,
+    pub component_source: bool,
+    pub component_binary: Option<std::sync::Arc<vybe_ast::canon::ComponentBinary>>,
     /// What the module DECLARED about presenting a UI
     /// ([`vybe_ast::Directives::app_shell`]), carried out so the embedder can
     /// read it without re-walking the tree. `None` states nothing — the
     /// document answers instead.
     pub app_shell: Option<vybe_ast::AppShell>,
 }
+
+/// One completed source producer within a prepared unit. These ranges report
+/// progress only: later finalization still relocates imports/globals/types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmissionProgress {
+    pub source_index: usize,
+    pub function_declaration: bool,
+    pub appended_chunks: std::ops::Range<usize>,
+    pub entry_bytes: std::ops::Range<usize>,
+}
+
+mod prepared_emission;
+pub use prepared_emission::{PreparedEmission, PreparedUnit, PreparedUnitProducer};
 
 fn is_php_builtin_constant_name(name: &str) -> bool {
     matches!(
@@ -2981,19 +3214,31 @@ fn is_php_builtin_constant_name(name: &str) -> bool {
 
 impl Compiler {
     pub(crate) fn strip_global_namespace_prefix(name: &str) -> String {
+        Self::strip_global_namespace_prefix_view(name).to_owned()
+    }
+
+    /// Read-only name resolution does not need an allocated lowercase copy
+    /// just to recognize the two ASCII global-namespace markers.
+    pub(crate) fn strip_global_namespace_prefix_view(name: &str) -> &str {
         let trimmed = name.trim();
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("global::") {
-            return trimmed[8..].trim().to_string();
+        if trimmed.get(..8).is_some_and(|prefix| prefix.eq_ignore_ascii_case("global::")) {
+            return trimmed[8..].trim();
         }
-        if lower.starts_with("global.") {
-            return trimmed[7..].trim().to_string();
+        if trimmed.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("global.")) {
+            return trimmed[7..].trim();
         }
-        trimmed.to_string()
+        trimmed
     }
 
     pub fn with_profile(profile: LanguageProfile) -> Self {
+        Self::with_shared_profile(std::sync::Arc::new(profile))
+    }
+
+    pub fn with_shared_profile(profile: std::sync::Arc<LanguageProfile>) -> Self {
         Self {
+            argument_emitters: argument_emission::Selection::default(),
+            helper_parser: None,
+            helper_templates: helper_templates::Owner::default(),
             last_lambda_body_chunk: None,
             chunks: vec![Chunk::new("<script>")],
             scopes: vec![Scope::new(scope::profile_variable_fold(&profile))],
@@ -3003,7 +3248,7 @@ impl Compiler {
             label_depth: 0,
             function_label_base: 0,
             line: 1,
-            defined_globals: HashSet::new(),
+            defined_globals: body_symbols::BodySymbols::new(),
             module_variable_names: HashSet::new(),
             gui_auto_name_counter: 0,
             const_globals: HashSet::new(),
@@ -3011,26 +3256,31 @@ impl Compiler {
             in_strict: false,
             directives: vec![vybe_ast::Directives::default()],
             canon_section: Vec::new(),
-            canon_decls: Vec::new(),
+            core_export_callees: Vec::new(),
             canon_functypes: Vec::new(),
             canon_valtypes: Vec::new(),
             component_funcs: Vec::new(),
+            component_func_links: Vec::new(),
+            component_instance_links: None,
             in_typeof_operand: false,
+            has_discarded_builtin_emits: profile.builtins.values().any(|def| def.discarded_emit.is_some()),
             want_i32_condition: false,
             gave_i32_condition: false,
+            gave_i32_word: false,
             program_lexical_names: HashSet::new(),
-            defined_functions: HashSet::default(),
+            defined_functions: body_symbols::FunctionSymbols::new(),
+            immutable_function_bindings: immutable_calls::Bindings::default(),
             run_module_end_hooks: true,
-            function_param_modes: HashMap::new(),
-            function_param_types: HashMap::new(),
-            function_min_arity: HashMap::new(),
-            function_signatures: HashMap::new(),
+            function_param_modes: HashMap::default(),
+            function_param_types: HashMap::default(),
+            function_min_arity: HashMap::default(),
+            function_signatures: HashMap::default(),
             rest_fixed_arities: BTreeSet::new(),
-            function_return_types: HashMap::new(),
+            function_return_types: HashMap::default(),
             fortran_interface_overloads: HashMap::new(),
             fortran_operator_overloads: HashMap::new(),
             constructor_signatures: HashMap::new(),
-            defined_classes: HashSet::new(),
+            defined_classes: body_symbols::BodySymbols::new(),
             abstract_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
             classes_with_late_static_binding: HashSet::new(),
@@ -3054,12 +3304,37 @@ impl Compiler {
             variable_namespace: vybe_runtime::registry::hooks(&profile.name).variable_namespace,
             profile,
             current_func_name: None,
+            statement_trace: None,
             current_result_slot: None,
             current_ref_out_params: None,
             pending_classes: HashMap::new(),
             seam3_indexable: std::collections::HashSet::new(),
+            receiver_preserving_classes: std::collections::HashSet::new(),
+            #[cfg(feature = "primitive-benchmarks")]
+            inherited_gc_fields: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            compact_parent_forwarding: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            static_class_member_writes: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            console_string_producers: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            console_fixed_numeric: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            compound_numeric_proof: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            comparison_bool_reuse: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            generator_predicate_reuse: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            generator_plain_control_packets: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            condition_truthiness_reuse: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            integer_truthiness_reuse: true,
             rtt_testable: std::collections::HashSet::new(),
-            normalized_classes: HashMap::new(),
+            normalized_classes: NormalizedClasses::default(),
+            deferred_class_bodies: None,
             current_class_slot_keys: HashMap::new(),
             current_class: None,
             current_namespace: None,
@@ -3078,6 +3353,7 @@ impl Compiler {
             module_addr_taken_globals: HashSet::new(),
             current_addr_taken_locals: HashSet::new(),
             current_atomic_word_locals: HashSet::new(),
+            source_atomic_free_bodies: HashSet::new(),
             module_atomic_word_globals: HashSet::new(),
             current_closure_captured_locals: HashSet::new(),
 
@@ -3097,17 +3373,72 @@ impl Compiler {
             source_type_aliases: HashMap::new(),
             source_namespace_imports: Vec::new(),
             user_namespace_tree: Default::default(),
+            user_namespace_lookup_cache: Default::default(),
             current_module_imports: Vec::new(),
             active_namespaces: None,
+            compile_certificate: None,
+            local_module_export_overlays: HashSet::new(),
             module_exports: HashMap::new(),
             module_value_exports: HashMap::new(),
             frame_control_flow: FrameControlFlowStore::default(),
             uses_proxy: false,
+            compact_source_lines: false,
+            array_call_tail_identity: false,
+            interpolation_call_tail_identity: false,
+            fused_closure_analysis: false,
             bigint_enabled: false,
             js_arguments_bindings: Vec::new(),
         }
     }
 
+    /// Apply explicit compiler lookup options before declaration/lowering.
+    pub fn with_optimizations(mut self, options: vybe_runtime::registry::CompilerOptimizations) -> Self {
+        self.compact_source_lines = options.compact_source_lines;
+        self.array_call_tail_identity = options.array_call_tail_identity;
+        self.interpolation_call_tail_identity = options.interpolation_call_tail_identity;
+        self.fused_closure_analysis = options.fused_closure_analysis;
+        self.defined_globals.configure_folded(options.symbol_membership_index);
+        self.defined_classes.configure_folded(options.symbol_membership_index);
+        self.defined_functions.configure_folded(options.symbol_membership_index);
+        self.user_namespace_lookup_cache
+            .borrow_mut()
+            .configure(options.user_namespace_cache);
+        self
+    }
+
+    /// Configure a fresh unit owner from an immutable request selection.
+    pub fn with_selected_helpers(mut self, selected: &helper_templates::Selected) -> Self {
+        self.helper_parser = Some(selected.selection.parser);
+        self.helper_templates = selected.owner();
+        self
+    }
+    pub(crate) fn with_selected_argument_emitters(mut self, selection: argument_emission::Selection) -> Self {
+        self.argument_emitters = selection;
+        self
+    }
+    /// Explicit exact-parser opt-in; absent for legacy PEG and ordinary callers.
+    pub fn with_argument_emitters(mut self, parser: vybe_runtime::registry::ParseFn,
+        definitions: &'static [argument_emission::Definition]) -> Self {
+        self.argument_emitters = argument_emission::Selection::new(parser, definitions);
+        self
+    }
+    pub fn with_helper_templates(mut self, parser: vybe_runtime::registry::ParseFn, definitions: &'static [helper_templates::Definition], pool: std::sync::Arc<helper_templates::Pool>) -> Self {
+        self.helper_parser = Some(parser);
+        self.helper_templates = helper_templates::Owner::new(definitions, pool);
+        self
+    }
+    fn try_owned_helper(&mut self, name: &str, argc: u8, line: u32, request: vybe_runtime::registry::emitter_results::EmitRequest) -> Option<helper_templates::EmissionReceipt> {
+        let Some(parser) = self.helper_parser else { return None };
+        // Runtime-helper lowering uses a different reference expansion and
+        // frame contract. Keep that path inline rather than sharing a body
+        // captured for ordinary source compilation.
+        if polyfills::is_compiling_runtime_helper() { return None; }
+        let Some((namespace, _)) = name.split_once('.') else { return None };
+        let Some(producer) = crate::languages::emit_dispatch_for(namespace) else { return None };
+        let chunk = &self.chunks[self.current];
+        let context = helper_templates::Context { profile: &self.profile, directives: self.directives.last().expect("module directive frame"), receiver: chunk.module_receiver_abi, own: chunk.module_instance_fields_are_own_properties, prototype: chunk.module_members_on_prototype };
+        self.helper_templates.emit_with_result(name, parser, producer, argc, request, &context, &mut self.chunks, self.current, line)
+    }
     pub fn with_run_module_end_hooks(mut self, enabled: bool) -> Self {
         self.run_module_end_hooks = enabled;
         self
@@ -3176,6 +3507,20 @@ impl Compiler {
     /// Pre-populate the module-exports snapshot. Called by the Bundle
     /// before `compile_with_imports` so the Linker can resolve
     /// Adapter-module re-exports during Phase A.
+    pub(crate) fn with_compile_certificate(mut self, certificate: Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>>) -> Self {
+        self.compile_certificate=Some(certificate);self
+    }
+    fn compiler_diagnostic(&self,message:String) {
+        if self.compile_certificate.as_ref().is_some_and(|c|c.lock().unwrap().capture_diagnostic(&message)) {return;}
+        eprintln!("{message}");
+    }
+    fn recorded_module_export(&self,module:&str,name:&str)->Option<&(String,String)> {
+        let target=self.module_exports.get(module).and_then(|m|m.get(name));
+        if let Some(c)=&self.compile_certificate {
+            if !self.local_module_export_overlays.contains(&(module.into(),name.into())) { c.lock().unwrap().record_export(module,name,target); }
+        }
+        target
+    }
     pub fn with_module_exports(
         mut self,
         module_exports: HashMap<String, HashMap<String, (String, String)>>,
@@ -3299,9 +3644,106 @@ impl Compiler {
     /// to install runtime globals for imported names so `import { X }`
     /// followed by `const f = X` works, and to synthesize Module
     /// Namespace Objects for `import * as ns` reflective access.
-    pub fn compile_with_imports(mut self, module: &Module) -> Result<CompileResult, String> {
+    pub fn compile_with_imports(self, module: &Module) -> Result<CompileResult, String> {
+        self.compile_with_source_body(module, std::borrow::Cow::Borrowed(&module.body), None)
+    }
+
+    /// Registered metadata-only normalization retains borrowed source bodies.
+    /// Source-class donation remains exclusive to the consuming AST path.
+    pub(crate) fn compile_with_imports_prepared(self, module: &Module,
+        parser: vybe_runtime::registry::ParseFn) -> Result<CompileResult, String> {
+        self.begin_emission_prepared(module, parser)?.finish()
+    }
+
+    pub(crate) fn begin_emission_prepared<'a>(self, module: &'a Module,
+        parser: vybe_runtime::registry::ParseFn) -> Result<PreparedEmission<'a>, String> {
+        let matches_profile = self.profile.uses_normalize_class
+            && crate::languages::find_by_name(&self.profile.name).is_some_and(|language|
+                std::ptr::fn_addr_eq(language.parse, parser));
+        let callback = matches_profile
+            .then(|| crate::frontend_preparation::snapshot(parser).capabilities.deferred_class_bodies)
+            .flatten()
+            // Header-only selection; Owner::new performs the complete
+            // expression-scope proof once before omitting any installed body.
+            .filter(|_| deferred_class_bodies::has_installed_library_owned_candidate(
+                &module.body, self.profile.case_sensitive));
+        self.prepare_source_emission(module, std::borrow::Cow::Borrowed(&module.body), callback)
+    }
+
+    /// Same borrowed prepared entry used by CaaS, exposed only for parity gates.
+    #[cfg(feature = "service-verification")]
+    pub fn compile_with_imports_prepared_for_validation(self, module: &Module,
+        parser: vybe_runtime::registry::ParseFn) -> Result<CompileResult, String> {
+        self.compile_with_imports_prepared(module, parser)
+    }
+
+    /// Consumes a caller-owned AST; unregistered parsers retain legacy normalization.
+    pub(crate) fn compile_with_imports_owned(self, module: Module,
+        parser: vybe_runtime::registry::ParseFn) -> Result<CompileResult, String> {
+        self.begin_emission_owned_prepared(module, parser)?.finish()
+    }
+
+    pub(crate) fn begin_emission_owned_prepared(self, mut module: Module,
+        parser: vybe_runtime::registry::ParseFn) -> Result<PreparedEmission<'static>, String> {
+        let body = std::mem::take(&mut module.body);
+        let matches_profile = self.profile.uses_normalize_class
+            && crate::languages::find_by_name(&self.profile.name).is_some_and(|language|
+                std::ptr::fn_addr_eq(language.parse, parser));
+        let callback = matches_profile.then(||crate::frontend_preparation::snapshot(parser).capabilities.deferred_class_bodies).flatten();
+        self.prepare_source_emission(&module, std::borrow::Cow::Owned(body), callback)
+    }
+
+    /// Validation only: production callers already carry this admission proof.
+    #[cfg(feature = "service-verification")]
+    pub fn compile_with_imports_owned_for_validation(self, module: Module,
+        parser: vybe_runtime::registry::ParseFn) -> Result<CompileResult, String> {
+        if self.profile.uses_normalize_class
+            && crate::languages::find_by_name(&self.profile.name).is_some_and(|language| std::ptr::fn_addr_eq(language.parse, parser))
+            && crate::frontend_preparation::snapshot(parser).capabilities.deferred_class_bodies.is_some()
+            && ((deferred_class_bodies::has_candidate_class_headers(&module.body)
+                && crate::dynamic::independent_lowering(&module))
+                || deferred_class_bodies::has_installed_library_owned_candidate(&module.body,self.profile.case_sensitive)) {
+            self.compile_with_imports_owned(module, parser)
+        } else {
+            self.compile_with_imports(&module)
+        }
+    }
+
+    /// Prepare one validated source unit once, then emit its complete common-AST
+    /// declarations/statements incrementally. Pending chunks are not relocated.
+    pub fn begin_emission<'a>(self, module: &'a Module) -> Result<PreparedEmission<'a>, String> {
+        self.prepare_source_emission(module, std::borrow::Cow::Borrowed(&module.body), None)
+    }
+
+    /// Transfer a validated parser/source-unit body without cloning its AST.
+    /// This has the same unregistered normalization policy as `compile_with_imports`.
+    pub fn begin_emission_owned(self, mut module: Module) -> Result<PreparedEmission<'static>, String> {
+        let body = std::mem::take(&mut module.body);
+        self.prepare_source_emission(&module, std::borrow::Cow::Owned(body), None)
+    }
+
+    fn compile_with_source_body(self, module: &Module,
+        source_body: std::borrow::Cow<'_, [Statement]>,
+        deferred_normalizer: Option<deferred_class_bodies::NormalizeFn>) -> Result<CompileResult, String> {
+        self.prepare_source_emission(module, source_body, deferred_normalizer)?.finish()
+    }
+
+    fn prepare_source_emission<'a>(mut self, module: &Module,
+        source_body: std::borrow::Cow<'a, [Statement]>,
+        deferred_normalizer: Option<deferred_class_bodies::NormalizeFn>) -> Result<PreparedEmission<'a>, String> {
+        let _source_lines = vybe_runtime::source_lines::LineEmissionScope::enter(self.compact_source_lines);
+        if self.compact_source_lines {
+            // The entry Chunk exists before options are selected. Later
+            // function/helper chunks inherit this thread-local emission scope.
+            for chunk in &mut self.chunks { chunk.lines.enable_compact(); }
+        }
         let _debug_compile = vybe_runtime::debugger::DebugPhase::current("compiler total");
         let timing = compiler_timing_path();
+        self.statement_trace = timing.as_ref().and_then(|path| {
+            std::env::var("VYBE_COMPILER_DEBUG_FUNCTION").ok().map(|function| {
+                std::sync::Arc::new(StatementTraceConfig { path: path.clone(), function })
+            })
+        });
         let total_started = Instant::now();
         // ⛔ THE MODULE'S DECLARED POLICY, NOT THE PROFILE'S. `variable_case`
         // is stated by the walker on `Module.directives`, so a multi-language
@@ -3348,11 +3790,30 @@ impl Compiler {
         // has no execution position, so it is captured here rather than
         // emitted, and published to the chunks once compilation is done.
         self.canon_section = common::canon::lower_section(&module.canon.defs)?;
-        self.canon_decls = module.canon.defs.clone();
+        self.core_export_callees = common::canon::collect_core_export_callees(&module.canon.defs);
+        self.core_export_callees.extend(common::canon::attach_resource_metadata(
+            &module.canon.defs,
+            &module.canon.types,
+            &mut self.canon_section,
+        )?);
         let (fts, vts) = common::canon::lower_types(&module.canon.types)?;
         self.canon_functypes = fts;
         self.canon_valtypes = vts;
         self.component_funcs = module.canon.funcs.clone();
+        self.component_instance_links = common::canon::lower_component_instance_links(
+            module.canon.instance_links.as_deref(),
+        )?;
+        self.component_func_links = module
+            .canon
+            .func_links
+            .iter()
+            .map(|link| vybe_runtime::canon_def::ComponentFuncLink {
+                import: link.import,
+                supplied: link.supplied,
+                expected_type: link.expected_type,
+                supplied_type: link.supplied_type,
+            })
+            .collect();
         self.current_module_imports = module.imports.clone();
         // Whether a global holds a pointer cell is a WHOLE-MODULE property, but
         // compilation is one forward pass: `function r(){ global $g; echo $g; }`
@@ -3366,20 +3827,43 @@ impl Compiler {
         // function can promote a global, but a shadowing local cannot.
         let prescan_started = Instant::now();
         let debug_prescans = vybe_runtime::debugger::DebugPhase::current("compiler prescans");
-        self.module_addr_taken_globals = reference_analysis::module_address_taken(
-            &module.body,
+        // Preserve existing policy admission; only source-derived facts are
+        // collected by the typed-unit transaction below.
+        let binds_ecma_proxy = self.profile.esm_defaults.iter().any(|entry| {
+            matches!(entry, vybe_runtime::profile::EsmDefault::Namespace { alias, module }
+                if alias == "Proxy" && module == "ecma:proxy")
+        });
+        let bigint_enabled = self.bigint_widens_mixes()
+            || self.profile.builtins.values().any(|def| {
+                matches!(&def.emit, vybe_runtime::profile::BuiltinEmit::HostCall(module, _)
+                    if module == "ecma:bigint")
+            });
+        let features = source_feature_preparation::SourceFeaturePreparation::new(
+            bigint_enabled, binds_ecma_proxy, self.uses_proxy,
+        );
+        let mut units = unit_preparation::TypedUnitPreparation::new(
+            source_body,
             module.directives.variable_fold(),
-        )
-        .into_iter()
-        .map(|name| self.pointer_binding_key(&name))
-        .collect();
+            std::mem::take(&mut self.module_atomic_word_globals),
+            std::mem::take(&mut self.source_atomic_free_bodies),
+            features,
+        );
+        while units.collect_next().is_some() {}
+        let unit_preparation::PreparedTypedUnits {
+            body: source_body, references, atomic_names, source_bodies,
+            features: source_features, functions: prepared_function_headers,
+        } = units.seal()?;
+        self.module_addr_taken_globals = references.into_iter()
+            .map(|name| self.pointer_binding_key(&name))
+            .collect();
         // Same forward-pass argument, for ATOMIC places: a module-level name
         // any statement (including one inside a nested function or lambda)
         // targets with an atomic op becomes a shared-memory word at its
         // declaration. It also enters `module_addr_taken_globals` so readers
         // compiled BEFORE the promotion emit the deref, which passes through
         // untouched until the wrap exists.
-        collect_atomic_place_idents(&module.body, &mut self.module_atomic_word_globals);
+        self.module_atomic_word_globals = atomic_names;
+        self.source_atomic_free_bodies = source_bodies;
         for name in &self.module_atomic_word_globals {
             self.module_addr_taken_globals.insert(name.clone());
         }
@@ -3401,50 +3885,8 @@ impl Compiler {
         }
         self.active_namespaces = Some(active);
 
-        // Pre-scan: detect `new Proxy(...)` anywhere in the module so the
-        // Member / Index emit sites can route through the proxy dispatcher
-        // even when the access appears before the construction in source
-        // order. Only for a profile that actually binds `Proxy` to the ECMA
-        // proxy surface — otherwise `new Proxy()` is a user class of that
-        // name and must not enable proxy dispatch.
-        let binds_ecma_proxy = self.profile.esm_defaults.iter().any(|entry| {
-            matches!(
-                entry,
-                vybe_runtime::profile::EsmDefault::Namespace { alias, module }
-                    if alias == "Proxy" && module == "ecma:proxy"
-            )
-        });
-        // Pre-scan: can this compile produce a BigInt VALUE at all? Three
-        // declarations can — a `[builtin_types] bigint` spelling, a builtin
-        // whose emit target reaches the `ecma:bigint` host, or a
-        // `Literal::BigInt` in the module itself (a walker only emits one
-        // when its language means it). Nothing declared → the bigint arms
-        // are unreachable and the `++` path emits no runtime type test.
-        self.bigint_enabled = self.bigint_widens_mixes()
-            || self.profile.builtins.values().any(|def| {
-                matches!(&def.emit,
-                    vybe_runtime::profile::BuiltinEmit::HostCall(module, _)
-                        if module == "ecma:bigint")
-            })
-            || {
-                let mut probe = module.body.clone();
-                probe.iter_mut().any(|stmt| {
-                    let mut found = false;
-                    stmt.walk_exprs_mut(&mut |e| {
-                        found |= matches!(e.kind, ExprKind::Lit(Literal::BigInt(_)));
-                    });
-                    found
-                })
-            };
-
-        if binds_ecma_proxy {
-            for stmt in &module.body {
-                if stmt_uses_proxy(stmt) {
-                    self.uses_proxy = true;
-                    break;
-                }
-            }
-        }
+        self.bigint_enabled = source_features.bigint_enabled;
+        self.uses_proxy = source_features.uses_proxy;
         if let Some(path) = timing.as_deref() {
             write_compiler_timing(path, "prescans", prescan_started.elapsed());
         }
@@ -3466,7 +3908,7 @@ impl Compiler {
         // load time in a separate step.
         let link_started = Instant::now();
         let debug_link = vybe_runtime::debugger::DebugPhase::current("compiler resolve");
-        self.link(module);
+        self.link_with_body(module, source_body.as_ref());
         drop(debug_link);
         if let Some(path) = timing.as_deref() {
             write_compiler_timing(path, "link", link_started.elapsed());
@@ -3495,15 +3937,24 @@ impl Compiler {
         // on `Partial Class`; other languages leave it false and skip the
         // merge entirely). After merging, the body has exactly one ClassDecl
         // per class name with all fields/methods pooled together.
-        let has_partial = module.body.iter().any(
+        let has_partial = source_body.iter().any(
             |s| matches!(&s.kind, StmtKind::ClassDecl { modifiers, .. } if modifiers.is_partial),
         );
         let merge_started = Instant::now();
-        let mut merged_body = if has_partial {
-            merge_partial_classes(&module.body, self.case_sensitive)
-        } else {
-            module.body.clone()
-        };
+        let mut merged_body: std::borrow::Cow<'_, [Statement]> = if has_partial {
+            // Partial merging copies procedure bodies; their old address receipts
+            // must not survive release of the original owned source buffer.
+            self.source_atomic_free_bodies.clear();
+            std::borrow::Cow::Owned(merge_partial_classes(source_body.as_ref(), self.case_sensitive))
+        } else { source_body };
+        // Prepared borrowed compilation selects installed-library-only headers;
+        // Owner proves expression scopes before publishing any metadata. Public
+        // legacy borrowed compilation supplies no callback and stays unchanged.
+        if !has_partial {
+            if let Some(callback) = deferred_normalizer {
+                self.deferred_class_bodies = deferred_class_bodies::Owner::new(&self, callback, &merged_body);
+            }
+        }
 
         // Builtins declared with `pass_by = [...]` in the profile enter the tree
         // here, as an ordinary interface — `referenceplan.md` §10j.1. The profile
@@ -3516,8 +3967,8 @@ impl Compiler {
         // Appended LAST so a same-named declaration written in source registers
         // first and wins: `register_interface_method_signatures` is `or_insert`,
         // so the builtin fills in only where the program itself said nothing.
-        if !self.profile.builtin_signatures.is_empty() {
-            merged_body.push(Statement::new(StmtKind::InterfaceDecl {
+        let builtin_signatures = (!self.profile.builtin_signatures.is_empty()).then(|| {
+            Statement::new(StmtKind::InterfaceDecl {
                 // Reserved spelling — a user type of this name is not expressible
                 // in any surface language here, so registering it as a type name
                 // cannot shadow a real class (php's own `PDOStatement` would).
@@ -3525,26 +3976,35 @@ impl Compiler {
                 parents: Vec::new(),
                 members: self.profile.builtin_signatures.clone(),
                 decorators: Vec::new(),
-            }));
-        }
-        let merged_body = merged_body;
+            })
+        });
+        #[cfg(test)]
+        let (mut merged_body, builtin_signatures) = if COPY_MODULE_BODY_BASELINE.with(|copy| copy.get()) {
+            let mut body = merged_body.into_owned();
+            if let Some(declaration) = builtin_signatures { body.push(declaration); }
+            (std::borrow::Cow::Owned(body), None::<Statement>)
+        } else { (merged_body, builtin_signatures) };
+        // Keep the appended declaration without copying the source AST merely
+        // to obtain a contiguous slice. Each phase sees source declarations
+        // first and the builtin signature interface last, as before.
+        let bodies = [merged_body.as_ref(), builtin_signatures.as_slice()];
         if let Some(path) = timing.as_deref() {
             write_compiler_timing(path, "merge_body", merge_started.elapsed());
         }
 
         let declarations_started = Instant::now();
         let _debug_declarations = vybe_runtime::debugger::DebugPhase::current("compiler declarations");
-        self.predeclare_type_names(&merged_body, None);
-        self.collect_module_variable_names(&merged_body);
-        self.predeclare_module_variable_type_hints(&merged_body);
-        self.collect_reflection_metadata(&merged_body);
+        for body in bodies { self.predeclare_type_names(body, None); }
+        for body in bodies { self.collect_module_variable_names(body); }
+        for body in bodies { self.predeclare_module_variable_type_hints(body); }
+        self.collect_reflection_metadata(merged_body.iter().chain(builtin_signatures.iter()));
 
         // Multi-value pre-scan: any function whose every explicit `Return`
         // is a same-arity tuple literal is a candidate for the WASM
         // multi-value ABI. We only opt in when the language profile
         // requests it — other languages keep tuple-as-heap-object semantics.
         if self.profile.multi_value_tuple_returns {
-            self.collect_multi_return_functions(&merged_body);
+            for body in bodies { self.collect_multi_return_functions(body); }
         }
 
         // Declaration pass, phases 2 and 3: fold declared augmentations across
@@ -3558,8 +4018,10 @@ impl Compiler {
         // type can be resolved, and the only one where it need happen once.
         self.resolve_field_value_types();
         self.predeclare_class_surfaces();
-        self.predeclare_function_names(&merged_body);
-        self.predeclare_interface_signatures_in_body(&merged_body);
+        // Partial merging and class normalization above do not rewrite
+        // top-level function headers. Reuse their sealed source-unit facts.
+        self.register_function_declarations(prepared_function_headers);
+        for body in bodies { self.predeclare_interface_signatures_in_body(body); }
         drop(_debug_declarations);
         if let Some(path) = timing.as_deref() {
             write_compiler_timing(path, "declaration_passes", declarations_started.elapsed());
@@ -3571,112 +4033,81 @@ impl Compiler {
         // calls it. Without this, those calls silently drop arguments.
         {
             let mut rest_arities = Vec::new();
-            crate::ast::collect_rest_param_arities(&merged_body, &mut rest_arities);
+            for body in bodies { crate::ast::collect_rest_param_arities(body, &mut rest_arities); }
             for arity in rest_arities {
                 self.rest_fixed_arities.insert(arity);
             }
         }
 
-        // ▶▶ SEAM 3 ORDERING. The pass below compiles every top-level
-        // FunctionDecl BODY, and `ClassDecl` is not reached until the pass
-        // after it. So a field read inside a top-level function resolved
-        // against a type slot whose field list was still empty and whose
-        // licence had not been granted, and fell back to a string key —
-        // correct, but permanently inert, exactly the shape
-        // `publish_class_storage`'s own comment describes one scope down. A
-        // language with no top-level functions (C#, Java) never shows it,
-        // which is why this reads as a per-language defect and is not one.
-        //
-        // PARENTLESS classes only, and that is the entire eligible set: the
-        // licence already requires `!has_parent`, and a parentless class's
-        // field order is a function of the class alone — `field_hides_ancestor`
-        // returns false with no parent to walk — so it cannot disagree with
-        // what `compile_class` publishes later. Publication is idempotent, so
-        // the second call verifies rather than rewrites.
-        // ⛔ SORTED BY KEY, AND THE SORT IS LOAD-BEARING. `normalized_classes`
-        // is a `HashMap`, whose iteration order Rust randomises per PROCESS —
-        // so publishing in that order handed out a different `typeidx` on every
-        // run and the emitted module stopped being reproducible. Measured: the
-        // csharp repro produced three different type assignments in three
-        // consecutive runs, while a one-class dart file looked stable and hid
-        // it. Any deterministic order will do; the key order is the one that
-        // needs no extra state.
+        // All original-AST analyses (including reflection and rest arities)
+        // have completed in their original order. Move Vec allocations intact.
+        if let Some(owner) = self.deferred_class_bodies.take() {
+            match &mut merged_body {
+                std::borrow::Cow::Owned(body) => owner.finish(&mut self, body)?,
+                std::borrow::Cow::Borrowed(_) => owner.finish_metadata_only()?,
+            }
+        }
+
+        // Publish field layouts before top-level function bodies can use them.
+        // Roots are published first, followed by eligible local parent chains.
+        // Sort each pass by canonical name so type indices are reproducible.
+        // Re-publication during class compilation verifies the same layout.
         let publish_storage_started = Instant::now();
-        let mut parentless_classes: Vec<_> = self
-            .normalized_classes
-            .iter()
-            .filter(|(_, class)| class.parent.is_none())
-            .map(|(key, class)| (key.clone(), class.clone()))
-            .collect();
-        parentless_classes.sort_by(|(a, _), (b, _)| a.cmp(b));
-        for (_, class) in &parentless_classes {
-            self.publish_class_storage(class);
+        {
+            // Keep the lookup registry installed: private/static member naming
+            // consults it while publication writes to the chunk type table.
+            let declarations = self.normalized_classes.clone();
+            let mut parentless_classes: Vec<_> = declarations
+                .iter()
+                .filter(|(_, class)| class.parent.is_none())
+                .map(|(key, class)| (key, std::borrow::Cow::Borrowed(class)))
+                .collect();
+            #[cfg(test)]
+            if COPY_MODULE_BODY_BASELINE.with(|copy| copy.get()) {
+                for (_, class) in &mut parentless_classes { class.to_mut(); }
+            }
+            parentless_classes.sort_by(|(a, _), (b, _)| a.cmp(b));
+            for (_, class) in &parentless_classes {
+                self.publish_class_storage(class);
+            }
+            // Publish each local single-parent chain in parent-first order.
+            // Only a parent with a stable indexed layout can license a child;
+            // own-property, external and unresolved parents retain their path.
+            let mut remaining: Vec<_> = declarations.iter()
+                .filter(|(_, class)| class.parent.is_some() && class.bases.len() <= 1)
+                .collect();
+            remaining.sort_by(|(a, _), (b, _)| a.cmp(b));
+            loop {
+                let mut advanced = false;
+                remaining.retain(|(_, class)| {
+                    let parent = self.canon(class.parent.as_deref().unwrap());
+                    if self.seam3_indexable.contains(&parent) || self.receiver_preserving_classes.contains(&parent) {
+                        self.publish_class_storage(class);
+                        advanced = true;
+                        false
+                    } else { true }
+                });
+                if !advanced { break; }
+            }
         }
         if let Some(path) = timing.as_deref() {
             write_compiler_timing(path, "publish_parentless_class_storage", publish_storage_started.elapsed(),);
         }
 
-        let function_pass_started = Instant::now();
-        let _debug_functions = vybe_runtime::debugger::DebugPhase::current("compiler functions");
-        let mut function_pass_index = 0usize;
-        for stmt in &merged_body {
-            if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
-                let _debug_function = vybe_runtime::debugger::DebugPhase::current(format!("function {name}"));
-                let one_function_started = Instant::now();
-                if let Some(path) = timing.as_deref() {
-                    write_compiler_timing(
-                        path,
-                        &format!("compile_function_start[{function_pass_index}] {name}"),
-                        Duration::ZERO,
-                    );
-                }
-                self.compile_stmt(stmt)?;
-                if let Some(path) = timing.as_deref() {
-                    function_pass_index += 1;
-                    let elapsed = one_function_started.elapsed();
-                    if elapsed.as_millis() >= 250 || function_pass_index % 100 == 0 {
-                        write_compiler_timing(
-                            path,
-                            &format!("compile_function_decl[{function_pass_index}] {name}"),
-                            elapsed,
-                        );
-                    }
-                }
-            }
-        }
-        drop(_debug_functions);
-        if let Some(path) = timing.as_deref() {
-            write_compiler_timing(path, "compile_function_decls", function_pass_started.elapsed(),);
-        }
+        Ok(PreparedEmission::new(self, merged_body, builtin_signatures,
+            module.canon.component_source, module.canon.binary.clone(), timing, total_started))
+    }
 
-        // ECMA-262 §11.2.1: Detect top-level "use strict" directive prologue
-        // so strict mode rules apply to module-level code
-        if self.profile.ecma_strict_mode && Self::stmts_have_use_strict_directive(&merged_body) {
-            self.in_strict = true;
-        }
-
-        let non_function_pass_started = Instant::now();
-        let debug_body = vybe_runtime::debugger::DebugPhase::current("compiler module body");
-        for stmt in &merged_body {
-            if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
-                continue;
-            }
-            self.compile_stmt(stmt)?;
-        }
-        if let Some(path) = timing.as_deref() {
-            write_compiler_timing(path, "compile_non_function_stmts", non_function_pass_started.elapsed(),);
-        }
-        drop(debug_body);
-
+    fn finish_emission(mut self, component_source: bool,
+        component_binary: Option<std::sync::Arc<vybe_ast::canon::ComponentBinary>>,
+        timing: Option<String>, total_started: Instant) -> Result<CompileResult, String> {
+        let _debug_compile = vybe_runtime::debugger::DebugPhase::current("compiler total");
+        let _source_lines = vybe_runtime::source_lines::LineEmissionScope::enter(self.compact_source_lines);
         // Auto-call entry point if defined
         let ep_started = Instant::now();
         if let Some(ref ep) = self.profile.entry_point.clone() {
             let has_ep = self.defined_globals.contains(ep)
-                || (!self.case_sensitive
-                    && self
-                        .defined_globals
-                        .iter()
-                        .any(|g| g.eq_ignore_ascii_case(ep)));
+                || (!self.case_sensitive && self.defined_globals.contains_ascii_folded(ep));
             if has_ep {
                 self.emit_var_get(ep);
                 let abi = crate::primitives::class_context::module_receiver_abi(&self.chunks);
@@ -3718,26 +4149,23 @@ impl Compiler {
             write_compiler_timing(path, "entrypoint_emit", ep_started.elapsed());
         }
 
-        // Any output buffer still open when the script ends is FLUSHED, not
-        // discarded — a template that forgets its `ob_end_flush()` still
-        // renders. Costs one null check on `__vybe_ob_stack` for a program that
-        // never buffered, since the stack global is only created by the first
-        // `ob_start`.
-        // Shutdown callbacks run BEFORE the final flush, exactly as php does:
-        // a handler that echoes must still land in an open buffer. Ungated —
-        // the runner is a null check on `__php_shutdown_fns`, which only exists
-        // once something registered one, so a program in any other language
-        // pays the same single check the buffer flush above already costs.
+        // Lifecycle hooks belong to the source module's declared policy.
+        // Shutdown callbacks precede the final flush so their output remains
+        // buffered. Other modules must not acquire these globals or imports.
         let module_end_started = Instant::now();
         if self.run_module_end_hooks {
-            let saved = self.current;
-            self.current = 0;
-            self.emit_php_run_shutdown_fns();
-            self.current = saved;
+            if let Some(vybe_ast::ShutdownPolicy::Callbacks { registry, order }) =
+                self.directives().shutdown_callbacks.clone()
+            {
+                let saved = self.current;
+                self.current = 0;
+                self.emit_run_shutdown_callbacks(&registry, order);
+                self.current = saved;
+            }
         }
 
         let line = self.line;
-        if self.run_module_end_hooks {
+        if self.run_module_end_hooks && self.directives().flush_output_buffers == Some(true) {
             common::io::emit_ob_flush_all(&mut self.chunks, 0, line);
         }
 
@@ -3765,8 +4193,8 @@ impl Compiler {
         // need the VM to reserve slots at call-frame entry.
         let ns = self.scope().next_slot;
         self.chunks[0].finalize_local_count(ns);
-        let local_names = self.scope().defined_names.clone();
-        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[0], &local_names);
+        let local_names = &self.scopes.last().unwrap().defined_names;
+        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[0], local_names);
         // Skip helper linking when compiling runtime helper source.
         // Re-running finalization here would call back into helper
         // compilation and recurse through `Compiler::compile`.
@@ -3780,7 +4208,11 @@ impl Compiler {
             // The exclusion list is profile data — a language that supplies
             // its own implementation of a shared helper names it there, rather
             // than the shared crate carrying a per-language table.
-            let excluded: Vec<String> = self.profile.excluded_runtime_helpers.clone();
+            let mut excluded: Vec<String> = self.profile.excluded_runtime_helpers.clone();
+            if let Some(certificate) = &self.compile_certificate {
+                excluded.extend(certificate.lock().unwrap().runtime_helper_exports(&self.chunks)
+                    .into_iter().map(str::to_owned));
+            }
             if excluded.is_empty() {
                 common::bundle::finalize_with_runtime_helpers(&mut self.chunks);
             } else {
@@ -3799,9 +4231,29 @@ impl Compiler {
             );
         }
         drop(_debug_helpers);
+        // Finish structural class layouts before discovering and normalizing
+        // global operands. Descriptor singleton declarations must use the final
+        // inherited field/method layout and participate in the same global
+        // index space as the code that reads them. Finalizing descriptors after
+        // globals forces the writer to synthesize a separate representation.
+        // Appending descriptor rows never changes existing class type indices.
+        let class_finalize_started = Instant::now();
+        self.finalize_type_prefixes();
+        self.append_descriptor_type_rows();
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(
+                path,
+                "finalize.class_metadata",
+                class_finalize_started.elapsed(),
+            );
+        }
+        // Relocate helper-owned canonical rows before import unification moves
+        // imports out of the chunks that own their local type metadata.
+        common::canon::resolve_emitter_imports(&mut self.chunks,
+            &mut self.canon_section, &mut self.canon_functypes, &mut self.canon_valtypes)?;
         let normalize_imports_started = Instant::now();
         let _debug_imports = vybe_runtime::debugger::DebugPhase::current("finalize imports");
-        Self::normalize_import_table(&mut self.chunks);
+        let global_operands = Self::normalize_import_table_and_collect_globals(&mut self.chunks);
         drop(_debug_imports);
         if let Some(path) = timing.as_deref() {
             write_compiler_timing(
@@ -3810,30 +4262,17 @@ impl Compiler {
                 normalize_imports_started.elapsed(),
             );
         }
-        let declare_globals_started = Instant::now();
-        let _debug_free_globals = vybe_runtime::debugger::DebugPhase::current("finalize free globals");
-        common::globals::declare_free_globals(&mut self.chunks);
-        drop(_debug_free_globals);
-        if let Some(path) = timing.as_deref() {
-            write_compiler_timing(
-                path,
-                "finalize.declare_free_globals",
-                declare_globals_started.elapsed(),
-            );
-        }
-        // Assign every global a real index over `global_imports ++ defined`
-        // and rewrite the operands into it. Must follow the line above,
-        // which decides the import half.
-        let normalize_globals_started = Instant::now();
+        let global_table_started = Instant::now();
         let _debug_globals = vybe_runtime::debugger::DebugPhase::current("finalize globals");
-        common::globals::normalize_global_table(&mut self.chunks);
+        match global_operands.as_ref() {
+            Some(operands) => common::globals::finalize_global_table_with_operands(&mut self.chunks, operands),
+            // No import rewrite scanned this unit. Keep the original global
+            // discovery pass instead of first collecting a separate record.
+            None => common::globals::finalize_global_table(&mut self.chunks),
+        }
         drop(_debug_globals);
         if let Some(path) = timing.as_deref() {
-            write_compiler_timing(
-                path,
-                "finalize.normalize_global_table",
-                normalize_globals_started.elapsed(),
-            );
+            write_compiler_timing(path, "finalize.global_table", global_table_started.elapsed());
         }
         // Publish this UNIT's receiver ABI to every chunk it produced, on the
         // same principle as the global index space and canon section below: a
@@ -3866,13 +4305,21 @@ impl Compiler {
         // able to say what that index means.
         let canon_started = Instant::now();
         let mut canon = std::mem::take(&mut self.canon_section);
-        let decls = std::mem::take(&mut self.canon_decls);
+        let decls = std::mem::take(&mut self.core_export_callees);
         common::canon::resolve_core_export_callees(&mut self.chunks, &decls, &mut canon)?;
-        common::canon::install_canon_section(&mut self.chunks, &canon);
+        common::canon::install_canon_section(&mut self.chunks, canon);
         let fts = std::mem::take(&mut self.canon_functypes);
         let vts = std::mem::take(&mut self.canon_valtypes);
         let cfuncs = std::mem::take(&mut self.component_funcs);
-        common::canon::install_type_space(&mut self.chunks, &fts, &vts, &cfuncs);
+        common::canon::install_type_space(&mut self.chunks, fts, vts, cfuncs);
+        common::canon::install_component_func_links(
+            &mut self.chunks,
+            std::mem::take(&mut self.component_func_links),
+        );
+        common::canon::install_component_instance_links(
+            &mut self.chunks,
+            self.component_instance_links.take(),
+        )?;
         if let Some(path) = timing.as_deref() {
             write_compiler_timing(path, "finalize.canon", canon_started.elapsed());
         }
@@ -3890,32 +4337,16 @@ impl Compiler {
         // writes through to it, so reading the base frame answers for the whole
         // unit however it was stated.
         let app_shell = self.directives.first().and_then(|d| d.app_shell);
-        // ⛔⛔ WASM GC VALIDITY, NOT AN OPTIMISATION. A `sub` declaration whose
-        // fields are not its supertype's prefix makes the module INVALID — a
-        // spec engine rejects it at validation; ours does not validate
-        // subtyping, so it loads and silently aliases one class's field onto
-        // another's index. `register_type` prefixes on the way past, but only
-        // with what the parent has THEN, and a class may be declared above its
-        // base. The table is only complete here, so the repair is here.
-        //
-        // Runs after every registration and after all emission, so it can never
-        // move an index a `struct.get` already baked (see the licence check
-        // inside).
-        let class_finalize_started = Instant::now();
-        self.finalize_type_prefixes();
-        // Descriptor rows come AFTER the prefix merge, so each descriptor's
-        // funcref slots mirror an already-merged method list.
-        self.append_descriptor_type_rows();
         drop(_debug_finalize);
-        if let Some(path) = timing.as_deref() {
-            write_compiler_timing(
-                path,
-                "finalize.class_metadata",
-                class_finalize_started.elapsed(),
-            );
-        }
         if dump_classes_enabled() {
             self.dump_pending_classes();
+        }
+        if self.compact_source_lines {
+            let started = Instant::now();
+            for chunk in &mut self.chunks { chunk.lines.compact(); }
+            if let Some(path) = timing.as_deref() {
+                write_compiler_timing(path, "finalize.source_lines", started.elapsed());
+            }
         }
         if let Some(path) = timing.as_deref() {
             write_compiler_timing(path, "finalize", finalize_started.elapsed());
@@ -3923,7 +4354,12 @@ impl Compiler {
         }
         Ok(CompileResult {
             chunks: self.chunks,
+            // Eligibility does not certify physical storage. Populate only
+            // after final slot/access provenance is implemented and verified.
+            word_local_proofs: Vec::new(),
             host_imports,
+            component_source,
+            component_binary,
             app_shell,
         })
     }
@@ -4130,6 +4566,77 @@ fn body_calls_method(body: &[Statement], method_name: &str) -> bool {
 }
 
 impl Compiler {
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_condition_truthiness_reuse(&mut self, enabled: bool) {
+        self.condition_truthiness_reuse = enabled;
+    }
+
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_negated_condition_chunks(mut self, repeats: usize) -> Vec<Chunk> {
+        let mut root = Chunk::new("condition-owner");
+        functions::emit_ref_func(&mut root, 1, 0, 0);
+        root.emit_op(Op::RETURN, 0);
+        self.chunks = vec![root, Chunk::new("condition")];
+        self.current = 1;
+        let input = self.define_local("input");
+        self.chunk().arity = 1;
+        self.chunk().param_count = 1;
+        for n in 0..repeats {
+            self.emit_u16(Op::LOCAL_GET, input);
+            self.emit_negated_condition();
+            let line = self.line;
+            ops::emit_i32_to_bool(self.chunk(), line);
+            if n + 1 < repeats { self.emit(Op::DROP); }
+        }
+        self.emit(Op::RETURN);
+        bundle::finalize_with_runtime_helpers(&mut self.chunks);
+        globals::declare_free_globals(&mut self.chunks);
+        globals::normalize_global_table(&mut self.chunks);
+        self.chunks
+    }
+
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_integer_truthiness_reuse(&mut self, enabled: bool) {
+        self.integer_truthiness_reuse = enabled;
+    }
+
+    /// Negation of a proven i32 needs only eqz; no dynamic coercion.
+    pub(crate) fn emit_i32_negated_condition(&mut self) {
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.integer_truthiness_reuse {
+            self.emit_negated_condition();
+            return;
+        }
+        self.emit(Op::I32_EQZ);
+    }
+
+    /// Integer XOR is zero exactly when the two integer bit patterns match.
+    /// Comparisons retain the same i32 operand conversions while producing 0/1.
+    pub(crate) fn emit_i32_xor_condition(&mut self, negate: bool) {
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.integer_truthiness_reuse {
+            self.emit(Op::I32_XOR);
+            if negate {
+                self.emit_negated_condition();
+            } else {
+                let line = self.line;
+                ops::emit_dyn_to_bool(self.chunk(), line);
+            }
+            return;
+        }
+        self.emit(if negate { Op::I32_EQ } else { Op::I32_NE });
+    }
+
+    /// Negate a dynamic condition once: emit_dyn_not already performs ToBoolean.
+    pub(crate) fn emit_negated_condition(&mut self) {
+        let line = self.line;
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.condition_truthiness_reuse {
+            ops::emit_dyn_to_bool(self.chunk(), line);
+        }
+        ops::emit_dyn_not(self.chunk(), line);
+    }
+
     /// The arguments of a PARENT-CONSTRUCTOR call, when `expr` is one:
     /// `SuperCall { method: None, args }`, `SuperCall { method: Some(ctor) }`
     /// where `ctor` is the profile's constructor name / `new` / `__init__`
@@ -4189,6 +4696,13 @@ fn body_has_identity_stamp(body: &[Statement]) -> bool {
 /// language-specific quirks. The merged class compiles via the standard
 /// compile_class path.
 fn merge_partial_classes(body: &[Statement], case_sensitive: bool) -> Vec<Statement> {
+    let mut preparation = declaration_preparation::PartialClassPreparation::new(case_sensitive, body.len());
+    preparation.consume(body);
+    preparation.finish()
+}
+
+#[cfg(test)]
+fn merge_partial_classes_whole_module_oracle(body: &[Statement], case_sensitive: bool) -> Vec<Statement> {
     let key = |name: &str| -> String {
         if case_sensitive {
             name.to_string()
@@ -4329,3 +4843,443 @@ fn is_host_specifier(path: &str) -> bool {
 pub fn platform_emit_dispatch(prefix: &str) -> Option<crate::languages::EmitDispatch> {
     vybe_runtime::registry::platform_emit_dispatch_for(prefix)
 }
+
+#[cfg(test)]
+mod closure_capture_shape_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_object_method_body_preserves_receiver_and_outer_binding() {
+        std::thread::Builder::new().stack_size(32 * 1024 * 1024).spawn(|| {
+            vybe_language_js::register();
+            let source = "let x = 7; const object = { value: 5, read() { return this.value + x; } }; if (object.read() !== 12) { throw new Error('method capture'); } x = 9; if (object.read() !== 14) { throw new Error('live capture'); }";
+            let module = vybe_language_js::parse(source).unwrap();
+            let profile = crate::profile::parse_profile(vybe_language_js::profile_source()).unwrap();
+            let chunks = Compiler::with_profile(profile).compile(&module).unwrap();
+            let mut vm = vybe_runtime::VM::new();
+            platforms::register_platforms_all(&mut vm);
+            vm.run(chunks).unwrap();
+        }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn successive_and_nested_closures_preserve_capture_storage() {
+        std::thread::Builder::new().stack_size(32 * 1024 * 1024).spawn(|| {
+            vybe_language_php::register();
+            for (source, expected) in [
+                ("<?php $x = 7; $a = function() use ($x) { return $x; }; $x = 9; $b = function() use ($x) { return $x; }; return $a() * 10 + $b();", 79.0),
+                ("<?php $x = 7; $a = function() use (&$x) { $x += 1; return $x; }; $b = function() use (&$x) { $x += 2; return $x; }; $a(); return $b();", 10.0),
+                ("<?php $x = 7; $outer = function() use ($x) { return function() use ($x) { return $x; }; }; $x = 9; $inner = $outer(); return $inner();", 7.0),
+            ] {
+                let module = vybe_language_php::parse(source).unwrap();
+                let profile = crate::profile::parse_profile(vybe_language_php::profile_source()).unwrap();
+                let chunks = Compiler::with_profile(profile).compile(&module).unwrap();
+                let mut vm = vybe_runtime::VM::new();
+                platforms::register_platforms_all(&mut vm);
+                let result = vm.run(chunks).unwrap();
+                assert_eq!(result.as_f64(), expected, "capture storage changed for {source}");
+            }
+        }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn addressed_places_preserve_root_and_index_captures() {
+        let body = Expression::new(ExprKind::Tuple(vec![
+            Expression::new(ExprKind::RefOf(Box::new(PlaceExpr::Ident("destination".into())))),
+            Expression::new(ExprKind::RefOf(Box::new(PlaceExpr::Member {
+                object: Box::new(Expression::ident("record")),
+                field: "value".into(), null_safe: false,
+            }))),
+            Expression::new(ExprKind::RefOf(Box::new(PlaceExpr::Index {
+                object: Box::new(Expression::ident("array")),
+                index: Box::new(Expression::ident("index")), null_safe: false,
+            }))),
+            Expression::new(ExprKind::RefOf(Box::new(PlaceExpr::Deref(Box::new(Expression::ident("pointer")))))),
+        ]));
+        let lambda = Expression::new(ExprKind::Lambda {
+            params: vec![], body: LambdaBody::Expr(Box::new(body)),
+            is_async: false, captures: vec![],
+        });
+        let mut captured = HashSet::new();
+        collect_closure_captured_in_expr(&lambda, &mut captured);
+        assert_eq!(captured, ["destination", "record", "array", "index", "pointer"]
+            .into_iter().map(str::to_string).collect());
+    }
+
+    #[test]
+    fn typed_reference_and_tuple_children_preserve_captured_identifiers() {
+        let member = Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::RefLoad(Box::new(
+                Expression::new(ExprKind::Cast {
+                    expr: Box::new(Expression::new(ExprKind::Ident("pointer".into()))),
+                    type_name: "record*".into(),
+                }),
+            )))),
+            field: "value".into(),
+            null_safe: false,
+        });
+        let body = Expression::new(ExprKind::Tuple(vec![member,
+            Expression::new(ExprKind::IsType {
+                expr: Box::new(Expression::new(ExprKind::Ident("other".into()))),
+                type_name: "record".into(),
+            }),
+            Expression::new(ExprKind::RefLoad(Box::new(
+                Expression::new(ExprKind::Ident("local".into())),
+            ))),
+        ]));
+        let lambda = Expression::new(ExprKind::Lambda {
+            params: vec![crate::ast::Param {
+                name: "local".into(), type_hint: None, default: None,
+                pass_by: vybe_ast::PassBy::Value, is_rest: false,
+                is_kwargs: false, is_optional: false, is_nullable: false,
+            }], body: LambdaBody::Expr(Box::new(body)),
+            is_async: false, captures: vec![],
+        });
+        let expected = HashSet::from(["pointer".to_string(), "other".to_string()]);
+        let mut captured = HashSet::new();
+        collect_closure_captured_in_expr(&lambda, &mut captured);
+        assert_eq!(captured, expected);
+        let wrapped = Expression::new(ExprKind::Tuple(vec![Expression::new(ExprKind::Cast {
+            expr: Box::new(Expression::new(ExprKind::RefLoad(Box::new(lambda)))),
+            type_name: "callable".into(),
+        })]));
+        captured.clear();
+        collect_closure_captured_in_expr(&wrapped, &mut captured);
+        assert_eq!(captured, expected);
+    }
+}
+
+#[cfg(test)]
+mod borrowed_body_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "local WordPress compiler method diagnostic, not a timing benchmark"]
+    fn wordpress_compiler_method_profile() {
+        std::thread::Builder::new().stack_size(32 * 1024 * 1024).spawn(|| {
+            vybe_language_php::register();
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/webroot/wordpress/wp-includes");
+            for name in ["class-wp-hook.php", "class-wp-query.php", "formatting.php"] {
+                let source = std::fs::read_to_string(root.join(name)).unwrap();
+                let module = vybe_language_php::parse(&source).unwrap();
+                let profile = crate::profile::parse_profile(vybe_language_php::profile_source()).unwrap();
+                let report = Arc::new(std::sync::Mutex::new(
+                    vybe_runtime::debugger::DebugReport::default()));
+                {
+                    let _scope = vybe_runtime::debugger::DebugReportScope::enter(Some(report.clone()));
+                    std::hint::black_box(compile_mode(&module, profile, false));
+                }
+                let mut report = report.lock().unwrap();
+                assert!(report.active.is_empty());
+                let mut methods = std::mem::take(&mut report.completed).into_iter()
+                    .filter(|(label, _)| label.starts_with("compiler method "))
+                    .collect::<Vec<_>>();
+                methods.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+                for (label, elapsed) in methods.into_iter().take(8) {
+                    eprintln!("compiler_method_diagnostic file={name} wall_ms={:.3} label={label}",
+                        elapsed.as_secs_f64() * 1000.0);
+                }
+            }
+        }).unwrap().join().unwrap();
+    }
+
+    fn compile_mode(module: &Module, profile: vybe_runtime::profile::LanguageProfile, copy: bool) -> Vec<Chunk> {
+        struct Reset(bool);
+        impl Drop for Reset {
+            fn drop(&mut self) { COPY_MODULE_BODY_BASELINE.with(|flag| flag.set(self.0)); }
+        }
+        let _reset = Reset(COPY_MODULE_BODY_BASELINE.with(|flag| flag.replace(copy)));
+        Compiler::with_profile(profile).compile(module).unwrap()
+    }
+
+    #[test]
+    fn class_registry_snapshot_preserves_lookup_and_detaches_only_on_write() {
+        std::thread::Builder::new().stack_size(32 * 1024 * 1024).spawn(|| {
+            vybe_language_php::register();
+            let module = vybe_language_php::parse(
+                "<?php class Box { public function read() { return 7; } }"
+            ).unwrap();
+            let profile = crate::profile::parse_profile(vybe_language_php::profile_source()).unwrap();
+            let mut compiler = Compiler::with_profile(profile);
+            compiler.predeclare_type_names(&module.body, None);
+            let key = compiler.canon("Box");
+            let declarations = compiler.normalized_classes.clone();
+            assert!(std::sync::Arc::ptr_eq(&declarations.0, &compiler.normalized_classes.0));
+            let previous_name = declarations.get(&key).unwrap().name.clone();
+            compiler.normalized_classes.get_mut(&key).unwrap().name = "Changed".into();
+            assert_eq!(declarations.get(&key).unwrap().name, previous_name);
+            assert_eq!(compiler.normalized_classes.get(&key).unwrap().name, "Changed");
+            assert!(!std::sync::Arc::ptr_eq(&declarations.0, &compiler.normalized_classes.0));
+        }).unwrap().join().unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "paired compilation CPU measurement on local WordPress modules"]
+    fn paired_wordpress_body_storage_cpu() {
+        fn cpu_ns() -> u128 {
+            unsafe extern "C" { fn clock_gettime(id: i32, time: *mut [i64; 2]) -> i32; }
+            let mut time = [0i64; 2];
+            assert_eq!(unsafe { clock_gettime(16, &mut time) }, 0);
+            time[0] as u128 * 1_000_000_000 + time[1] as u128
+        }
+        std::thread::Builder::new().stack_size(32 * 1024 * 1024).spawn(|| {
+            vybe_language_php::register();
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/webroot/wordpress/wp-includes");
+            for name in ["class-wp-hook.php", "class-wp-query.php", "formatting.php"] {
+                let source = std::fs::read_to_string(root.join(name)).unwrap();
+                let module = vybe_language_php::parse(&source).unwrap();
+                let profile = crate::profile::parse_profile(vybe_language_php::profile_source()).unwrap();
+                let mut samples = [Vec::new(), Vec::new()];
+                for round in 0..7 {
+                    for copy in if round % 2 == 0 { [true, false] } else { [false, true] } {
+                        let start = cpu_ns();
+                        let chunks = compile_mode(&module, profile.clone(), copy);
+                        std::hint::black_box(&chunks);
+                        drop(chunks);
+                        let elapsed = cpu_ns() - start;
+                        if round != 0 { samples[copy as usize].push(elapsed); }
+                    }
+                }
+                for values in &mut samples { values.sort_unstable(); }
+                eprintln!("module_body file={name} copied_cpu_ms={:.3} borrowed_cpu_ms={:.3} ratio={:.3}",
+                    samples[1][3] as f64 / 1e6, samples[0][3] as f64 / 1e6,
+                    samples[0][3] as f64 / samples[1][3] as f64);
+            }
+        }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn borrowed_segments_match_previous_copy_for_php_reference_outputs() {
+        std::thread::Builder::new().stack_size(32 * 1024 * 1024).spawn(|| {
+            vybe_language_php::register();
+            for source in [
+                "<?php parse_str('', $result); return is_array($result);",
+                "<?php class Box { private $value = 7; public function read() { return $this->value; } } $box = new Box(); return $box->read();",
+                "<?php function parse_wrapper($input, &$output) { parse_str($input, $output); } $result = null; parse_wrapper('', $result); return is_array($result);",
+                "<?php function parse_wrapper($input, &$output) { parse_str($input, $output); } function options($input, $defaults) { parse_wrapper($input, $parsed); return array_merge($defaults, $parsed); } return options('', ['optimize' => false]);",
+            ] {
+                let module = vybe_language_php::parse(source).unwrap();
+                let original = format!("{module:?}");
+                let profile = crate::profile::parse_profile(vybe_language_php::profile_source()).unwrap();
+                let baseline = compile_mode(&module, profile.clone(), true);
+                let borrowed = compile_mode(&module, profile, false);
+                assert_eq!(baseline.len(), borrowed.len());
+                for (a, b) in baseline.iter().zip(&borrowed) {
+                    assert_eq!(a.code, b.code, "emitted instruction bytes changed for {source}");
+                    assert_eq!(format!("{:?}", a.constants), format!("{:?}", b.constants));
+                    assert_eq!(format!("{:?}", a.imports), format!("{:?}", b.imports));
+                }
+                let run = |chunks| {
+                    let mut vm = vybe_runtime::VM::new();
+                    platforms::register_platforms_all(&mut vm);
+                    vm.run(chunks).map(|value| format!("{value:?}")).map_err(|error| error.to_string())
+                };
+                assert_eq!(run(baseline), run(borrowed), "runtime changed for {source}");
+                assert_eq!(format!("{module:?}"), original, "compilation changed the input AST");
+            }
+        }).unwrap().join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod staged_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn speculative_compiler_buffers_diagnostics_for_actual_include() {
+        let certificate=Arc::new(std::sync::Mutex::new(crate::compile_dependencies::Certificate::speculative()));
+        let compiler=Compiler::with_profile(crate::profile::parse_profile("[info]\nname='diagnostic-test'\n[compiler]\n").unwrap()).with_compile_certificate(certificate.clone());
+        compiler.compiler_diagnostic("unreached diagnostic".into());
+        assert_eq!(certificate.lock().unwrap().take_diagnostics(),["unreached diagnostic"]);
+        assert!(certificate.lock().unwrap().take_diagnostics().is_empty());
+    }
+    #[test]
+    fn actual_namespace_call_records_selected_and_missing_export_dependencies() {
+        use vybe_runtime::{ExportEntry,ModuleRecord};
+        fn compile(graph:&HashMap<String,ModuleRecord>)->Arc<std::sync::Mutex<crate::compile_dependencies::Certificate>> {
+            let certificate=Arc::new(std::sync::Mutex::new(crate::compile_dependencies::Certificate::speculative()));
+            let mut compiler=Compiler::with_profile(crate::profile::parse_profile("[info]\nname='certificate-test'\n[compiler]\n").unwrap())
+                .with_module_exports(crate::bundle::flatten_module_exports(graph)).with_compile_certificate(certificate.clone());
+            compiler.host_namespace_aliases.insert("pkg".into(),"adapter".into());
+            let member=Expression::new(ExprKind::Member{object:Box::new(Expression::ident("pkg")),field:"f".into(),null_safe:false});
+            let call=Expression::new(ExprKind::Call{callee:Box::new(member),args:vec![],optional:false});
+            let module=Module{name:"test".into(),language:Lang::Unknown,body:vec![Statement::new(StmtKind::Expr(call))],imports:vec![],directives:Default::default(),canon:Default::default()};
+            compiler.compile_with_imports(&module).unwrap();certificate
+        }
+        let mut graph=HashMap::new();
+        graph.insert("adapter".into(),ModuleRecord::new_synthetic("adapter"));
+        graph.insert("host".into(),ModuleRecord::new_synthetic("host"));
+        let missing=compile(&graph);assert!(missing.lock().unwrap().validates(&graph));
+        graph.get_mut("host").unwrap().exports.insert("terminal".into(),ExportEntry::Function{idx:1});
+        graph.get_mut("adapter").unwrap().exports.insert("f".into(),ExportEntry::Indirect{from:"host".into(),name:"terminal".into()});
+        assert!(!missing.lock().unwrap().validates(&graph));
+        let selected=compile(&graph);assert!(selected.lock().unwrap().validates(&graph));
+        graph.get_mut("adapter").unwrap().exports.insert("f".into(),ExportEntry::Function{idx:2});
+        assert!(!selected.lock().unwrap().validates(&graph));
+    }
+
+}
+
+pub mod memory_span_set;
+
+// Generic verification code only; no language crate dependency and no normal
+// build API or runtime state. The caller supplies an actual registered producer.
+#[cfg(any(test,feature="service-verification"))]
+mod helper_direct_frame_policy_verification {
+    use super::*;
+    use vybe_runtime::registry::{ParseFn,EmitDispatchFn};
+
+    #[derive(Debug)]
+    pub struct Report {
+        pub direct_calls:usize,
+        pub helper_chunks:usize,
+        pub scope_next_slot:u16,
+        pub local_count:u16,
+        pub scratch_high_water:u16,
+        pub escaping_scope_next_slot:u16,
+        pub rooted_result:String,
+    }
+    fn key(_: &[Chunk],_:u32)->Vec<u8>{vec![1]}
+    fn build(chunks:&mut Vec<Chunk>,line:u32)->usize {
+        let mut body=Chunk::new("__frame_policy_probe");
+        body.arity=2;body.param_count=2;body.local_count=2;
+        body.takes_receiver=false;body.direct_entry_has_captures=Some(false);
+        body.emit_op_u16(Op::LOCAL_GET,0,line);body.emit_op(Op::RETURN,line);
+        let index=chunks.len();chunks.push(body);index
+    }
+    fn no_factory()->Chunk{panic!("contextual factory unused")}
+    fn no_caller(_: &mut Chunk,_:usize,_:u32){panic!("contextual caller unused")}
+    fn escaping_invoke(chunks:&mut Vec<Chunk>,current:usize,_:usize,_:u32){chunks[current].local_count+=3;}
+    fn compiler(direct:bool,parser:ParseFn,producer:EmitDispatchFn,namespace:&'static str,operation:&'static str)->Compiler {
+        let definitions=Box::leak(vec![helper_templates::Definition {
+            contract:if direct {helper_templates::Contract::ContextualDirectCallAppendOnlyUnit{key,build}}
+                else {helper_templates::Contract::ContextualAppendOnlyUnit{key,build,invoke:escaping_invoke}},
+            operation,namespace,version:1,parser,producer,arity:2,
+            helper_name:"__frame_policy_probe",factory:no_factory,caller:no_caller,
+        }].into_boxed_slice());
+        Compiler::with_profile(vybe_runtime::profile::parse_profile(
+            "[info]\nname='helper-frame-verification'\n[compiler]").unwrap())
+            .with_helper_templates(parser,definitions,std::sync::Arc::new(helper_templates::Pool::default()))
+    }
+    pub fn verify(parser:ParseFn,producer:EmitDispatchFn,namespace:&'static str,operation:&'static str)->Result<Report,String> {
+        if operation.split_once('.').map(|(prefix,_)|prefix)!=Some(namespace){return Err("operation namespace mismatch".into());}
+        if !crate::languages::emit_dispatch_for(namespace).is_some_and(|actual|std::ptr::fn_addr_eq(actual,producer)) {
+            return Err("verification producer is not registered for namespace".into());
+        }
+        // Actual Compiler entry, builtin dispatch, Scope allocator and checked
+        // direct helper path; not an extracted or mirrored scope model.
+        let mut c=compiler(true,parser,producer,namespace,operation);
+        let root=c.define_local("root");assert_eq!(root,0);
+        c.chunks[0].local_count=11;c.chunks[0].scratch_high_water=17;
+        c.emit_const(vybe_runtime::Value::String(std::sync::Arc::from("rooted")));
+        c.emit_u16(Op::LOCAL_SET,root);
+        for _ in 0..20 {
+            // A live local and a nested call result survive new strings
+            // allocated in both argument positions before each direct call.
+            c.emit_u16(Op::LOCAL_GET,root);
+            c.emit_const(vybe_runtime::Value::String(std::sync::Arc::from("in")));
+            c.emit_const(vybe_runtime::Value::String(std::sync::Arc::from("ner")));
+            c.emit(Op::STRING_CONCAT);c.emit_common(operation,2,13);
+            c.emit_const(vybe_runtime::Value::String(std::sync::Arc::from("out")));
+            c.emit_const(vybe_runtime::Value::String(std::sync::Arc::from("er")));
+            c.emit(Op::STRING_CONCAT);c.emit_common(operation,2,29);c.emit(Op::DROP);
+            assert_eq!(c.scopes[0].next_slot,1);
+            assert_eq!(c.chunks[0].local_count,11);
+            assert_eq!(c.chunks[0].scratch_high_water,17);
+        }
+        let direct_calls=c.chunks[0].direct_defined_calls.len();assert_eq!(direct_calls,40);
+        let helper_chunks=c.chunks.len()-1;assert_eq!(helper_chunks,1);
+        let scope_next_slot=c.scopes[0].next_slot;
+        let local_count=c.chunks[0].local_count;
+        let scratch_high_water=c.chunks[0].scratch_high_water;
+        c.emit_u16(Op::LOCAL_GET,root);c.emit(Op::RETURN);
+        let mut vm=vybe_runtime::VM::new();
+        let value=vm.run(c.chunks).map_err(|e|e.to_string())?;
+        let vybe_runtime::Value::String(rooted)=value else {return Err("rooted result is not a string".into());};
+        if rooted.as_ref()!="rooted" {return Err("rooted value changed across nested helper arguments".into());}
+        let rooted_result=rooted.to_string();
+        // Old arbitrary adapters may leave live/escaping caller locals: they
+        // must still reserve Scope slots and retain their scratch high-water.
+        let mut old=compiler(false,parser,producer,namespace,operation);
+        old.scopes[0].next_slot=1;old.chunks[0].local_count=11;
+        old.emit_common(operation,2,13);
+        assert_eq!(old.chunks[0].local_count,14);assert_eq!(old.scopes[0].next_slot,14);
+        assert!(old.chunks[0].scratch_high_water>=14);
+        Ok(Report {direct_calls,helper_chunks,scope_next_slot,local_count,scratch_high_water,
+            escaping_scope_next_slot:old.scopes[0].next_slot,rooted_result})
+    }
+}
+#[cfg(feature="service-verification")]
+pub use helper_direct_frame_policy_verification::Report as HelperDirectFrameScopeReport;
+/// Feature-only native acceptance entry. Caller registers its real frontend
+/// and supplies its exact parse/dispatch identities; no normal API is added.
+#[cfg(feature="service-verification")]
+pub fn verify_helper_direct_frame_scope(parser:vybe_runtime::registry::ParseFn,
+    producer:vybe_runtime::registry::EmitDispatchFn,namespace:&'static str,operation:&'static str,
+)->Result<HelperDirectFrameScopeReport,String>{
+    helper_direct_frame_policy_verification::verify(parser,producer,namespace,operation)
+}
+
+#[cfg(any(test,feature="service-verification"))]
+mod helper_typed_direct_verification {
+    use super::*;
+    use vybe_runtime::registry::{ParseFn,EmitDispatchFn,emitter_results::ResultRepresentation};
+    #[derive(Debug)]pub struct Case {
+        pub result:ResultRepresentation,pub mode:&'static str,pub calls:usize,pub helpers:usize,
+        pub scope:u16,pub locals:u16,pub high_water:u16,pub boolean_casts:usize,pub drops:usize,pub returned:String,
+    }
+    fn key(_: &[Chunk],_:u32)->Vec<u8>{Vec::new()}
+    fn boxed(chunks:&mut Vec<Chunk>,line:u32)->usize{
+        let mut c=Chunk::new("__typed_frame_probe_body");c.arity=0;c.param_count=0;c.local_count=0;c.takes_receiver=false;c.direct_entry_has_captures=Some(false);c.emit_bool_const(true,line);c.emit_op(Op::RETURN,line);let i=chunks.len();chunks.push(c);i
+    }
+    fn unused_factory()->Chunk{panic!("typed contextual helper has no standalone factory")}
+    fn unused_caller(_: &mut Chunk,_:usize,_:u32){panic!("typed direct helper has no arbitrary caller")}
+    fn compiler(parser:ParseFn,producer:EmitDispatchFn,namespace:&'static str,operation:&'static str,result:ResultRepresentation)->Compiler{
+        let build=boxed;
+        let defs=Box::leak(vec![helper_templates::Definition{contract:helper_templates::Contract::ContextualTypedDirectCallAppendOnlyUnit{key,build,result},operation,namespace,version:1,parser,producer,arity:0,helper_name:"__typed_frame_probe_body",factory:unused_factory,caller:unused_caller}].into_boxed_slice());
+        let profile=format!("[info]\nname='typed-helper-proof'\n[compiler]\n[builtins]\n__typed_frame_probe={{emit='common:{operation}',discarded_emit='common:{operation}',min_args=0,max_args=0}}\n");
+        Compiler::with_profile(vybe_runtime::profile::parse_profile(&profile).unwrap()).with_helper_templates(parser,defs,std::sync::Arc::new(helper_templates::Pool::default()))
+    }
+    pub fn verify(parser:ParseFn,producer:EmitDispatchFn,namespace:&'static str,operation:&'static str,check_code:fn(&[Chunk])->Result<(),String>)->Result<Vec<Case>,String>{
+        if operation.split_once('.').map(|(prefix,_)|prefix)!=Some(namespace){return Err("operation namespace mismatch".into());}
+        if !crate::languages::emit_dispatch_for(namespace).is_some_and(|actual|std::ptr::fn_addr_eq(actual,producer)){return Err("typed verification producer is not registered".into());}
+        let mut reports=Vec::new();
+        for result in [ResultRepresentation::BoxedBoolean]{for mode in ["value","condition","discarded-profile"]{
+            let mut c=compiler(parser,producer,namespace,operation,result);
+            let root=c.define_local("root");assert_eq!(root,0);c.chunks[0].local_count=11;c.chunks[0].scratch_high_water=17;
+            c.emit_const(vybe_runtime::Value::String(std::sync::Arc::from("rooted")));c.emit_u16(Op::LOCAL_SET,root);
+            let call=vybe_ast::Expression::new(vybe_ast::ExprKind::Call{callee:Box::new(vybe_ast::Expression::ident("__typed_frame_probe")),args:Vec::new(),optional:false});
+            match mode {
+                "value"=>c.compile_expr(&call)?,
+                "condition"=>{
+                    c.want_i32_condition=true;c.compile_expr(&call)?;assert!(c.gave_i32_condition,"typed Boolean must reach the ordinary Compiler condition report");
+                    c.chunks[0].emit_if(17);c.emit_const(vybe_runtime::Value::String(std::sync::Arc::from("selected")));c.emit_u16(Op::LOCAL_SET,root);c.chunks[0].emit_end(17);c.emit_u16(Op::LOCAL_GET,root);
+                },
+                "discarded-profile"=>{assert!(c.has_discarded_builtin_emits);c.compile_expr_stmt(&call)?;c.emit_u16(Op::LOCAL_GET,root);},
+                _=>unreachable!(),
+            }
+            assert_eq!(c.scopes[0].next_slot,1);assert_eq!(c.chunks[0].local_count,11);assert_eq!(c.chunks[0].scratch_high_water,17);
+            let calls=c.chunks[0].direct_defined_calls.len();let helpers=c.chunks.len()-1;assert_eq!(calls,1);assert_eq!(helpers,1);
+            let boolean_casts=c.chunks[0].imports.iter().filter(|i|i.module=="wasm:js-boolean"&&i.name=="cast").count();assert_eq!(boolean_casts,usize::from(mode=="condition"&&result==ResultRepresentation::BoxedBoolean));
+            let mut drops=0;let mut ip=0;while ip<c.chunks[0].code.len(){let op=Op::from_code_at(&c.chunks[0].code,ip);drops+=usize::from(op==Op::DROP);ip+=4+op.operand_format().size_in(&c.chunks[0].code,ip+4);}assert_eq!(drops,usize::from(mode=="discarded-profile"));
+            c.emit(Op::RETURN);check_code(&c.chunks)?;let mut vm=vybe_runtime::VM::new();vybe_runtime::js_builtins::register(&mut vm);vybe_platform_ecma::register(&mut vm);
+            let missing:Vec<_>=c.chunks.iter().flat_map(|chunk|chunk.imports.iter()).filter_map(|import|vm.resolve_import_target(&import.module,&import.name).err().map(|e|format!("{}:{}: {e}",import.module,import.name))).collect();
+            assert!(missing.is_empty(),"all missing actual provider bindings before VM execution: {missing:?}");let value=vm.run(c.chunks).map_err(|e|e.to_string())?;
+            match mode {
+                "value"=>match result{ResultRepresentation::BoxedBoolean=>assert!(matches!(&value,vybe_runtime::Value::Bool(true))),ResultRepresentation::RawI32Boolean=>assert!(matches!(&value,vybe_runtime::Value::I32(1))),_=>unreachable!()},
+                "condition"=>assert!(matches!(&value,vybe_runtime::Value::String(s)if s.as_ref()=="selected")),
+                "discarded-profile"=>assert!(matches!(&value,vybe_runtime::Value::String(s)if s.as_ref()=="rooted")),
+                _=>unreachable!(),
+            }
+            reports.push(Case{result,mode,calls,helpers,scope:1,locals:11,high_water:17,boolean_casts,drops,returned:format!("{value:?}")});
+        }}
+        Ok(reports)
+    }
+}
+#[cfg(feature="service-verification")]
+pub use helper_typed_direct_verification::Case as HelperTypedDirectScopeCase;
+/// Feature-only actual Compiler value/condition/profile-discard result gate.
+#[cfg(feature="service-verification")]
+pub fn verify_helper_typed_direct_scope(parser:vybe_runtime::registry::ParseFn,producer:vybe_runtime::registry::EmitDispatchFn,namespace:&'static str,operation:&'static str,check_code:fn(&[Chunk])->Result<(),String>)->Result<Vec<HelperTypedDirectScopeCase>,String>{helper_typed_direct_verification::verify(parser,producer,namespace,operation,check_code)}

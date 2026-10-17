@@ -33,6 +33,10 @@ pub struct SourcePratt<'a> {
 }
 #[derive(Debug, Clone)]
 pub(crate) struct OwnedPratt {
+    pub operator_rhs_atoms: Vec<(RuleId, RuleId)>,
+    pub rhs_atom: Option<RuleId>,
+    pub rhs_operator: Option<RuleId>,
+    pub operator_trivia: Option<RuleId>,
     pub atom: RuleId,
     pub operators: Vec<BoundOperator>,
     pub trailing_trivia: crate::islands::TrailingTrivia,
@@ -159,10 +163,189 @@ impl CompactScope {
     }
 }
 
+/// Generated proof that a choice's left subtree fails without state changes
+/// for bytes outside `bytes`. Only certified rule calls, groups, choices and left-failing sequences are used.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeChoicePrefix<'a> {
+    pub bytes: [u64; 4],
+    /// All left-subtree tasks; caller adds its Choice continuation.
+    pub steps: usize,
+    pub depth: usize,
+    pub diagnostic_complete: bool,
+    pub events: &'a [NativeChoiceEvent],
+}
+/// Generated left-sequence spine ending in a rule call. Engine preserves frames.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeRuleHead<'a> {
+    pub sequences: &'a [(ExprId, ExprId)],
+    pub call_expression: ExprId,
+    pub callee: RuleId,
+}
+
+/// Original observer order for a certified first-byte miss.
+#[derive(Debug, Clone, Copy)]
+pub enum NativeChoiceEvent {
+    Expression(ExprId),
+    Call { expression: ExprId, rule: RuleId },
+}
+
+/// Generated opt-in zero-consumption failed rule path. Caller Eval is excluded.
+/// Work includes EnterRule + FinishRule; expected terminals retain source order.
+#[derive(Debug)]
+pub struct NullableFailurePrefix<'a> {
+    pub steps: usize,
+    pub depth: usize,
+    pub expected: &'a [FragmentExpected<'a>],
+    pub unobserved_rules: &'a [RuleId],
+}
+
+/// Checked PEG shape for a shared successful expression prefix. Providers must
+/// retain its rule/instruction geometry; runtime revalidates direct override edges.
+#[derive(Debug, Clone, Copy)]
+pub struct SharedPrefixChoice {
+    pub target: RuleId, pub target_expression: ExprId,
+    pub branch_expression: ExprId, pub branch_sequence: ExprId,
+    pub left_choice: ExprId, pub wrapper_call: ExprId, pub right: ExprId,
+    pub scope: usize, pub prefix_rule: RuleId, pub suffix_rule: Option<RuleId>,
+    pub prior: ExprId, pub wrapper: RuleId, pub prefix: ExprId, pub suffix: ExprId,
+}
+
+/// Checked `branch(prefix ~ suffix) | fallback(prefix)` capture-preserving choice.
+/// The matcher rechecks the current IR, modes, scopes and observer policies.
+#[derive(Debug, Clone, Copy)]
+pub struct SharedWrapperPrefix {
+    pub choice: ExprId,
+    pub branch: RuleId,
+    pub fallback_rule: RuleId,
+    pub prefix: ExprId,
+    pub suffix: ExprId,
+    pub fallback: ExprId,
+}
+/// Opted-in delimited generator/group choice; original PEG geometry stays authoritative.
+#[derive(Debug,Clone,Copy)]
+pub struct SharedGroupPrefix {
+ pub target: usize,
+ pub target_expression: usize,
+ pub choice: usize,
+ pub left: usize,
+ pub right: usize,
+ pub left_inner: usize,
+ pub open: usize,
+ pub branch_call: usize,
+ pub close: usize,
+ pub right_inner: usize,
+ pub fallback_open: usize,
+ pub optional: usize,
+ pub fallback_close: usize,
+ pub branch: usize,
+ pub branch_expression: usize,
+ pub fallback_rule: usize,
+ pub fallback_expression: usize,
+ pub prefix_rule: usize,
+ pub prefix: usize,
+ pub branch_tail: usize,
+ pub fallback_inner: usize,
+ pub fallback_prefix: usize,
+ pub commas: usize,
+ pub trailing: usize,
+}
+/// Immutable generated geometry for an explicitly owned normal rule.
+#[derive(Clone,Copy,Debug)]
+pub struct OwnedCaptureBoundary<'a> {pub expression:ExprId,pub scope:usize,pub capture_rules:&'a[RuleId]}
+/// Explicit capture-preserving shared prefix inside one rule.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct SharedInnerPrefix {
+pub target:usize,
+pub target_expression:usize,
+pub choice:usize,
+pub left:usize,
+pub right:usize,
+pub prefix_rule:usize,
+pub prefix:usize,
+pub first:usize,
+pub second:usize,
+pub third:usize,
+pub kind:usize,
+}
+/// Opted-in silent literal repetition. An absent first byte proves zero-length
+/// success without entering the repetition. Immutable geometry must be retained.
+#[derive(Debug,Clone,Copy)]
+pub struct EmptySuccessHead{pub expression:ExprId,pub scope:usize,pub first:[u64;4]}
 pub trait Program: std::fmt::Debug {
+    /// Opted-in generated geometry agrees with current rule/body/scope and
+    /// descendant capture-observer rules. Forwarding wrappers default to false.
+    fn owned_capture_boundary_metadata_is_current(&self)->bool{false}
+    fn owned_capture_boundary(&self,_:RuleId)->Option<OwnedCaptureBoundary<'_>>{None}
+    /// Opt-in embedding storage policy. Unmodified/forwarding programs retain
+    /// independent units unless they explicitly carry this contract.
+    fn code_space(&self) -> crate::source_units::CodeSpace { crate::source_units::CodeSpace::Unit }
+    /// Explicit source-load policy for an embedding's transactional AST hook.
+    /// Metadata only: the parser never resolves paths or executes a load.
+    fn source_unit_binding(&self, _: RuleId, _: Option<RuleId>) -> Option<crate::source_units::Binding<'_>> { None }
+    /// Generated immutable choice metadata agrees with every current instruction,
+    /// literal, rule/scope/mode and SourcePratt setting. Forwarding wrappers must
+    /// independently establish this contract; forwarding metadata alone is insufficient.
+    fn choice_heads_metadata_is_current(&self)->bool{false}
+    /// Cheap generated selected-root admission. Default PEG programs have no targets.
+    fn choice_head_branch_metadata_is_current(&self) -> bool { false }
+    /// Optional per-alternative conservative hook proof; None retains union behavior.
+    fn choice_head_branch_rules(&self, _expression: ExprId, _branch: usize) -> Option<&[RuleId]> { None }
+    fn choice_heads_candidate(&self,_:ExprId)->bool{false}
+    fn choice_heads(&self,_:ExprId)->Option<&ChoiceHeads>{None}
+
+ fn shared_inner_prefix(&self,_:ExprId)->Option<SharedInnerPrefix>{None}
+ fn shared_group_prefix(&self,_:ExprId)->Option<SharedGroupPrefix>{None}
+    /// Immutable resolved/generated wrapper geometry agrees with current instructions.
+    /// Custom/forwarding programs must independently certify this; default revalidates.
+    fn shared_wrapper_prefix_metadata_is_current(&self)->bool{false}
+ fn shared_wrapper_prefix(&self,_:ExprId)->Option<SharedWrapperPrefix>{None}
+
+    /// Explicit permission to omit diagnostic matcher observations in opted-in
+    /// certificates. Both observer callbacks must be no-ops. Forwarding wrappers
+    /// retain their events by default, even when they forward certificate metadata.
+    fn match_observers_are_noop(&self) -> bool { false }
+    /// Disabled for ordinary generation and custom observational wrappers.
+    /// Metadata alone does not permit omitting matcher observations. Unicode and
+    /// unknown contexts return None.
+    fn nullable_failure_prefix(&self, _: RuleId, _: u8, _: Option<u8>) -> Option<&NullableFailurePrefix<'_>> { None }
+
+    /// Explicit generated-native opt-in. Ordinary capture parsing never uses
+    /// this path; custom programs and standard generation leave it disabled.
+    fn shared_prefix_choice(&self, _: ExprId) -> Option<SharedPrefixChoice> { None }
+    fn native_hybrid_choices(&self) -> bool {
+        false
+    }
+    fn native_hybrid_choice_prefix(&self, _: ExprId) -> Option<&NativeChoicePrefix<'_>> {
+        None
+    }
+    /// Explicit native left-sequence spine. All semantic hooks and frames remain.
+    fn native_hybrid_rule_head(&self, _: RuleId) -> Option<&NativeRuleHead<'_>> {
+        None
+    }
+
+    #[inline(always)]
+    fn delimited_fragment(&self, _: RuleId) -> Option<crate::quoted::DelimitedFragment<'_>> { None }
+    #[inline(always)]
+    fn quoted_fragment(&self, _: RuleId) -> Option<crate::quoted::Fragment> { None }
+    /// Certified silent ASCII terminal repetition, without rule calls or effects.
+    fn whitespace_run_class(&self, _: usize) -> Option<crate::lexical::ByteClass> { None }
+
+    /// Forwarding wrappers must certify scanner geometry against current bodies.
+    fn native_token_metadata_is_current(&self) -> bool { false }
+    /// Generated opt-in success-only lexical recognizer. It must preserve PEG greediness.
+    fn native_token(&self, _rule: RuleId, _source: &str, _offset: usize, _remaining_depth: usize) -> Option<usize> { None }
+    /// Certified lexical result: None retains PEG; Some(None) proves failure.
+    /// Legacy positive-only providers never claim a negative result.
+    fn native_token_result(&self, rule: RuleId, source: &str, offset: usize, remaining_depth: usize) -> Option<Option<usize>> {
+        self.native_token(rule, source, offset, remaining_depth).map(Some)
+    }
+
     fn atomic_fragments(&self) -> Option<()> {
         None
     }
+    /// Explicit partial ASCII table policy; absent by default so tracing wrappers
+    /// retain original intrinsic observations. Unsupported lanes replay whole rules.
+    fn partial_atomic_fragment(&self, _rule: RuleId) -> Option<&AtomicFragment<'_>> { None }
     fn atomic_fragment(&self, _rule: RuleId) -> Option<&AtomicFragment<'_>> {
         None
     }
@@ -290,6 +473,12 @@ pub trait Program: std::fmt::Debug {
     fn source_pratt(&self, _: RuleId) -> Option<SourcePratt<'_>> {
         None
     }
+    /// Explicit separator rule between an infix operator and its next atom.
+    /// Default bindings use ordinary implicit trivia only.
+    fn source_pratt_operator_trivia(&self, _: RuleId) -> Option<RuleId> { None }
+    fn source_pratt_operator_rhs_atom(&self, _: RuleId, _: RuleId) -> Option<RuleId> { None }
+    fn source_pratt_rhs_atom(&self, _: RuleId) -> Option<RuleId> { None }
+    fn source_pratt_rhs_operator(&self, _: RuleId) -> Option<RuleId> { None }
     fn scope(&self, id: usize) -> Scope {
         assert_eq!(id, 0, "program has no such scope");
         Scope {
@@ -309,9 +498,49 @@ pub trait Program: std::fmt::Debug {
     fn whitespace_prefix_class(&self) -> Option<crate::lexical::ByteClass> {
         self.whitespace_class()
     }
+    /// Cheap selected-rule lookup; metadata alone never admits a shortcut.
+    fn empty_success_candidate(&self,_:RuleId)->bool{false}
+    /// Grant only for unchanged certified rule instructions and modes/scopes.
+    /// Accessors used by the certificate must be pure; their interpreter query
+    /// counts/order may change. Forwarding or transformed programs must re-certify
+    /// instead of forwarding this permission.
+    fn empty_success_metadata_is_current(&self)->bool{false}
+    fn empty_success_head(&self,_:RuleId)->Option<&EmptySuccessHead>{None}
+    fn empty_suffix_candidate(&self,_:usize)->bool{false}
+    /// Grant only for the unchanged certified instruction/mode/scope/Pratt geometry.
+    /// All reached accessors must be pure: interpreter query counts/order may change.
+    /// Forwarding/transformed programs must re-certify; forwarding metadata alone
+    /// does not grant permission.
+    fn empty_suffix_metadata_is_current(&self)->bool{false}
+    fn empty_suffix_head(&self,_:usize)->Option<&EmptySuffixHead>{None}
+
 }
 
 impl Program for CompiledGrammar {
+    fn code_space(&self) -> crate::source_units::CodeSpace { self.code_space.unwrap_or_default() }
+    fn owned_capture_boundary_metadata_is_current(&self)->bool { !self.owned_capture_boundaries.is_empty() }
+    fn owned_capture_boundary(&self,rule:RuleId)->Option<OwnedCaptureBoundary<'_>> {
+        let capture_rules=self.owned_capture_boundaries.get(&rule)?;
+        let definition=self.rule(rule);
+        Some(OwnedCaptureBoundary{expression:definition.expression,scope:definition.scope,capture_rules})
+    }
+
+    fn source_unit_binding(&self, rule: RuleId, selector: Option<RuleId>) -> Option<crate::source_units::Binding<'_>> {
+        self.source_units.iter().find(|binding| binding.rule == rule && binding.selector == selector).map(crate::source_units::OwnedBinding::borrowed)
+    }
+    fn shared_wrapper_prefix_metadata_is_current(&self)->bool{true}
+    fn shared_wrapper_prefix(&self,id:ExprId)->Option<SharedWrapperPrefix>{self.shared_wrapper_prefixes.get(&id).copied()}
+    fn match_observers_are_noop(&self) -> bool { true }
+    fn empty_success_candidate(&self,r:RuleId)->bool{self.empty_success_heads.contains_key(&r)}
+    fn empty_success_metadata_is_current(&self)->bool{true}
+    fn empty_success_head(&self,r:RuleId)->Option<&EmptySuccessHead>{self.empty_success_heads.get(&r)}
+    fn empty_suffix_candidate(&self,id:usize)->bool{self.empty_suffix_heads.contains_key(&id)}
+    fn empty_suffix_metadata_is_current(&self)->bool{true}
+    fn empty_suffix_head(&self,id:usize)->Option<&EmptySuffixHead>{self.empty_suffix_heads.get(&id)}
+
+    fn shared_inner_prefix(&self,id:ExprId)->Option<SharedInnerPrefix>{self.shared_inner_prefixes.get(&id).copied()}
+    fn shared_group_prefix(&self,id:ExprId)->Option<SharedGroupPrefix>{self.shared_group_prefixes.get(&id).copied()}
+    fn shared_prefix_choice(&self, id: ExprId) -> Option<SharedPrefixChoice> { self.shared_prefixes.get(&id).copied() }
     fn leading_bytes(&self, expression: ExprId) -> Option<crate::lexical::LeadingBytes> {
         self.leading_bytes[expression]
     }
@@ -345,6 +574,14 @@ impl Program for CompiledGrammar {
     }
     fn fast_ascii_repetitions(&self) -> bool {
         true
+    }
+    fn source_pratt_operator_rhs_atom(&self,target:RuleId,operator:RuleId)->Option<RuleId> { self.pratt.get(target)?.as_ref()?.operator_rhs_atoms.iter().find_map(|&(op,atom)|(op==operator).then_some(atom)) }
+    fn source_pratt_rhs_operator(&self,rule:RuleId)->Option<RuleId> { self.pratt.get(rule)?.as_ref()?.rhs_operator }
+    fn source_pratt_rhs_atom(&self,rule:RuleId)->Option<RuleId> {
+        self.pratt.get(rule)?.as_ref()?.rhs_atom
+    }
+    fn source_pratt_operator_trivia(&self,rule:RuleId)->Option<RuleId> {
+        self.pratt.get(rule)?.as_ref()?.operator_trivia
     }
     fn source_pratt(&self, rule: RuleId) -> Option<SourcePratt<'_>> {
         self.pratt.get(rule)?.as_ref().map(|spec| SourcePratt {
@@ -423,3 +660,23 @@ impl Program for CompiledGrammar {
         }
     }
 }
+
+/// Conservative mandatory ASCII head: a byte class or complete literal word.
+/// The boolean on each word selects ASCII case-insensitive matching.
+#[derive(Debug)]
+pub struct ChoiceHead {pub class:[u64;4],pub words:&'static[(&'static str,bool)]}
+/// Original ordered-choice branch. Unknown heads must always be admitted.
+#[derive(Debug)]
+pub struct ChoiceHeadBranch {pub expression:usize,pub head:Option<&'static ChoiceHead>}
+/// Immutable generated proof for a selected choice in its original lexical scope.
+/// `branches` preserves original order and has at most 64 entries. Every mask
+/// in `first` contains only valid branch bits; unknown heads are present in all
+/// masks. `rules` covers all named rules inspected by known head proofs, and
+/// `depth` bounds their maximum additional rule nesting before head failure.
+/// Custom programs granting `choice_heads_metadata_is_current` must uphold
+/// these invariants as well as agreement with their current program geometry.
+#[derive(Debug)]
+pub struct ChoiceHeads {pub first:&'static[u64;256],pub scope:usize,pub expression:usize,pub branches:&'static[ChoiceHeadBranch],pub rules:&'static[usize],pub depth:usize}
+
+#[derive(Debug,Clone,Copy)]
+pub struct EmptySuffixHead {pub owner:usize,pub owner_body:usize,pub repetition:usize,pub child:usize,pub scope:usize,pub first:[u64;4],pub calls:[usize;8],pub calls_len:u8,pub depth:usize}

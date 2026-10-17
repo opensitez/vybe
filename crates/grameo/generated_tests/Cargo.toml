@@ -16,6 +16,8 @@ grameo = { path = ".." }
 [build-dependencies]
 grameo_codegen = { path = "../codegen" }
 grameo = { path = ".." }
+vybe_ast_bindings = { path = "../../vybe_ast_bindings" }
 
 [dev-dependencies]
 vybe_ast = { path = "../../vybe_ast" }
+vybe_ast_bindings = { path = "../../vybe_ast_bindings" }

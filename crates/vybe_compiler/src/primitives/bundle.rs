@@ -9,6 +9,9 @@
 //! On any other runtime, the globals hold the bundled helper function refs.
 //! One binary, works everywhere, no unresolvable imports.
 
+#[path = "generator_native_markers.rs"]
+mod generator_native_markers;
+
 use std::collections::{BTreeSet, HashMap};
 use std::sync::OnceLock;
 use vybe_runtime::opcode::Op;
@@ -18,6 +21,8 @@ use vybe_runtime::{Chunk, Value};
 // globals. The existing u16 function operand is fixed up before execution;
 // only an exact compiler-origin offset record authorizes that fixup.
 const PRIVATE_HELPERS: &[(&str, u8)] = &[
+    ("primitive.array_range_add", 2),
+    ("primitive.array_range_lt", 2),
     ("__stdlib_erf", 1),
     ("__stdlib_random_next_unit", 0),
     ("__stdlib_levenshtein", 2),
@@ -27,6 +32,7 @@ const PRIVATE_HELPERS: &[(&str, u8)] = &[
     ("__stdlib_csv_format_minimal", 3),
     ("__stdlib_csv_format_whitespace", 3),
     ("primitive.reference_read", 1),
+    ("primitive.byte_copy", 3),
     ("primitive.generator_yield_value", 1),
     ("primitive.generator_start_valid", 1),
     ("primitive.generator_start_current", 1),
@@ -47,6 +53,7 @@ fn private_helper_arity(export: &str) -> Option<u8> {
 // writable language-global registration.
 fn build_private_primitive(export: &str) -> Option<Chunk> {
     Some(match export {
+        "primitive.array_range_add" | "primitive.array_range_lt" => crate::primitives::arrays::build_range_binary(export),
         "__stdlib_erf" => crate::primitives::math::build_erf(),
         "__stdlib_random_next_unit" => crate::primitives::random::build_next_unit(),
         "__stdlib_levenshtein" => crate::primitives::string_similarity::build_levenshtein(),
@@ -56,6 +63,7 @@ fn build_private_primitive(export: &str) -> Option<Chunk> {
             crate::primitives::csv::build_shared_helper(export)
         }
         "primitive.reference_read" => crate::primitives::references::build_guarded_reference_read(),
+        "primitive.byte_copy" => crate::primitives::pointers::build_byte_copy(),
         "primitive.generator_yield_value" => crate::primitives::generators::build_generator_yield_value(),
         "primitive.generator_start_valid" | "primitive.generator_start_current"
         | "primitive.generator_start_value" => {
@@ -108,20 +116,43 @@ pub(crate) fn finalize_source_local_names(
     chunk: &mut Chunk,
     names: &[vybe_runtime::chunk::LocalName],
 ) {
+    let mut pending = pending_source_local_markers(chunk);
+    pending.extend_from_slice(names);
+    chunk.local_names = pending;
+}
+
+/// Transfer a completed scope's records instead of cloning every source name.
+/// Call only after its last emission; upvalue naming reads Scope.locals.
+pub(crate) fn finalize_source_local_names_owned(
+    chunk: &mut Chunk,
+    names: Vec<vybe_runtime::chunk::LocalName>,
+) {
+    let mut pending = pending_source_local_markers(chunk);
+    if pending.is_empty() {
+        chunk.local_names = names;
+    } else {
+        pending.extend(names);
+        chunk.local_names = pending;
+    }
+}
+
+fn pending_source_local_markers(chunk: &Chunk) -> Vec<vybe_runtime::chunk::LocalName> {
     use vybe_runtime::chunk::LocalOrigin;
     let mut seen = BTreeSet::new();
-    let mut pending: Vec<_> = chunk
+    chunk
         .local_names
         .iter()
         .filter(|local| {
             local.origin == LocalOrigin::Compiler
-                && private_ref_marker(&local.name).is_some()
+                && (private_ref_marker(&local.name).is_some()
+                    || local.name.starts_with("<native-generator-next:")
+                    || local.name.starts_with("<native-generator-resume:")
+                    || local.name.starts_with("<native-generator-entry:")
+                    || local.name.starts_with("<native-growable-array:"))
                 && seen.insert((local.slot, local.name.clone()))
         })
         .cloned()
-        .collect();
-    pending.extend_from_slice(names);
-    chunk.local_names = pending;
+        .collect()
 }
 
 /// Outline one registered private algorithm without publishing a language
@@ -142,6 +173,26 @@ pub(crate) fn emit_private_helper_call(chunk: &mut Chunk, export: &str, argc: u8
         chunk.emit_op_u16(Op::LOCAL_SET, base + arg as u16, line);
     }
     emit_private_helper_call_from_slots(chunk, export, base, argc, line);
+}
+
+/// Direct, uncaptured range-math calls have ordinary explicit Wasm signatures.
+/// A private marker resolves the forward target at module finalization.
+pub(crate) fn emit_private_range_call_from_slots(chunk: &mut Chunk, export: &str, base: u16, line: u32) {
+    use vybe_runtime::chunk::{LocalName, LocalOrigin};
+    assert!(matches!(export, "primitive.array_range_add" | "primitive.array_range_lt"));
+    assert_eq!(private_helper_arity(export), Some(2));
+    assert!((base as usize) + 2 <= chunk.local_count as usize);
+    let mut declaration = Chunk::new(export);
+    declaration.arity = 2;
+    declaration.func_sig = Some(("externref,externref".into(), "externref".into()));
+    for arg in 0..2 { chunk.emit_op_u16(Op::LOCAL_GET, base + arg, line); }
+    let offset = chunk.code.len();
+    chunk.emit_direct_defined_call(u32::MAX, &declaration, false, line).expect("uncaptured private range helper");
+    chunk.local_names.push(LocalName::new(base, format!("{PRIVATE_REF_PREFIX}{export}@{offset}>"), LocalOrigin::Compiler));
+}
+
+fn private_range_direct(export: &str) -> bool {
+    matches!(export, "primitive.array_range_add" | "primitive.array_range_lt")
 }
 
 /// Call a module-local primitive using values already retained in caller slots.
@@ -258,10 +309,19 @@ fn inline_private_call(chunk: &mut Chunk, export: &str, offset: usize, slot: u16
         chunk.call_indirect_sigs.len(),
         chunk.call_indirect_canon.len(),
         chunk.stack_switch_handlers.len(),
+        chunk.direct_defined_calls.len(),
     );
     // Append against the actual caller so constants/imports and scratch slots
     // remain in its existing index spaces, then move only the emitted bytes.
     match export {
+        "primitive.byte_copy" => {
+            for argument in 0..3 {
+                chunk.emit_op_u16(Op::LOCAL_GET, slot + argument, line);
+            }
+            crate::primitives::pointers::emit_byte_copy_body(
+                std::slice::from_mut(chunk), 0, line,
+            );
+        }
         "__stdlib_erf" => crate::primitives::math::emit_erf_body(chunk, slot, line),
         "__stdlib_similar_text" => crate::primitives::string_similarity::emit_similar_text_body(
             std::slice::from_mut(chunk), 0, slot, slot + 1, line,
@@ -312,7 +372,8 @@ fn inline_private_call(chunk: &mut Chunk, export: &str, offset: usize, slot: u16
         (
             chunk.call_indirect_sigs.len(),
             chunk.call_indirect_canon.len(),
-            chunk.stack_switch_handlers.len()
+            chunk.stack_switch_handlers.len(),
+            chunk.direct_defined_calls.len()
         ),
         "private inline body added offset metadata requiring relocation"
     );
@@ -364,7 +425,7 @@ fn inline_private_call(chunk: &mut Chunk, export: &str, offset: usize, slot: u16
         );
     }
     let replacement = chunk.code.split_off(original_len);
-    let replacement_lines = chunk.lines.split_off(original_len);
+    let replacement_lines = chunk.lines.split_off_table(original_len);
     assert_eq!(replacement.len(), replacement_lines.len());
     let replacement_len = replacement.len();
     chunk.block_i32_results = original_i32_blocks
@@ -380,6 +441,8 @@ fn inline_private_call(chunk: &mut Chunk, export: &str, offset: usize, slot: u16
             "duplicate relocated I32 block metadata"
         );
     }
+    chunk.direct_defined_calls = std::mem::take(&mut chunk.direct_defined_calls)
+        .into_iter().map(|(key,value)|(remap_offset(key,offset,end,replacement_len),value)).collect();
     chunk.call_indirect_sigs = std::mem::take(&mut chunk.call_indirect_sigs)
         .into_iter()
         .map(|(key, value)| (remap_offset(key, offset, end, replacement_len), value))
@@ -419,8 +482,11 @@ fn inline_private_call(chunk: &mut Chunk, export: &str, offset: usize, slot: u16
                 .expect("user code offset exceeds u32")
         });
     }
+    generator_native_markers::relocate(&mut chunk.local_names, |p| {
+        remap_offset(p, offset, end, replacement_len)
+    });
     chunk.code.splice(offset..end, replacement);
-    chunk.lines.splice(offset..end, replacement_lines);
+    chunk.lines.replace_range_table(offset..end, replacement_lines);
     let final_boundaries = instruction_boundaries(chunk);
     assert!(
         chunk
@@ -463,6 +529,15 @@ fn resolve_private_helper_refs(chunks: &mut [Chunk], inline_exports: &BTreeSet<&
                     .is_some_and(|end| end <= chunk.code.len()),
                 "private helper reference offset is out of bounds"
             );
+            if private_range_direct(export) && Op::decode(chunk.read_u16(offset), chunk.read_u16(offset + 2)) == Some(Op::CALL) {
+                let edge = chunk.direct_defined_calls.get_mut(&offset).expect("private direct-call edge missing");
+                assert_eq!(edge.target, u32::MAX, "private direct target changed before finalization");
+                assert!(!edge.source);
+                assert_eq!(edge.params, "externref,externref");
+                assert_eq!(edge.results, "externref");
+                edge.target = u32::try_from(*indices.get(export).expect("private direct helper was not linked")).expect("Wasm function index exceeds u32");
+                continue;
+            }
             assert_eq!(
                 Op::decode(chunk.read_u16(offset), chunk.read_u16(offset + 2)),
                 Some(Op::REF_FUNC),
@@ -536,8 +611,11 @@ const MAPPINGS: &[(&str, &str)] = &[
         "__stdlib_encoding_base64_decode",
         "__vybe_encoding_base64_decode",
     ),
+    ("__stdlib_binary_string_to_uint8_array", "__vybe_binary_string_to_uint8_array"),
+    ("__stdlib_base64_decode_bytes", "__vybe_base64_decode_bytes"),
     ("__stdlib_encoding_bin2hex", "__vybe_encoding_bin2hex"),
     ("__stdlib_encoding_hex2bin", "__vybe_encoding_hex2bin"),
+    ("__stdlib_encoding_hex2bytes", "__vybe_encoding_hex2bytes"),
     ("__stdlib_encoding_str_rot13", "__vybe_encoding_str_rot13"),
     (
         "__stdlib_encoding_quoted_printable_encode",
@@ -663,7 +741,6 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_to_bytes", "__vybe_to_bytes"),
     ("__stdlib_id", "__vybe_id"),
     ("__stdlib_hash", "__vybe_hash"),
-    ("__stdlib_vb_format", "__vybe_vb_format"),
     (
         "__stdlib_dotnet_numeric_format",
         "__vybe_dotnet_numeric_format",
@@ -718,6 +795,70 @@ fn mappings() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
     MAPPINGS
         .iter()
         .chain(crate::primitives::array_transforms::SHARED_HELPERS.iter())
+}
+
+// These recipes are pure fixed-ABI bodies, independent of source scope and
+// language profile. Identity is process-local authority minted by the Rust
+// producer, not a guest name or a serialized/debug-metadata spelling.
+fn fixed_runtime_providers() -> &'static [(&'static str, vybe_runtime::shared_provider::RuntimeHelperReceipt)] {
+    static PROVIDERS: OnceLock<Vec<(&'static str, vybe_runtime::shared_provider::RuntimeHelperReceipt)>> = OnceLock::new();
+    PROVIDERS.get_or_init(|| [
+        ("__stdlib_dyneq", "__vybe_dyneq", 2, "vybe.compiler.fixed-comparison.v1"),
+        ("__stdlib_dynlt", "__vybe_dynlt", 2, "vybe.compiler.fixed-comparison.v1"),
+        ("__stdlib_dyngt", "__vybe_dyngt", 2, "vybe.compiler.fixed-comparison.v1"),
+        ("__stdlib_dynle", "__vybe_dynle", 2, "vybe.compiler.fixed-comparison.v1"),
+        ("__stdlib_dynge", "__vybe_dynge", 2, "vybe.compiler.fixed-comparison.v1"),
+        // The standalone reference reader uses only its argument, fixed
+        // property keys and runtime imports. It owns no class/type indices,
+        // source bindings, directive-dependent policy or captured values.
+        // Reuse the algorithm, never a previously read reference value.
+        ("__stdlib_autoderef", "__vybe_autoderef", 1, "vybe.compiler.fixed-autoderef.v1"),
+    ].into_iter().map(|(export, global, arity, version)| (export,
+        vybe_runtime::shared_provider::RuntimeHelperReceipt::new(global,
+            version, arity, 1))).collect())
+}
+
+pub(crate) fn snapshot_runtime_helpers(vm: &vybe_runtime::VM)
+    -> Vec<vybe_runtime::shared_provider::InstalledRuntimeProvider>
+{
+    fixed_runtime_providers().iter()
+        .filter_map(|(_, receipt)| vm.snapshot_runtime_helper(receipt))
+        .filter(|provider| runtime_provider_diagnostics_clean(vm, provider)).collect()
+}
+
+pub(crate) fn runtime_provider_diagnostics_clean(vm: &vybe_runtime::VM,
+    provider: &vybe_runtime::shared_provider::InstalledRuntimeProvider) -> bool {
+    let Some(chunk) = vm.chunks.get(provider.chunk_index()) else { return false; };
+    let mut ip = 0;
+    while ip < chunk.code.len() {
+        let op = Op::from_code_at(&chunk.code, ip);
+        if op == Op::CALL && !chunk.direct_defined_calls.contains_key(&ip) {
+            let import = u16::from_be_bytes(chunk.code[ip+4..ip+6].try_into().unwrap()) as usize;
+            // Linking moves a function's imports onto its owning module.
+            // Resolve the descriptor through the attested live provider;
+            // an empty function-local table is not a missing host import.
+            let Some(import) = vm.runtime_helper_import(provider, import) else { return false; };
+            if vybe_runtime::host_arity_mismatch(&import.module, &import.name, chunk.code[ip+6]).is_some() {
+                // Keep the original builder/diagnostic path when the live
+                // registry would report an arity mismatch during construction.
+                return false;
+            }
+        }
+        ip += 4 + op.operand_format().size_in(&chunk.code, ip+4);
+    }
+    true
+}
+
+pub(crate) fn installed_runtime_helper_exports(
+    providers: &[vybe_runtime::shared_provider::InstalledRuntimeProvider],
+    chunks: &[Chunk],
+) -> Vec<&'static str> {
+    fixed_runtime_providers().iter().filter_map(|(export, receipt)| {
+        (providers.iter().any(|provider| provider.has_receipt(receipt))
+            && !chunks.iter().any(|chunk| chunk.global_inits.iter()
+                .any(|init| init.name == receipt.global_name())))
+            .then_some(*export)
+    }).collect()
 }
 
 /// Emit the runtime-helper preamble at the START of a script chunk.
@@ -852,7 +993,7 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
         let mut missing = Vec::new();
         for name in candidates {
             let index = helper_base + helper_chunks.len() + missing.len();
-            if private_helper_arity(name).is_some() && index > u16::MAX as usize {
+            if private_helper_arity(name).is_some() && !private_range_direct(name) && index > u16::MAX as usize {
                 inline_exports.insert(name);
             } else {
                 missing.push(name);
@@ -892,6 +1033,13 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
                 name: global_name.to_string(),
                 init: ConstExpr::RefFunc(helper_base + i),
             });
+        }
+    }
+    for chunk in &mut helper_chunks {
+        if let Some((_, receipt)) = fixed_runtime_providers().iter()
+            .find(|(export, _)| *export == chunk.name)
+        {
+            chunk.runtime_helper_receipt = Some(receipt.clone());
         }
     }
     chunks.extend(helper_chunks);
@@ -1039,6 +1187,207 @@ fn helper_mapping_indexes() -> &'static HelperMappingIndexes {
 #[cfg(test)]
 mod helper_mapping_lookup_tests {
     use super::*;
+
+    #[test]
+    fn linked_fixed_provider_uses_module_import_owner_and_keeps_diagnostics() {
+        let mut script = Chunk::new("<script>");
+        emit_call_push_func(&mut script, "__vybe_autoderef", 0);
+        script.emit_f64_const(7.0, 0);
+        emit_call_invoke(&mut script, 1, 0);
+        script.emit_op(Op::RETURN, 0);
+        let mut chunks = vec![script];
+        finalize_with_runtime_helpers(&mut chunks);
+        let index = chunks.iter().position(|c| c.name == "__stdlib_autoderef").unwrap();
+
+        // Model normal linked-module import ownership without reconstructing
+        // descriptor identities from names or publishing private VM tables.
+        let base = chunks[0].imports.len();
+        let imports = std::mem::take(&mut chunks[index].imports);
+        assert!(!imports.is_empty());
+        chunks[0].imports.extend(imports);
+        let helper = &mut chunks[index];
+        let mut ip = 0;
+        while ip < helper.code.len() {
+            let op = Op::from_code_at(&helper.code, ip);
+            if op == Op::CALL && !helper.direct_defined_calls.contains_key(&ip) {
+                let old = u16::from_be_bytes(helper.code[ip+4..ip+6].try_into().unwrap());
+                let relocated = u16::try_from(base + old as usize).unwrap();
+                helper.code[ip+4..ip+6].copy_from_slice(&relocated.to_be_bytes());
+            }
+            ip += 4 + op.operand_format().size_in(&helper.code, ip+4);
+        }
+        crate::primitives::globals::normalize_global_table(&mut chunks);
+        let mut vm = vybe_runtime::VM::new();
+        crate::primitives::platforms::register_platforms_all(&mut vm);
+        let result = vm.run(chunks).unwrap();
+        assert!(matches!(result, Value::F64(value) if value == 7.0));
+        assert!(vm.chunks[index].imports.is_empty());
+        let receipt = vm.chunks[index].runtime_helper_receipt.clone().unwrap();
+        let installed = vm.snapshot_runtime_helper(&receipt).unwrap();
+        assert!(runtime_provider_diagnostics_clean(&vm, &installed));
+
+        let mut certificate = crate::compile_dependencies::Certificate::default();
+        certificate.install_runtime_helpers(snapshot_runtime_helpers(&vm));
+        let mut consumer = Chunk::new("<script>");
+        emit_call_push_func(&mut consumer, "__vybe_autoderef", 0);
+        consumer.emit_op(Op::RETURN, 0);
+        let mut included = vec![consumer];
+        let excluded = certificate.runtime_helper_exports(&included);
+        assert!(excluded.contains(&"__stdlib_autoderef"));
+        finalize_with_runtime_helpers_excluding(&mut included, &excluded);
+        assert_eq!(included.len(), 1);
+
+        // Standard imports can legitimately have no process-global arity
+        // declaration. Use a unique declared contract for the negative case,
+        // rather than treating an unknown signature as a mismatch or mutating
+        // another test's platform registrations. The bad call is never run.
+        vybe_runtime::declare_host_signature("test:linked-provider-arity", "unary",
+            vybe_runtime::FuncSig {
+                name: "unary".into(),
+                params: vybe_runtime::Param::unnamed_list(vec![vybe_runtime::ValType::String]),
+                results: vec![],
+            }, None);
+        assert_eq!(vybe_runtime::host_arity_mismatch("test:linked-provider-arity", "unary", 2), Some(1));
+        let bad_import = vm.chunks[0].add_import("test:linked-provider-arity", "unary");
+        let mut ip = 0;
+        let mut mismatched = false;
+        while ip < vm.chunks[index].code.len() {
+            let helper = &vm.chunks[index];
+            let op = Op::from_code_at(&helper.code, ip);
+            if op == Op::CALL && !helper.direct_defined_calls.contains_key(&ip) {
+                vm.chunks[index].code[ip+4..ip+6].copy_from_slice(&bad_import.to_be_bytes());
+                vm.chunks[index].code[ip+6] = 2;
+                mismatched = true;
+                break;
+            }
+            ip += 4 + op.operand_format().size_in(&helper.code, ip+4);
+        }
+        assert!(mismatched, "linked provider must exercise the declared diagnostic veto");
+        assert!(!runtime_provider_diagnostics_clean(&vm, &installed));
+        assert!(!certificate.runtime_helpers_valid(&vm));
+    }
+
+    #[test]
+    fn fixed_provider_reuse_requires_exact_live_request_owned_authority() {
+        use vybe_runtime::value::{Function, Object, ObjectKind};
+        for &(export, ref receipt) in fixed_runtime_providers() {
+            let consumer = || {
+                let mut script = Chunk::new("<script>");
+                crate::primitives::globals::emit_read(&mut script, receipt.global_name(), 0);
+                script.emit_op(Op::RETURN, 0);
+                vec![script]
+            };
+            let mut original = consumer();
+            finalize_with_runtime_helpers(&mut original);
+            let index = original.iter().position(|chunk| chunk.name == export).unwrap();
+            let helper = &original[index];
+            assert_eq!(helper.arity, receipt.arity());
+            assert_eq!(helper.result_arity, receipt.result_arity());
+            assert!(helper.types.is_empty());
+            assert!(helper.direct_defined_calls.is_empty());
+            let mut object = Object::new();
+            object.kind = ObjectKind::Function(Function {
+                name: None, arity: receipt.arity(), chunk_index: index, upvalues: Vec::new(),
+            });
+            let binding = Value::Object(vybe_runtime::heap::alloc(object));
+            let mut vm = vybe_runtime::VM::new();
+            vm.chunks = original;
+            vm.set_global(receipt.global_name(), binding.clone());
+            let installed = vm.snapshot_runtime_helper(receipt).unwrap();
+            assert!(vm.validate_runtime_helper(&installed));
+
+            let mut certificate = crate::compile_dependencies::Certificate::default();
+            certificate.install_runtime_helpers(snapshot_runtime_helpers(&vm));
+            let mut included = consumer();
+            let excluded = certificate.runtime_helper_exports(&included);
+            assert!(excluded.contains(&export));
+            finalize_with_runtime_helpers_excluding(&mut included, &excluded);
+            assert!(!included.iter().any(|chunk| chunk.name == export));
+            assert!(included[0].global_inits.is_empty());
+
+            // Equal labels, serialized metadata and a copied guest binding
+            // cannot recreate the recipe identity or its installing VM scope.
+            let forged = vybe_runtime::shared_provider::RuntimeHelperReceipt::new(
+                receipt.global_name(), receipt.version(), receipt.arity(), receipt.result_arity());
+            assert!(vm.snapshot_runtime_helper(&forged).is_none());
+            let mut other = vybe_runtime::VM::new();
+            other.chunks = vm.chunks.clone();
+            other.set_global(receipt.global_name(), binding);
+            assert!(!other.validate_runtime_helper(&installed));
+            vm.set_global(receipt.global_name(), Value::Null);
+            assert!(!certificate.runtime_helpers_valid(&vm));
+            assert!(vm.snapshot_runtime_helper(receipt).is_none());
+            let mut fallback = consumer();
+            finalize_with_runtime_helpers(&mut fallback);
+            assert!(fallback.iter().any(|chunk| chunk.name == export));
+        }
+    }
+
+    fn comparison_consumer() -> Vec<Chunk> {
+        let mut script = Chunk::new("<script>");
+        crate::primitives::globals::emit_read(&mut script, "__vybe_dyneq", 0);
+        script.emit_op(Op::RETURN, 0);
+        vec![script]
+    }
+
+    #[test]
+    fn runtime_helper_reuse_omits_only_attested_live_provider_bodies() {
+        use vybe_runtime::value::{Function, Object, ObjectKind};
+        let mut original = comparison_consumer();
+        finalize_with_runtime_helpers(&mut original);
+        let index = original.iter().position(|chunk| chunk.name == "__stdlib_dyneq").unwrap();
+        assert!(original[index].runtime_helper_receipt.is_some());
+        let mut vm = vybe_runtime::VM::new();
+        vm.chunks = original;
+        vm.set_global("__vybe_dyneq", Value::Object(vybe_runtime::heap::alloc(Object {
+            properties: Default::default(), type_id: 0, descriptor: None, fields: Vec::new(),
+            kind: ObjectKind::Function(Function {
+                name: None, arity: 2, chunk_index: index, upvalues: Vec::new(),
+            }),
+        })));
+        let mut certificate = crate::compile_dependencies::Certificate::default();
+        certificate.install_runtime_helpers(snapshot_runtime_helpers(&vm));
+        assert_eq!(certificate.runtime_helper_exports(&[]), ["__stdlib_dyneq"]);
+        assert!(certificate.runtime_helpers_valid(&vm));
+        let mut included = comparison_consumer();
+        let excluded = certificate.runtime_helper_exports(&included);
+        finalize_with_runtime_helpers_excluding(&mut included, &excluded);
+        assert_eq!(included.len(), 1, "include must not construct another comparison body");
+        assert!(included[0].global_inits.is_empty());
+        assert!(referenced_helper_exports(&included).contains("__stdlib_dyneq"));
+
+        let mut shadowed = comparison_consumer();
+        shadowed[0].global_inits.push(vybe_runtime::chunk::GlobalInit {
+            name: "__vybe_dyneq".into(), init: vybe_runtime::chunk::ConstExpr::RefFunc(0),
+        });
+        assert!(certificate.runtime_helper_exports(&shadowed).is_empty(),
+            "local publication must not adopt a provider about to be replaced");
+
+        // Ordinary compilation/export still owns a complete implementation.
+        let mut standalone = comparison_consumer();
+        finalize_with_runtime_helpers(&mut standalone);
+        assert!(standalone.iter().any(|chunk| chunk.name == "__stdlib_dyneq"));
+        vm.set_global("__vybe_dyneq", Value::Null);
+        assert!(!certificate.runtime_helpers_valid(&vm));
+        assert!(snapshot_runtime_helpers(&vm).is_empty());
+    }
+
+    #[test]
+    fn runtime_helper_reuse_does_not_adopt_a_guest_function_name() {
+        use vybe_runtime::value::{Function, Object, ObjectKind};
+        let mut vm = vybe_runtime::VM::new();
+        let mut impostor = Chunk::new("__stdlib_dyneq");
+        impostor.arity = 2;
+        impostor.local_count = 2;
+        vm.chunks.push(impostor);
+        vm.set_global("__vybe_dyneq", Value::Object(vybe_runtime::heap::alloc(Object {
+            properties: Default::default(), type_id: 0, descriptor: None, fields: Vec::new(),
+            kind: ObjectKind::Function(Function {
+                name: Some("__stdlib_dyneq".into()), arity: 2, chunk_index: 0, upvalues: Vec::new(),
+            }),
+        })));
+        assert!(snapshot_runtime_helpers(&vm).is_empty());
+    }
 
     #[test]
     fn cached_helper_mappings_preserve_ordered_catalog_and_unknown_names() {

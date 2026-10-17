@@ -46,11 +46,18 @@ fn main() {
 
 `parse_source` returns captures; `recognize` validates without allocating a capture tree. Grammar compilation and input parsing return errors when they fail. Input parsing has no default work cutoff; callers can set an explicit limit with `MatchOptions`.
 
+For direct AST construction, implement `grameo::builder::Builder` and call `grammar.build_ast(...)` or a generated parser's `build_ast(...)`. Builders support transactional rollback and optional Pratt expression bindings.
+
+Grammar comments such as `// @grameo ast return_statement = Return(value: expression?, span: rule)` can generate owned AST reductions through a target's constructors. See [AST bindings](AST.md) for selectors, schema validation and rollback requirements.
+
 Generate a Rust parser with static grammar tables:
 
 ```sh
 cargo run --manifest-path crates/grameo/Cargo.toml -p grameo_codegen --bin grammargen -- input.pest output.rs
 ```
+
+Performance directives can select native matching and Pratt bindings through
+explicit compile options. See [grammar optimization directives](OPTIMIZATION.md).
 
 ## License
 

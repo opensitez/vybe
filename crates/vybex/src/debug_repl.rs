@@ -16,6 +16,15 @@ use vybe_runtime::debugger::{
 };
 use vybe_runtime::{DebugCommand, DebugRequest, VM};
 
+#[path = "debug_keyboard.rs"]
+mod keyboard;
+
+#[path = "debug_pointer.rs"]
+mod pointer;
+
+#[path = "debug_timing.rs"]
+mod timing;
+
 /// Created before CLI locals, so its destructor measures their teardown too.
 pub(crate) struct CliReport {
     pub started: std::time::Instant,
@@ -130,6 +139,14 @@ pub(crate) fn print_report(report: &vybe_runtime::debugger::SharedDebugReport, f
     }
 }
 
+fn reset_samples(report: &vybe_runtime::debugger::SharedDebugReport) -> u64 {
+    let mut report = report.lock().unwrap();
+    report.function_samples.clear();
+    report.host_samples.clear();
+    report.line_samples.clear();
+    report.live.instructions.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Attach a debugger to `vm` and spawn the REPL worker threads. Call this before
 /// running the VM; it pauses on entry so breakpoints can be set first.
 pub fn attach(vm: &mut VM) {
@@ -144,7 +161,18 @@ pub fn attach(vm: &mut VM) {
 
     // Event printer: renders async events (paused / resumed / exited / opcode).
     thread::spawn(move || {
+        let mut timer = timing::RunTimer::default();
         for event in evt_rx {
+            let now = std::time::Instant::now();
+            match &event {
+                DebugEvent::Resumed => timer.resume(now),
+                DebugEvent::Paused { .. } | DebugEvent::Exited { .. } => {
+                    if let Some(elapsed) = timer.stop(now) {
+                        eprintln!("  run interval (observer wall): {:.6}s", elapsed.as_secs_f64());
+                    }
+                }
+                _ => {},
+            }
             print_event(&event);
         }
     });
@@ -168,7 +196,12 @@ pub fn attach(vm: &mut VM) {
             let head = line.split_whitespace().next().unwrap_or("");
             if head == "report" {
                 let filter = line.split_once(' ').map(|(_, text)| text.trim()).filter(|text| !text.is_empty());
-                print_report(&report, filter);
+                if filter == Some("reset-samples") {
+                    let instructions = reset_samples(&report);
+                    eprintln!("  samples cleared at {instructions} live instructions; timings and execution state preserved");
+                } else {
+                    print_report(&report, filter);
+                }
                 continue;
             }
             if matches!(head, "widgets" | "controls") {
@@ -179,6 +212,33 @@ pub fn attach(vm: &mut VM) {
             // document into an offscreen pixmap.
             if head == "capture" {
                 capture_frame(&line.split_whitespace().skip(1).collect::<Vec<_>>());
+                continue;
+            }
+            if head == "pointer" {
+                match pointer::parse(&line.split_whitespace().skip(1).collect::<Vec<_>>()) {
+                    Ok(event) => {
+                        use vybe_platform_web::engine::{self, DomOp};
+                        engine::apply(crate::gui_document::active(), DomOp::DispatchPointer {
+                            kind: event.kind, client_x: event.x, client_y: event.y, button: event.button,
+                        });
+                        eprintln!("  pointer event dispatched through browser hit-testing");
+                    }
+                    Err(error) => eprintln!("  {error}"),
+                }
+                continue;
+            }
+            if head == "key" {
+                match keyboard::parse(&line.split_whitespace().skip(1).collect::<Vec<_>>()) {
+                    Ok(event) => {
+                        use vybe_platform_web::engine::{self, DomOp, UiEventFields};
+                        engine::apply(crate::gui_document::active(), DomOp::DispatchKeyboard(UiEventFields {
+                            kind: event.kind, key: event.key, key_code: event.key_code, code: event.code,
+                            ..Default::default()
+                        }));
+                        eprintln!("  keyboard event dispatched; guest handlers run through the browser event queue");
+                    }
+                    Err(error) => eprintln!("  {error}"),
+                }
                 continue;
             }
             // `html` is client-side for the same reason as `widgets`: it reads
@@ -607,6 +667,39 @@ fn send_and_print(cmd_tx: &Sender<DebugRequest>, command: DebugCommand) -> bool 
 
 // ─── Command parsing ────────────────────────────────────────────────────────
 
+fn parse_memory_arguments(parts: &[&str]) -> Result<(u32, u64, u32), String> {
+    if !(2..=3).contains(&parts.len()) {
+        return Err("usage: memory <index> <address> [byte-count]".into());
+    }
+    let number = |text: &str| {
+        if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            u64::from_str_radix(hex, 16)
+        } else {
+            text.parse::<u64>()
+        }
+    };
+    let memory = u32::try_from(number(parts[0]).map_err(|_| "bad memory index")?)
+        .map_err(|_| "memory index exceeds u32")?;
+    let address = number(parts[1]).map_err(|_| "bad memory address")?;
+    let length = match parts.get(2) {
+        Some(text) => u32::try_from(number(text).map_err(|_| "bad byte count")?)
+            .map_err(|_| "byte count exceeds u32")?,
+        None => 64,
+    };
+    Ok((memory, address, length))
+}
+
+fn memory_dump_rows(address: u64, bytes: &[u8]) -> Vec<String> {
+    bytes.chunks(16).enumerate().map(|(row, chunk)| {
+        let hex = chunk.iter().map(|byte| format!("{byte:02x}")).collect::<Vec<_>>().join(" ");
+        let text: String = chunk.iter().map(|&byte| {
+            if byte.is_ascii_graphic() || byte == b' ' { char::from(byte) } else { '.' }
+        }).collect();
+        let offset = u128::from(address) + row as u128 * 16;
+        format!("{offset:016x}  {hex:47}  |{text}|")
+    }).collect()
+}
+
 fn parse_command(line: &str) -> Result<DebugCommand, String> {
     let mut parts = line.split_whitespace();
     let cmd = parts.next().unwrap_or("");
@@ -656,6 +749,10 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
                 return Err("usage: p <name>[.field][idx]  or  p <expr>".into());
             }
             DebugCommand::Print { path }
+        }
+        "memory" | "mem" => {
+            let (memory, address, length) = parse_memory_arguments(&rest)?;
+            DebugCommand::ReadMemory { memory, address, length }
         }
         "set" => {
             let joined = rest.join(" ");
@@ -956,6 +1053,12 @@ fn print_response(resp: &DebugResponse) {
         DebugResponse::Ok => {}
         DebugResponse::Error(e) => eprintln!("  error: {e}"),
         DebugResponse::Value(s) => eprintln!("  {s}"),
+        DebugResponse::Memory { memory, address, bytes } => {
+            eprintln!("  memory #{memory} @0x{address:x}: {} byte(s)", bytes.len());
+            for row in memory_dump_rows(*address, bytes) {
+                eprintln!("  {row}");
+            }
+        }
         DebugResponse::Fibers(lines) => {
             for l in lines {
                 eprintln!("  {l}");
@@ -1096,6 +1199,7 @@ fn fmt_frame(f: &FrameInfo) -> String {
 }
 
 fn print_help() {
+    let memory_limit = vybe_runtime::debugger::MAX_DEBUG_MEMORY_READ;
     eprintln!(
         "  control:  c continue · s step-in · n step-over · o step-out · si stepi · q quit\n\
          \x20 breaks:   b <line> · b <file>:<line> · b <chunk>@<offset> · [if <cond>] · bl · bd <id> · enable/disable\n\
@@ -1104,12 +1208,78 @@ fn print_help() {
          \x20 inspect:  bt backtrace · locals [frame] · stack · g/globals [prefix] · dis [@offset] [n] · targets <offset> · chunks\n\
          \x20 loader:   trace-global-inits on|off · bgi <global-name|*|off>  break before init\n\
          \x20 frame:    fr/frame [n]  EVERY slot incl. compiler+capture, with local_count/capture_base\n\
+         \x20 profile:  report [filter|reset-samples]  timings and instruction/host samples\n\
          \x20 vars:     p <name>[.field][idx] or p <expr> · set <name> = <literal> · watch <expr> · watches · unwatch\n\
+         \x20 memory:   memory <index> <address> [byte-count]  live read-only hex/ASCII dump (default 64, max {memory_limit})\n\
          \x20 gui:      widgets/controls · click <control> · fire <control> <event> · close [control]\n\
+         \x20 input:    key <keydown|keyup> <key> <keyCode> [code]  browser keyboard dispatch\n\
+         \x20 pointer:  pointer <mousedown|mouseup|mousemove> <x> <y> [button]  browser hit-testing\n\
          \x20 gui+:     draws [control]    canvas ink + bounds · capture [control] [file.png] offscreen PNG\n\
          \x20 stream+:  trace canvas on|off  (draw routing — which control each draw resolved to)\n\
          \x20 reload:   reload  (recompile + swap changed fn bodies in place; heap/globals kept)\n\
          \x20 stream:   trace on|off  (live opcode stream — the VYBE_TRACE replacement)\n\
          \x20 chunk may be a name or a numeric index (see `chunks`)."
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{memory_dump_rows, parse_command, parse_memory_arguments, reset_samples};
+    use std::sync::{Arc, Mutex, atomic::Ordering};
+    use std::time::{Duration, Instant};
+    use vybe_runtime::debugger::DebugReport;
+
+    #[test]
+    fn memory_arguments_preserve_exact_addresses_and_indices() {
+        assert_eq!(parse_memory_arguments(&["0", "34731088"]).unwrap(), (0, 34731088, 64));
+        assert_eq!(parse_memory_arguments(&["2", "0x100000001", "0x20"]).unwrap(), (2, 0x100000001, 32));
+        assert_eq!(parse_memory_arguments(&["0", "18446744073709551615", "0"]).unwrap(), (0, u64::MAX, 0));
+        for parts in [vec![], vec!["0"], vec!["0", "1", "2", "3"],
+            vec!["-1", "0"], vec!["4294967296", "0"], vec!["0", "1.5"],
+            vec!["0", "18446744073709551616"], vec!["0", "1", "4294967296"]] {
+            assert!(parse_memory_arguments(&parts).is_err(), "{parts:?}");
+        }
+    }
+
+    #[test]
+    fn memory_command_and_dump_are_bounded_and_lossless() {
+        assert!(matches!(parse_command("mem 2 0x100000001 32").unwrap(),
+            vybe_runtime::DebugCommand::ReadMemory { memory: 2, address: 0x100000001, length: 32 }));
+        let bytes: Vec<u8> = (0..17).collect();
+        let rows = memory_dump_rows(0x100000001, &bytes);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].starts_with("0000000100000001  00 01 02 03"));
+        assert!(rows[1].starts_with("0000000100000011  10"));
+        assert!(memory_dump_rows(0, b"A \0\xff")[0].ends_with("|A ..|"));
+        assert!(memory_dump_rows(0, &[]).is_empty());
+    }
+
+    #[test]
+    fn sample_reset_preserves_execution_and_timing_state() {
+        let mut state = DebugReport::default();
+        state.function_samples.insert("draw".into(), 12);
+        state.line_samples.insert("draw:42".into(), 8);
+        state.host_samples.insert(Arc::from("putImageData"), (2, Duration::from_millis(4)));
+        state.instructions = 4096;
+        state.live.instructions.store(4100, Ordering::Relaxed);
+        state.location = Some("draw@16".into());
+        state.host_sample_tick = 17;
+        state.paused = Duration::from_secs(2);
+        state.completed.push(("compile".into(), Duration::from_secs(3)));
+        state.active_host = Some((Arc::from("read"), Instant::now()));
+        let report = Arc::new(Mutex::new(state));
+
+        assert_eq!(reset_samples(&report), 4100);
+        let state = report.lock().unwrap();
+        assert!(state.function_samples.is_empty());
+        assert!(state.line_samples.is_empty());
+        assert!(state.host_samples.is_empty());
+        assert_eq!(state.instructions, 4096);
+        assert_eq!(state.live.instructions.load(Ordering::Relaxed), 4100);
+        assert_eq!(state.location.as_deref(), Some("draw@16"));
+        assert_eq!(state.host_sample_tick, 17);
+        assert_eq!(state.paused, Duration::from_secs(2));
+        assert_eq!(state.completed, vec![("compile".into(), Duration::from_secs(3))]);
+        assert_eq!(state.active_host.as_ref().unwrap().0.as_ref(), "read");
+    }
 }

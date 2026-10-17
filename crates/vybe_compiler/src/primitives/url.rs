@@ -118,7 +118,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     let chunk = &mut chunks[current];
     chunk.emit_call(idx, argc, line);
 }
@@ -476,6 +476,9 @@ fn emit_parse_syntactic(chunks: &mut [Chunk], current: usize, opts: ParseOptions
         lset_at(chunks, current, g, line);
         lget_at(chunks, current, g, line);
         chunks[current].emit_op(Op::REF_IS_NULL, line);
+        lget_at(chunks, current, g, line);
+        call_import(chunks, current, "wasm:js-undefined", "test", 1, line);
+        chunks[current].emit_op(Op::I32_OR, line);
         chunks[current].emit_if_value(line);
         chunks[current].emit_string_const("", line);
         chunks[current].emit_else(line);

@@ -25,6 +25,7 @@ use vybe_runtime::opcode::Op;
 /// futex allocator on purpose: two bump pointers into one page would hand out
 /// the same address twice.
 const BUMP: &str = "__vybe_chan_futex_next";
+const BYTE_PUSH_BATCH: i32 = 254;
 
 /// Marshal a string into linear memory as UTF-8.
 ///
@@ -110,14 +111,7 @@ fn emit_store_byte_array_impl(
     let (_copy, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len, line);
-    chunk.emit_op(
-        if encoded_bytes {
-            Op::I32_GE_U
-        } else {
-            Op::I32_GE_S
-        },
-        line,
-    );
+    chunk.emit_op(Op::I32_GE_U, line);
     chunk.emit_br_if(1, line);
     if let Some(byte) = encoded_byte {
         // Array.from(TextEncoder.encode(...)) contains only byte-valued
@@ -167,6 +161,8 @@ fn emit_store_byte_array_impl(
 pub fn emit_alloc(chunk: &mut Chunk, line: u32, n_slot: u16) -> u16 {
     let ptr = chunk.alloc_scratch(1);
     let base = chunk.alloc_scratch(1);
+    let next = super::bits::raw_i64_scratch(chunk);
+    let end = super::bits::raw_i64_scratch(chunk);
 
     crate::primitives::globals::emit_read(chunk, BUMP, line);
     chunk.emit_op_u16(Op::LOCAL_TEE, base, line);
@@ -190,25 +186,34 @@ pub fn emit_alloc(chunk: &mut Chunk, line: u32, n_slot: u16) -> u16 {
     chunk.emit_op_u16(Op::LOCAL_SET, base, line);
     chunk.emit_end(line);
 
-    // Keep the allocation base fixed. Advancing it to the old end after each
-    // one-page grow leaves the available span at one page forever for n > 64K.
-    // Widen before adding so an oversized memory32 request cannot wrap.
+    // The bump base is eight-byte aligned. Compute the widened end once for
+    // both the next aligned allocation and the memory growth check.
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op(Op::I64_EXTEND_I32_U, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
     chunk.emit_op(Op::I64_EXTEND_I32_U, line);
     chunk.emit_op(Op::I64_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, end, line);
+    chunk.emit_i64_const(15, line);
+    chunk.emit_op(Op::I64_ADD, line);
+    chunk.emit_i64_const(!7, line);
+    chunk.emit_op(Op::I64_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, next, line);
+    chunk.emit_i64_const(u32::MAX as i64, line);
+    chunk.emit_op(Op::I64_GT_U, line);
+    chunk.emit_if(line);
+    chunk.emit_op(Op::UNREACHABLE, line);
+    chunk.emit_end(line);
+
+    // Keep the allocation base fixed for buffers larger than one page.
+    chunk.emit_op_u16(Op::LOCAL_GET, end, line);
     chunk.emit_op_idx(Op::MEMORY_SIZE, 0u32, line);
     chunk.emit_op(Op::I64_EXTEND_I32_U, line);
     chunk.emit_i64_const(16, line);
     chunk.emit_op(Op::I64_SHL, line);
     chunk.emit_op(Op::I64_GT_U, line);
     chunk.emit_if(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    chunk.emit_op(Op::I64_EXTEND_I32_U, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
-    chunk.emit_op(Op::I64_EXTEND_I32_U, line);
-    chunk.emit_op(Op::I64_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, end, line);
     chunk.emit_i64_const(65535, line);
     chunk.emit_op(Op::I64_ADD, line);
     chunk.emit_i64_const(16, line);
@@ -228,16 +233,9 @@ pub fn emit_alloc(chunk: &mut Chunk, line: u32, n_slot: u16) -> u16 {
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ptr, line);
 
-    // BUMP = base + align_to(n + 8, 8), same rule as the store direction:
-    // 8-aligned so a later i64/f64 store lands legally, never zero-width so
-    // two empty buffers cannot alias.
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
-    chunk.emit_i32_const(15, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_i32_const(!7, line);
-    chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_op(Op::I32_ADD, line);
+    // The checked, aligned next pointer also separates empty buffers.
+    chunk.emit_op_u16(Op::LOCAL_GET, next, line);
+    chunk.emit_op(Op::I32_WRAP_I64, line);
     crate::primitives::globals::emit_write(chunk, BUMP, line);
 
     ptr
@@ -253,6 +251,7 @@ pub fn emit_new_bytes(chunk: &mut Chunk, line: u32) {
     let new_arr = chunk.add_import("vybe:js-array", "newWithLength");
     chunk.emit_call(new_arr, 1, line);
 }
+
 
 /// Append `len_slot` bytes at `ptr_slot` to the byte array in `arr_slot`.
 ///
@@ -270,7 +269,6 @@ pub fn emit_append_bytes(
     ptr_slot: u16,
     len_slot: u16,
 ) {
-    const PUSH_BATCH: i32 = 254;
     let i = chunk.alloc_scratch(1);
     let push = chunk.add_import("ecma:array", "push");
     let set = chunk.add_import("ecma:array", "set");
@@ -287,49 +285,23 @@ pub fn emit_append_bytes(
     chunk.emit_op_u16(Op::LOCAL_GET, ptr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
     let done = chunk.emit_block(line);
-    let batch_done = chunk.emit_block(line);
-    let (batch_copy, _) = chunk.emit_loop_s(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
-    chunk.emit_i32_const(PUSH_BATCH, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunk.emit_op(Op::I32_GT_S, line);
-    chunk.emit_br_if(1, line);
+    emit_push_batch_loop(
+        chunk,
+        line,
+        arr_slot,
+        len_slot,
+        i,
+        cursor,
+        push,
+        BYTE_PUSH_BATCH,
+    );
+    emit_push_batch_loop(chunk, line, arr_slot, len_slot, i, cursor, push, 64);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    for offset in 0..PUSH_BATCH {
-        chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
-        chunk.emit_op(Op::I32_LOAD8_U, line);
-        if offset != 0 {
-            // The existing optional memarg format mirrors Wasm's unsigned
-            // effective-address offset. Avoid an i32 add for every byte.
-            chunk.emit_leb_u32(0x80, line);
-            chunk.emit_leb_u32(offset as u32, line);
-        }
-    }
-    chunk.emit_call(push, (PUSH_BATCH + 1) as u8, line);
-    chunk.emit_op(Op::DROP, line); // push answers the new length
-
-    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
-    chunk.emit_i32_const(PUSH_BATCH, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
-    chunk.emit_i32_const(PUSH_BATCH, line);
-    chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
-    chunk.emit_br(0, line);
-    chunk.emit_end(line);
-    chunk.patch_loop(batch_copy);
-    chunk.emit_end(line);
-    chunk.patch_block(batch_done);
-
-    // A Wasm import has one fixed signature: keep `push` at 255 arguments and
-    // use the separate fixed-arity setter for fewer than 254 remaining bytes.
+    // Fewer than 64 remaining bytes use the fixed-arity setter.
     let (tail_copy, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_op(Op::I32_GE_U, line);
     chunk.emit_br_if(1, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
@@ -352,6 +324,54 @@ pub fn emit_append_bytes(
     chunk.patch_loop(tail_copy);
     chunk.emit_end(line);
     chunk.patch_block(done);
+}
+
+fn emit_push_batch_loop(
+    chunk: &mut Chunk,
+    line: u32,
+    arr_slot: u16,
+    len_slot: u16,
+    i: u16,
+    cursor: u16,
+    push: u16,
+    batch: i32,
+) {
+    let batch_done = chunk.emit_block(line);
+    let (batch_copy, _) = chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    chunk.emit_i32_const(batch, line);
+    chunk.emit_op(Op::I32_LT_U, line);
+    chunk.emit_br_if(1, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    for offset in 0..batch {
+        chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+        chunk.emit_op(Op::I32_LOAD8_U, line);
+        if offset != 0 {
+            // The existing optional memarg format mirrors Wasm's unsigned
+            // effective-address offset. Avoid an i32 add for every byte.
+            chunk.emit_leb_u32(0x80, line);
+            chunk.emit_leb_u32(offset as u32, line);
+        }
+    }
+    chunk.emit_call(push, (batch + 1) as u8, line);
+    chunk.emit_op(Op::DROP, line); // push answers the new length
+
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(batch, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_i32_const(batch, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(batch_copy);
+    chunk.emit_end(line);
+    chunk.patch_block(batch_done);
 }
 
 /// Decode a byte array as UTF-8. Stack effect: `[array] → [string]`.
@@ -399,4 +419,229 @@ pub fn emit_load_utf8(chunk: &mut Chunk, line: u32, ptr_slot: u16, len_slot: u16
     emit_append_bytes(chunk, line, bytes, ptr_slot, len_slot);
     chunk.emit_op_u16(Op::LOCAL_GET, bytes, line);
     emit_decode_utf8(chunk, line);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_loops_compare_canonical_lengths_as_unsigned() {
+        let mut store = Chunk::new("store-bytes");
+        emit_store_byte_array(&mut store, 0, |chunk| emit_new_bytes(chunk, 0));
+        let store_code = vybe_runtime::debug::disassemble(&store);
+        assert!(store_code.contains("i32.ge_u"));
+        assert!(!store_code.contains("i32.ge_s"));
+
+        let mut append = Chunk::new("append-bytes");
+        let array = append.alloc_scratch(1);
+        let ptr = append.alloc_scratch(1);
+        let len = append.alloc_scratch(1);
+        emit_append_bytes(&mut append, 0, array, ptr, len);
+        let append_code = vybe_runtime::debug::disassemble(&append);
+        assert!(append_code.contains("i32.lt_u"));
+        assert!(append_code.contains("i32.ge_u"));
+        assert!(!append_code.contains("i32.gt_s"));
+        assert!(!append_code.contains("i32.ge_s"));
+    }
+
+    #[test]
+    fn byte_append_loop_emits_valid_wasm() {
+        let mut chunk = Chunk::new("append-bytes-wasm");
+        chunk.memory_min_pages.push(1);
+        let array = chunk.alloc_scratch(1);
+        let ptr = chunk.alloc_scratch(1);
+        let len = chunk.alloc_scratch(1);
+        emit_new_bytes(&mut chunk, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, array, 0);
+        chunk.emit_i32_const(0, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, ptr, 0);
+        chunk.emit_i32_const(0, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, len, 0);
+        emit_append_bytes(&mut chunk, 0, array, ptr, len);
+        chunk.emit_i32_const(0, 0);
+        chunk.emit_op(Op::RETURN, 0);
+
+        let binary = vybe_platform_wasm::write_wasm(&[chunk]);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&binary)
+            .expect("canonical byte append must be valid standard Wasm");
+    }
+
+    #[test]
+    fn byte_append_preserves_values_across_batch_boundaries() {
+        use vybe_runtime::VM;
+        use vybe_runtime::capabilities::Capabilities;
+        use vybe_runtime::value::{ObjectKind, Value};
+
+        for size in [
+            0, 1, 63, 64, 65, 127, 253, 254, 255, 317, 318, 319, 508, 572, 262_144,
+        ] {
+            let mut chunk = Chunk::new("append-bytes-boundary");
+            chunk.memory_min_pages.push(1);
+            let array = chunk.alloc_scratch(1);
+            let ptr = chunk.alloc_scratch(1);
+            let len = chunk.alloc_scratch(1);
+            emit_new_bytes(&mut chunk, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, array, 0);
+            chunk.emit_i32_const(0, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, ptr, 0);
+            chunk.emit_i32_const(size, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, len, 0);
+            emit_append_bytes(&mut chunk, 0, array, ptr, len);
+            chunk.emit_op_u16(Op::LOCAL_GET, array, 0);
+            chunk.emit_op(Op::RETURN, 0);
+
+            let binary = matches!(size, 64 | 254 | 572 | 262_144)
+                .then(|| vybe_platform_wasm::write_wasm(&[chunk.clone()]));
+            if let Some(bytes) = &binary {
+                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                    .validate_all(bytes)
+                    .expect("canonical byte append must be valid standard Wasm");
+            }
+
+            let mut vm = VM::new();
+            crate::primitives::platforms::register_platforms(&mut vm, &Capabilities::all());
+            let expected: Vec<u8> = (0..size).map(|n| (n * 37 % 256) as u8).collect();
+            vm.memory.grow(if size > 65_536 { 5 } else { 1 });
+            vm.memory.write_bytes(0, &expected);
+            let Value::Object(result) = vm.run(vec![chunk]).expect("byte append") else {
+                panic!("byte append must return an array");
+            };
+            let guard = result.lock().unwrap();
+            let ObjectKind::Array(values) = &guard.kind else {
+                panic!("byte append must return a plain array");
+            };
+            let actual: Vec<u8> = values.iter().map(|value| value.as_i32() as u8).collect();
+            assert_eq!(actual, expected, "size {size}");
+
+            if let Some(bytes) = binary {
+                let entry: Vec<_> = vybe_platform_wasm::read_wasm(&bytes)
+                    .expect("read canonical byte append binary")
+                    .into_iter()
+                    .filter(|chunk| chunk.name == "_start")
+                    .collect();
+                assert_eq!(entry.len(), 1);
+                let mut binary_vm = VM::new();
+                crate::primitives::platforms::register_platforms(
+                    &mut binary_vm,
+                    &Capabilities::all(),
+                );
+                binary_vm.memory.grow(if size > 65_536 { 5 } else { 1 });
+                binary_vm.memory.write_bytes(0, &expected);
+                binary_vm.record_runtime_perf(true);
+                let Value::Object(result) = binary_vm.run(entry).expect("binary byte append")
+                else {
+                    panic!("binary byte append must return an array");
+                };
+                let guard = result.lock().unwrap();
+                let ObjectKind::Array(values) = &guard.kind else {
+                    panic!("binary byte append must return a plain array");
+                };
+                let actual: Vec<u8> = values.iter().map(|value| value.as_i32() as u8).collect();
+                assert_eq!(actual, expected, "binary size {size}");
+                let expected_batches = u64::from(size >= 254) + u64::from(size % 254 >= 64);
+                assert_eq!(
+                    binary_vm
+                        .take_runtime_perf()
+                        .unwrap()
+                        .super_linear_to_managed,
+                    expected_batches,
+                    "binary size {size}",
+                );
+
+                if size == 64 {
+                    use std::sync::{Arc, Mutex};
+                    use vybe_runtime::value::Object;
+
+                    let mut guarded_vm = VM::new();
+                    crate::primitives::platforms::register_platforms(
+                        &mut guarded_vm,
+                        &Capabilities::all(),
+                    );
+                    guarded_vm.register_host_fn(
+                        "vybe:js-array",
+                        "newWithLength",
+                        Box::new(|_, _| {
+                            let mut array = Object::new_array(Vec::new());
+                            array.properties.insert("__proto__".into(), Value::Null);
+                            array.properties.insert("marker".into(), Value::I32(1));
+                            Value::Object(Arc::new(Mutex::new(array)))
+                        }),
+                    );
+                    guarded_vm.memory.grow(1);
+                    guarded_vm.memory.write_bytes(0, &expected);
+                    guarded_vm.record_runtime_perf(true);
+                    let Value::Object(result) = guarded_vm
+                        .run(
+                            vybe_platform_wasm::read_wasm(&bytes)
+                                .expect("read guarded byte append binary")
+                                .into_iter()
+                                .filter(|chunk| chunk.name == "_start")
+                                .collect(),
+                        )
+                        .expect("guarded byte append")
+                    else {
+                        panic!("guarded byte append must return an array");
+                    };
+                    let guard = result.lock().unwrap();
+                    let ObjectKind::Array(values) = &guard.kind else {
+                        panic!("guarded byte append must return a plain array");
+                    };
+                    let actual: Vec<u8> = values.iter().map(|value| value.as_i32() as u8).collect();
+                    assert_eq!(actual, expected);
+                    assert_eq!(
+                        guarded_vm
+                            .take_runtime_perf()
+                            .unwrap()
+                            .super_linear_to_managed,
+                        0,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn allocator_checks_widened_next_pointer_before_growing_memory() {
+        let mut chunk = Chunk::new("alloc-order");
+        let n = chunk.alloc_scratch(1);
+        emit_alloc(&mut chunk, 0, n);
+        let code = vybe_runtime::debug::disassemble(&chunk);
+        let guard = code.find("i64.gt_u").expect("widened pointer guard");
+        let size = code.find("memory.size").expect("growth check");
+        assert!(guard < size, "pointer overflow must trap before growth");
+    }
+
+    #[test]
+    fn allocator_keeps_aligned_bump_positions_for_small_buffers() {
+        use vybe_runtime::VM;
+        use vybe_runtime::capabilities::Capabilities;
+
+        for (size, next) in [
+            (0, 65_544),
+            (1, 65_552),
+            (17, 65_568),
+            (65_535, 131_080),
+            (65_536, 131_080),
+            (65_537, 131_088),
+            (131_073, 196_624),
+        ] {
+            let mut chunk = Chunk::new("alloc-bump");
+            chunk.memory_min_pages.push(1);
+            let n = chunk.alloc_scratch(1);
+            chunk.emit_i32_const(65_536, 0);
+            crate::primitives::globals::emit_write(&mut chunk, BUMP, 0);
+            chunk.emit_i32_const(size, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, n, 0);
+            emit_alloc(&mut chunk, 0, n);
+            crate::primitives::globals::emit_read(&mut chunk, BUMP, 0);
+            chunk.emit_op(Op::RETURN, 0);
+
+            let mut vm = VM::new();
+            crate::primitives::platforms::register_platforms(&mut vm, &Capabilities::all());
+            let result = vm.run(vec![chunk]).expect("canonical allocation");
+            assert_eq!(result.as_i32(), next, "size {size}");
+        }
+    }
 }

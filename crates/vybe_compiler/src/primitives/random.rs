@@ -151,8 +151,7 @@ pub fn emit_sample(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = chunks[current].local_count;
     chunks[current].alloc_scratch(3);
     let (arr_s, len_s, idx_s) = (base, base + 1, base + 2);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_s, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, arr_s, line);
     crate::primitives::collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_s, line);
     // empty → null
@@ -186,8 +185,7 @@ pub fn emit_shuffle(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = chunks[current].local_count;
     chunks[current].alloc_scratch(5);
     let (arr_s, i_s, j_s, tmp_s, len_s) = (base, base + 1, base + 2, base + 3, base + 4);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_s, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, arr_s, line);
     crate::primitives::collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_s, line);
     // i = len - 1

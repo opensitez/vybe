@@ -73,9 +73,15 @@ pub enum ScopeResolution {
 #[derive(Debug)]
 pub struct Scope {
     pub locals: Vec<Local>,
+    /// Whole-body certified boxed signed-word bindings. No raw local ABI.
+    pub normalized_word_bindings: std::collections::HashSet<String>,
     // Latest active binding for an exact spelling. Folded lookup remains a
     // separate fallback so exact spellings retain their existing precedence.
-    local_indices: std::collections::HashMap<String, usize>,
+    local_indices: std::collections::HashMap<String, usize, vybe_runtime::chunk::FxBuildHasher>,
+    // Like local_indices, maintained by define/end_scope. Metadata-only local
+    // mutations do not affect membership. Lazy so scopes never queried by a
+    // namespace lookup pay no additional name allocation or indexing cost.
+    folded_membership: std::sync::OnceLock<FoldedMembership>,
     pub upvalues: Vec<UpvalueDesc>,
     /// See [`ScopeResolution`].
     pub resolution: ScopeResolution,
@@ -127,7 +133,9 @@ impl Scope {
     pub fn new(fold: Option<vybe_ast::CaseAlphabet>) -> Self {
         Self {
             locals: Vec::new(),
-            local_indices: std::collections::HashMap::new(),
+            normalized_word_bindings: Default::default(),
+            local_indices: Default::default(),
+            folded_membership: std::sync::OnceLock::new(),
             upvalues: Vec::new(),
             resolution: ScopeResolution::Chain,
             open_names: std::collections::HashSet::new(),
@@ -196,6 +204,20 @@ impl Scope {
         self.define_typed(name, None)
     }
 
+    pub fn is_normalized_signed_word(&self, name: &str) -> bool {
+        self.normalized_word_bindings.contains(name)
+            && self.resolve_local(name).is_some_and(|local| {
+                !local.is_captured && !local.holds_reference
+                    && local.type_hint.as_ref().is_some_and(|hint| {
+                        hint.binding == vybe_ast::TypeBinding::Checked
+                            && hint.access == Some(vybe_ast::StorageAccess::Ordinary)
+                            && hint.word_value == Some(
+                                vybe_ast::word_local_transport::WordInterpretation::Signed,
+                            )
+                    })
+            })
+    }
+
     /// Record who declared the NEXT binding this scope defines.
     ///
     /// The origin is a property of the call site, not of the name, and the
@@ -207,6 +229,9 @@ impl Scope {
 
     pub fn define_typed(&mut self, name: &str, type_hint: Option<vybe_ast::TypeHint>) -> u16 {
         let slot = self.next_slot;
+        if let Some(index) = self.folded_membership.get_mut() {
+            index.insert(name);
+        }
         self.local_indices.insert(name.to_string(), self.locals.len());
         self.locals.push(Local {
             name: name.to_string(),
@@ -241,6 +266,9 @@ impl Scope {
         type_hint: Option<vybe_ast::TypeHint>,
     ) -> u16 {
         let slot = self.next_slot;
+        if let Some(index) = self.folded_membership.get_mut() {
+            index.insert(name);
+        }
         self.local_indices.insert(name.to_string(), self.locals.len());
         self.locals.push(Local {
             name: name.to_string(),
@@ -356,6 +384,19 @@ impl Scope {
         }
     }
 
+    /// ASCII membership for namespace-head shadowing, preserving that lookup's
+    /// existing alphabet independently of the scope's variable-fold policy.
+    pub fn contains_ascii_folded_local(&self, name: &str) -> bool {
+        let index = self.folded_membership.get_or_init(|| {
+            let mut index = FoldedMembership::default();
+            for local in &self.locals {
+                index.insert(&local.name);
+            }
+            index
+        });
+        index.counts.contains_key(ascii_key(name).as_ref())
+    }
+
     /// Case-EXACT, whatever the folding policy.
     ///
     /// For the one decision that legitimately distinguishes an exact match from
@@ -405,12 +446,26 @@ impl Scope {
         // so shadowing still resolves to the latest declaration.
         let depth = self.depth;
         let old_len = self.locals.len();
-        self.locals.retain(|l| l.depth < depth);
-        if self.locals.len() != old_len {
-            self.local_indices.clear();
-            for (index, local) in self.locals.iter().enumerate() {
-                self.local_indices.insert(local.name.clone(), index);
+        let mut folded = self.folded_membership.get_mut();
+        self.locals.retain(|local| {
+            let keep = local.depth < depth;
+            if !keep && let Some(index) = folded.as_deref_mut() {
+                index.remove(&local.name);
             }
+            keep
+        });
+        if self.locals.len() != old_len {
+            // Every surviving spelling already has an index key. Repair its
+            // position in declaration order so the latest surviving shadow
+            // wins, then discard keys whose bindings left the block. Reuse
+            // the owned names instead of allocating them again at each exit.
+            for (index, local) in self.locals.iter().enumerate() {
+                *self.local_indices.get_mut(local.name.as_str())
+                    .expect("defined local index") = index;
+            }
+            self.local_indices.retain(|name, index| {
+                self.locals.get(*index).is_some_and(|local| local.name == *name)
+            });
         }
         self.depth -= 1;
     }
@@ -427,6 +482,57 @@ impl Scope {
     }
 }
 
+#[cfg(test)]
+mod block_index_tests {
+    use super::*;
+
+    #[test]
+    fn block_exit_restores_shadows_and_keeps_interleaved_function_bindings() {
+        for fold in [None, Some(vybe_ast::CaseAlphabet::Ascii), Some(vybe_ast::CaseAlphabet::Unicode)] {
+            let mut scope = Scope::new(fold);
+            let root = scope.define("shadow");
+            scope.begin_scope();
+            let inner = scope.define("shadow");
+            scope.mark_const(inner);
+            scope.set_holds_reference("shadow");
+            scope.mark_declared_arity(inner, 3);
+            let surviving = scope.define_at_function_scope("survivor", None);
+            scope.define("removed_after_var");
+            scope.end_scope();
+            assert_eq!(scope.resolve("shadow"), Some(root));
+            assert!(!scope.resolve_is_const("shadow"));
+            assert_eq!(scope.holds_reference("shadow"), Some(false));
+            assert_eq!(scope.resolve_declared_arity("shadow"), None);
+            assert_eq!(scope.resolve("survivor"), Some(surviving));
+            assert_eq!(scope.resolve("removed_after_var"), None);
+            for _ in 0..3 {
+                scope.begin_scope();
+                scope.define("survivor");
+                scope.define("removed_after_var");
+                scope.end_scope();
+                assert_eq!(scope.resolve("survivor"), Some(surviving));
+                assert_eq!(scope.resolve("removed_after_var"), None);
+            }
+        }
+    }
+
+    #[test]
+    fn exact_spelling_and_folded_fallback_survive_index_compaction() {
+        for fold in [vybe_ast::CaseAlphabet::Ascii, vybe_ast::CaseAlphabet::Unicode] {
+            let mut scope = Scope::new(Some(fold));
+            let upper = scope.define("Name");
+            let lower = scope.define("name");
+            scope.begin_scope();
+            scope.define("NAME");
+            scope.define_at_function_scope("persist", None);
+            scope.end_scope();
+            assert_eq!(scope.resolve("Name"), Some(upper));
+            assert_eq!(scope.resolve("name"), Some(lower));
+            assert_eq!(scope.resolve("NAME"), Some(lower));
+        }
+    }
+}
+
 /// Compare a DECLARED identifier against a REFERENCE under a stated alphabet.
 ///
 /// ⛔ ONE function, so the alphabets cannot drift apart the way this pipeline's
@@ -437,7 +543,7 @@ impl Scope {
 /// Argument order is `declared, reference` and not the reverse because that is
 /// the direction normalisation runs: the answer is the DECLARED spelling, which
 /// is what the reference is rewritten to.
-fn names_equal(fold: vybe_ast::CaseAlphabet, declared: &str, reference: &str) -> bool {
+pub(super) fn names_equal(fold: vybe_ast::CaseAlphabet, declared: &str, reference: &str) -> bool {
     match fold {
         vybe_ast::CaseAlphabet::Ascii => declared.eq_ignore_ascii_case(reference),
         vybe_ast::CaseAlphabet::Unicode => declared.to_lowercase() == reference.to_lowercase(),
@@ -474,4 +580,104 @@ pub fn profile_variable_fold(
 /// callables while its variables are exact.
 pub fn tree_fold(d: &vybe_ast::Directives) -> crate::primitives::namespaces::Fold {
     d.callable_fold()
+}
+
+#[derive(Debug, Clone, Default)]
+struct FoldedMembership {
+    counts: std::collections::HashMap<String, usize>,
+}
+
+fn ascii_key(name: &str) -> std::borrow::Cow<'_, str> {
+    if name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        std::borrow::Cow::Owned(name.to_ascii_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(name)
+    }
+}
+
+impl FoldedMembership {
+    fn insert(&mut self, name: &str) {
+        let key = ascii_key(name);
+        if let Some(count) = self.counts.get_mut(key.as_ref()) {
+            *count += 1;
+        } else {
+            self.counts.insert(key.into_owned(), 1);
+        }
+    }
+
+    fn remove(&mut self, name: &str) {
+        let key = ascii_key(name);
+        let count = self.counts.get_mut(key.as_ref()).expect("active folded local");
+        *count -= 1;
+        if *count == 0 {
+            self.counts.remove(key.as_ref());
+        }
+    }
+}
+
+#[cfg(test)]
+mod folded_membership_tests {
+    use super::*;
+    fn parity(scope: &Scope) {
+        for name in [
+            "A", "a", "ÄNAME", "äNAME", "persist", "PERSIST", "absent", "$FOO",
+        ] {
+            assert_eq!(
+                scope.contains_ascii_folded_local(name),
+                scope
+                    .locals
+                    .iter()
+                    .any(|l| l.name.eq_ignore_ascii_case(name)),
+                "{name}"
+            );
+        }
+    }
+    #[test]
+    fn lazy_index_updates_duplicate_counts_and_scope_retirement() {
+        for fold in [
+            None,
+            Some(vybe_ast::CaseAlphabet::Ascii),
+            Some(vybe_ast::CaseAlphabet::Unicode),
+        ] {
+            let mut scope = Scope::new(fold);
+            assert!(scope.folded_membership.get().is_none());
+            scope.define("A");
+            scope.define("ÄName");
+            scope.define("$foo");
+            parity(&scope);
+            assert!(!scope.contains_ascii_folded_local("äname"));
+            scope.begin_scope();
+            scope.define("a");
+            scope.define("äname");
+            scope.define_at_function_scope("persist", None);
+            parity(&scope);
+            assert_eq!(scope.folded_membership.get().unwrap().counts["a"], 2);
+            scope.set_holds_reference("a");
+            assert!(scope.folded_membership.get().is_some());
+            scope.end_scope();
+            parity(&scope);
+            assert_eq!(scope.folded_membership.get().unwrap().counts["a"], 1);
+            assert!(!scope.contains_ascii_folded_local("äname"));
+            assert!(scope.contains_ascii_folded_local("PERSIST"));
+        }
+    }
+    #[test]
+    fn index_is_thread_safe_movable_and_owned_clone_is_independent() {
+        fn assert_traits<T: Send + Sync>() {}
+        assert_traits::<Scope>();
+        let mut scope = Scope::new(None);
+        scope.define("A");
+        parity(&scope);
+        let cache = scope.folded_membership.get().unwrap();
+        let mut copy = cache.clone();
+        copy.remove("a");
+        assert!(cache.counts.contains_key("a"));
+        assert!(!copy.counts.contains_key("a"));
+        std::thread::scope(|threads| {
+            threads.spawn(|| parity(&scope));
+            threads.spawn(|| parity(&scope));
+        });
+        let moved = scope;
+        parity(&moved);
+    }
 }

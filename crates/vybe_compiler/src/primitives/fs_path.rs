@@ -118,15 +118,20 @@ fn emit_stat_at(chunk: &mut Chunk, line: u32, path_slot: u16) {
 /// The discriminator is structural: `platforms/wasi/src/filesystem.rs::err`
 /// builds `{ __wasi_error: <code> }` and every success answer — descriptor,
 /// stat record, stream tuple — lacks that key. Reading an absent key yields
-/// `Undefined`, which `REF_IS_NULL` reports as null, so "no error property" and
+/// `Undefined`, so "no error property" and
 /// "not an object at all" both come out as success, and only a real error
 /// answer comes out as failure.
 fn emit_ok_test(chunk: &mut Chunk, line: u32, slot: u16) {
-    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, slot, line);
     chunk.emit_string_const(ERROR_KEY, line);
     chunk.emit_op(Op::ARRAY_GET, line);
+    let value = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_TEE, value, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    let undefined_test = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(undefined_test, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
 }
 
 /// Read a named field out of a WASI record. Stack: `[]` → `[value]`.
@@ -236,10 +241,8 @@ fn emit_stream_out(
                     chunk.emit_i32_const(0, line); // offset
                     chunk.emit_call(sink, 3, line);
                 }
-                // The `future<result<_, error-code>>` is discarded: the host
-                // resolves it before returning, and the verbs above report
-                // success as a bool that the open already decided.
-                chunk.emit_op(Op::DROP, line);
+                // This helper ignores completion; release the readable handle.
+                io::emit_discard_future(chunk, line);
             },
         );
         chunk.emit_bool_const(true, line);
@@ -368,16 +371,25 @@ pub fn emit_is_dir(chunk: &mut Chunk, line: u32) {
 }
 
 fn emit_type_probe(chunk: &mut Chunk, line: u32, want: &str) {
+    emit_type_probe_condition(chunk, line, want);
+    crate::primitives::ops::emit_i32_to_bool(chunk, line);
+}
+
+/// Directory predicate for a core-Wasm branch. Stack: `[path]` -> `[i32]`.
+pub fn emit_is_dir_condition(chunk: &mut Chunk, line: u32) {
+    emit_type_probe_condition(chunk, line, "directory");
+}
+
+fn emit_type_probe_condition(chunk: &mut Chunk, line: u32, want: &str) {
     let path = chunk.alloc_scratch(1);
     let st = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, path, line);
     emit_stat_at(chunk, line, path);
     emit_ok_test(chunk, line, st);
-    chunk.emit_if_value(line);
+    chunk.emit_if_i32(line);
     emit_type_is(chunk, line, st, want);
-    crate::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
-    chunk.emit_bool_const(false, line);
+    chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
 }
 
@@ -707,8 +719,7 @@ pub fn emit_remove_all(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_i32_const(0, line);
     chunk.emit_call(new_arr, 1, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, dirs, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, dirs, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, dirs, line);
     chunk.emit_op_u16(Op::LOCAL_GET, root, line);
     chunk.emit_call(push, 2, line);
     chunk.emit_op(Op::DROP, line);
@@ -922,7 +933,7 @@ pub fn emit_copy(chunk: &mut Chunk, line: u32) {
                     chunk.emit_op_u16(Op::LOCAL_GET, rd, line);
                     chunk.emit_i32_const(0, line);
                     chunk.emit_call(write_via, 3, line);
-                    chunk.emit_op(Op::DROP, line);
+                    io::emit_discard_future(chunk, line);
                 },
             );
             chunk.emit_bool_const(true, line);
@@ -980,7 +991,13 @@ fn stash(chunk: &mut Chunk, argc: u8, line: u32) -> u16 {
 /// Push the handle table, creating it on first use. Stack: `[]` → `[map]`.
 fn emit_handle_table(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::globals::emit_read(&mut chunks[current], HANDLES, line);
+    let handles = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, handles, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, handles, line);
+    let undefined_test = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(undefined_test, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     collections::emit_map_new(chunks, current, line);
     crate::primitives::globals::emit_write(&mut chunks[current], HANDLES, line);
@@ -1308,8 +1325,7 @@ pub fn emit_line_input(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, fnum, line);
 
     emit_handle_of(chunks, current, fnum, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, h, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, h, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, h, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("", line);
@@ -1397,17 +1413,8 @@ const DESCRIPTOR_TYPE_CASES: [&str; 8] = [
     "other",
 ];
 
-/// Field offsets and stride of `record directory-entry { %type:
-/// descriptor-type, name: string }` (`types.wit:182`), in bytes.
-///
-/// Returned as `(stride, disc_offset, disc_bytes, name_offset)` and COMPUTED,
-/// never written down: `canon_layout` is the same code the host lowers
-/// through, so asking it is the only way the two cannot disagree. Hand-typing
-/// `24 / 0 / 1 / 16` would be right today and wrong the day the WIT gains a
-/// ninth `descriptor-type` case — which widens the discriminant, moves `name`,
-/// and would leave this reading the middle of a string pointer.
-fn directory_entry_layout() -> (i32, i32, u32, i32) {
-    use vybe_runtime::canon_layout::{align_to, alignment, elem_size, variant_discriminant_size};
+/// Guest declaration of WIT `directory-entry`, shared by layout and type checks.
+fn directory_entry_type() -> vybe_runtime::component::ValType {
     use vybe_runtime::component::ValType;
 
     let cases: Vec<(String, Option<ValType>)> = DESCRIPTOR_TYPE_CASES
@@ -1417,19 +1424,28 @@ fn directory_entry_layout() -> (i32, i32, u32, i32) {
             ((*name).to_string(), payload)
         })
         .collect();
-    let disc_bytes = variant_discriminant_size(&cases);
-    let type_field = ValType::Variant(cases);
+    ValType::Record(vec![
+        ("type".to_string(), ValType::Variant(cases)),
+        ("name".to_string(), ValType::String),
+    ])
+}
+
+/// Canonical `(stride, discriminant offset, discriminant bytes, name offset)`.
+/// Derive these from the declared type rather than duplicating layout constants.
+fn directory_entry_layout(entry: &vybe_runtime::component::ValType) -> (i32, i32, u32, i32) {
+    use vybe_runtime::canon_layout::{align_to, alignment, elem_size, variant_discriminant_size};
+    use vybe_runtime::component::ValType;
+    let ValType::Record(fields) = entry else { unreachable!("directory-entry is a record") };
+    let type_field = &fields[0].1;
+    let ValType::Variant(cases) = type_field else { unreachable!("descriptor-type is a variant") };
+    let disc_bytes = variant_discriminant_size(cases);
 
     // `record` field offsets — `CanonicalABI.md` §`store_record`: each field
     // starts at the next offset aligned to ITS OWN alignment.
-    let name_offset = align_to(elem_size(&type_field), alignment(&ValType::String));
-    let entry = ValType::Record(vec![
-        ("type".to_string(), type_field),
-        ("name".to_string(), ValType::String),
-    ]);
+    let name_offset = align_to(elem_size(type_field), alignment(&ValType::String));
 
     (
-        elem_size(&entry) as i32,
+        elem_size(entry) as i32,
         0, // the discriminant sits at the start of the variant, which starts the record
         disc_bytes,
         name_offset as i32,
@@ -1455,16 +1471,16 @@ const ENTRIES_PER_READ: i32 = 32;
 /// `directory-entry` values into a stream it TYPED with
 /// `create_stream_of(Some(directory_entry_type()))`, `canon stream.read` lowers
 /// each one into linear memory at its canonical stride, and the loop below
-/// lifts them back. No `@N` type immediate is needed — the element type
-/// travels with the stream, so the built-in already knows the layout it is
-/// writing and this side only has to agree about where the fields land.
+/// lifts them back. Read and drop both retain the declared stream type; module
+/// finalization assigns their canonical indices without changing source indices.
 ///
 /// ⚠`type` is the WIT's spelling, not a language's. `isFile`/`isDir` are
 /// PHP's and Python's questions, and each adapter derives them from this by
 /// comparing against a `descriptor-type` case name. Answering their shape here
 /// would put one language's vocabulary in the shared lowering.
 pub fn emit_read_directory_entries(chunk: &mut Chunk, line: u32) {
-    let (stride, disc_at, disc_bytes, name_at) = directory_entry_layout();
+    let element = directory_entry_type();
+    let (stride, disc_at, disc_bytes, name_at) = directory_entry_layout(&element);
 
     let read_dir = chunk.add_import(TYPES, "[method]descriptor.read-directory");
     let at = chunk.add_import("ecma:array", "at");
@@ -1472,8 +1488,11 @@ pub fn emit_read_directory_entries(chunk: &mut Chunk, line: u32) {
     let new_arr = chunk.add_import("vybe:js-array", "newWithLength");
     let obj_new = chunk.add_import("ecma:object", "new");
     let obj_set = chunk.add_import("ecma:object", "set");
-    let stream_read = chunk.add_import("canon", "stream.read");
-    let drop_rd = chunk.add_import("canon", "stream.drop-readable");
+    let stream_read = crate::primitives::canon::add_typed_stream_import(
+        chunk, "stream.read", element.clone(),
+        vybe_runtime::canon_def::CanonOpts { memory: Some(0), ..Default::default() });
+    let drop_rd = crate::primitives::canon::add_typed_stream_import(
+        chunk, "stream.drop-readable", element, Default::default());
 
     let path = chunk.alloc_scratch(1);
     let desc = chunk.alloc_scratch(1);

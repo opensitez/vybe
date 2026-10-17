@@ -107,6 +107,14 @@ fn shifted(span: Span, offset: usize) -> Span {
 }
 
 pub fn compile(modules: &[Module<'_>]) -> Result<LinkedGrammar, Vec<ModuleDiagnostic>> {
+    compile_internal(modules, false)
+}
+
+/// Link modules with explicitly enabled AST annotations.
+pub fn compile_with_ast_bindings(modules: &[Module<'_>]) -> Result<LinkedGrammar, Vec<ModuleDiagnostic>> {
+    compile_internal(modules, true)
+}
+fn compile_internal(modules: &[Module<'_>], ast_enabled: bool) -> Result<LinkedGrammar, Vec<ModuleDiagnostic>> {
     if modules.is_empty() {
         return Err(vec![error(
             0,
@@ -128,7 +136,7 @@ pub fn compile(modules: &[Module<'_>]) -> Result<LinkedGrammar, Vec<ModuleDiagno
                 Span { start: 0, end: 0 },
             ));
         }
-        match crate::parse(module.source) {
+        match if ast_enabled { crate::grammar::parse_with_ast_bindings(module.source) } else { crate::parse(module.source) } {
             Ok(parsed) => {
                 let mut local = HashMap::new();
                 for (rule_id, rule) in parsed.rules.iter().enumerate() {
@@ -165,6 +173,7 @@ pub fn compile(modules: &[Module<'_>]) -> Result<LinkedGrammar, Vec<ModuleDiagno
                 syntax.push(GrammarSyntax {
                     rules: Vec::new(),
                     expressions: Vec::new(),
+                    ast_bindings: Vec::new(),
                 });
                 locals.push(HashMap::new());
             }
@@ -251,6 +260,7 @@ pub fn compile(modules: &[Module<'_>]) -> Result<LinkedGrammar, Vec<ModuleDiagno
     let mut merged = GrammarSyntax {
         rules: Vec::new(),
         expressions: Vec::new(),
+        ast_bindings: Vec::new(),
     };
     let mut source = String::new();
     let mut ranges = Vec::new();
@@ -264,6 +274,16 @@ pub fn compile(modules: &[Module<'_>]) -> Result<LinkedGrammar, Vec<ModuleDiagno
         });
         source.push('\n');
         let base = merged.expressions.len();
+        for mut binding in parsed.ast_bindings {
+            binding.rule = internal(id, &binding.rule);
+            binding.span = shifted(binding.span, offset);
+            for field in &mut binding.fields {
+                if let crate::ast::SourceSyntax::Child { rule, .. } = &mut field.source {
+                    if let Some(bound) = bindings[id].get(rule) { *rule = bound.clone(); }
+                }
+            }
+            merged.ast_bindings.push(binding);
+        }
         for mut expression in parsed.expressions {
             expression.span = shifted(expression.span, offset);
             match &mut expression.kind {

@@ -83,7 +83,6 @@ impl Compiler {
                 InterfaceMember::Method { name, .. }
                 | InterfaceMember::Property { name, .. }
                 | InterfaceMember::Event { name, .. } => name,
-                _ => continue,
             };
             let stored = self.js_member_storage_name_for_class(&canonical, name);
             if !instance_member_names.contains(&stored) {

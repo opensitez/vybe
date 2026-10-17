@@ -1,0 +1,23 @@
+// @grameo pratt expr atom=atom trailing=consume
+// @grameo operator expr plus precedence=10 fixity=infix_left
+// @grameo operator expr minus precedence=10 fixity=infix_left
+// @grameo operator expr star precedence=20 fixity=infix_left
+// @grameo operator expr power precedence=30 fixity=infix_right
+// @grameo operator expr minus precedence=40 fixity=prefix
+// @grameo operator expr bang precedence=50 fixity=postfix
+WHITESPACE = _{ " " | "\t" | "\n" }
+number = @{ ASCII_DIGIT+ }
+plus = @{ "+" }
+minus = @{ "-" }
+star = @{ "*" }
+power = @{ "^" }
+bang = @{ "!" }
+atom = { number | "(" ~ expr ~ ")" }
+postfix = { atom ~ bang* }
+pow = { postfix ~ (power ~ unary)* }
+unary = { (minus ~ unary) | pow }
+mul = { unary ~ (star ~ unary)* }
+expr = { mul ~ ((plus | minus) ~ mul)* }
+program = { SOI ~ expr ~ EOI }
+probe = { SOI ~ &expr ~ expr ~ EOI }
+fallback = { SOI ~ ((expr ~ "x") | expr) ~ EOI }

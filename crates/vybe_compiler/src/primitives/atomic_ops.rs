@@ -14,10 +14,8 @@
 //! atomics a value where an address belongs is precisely the trap
 //! (`addr=100 limit=0`) this module exists to end.
 
-use std::sync::Arc;
 
 use vybe_ast::{AtomicOp, AtomicRmw, ExprKind, Expression, RmwResult};
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
 use crate::primitives::pointers::SHARED_ADDR_KEY;

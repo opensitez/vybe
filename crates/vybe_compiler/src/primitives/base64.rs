@@ -12,6 +12,96 @@ use vybe_runtime::opcode::Op;
 use crate::primitives::instructions::host;
 use crate::primitives::{collections, loops, strings};
 
+/// Emit an i32 predicate for a strict i32 character-code local.
+/// Accept ASCII letters, digits, padding, and the selected standard/URL alphabet.
+/// Emits standard arithmetic/comparisons without additional locals or imports.
+pub fn emit_code_is_allowed(chunk: &mut Chunk, code_slot: u16, url: bool, line: u32) {
+    // ASCII letters: fold the case bit without discarding high bits.
+    chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+    chunk.emit_i32_const(32, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_i32_const(97, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    chunk.emit_i32_const(25, line);
+    chunk.emit_op(Op::I32_LE_U, line);
+    if url {
+        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+        chunk.emit_i32_const(48, line);
+        chunk.emit_op(Op::I32_SUB, line);
+        chunk.emit_i32_const(9, line);
+        chunk.emit_op(Op::I32_LE_U, line);
+        chunk.emit_op(Op::I32_OR, line);
+        // '-'45 and '='61 differ only in bit4. Setting it recognizes exactly
+        // that pair without admitting any other UTF16 unit.
+        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+        chunk.emit_i32_const(16, line);
+        chunk.emit_op(Op::I32_OR, line);
+        chunk.emit_i32_const(61, line);
+        chunk.emit_op(Op::I32_EQ, line);
+        chunk.emit_op(Op::I32_OR, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+        chunk.emit_i32_const(95, line);
+        chunk.emit_op(Op::I32_EQ, line);
+        chunk.emit_op(Op::I32_OR, line);
+        return;
+    }
+    // Bits0..31 name ASCII32..63. Digits, padding and alphabet punctuation
+    // fit one word. Wasm shifts mask the count; the block check below prevents
+    // any other32-unit block from aliasing these bits.
+    chunk.emit_i32_const(0x23ff8800, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+    chunk.emit_op(Op::I32_SHR_U, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
+    chunk.emit_i32_const(5, line);
+    chunk.emit_op(Op::I32_SHR_U, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+
+/// Stack: `[string] -> [string]`, retaining the standard Base64 ASCII alphabet.
+/// Owning adapters decide whether filtering is permitted and perform coercion.
+/// Empty and single-unit inputs avoid constructing a RegExp.
+pub fn emit_filter_lenient(chunks: &mut [Chunk], current: usize, line: u32) {
+    let c = &mut chunks[current];
+    let src = c.alloc_scratch(1);
+    let len = c.alloc_scratch(1);
+    crate::primitives::instructions::core_wasm::local_tee(c, line, src);
+    host::emit(c, "wasm:js-string", "length", 1, line);
+    crate::primitives::instructions::core_wasm::local_tee(c, line, len);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if_value(line);
+    c.emit_string_const("", line);
+    c.emit_else(line);
+    c.emit_op_u16(Op::LOCAL_GET, len, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_EQ, line);
+    c.emit_if_value(line);
+    c.emit_string_const("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=", line);
+    c.emit_op_u16(Op::LOCAL_GET, src, line);
+    host::emit(c, "ecma:string", "indexOf", 2, line);
+    c.emit_f64_const(0.0, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_if_value(line);
+    c.emit_op_u16(Op::LOCAL_GET, src, line);
+    c.emit_else(line);
+    c.emit_string_const("", line);
+    c.emit_end(line);
+    c.emit_else(line);
+    c.emit_op_u16(Op::LOCAL_GET, src, line);
+    c.emit_string_const("[^A-Za-z0-9+/=]+", line);
+    c.emit_string_const("g", line);
+    host::emit(c, "ecma:regexp", "new", 2, line);
+    c.emit_string_const("", line);
+    host::emit(c, "ecma:regexp", "replaceAll", 3, line);
+    c.emit_end(line);
+    c.emit_end(line);
+}
+
 /// Stack: `[binary_string] -> [base64_string]`.
 pub fn emit_encode_binary_string(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:string", "btoa", 1, line);
@@ -20,6 +110,58 @@ pub fn emit_encode_binary_string(chunks: &mut [Chunk], current: usize, line: u32
 /// Stack: `[base64_string] -> [binary_string]`.
 pub fn emit_decode_binary_string(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:string", "atob", 1, line);
+}
+
+/// Stack: `[base64_string] -> [plain_byte_array]`.
+/// The existing atob adapter guarantees Latin1 output. Language-specific
+/// validation, slicing and public result types remain in owning adapters.
+pub fn emit_decode_byte_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    if !crate::primitives::polyfills::is_compiling_runtime_helper() {
+        crate::primitives::bundle::emit_stacked_helper_call(
+            &mut chunks[current], "__vybe_base64_decode_bytes", 1, line,
+        );
+        return;
+    }
+    let c = &mut chunks[current];
+    let text = c.alloc_scratch(1);
+    host::emit(c, "ecma:string", "atob", 1, line);
+    crate::primitives::instructions::core_wasm::local_tee(c, line, text);
+    host::emit(c, "wasm:js-string", "length", 1, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if_value(line);
+    c.emit_i32_const(0, line);
+    host::emit(c, "vybe:js-array", "newWithLength", 1, line);
+    c.emit_else(line);
+    c.emit_op_u16(Op::LOCAL_GET, text, line);
+    c.emit_string_const("latin1", line);
+    host::emit(c, "node:buffer", "from", 2, line);
+    host::emit(c, "ecma:array", "from", 1, line);
+    c.emit_end(line);
+}
+
+/// Stack: `[string] -> [Uint8Array]`, truncating each UTF16 unit to its
+/// low byte exactly like the string-to-array / Uint8Array composition.
+/// Keep the length check before conversion so non-strings retain their trap.
+pub fn emit_binary_string_to_uint8_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    if !crate::primitives::polyfills::is_compiling_runtime_helper() {
+        crate::primitives::bundle::emit_stacked_helper_call(
+            &mut chunks[current], "__vybe_binary_string_to_uint8_array", 1, line,
+        );
+        return;
+    }
+    let c = &mut chunks[current];
+    let text = c.alloc_scratch(1);
+    crate::primitives::instructions::core_wasm::local_tee(c, line, text);
+    host::emit(c, "wasm:js-string", "length", 1, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if_value(line);
+    host::emit(c, "ecma:uint8array", "new", 0, line);
+    c.emit_else(line);
+    c.emit_op_u16(Op::LOCAL_GET, text, line);
+    c.emit_string_const("latin1", line);
+    host::emit(c, "node:buffer", "from", 2, line);
+    host::emit(c, "ecma:uint8array", "new", 1, line);
+    c.emit_end(line);
 }
 
 /// Stack: `[byte_array] -> [binary_string]`.
@@ -150,8 +292,8 @@ fn emit_fragmented_byte_array_string(
     let state = loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, end_local, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, fragment, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
@@ -238,8 +380,8 @@ fn emit_small_byte_array_string(
     let state = loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, end_local, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
@@ -287,14 +429,14 @@ pub fn emit_binary_string_to_byte_array(chunks: &mut [Chunk], current: usize, li
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     strings::emit_length(&mut chunks[current], line);
-    host::emit(&mut chunks[current], "wasm:js-number", "toI32", 1, line);
+
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
 
     let state = loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
@@ -334,6 +476,14 @@ pub(crate) fn build_shared_helper(name: &str) -> Chunk {
         }
         "__stdlib_bytes_to_binary_string" => {
             emit_byte_array_slot_to_binary_string(&mut chunks, 0, Some(0), Some(1), Some(2), 0)
+        }
+        "__stdlib_base64_decode_bytes" => {
+            chunks[0].emit_op_u16(Op::LOCAL_GET, 0, 0);
+            emit_decode_byte_array(&mut chunks, 0, 0);
+        }
+        "__stdlib_binary_string_to_uint8_array" => {
+            chunks[0].emit_op_u16(Op::LOCAL_GET, 0, 0);
+            emit_binary_string_to_uint8_array(&mut chunks, 0, 0);
         }
         "__stdlib_binary_string_to_bytes" => {
             chunks[0].emit_op_u16(Op::LOCAL_GET, 0, 0);

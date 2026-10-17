@@ -71,6 +71,7 @@ pub struct Expr {
 pub struct GrammarSyntax {
     pub rules: Vec<Rule>,
     pub expressions: Vec<Expr>,
+    pub ast_bindings: Vec<crate::ast::BindingSyntax>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,8 +92,28 @@ pub fn parse_with_options(
     source: &str,
     options: ParseOptions,
 ) -> Result<GrammarSyntax, Diagnostic> {
+    parse_internal(source, options, false)
+}
+
+/// Explicitly enable grammar-driven AST annotations. Ordinary PEG parsing
+/// treats these comments as comments, including malformed annotations.
+pub fn parse_with_ast_bindings(source: &str) -> Result<GrammarSyntax, Diagnostic> {
+    parse_internal(source, ParseOptions::default(), true)
+}
+
+fn parse_internal(source: &str, options: ParseOptions, ast_enabled: bool) -> Result<GrammarSyntax, Diagnostic> {
+    parse_configured(source, options, ast_enabled, false).map(|(syntax, _)| syntax)
+}
+pub(crate) fn parse_configured(source: &str, options: ParseOptions, ast_enabled: bool, optimization_enabled: bool) -> Result<(GrammarSyntax, Vec<lexer::Annotation>), Diagnostic> {
+    let (tokens, annotations) = lexer::lex_with_annotations(source)?;
+    let ast_bindings = if ast_enabled {
+        annotations.iter().filter(|a| a.kind == lexer::AnnotationKind::Ast)
+            .map(|a| crate::ast::parse_binding(&a.text, a.span))
+            .collect::<Result<Vec<_>, _>>()?
+    } else { Vec::new() };
+    let optimizations = if optimization_enabled {annotations.into_iter().filter(|a| a.kind != lexer::AnnotationKind::Ast).collect()} else {Vec::new()};
     let mut parser = Parser {
-        tokens: lexer::lex(source)?,
+        tokens,
         position: 0,
         expressions: Vec::new(),
         depth: 0,
@@ -105,10 +126,11 @@ pub fn parse_with_options(
     if rules.is_empty() {
         return Err(parser.error("G005", "expected at least one rule definition"));
     }
-    Ok(GrammarSyntax {
+    Ok((GrammarSyntax {
         rules,
         expressions: parser.expressions,
-    })
+        ast_bindings,
+    }, optimizations))
 }
 
 struct Parser {

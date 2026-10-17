@@ -21,6 +21,8 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+mod stream_write;
+
 /// Emit print/log. Stack: [arg1, ..., argN] → []
 /// Routes to `web:console.log` — WHATWG `log(...data)`, variadic by spec
 /// (the host renders each datum and joins with a single space).
@@ -40,10 +42,9 @@ pub fn emit_print_with_import(chunk: &mut Chunk, import_idx: u16, arg_count: u8,
 /// Composes the WASI 0.3 surface: `canon stream.new` (a "canon"-module
 /// import, called via spec `call`) creates a `stream<u8>` as (readable,
 /// writable) i32 handles, the contents go in via `canon stream.write`,
-/// the writable end closes (EOF), and the readable end is passed to
-/// `wasi:cli/stdout.write-via-stream(data: stream<u8>)`.
-/// The returned `future<result<_, error-code>>` is discarded; both handle
-/// table entries are dropped afterwards per the canonical ABI.
+/// the readable end is transferred to the sink, and the writable end closes
+/// after the copy. The returned `future<result<_, error-code>>` is discarded
+/// by this fire-and-forget helper; the sink owns the readable end.
 ///
 /// Stack: [] → []. `push_contents` emits the string to write while the
 /// writable handle is on the stack. `rd_slot`/`wr_slot` are caller-defined
@@ -62,8 +63,14 @@ pub fn emit_write_stdout_with_imports(
     emit_write_via_stream(chunk, rd_slot, wr_slot, line, push_contents, |chunk, rd| {
         chunk.emit_op_u16(Op::LOCAL_GET, rd, line);
         chunk.emit_call(write_idx, 1, line);
-        chunk.emit_op(Op::DROP, line);
+        emit_discard_future(chunk, line);
     });
+}
+
+/// Release an ignored canonical future; a core value drop cannot release its handle.
+pub fn emit_discard_future(chunk: &mut Chunk, line: u32) {
+    let drop = chunk.add_import("canon", "future.drop-readable");
+    chunk.emit_call(drop, 1, line);
 }
 
 /// The transport under every `write-via-stream`, whatever its signature.
@@ -77,7 +84,7 @@ pub fn emit_write_stdout_with_imports(
 ///
 /// Same "quirks above, ONE transport below" split the print path already uses:
 /// minting the stream, marshalling the bytes into linear memory, writing and
-/// dropping both ends is identical for all of them, so it lives here once.
+/// transferring the reader and dropping the writer is identical for all sinks.
 pub fn emit_write_via_stream(
     chunk: &mut Chunk,
     rd_slot: u16,
@@ -111,6 +118,26 @@ pub enum Payload {
     Bytes,
 }
 
+/// Stack: [receiver, bytes] -> [sink future]. Starts a two-argument sink
+/// before lending its byte buffer; callers retain responsibility for completion.
+pub fn emit_bytes_to_receiver_sink(chunk: &mut Chunk, sink: u16, line: u32) {
+    let bytes = chunk.alloc_scratch(1);
+    let receiver = chunk.alloc_scratch(1);
+    let rd = chunk.alloc_scratch(1);
+    let wr = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, bytes, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, receiver, line);
+    emit_payload_via_stream(
+        chunk, rd, wr, line, Payload::Bytes,
+        |chunk| chunk.emit_op_u16(Op::LOCAL_GET, bytes, line),
+        |chunk, rd| {
+            chunk.emit_op_u16(Op::LOCAL_GET, receiver, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, rd, line);
+            chunk.emit_call(sink, 2, line);
+        },
+    );
+}
+
 /// [`emit_write_via_stream`] with the payload kind spelled out.
 pub fn emit_payload_via_stream(
     chunk: &mut Chunk,
@@ -126,7 +153,6 @@ pub fn emit_payload_via_stream(
     let stream_new = chunk.add_import("canon", "stream.new");
     let stream_write = chunk.add_import("canon", "stream.write");
     let drop_wr = chunk.add_import("canon", "stream.drop-writable");
-    let drop_rd = chunk.add_import("canon", "stream.drop-readable");
     // canon stream.new → ONE i64: `ri | (wi << 32)`, readable in the low 32
     // bits and writable in the high 32 (`CanonicalABI.md` §canon
     // {stream,future}.new — `$f` is given type `(func (result i64))`).
@@ -140,7 +166,7 @@ pub fn emit_payload_via_stream(
     // local.get of type externref`. It is also what made this look like it
     // needed general typed-local inference: no per-slot type could ever have
     // described a slot that changes type halfway through.
-    let packed = chunk.i64_scratch();
+    let packed = super::bits::raw_i64_scratch(chunk);
     chunk.emit_call(stream_new, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, packed, line);
     // writable = high 32
@@ -174,23 +200,13 @@ pub fn emit_payload_via_stream(
             crate::primitives::canon_marshal::emit_store_byte_array(chunk, line, push_contents)
         }
     };
-    chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ptr, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, n, line);
-    chunk.emit_call(stream_write, 3, line);
-    // The packed CopyResult is not inspected here: a write into a stream whose
-    // reader is the host cannot partially fail, and stdout has nowhere to
-    // report it. A guest that cares reads the result.
-    chunk.emit_op(Op::DROP, line);
-    // stream.drop-writable(wr) — signals EOF. MUST precede the sink call: the
-    // sink drains until the writable end is gone, so handing it a still-open
-    // stream is a wait for bytes that will never come.
+    // Transfer the readable end before lending the guest write buffer.
+    // A sink must be running to participate in the canonical copy.
+    emit_sink_call(chunk, rd_slot);
+    stream_write::emit_write_buffer(chunk, wr_slot, ptr, n, stream_write, line);
+    // EOF settles the sink's future and releases its native resources.
     chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
     chunk.emit_call(drop_wr, 1, line);
-    emit_sink_call(chunk, rd_slot);
-    // stream.drop-readable(rd)
-    chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
-    chunk.emit_call(drop_rd, 1, line);
 }
 
 /// Drain a Component Model `stream<u8>` to a BYTE ARRAY. Stack: [handle] → [array].
@@ -349,6 +365,117 @@ pub fn emit_read_stream_chunk(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+#[cfg(test)]
+mod canonical_stream_tests {
+    use super::*;
+
+    #[test]
+    fn receiver_sink_starts_before_bytes_and_retains_its_completion_future() {
+        use std::sync::{Arc, Mutex};
+        use vybe_runtime::Value;
+        for bytes in [vec![], vec![0, 128, 255, 13]] {
+            let captured = Arc::new(Mutex::new((Vec::new(), false)));
+            let mut vm = vybe_runtime::VM::new();
+            crate::primitives::platforms::register_platforms_all(&mut vm);
+            let observed = captured.clone();
+            vm.register_host_fn("sink-order-test", "send", Box::new(move |ctx, args| {
+                assert_eq!(args[0].as_i32(), 17);
+                let (future, id) = ctx.create_future();
+                let output = observed.clone();
+                ctx.consume_byte_stream(&args[1], id, Box::new(move |part| {
+                    let mut output = output.lock().unwrap();
+                    match part {
+                        Some(bytes) => output.0.extend_from_slice(bytes),
+                        None => output.1 = true,
+                    }
+                    Ok(())
+                })).expect("sink must own a live readable end");
+                future
+            }));
+            let mut chunk = Chunk::new("receiver-sink-first");
+            chunk.memory_min_pages.push(1);
+            let sink = chunk.add_import("sink-order-test", "send");
+            chunk.emit_i32_const(17, 0);
+            for byte in &bytes { chunk.emit_i32_const(*byte as i32, 0); }
+            chunk.emit_array_new_fixed(0, bytes.len() as u16, 0);
+            emit_bytes_to_receiver_sink(&mut chunk, sink, 0);
+            chunk.emit_op(Op::RETURN, 0);
+            let mut chunks = vec![chunk];
+            crate::primitives::globals::normalize_global_table(&mut chunks);
+            let binary = vybe_platform_wasm::write_wasm(&chunks);
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&binary).expect("sink-first byte transport must be standard Wasm");
+            let result = vm.run(chunks).expect("sink-first transport must finish");
+            let Value::I32(handle) = result else { panic!("sink future handle was lost") };
+            assert!(matches!(vm.handle_table.get(handle as u32),
+                Some(vybe_runtime::handle_table::HandleEntry::ReadableFutureEnd(_))));
+            assert_eq!(*captured.lock().unwrap(), (bytes, true));
+            let events = vm.event_loop.borrow();
+            assert_eq!(events.future_states.len(), 1);
+            let completion = events.future_states.values().next().unwrap();
+            assert_eq!(completion.phase, vybe_runtime::event_loop::FuturePhase::Resolved);
+            assert!(matches!(completion.value, Some(Value::Null)));
+        }
+    }
+
+    #[test]
+    fn shared_text_write_finishes_the_native_sink_for_empty_and_unicode_output() {
+        for text in ["", "CM3 output: \u{03bb}\n"] {
+            let mut chunk = Chunk::new("shared-io-native-sink");
+            chunk.memory_min_pages.push(1);
+            let sink = chunk.add_import("wasi:cli/stdout", "write-via-stream");
+            let readable = chunk.alloc_scratch(1);
+            let writable = chunk.alloc_scratch(1);
+            emit_write_stdout_with_imports(&mut chunk, sink, readable, writable, 0,
+                |chunk| chunk.emit_string_const(text, 0));
+            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+            chunk.emit_op(Op::RETURN, 0);
+            let mut vm = vybe_runtime::VM::new();
+            crate::primitives::platforms::register_platforms_all(&mut vm);
+            vm.run(vec![chunk]).expect("shared IO write must finish");
+            let events = vm.event_loop.borrow();
+            assert!(events.future_states.is_empty(), "ignored output future leaked its completion");
+            for handle in 1..=3 {
+                assert!(vm.handle_table.get(handle).is_none(), "output leaked handle {handle}");
+            }
+        }
+    }
+
+    #[test]
+    fn direct_byte_drain_emits_valid_wasm() {
+        let mut chunk = Chunk::new("direct-canonical-byte-drain");
+        chunk.memory_min_pages.push(1);
+        chunk.emit_i32_const(0, 0);
+        emit_read_stream_to_bytes(&mut chunk, 0);
+        chunk.emit_op(Op::RETURN, 0);
+
+        let mut chunks = vec![chunk];
+        crate::primitives::globals::normalize_global_table(&mut chunks);
+        let binary = vybe_platform_wasm::write_wasm(&chunks);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&binary)
+            .expect("direct canonical byte drain must be valid standard Wasm");
+    }
+
+    #[test]
+    fn sink_first_text_write_with_progress_loop_emits_valid_wasm() {
+        let mut chunk = Chunk::new("canonical-sink-first-text-write");
+        chunk.memory_min_pages.push(1);
+        let sink = chunk.add_import("wasi:cli/stdout", "write-via-stream");
+        let readable = chunk.alloc_scratch(1);
+        let writable = chunk.alloc_scratch(1);
+        emit_write_stdout_with_imports(&mut chunk, sink, readable, writable, 0,
+            |chunk| chunk.emit_string_const("binary-safe output", 0));
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        let mut chunks = vec![chunk];
+        crate::primitives::globals::normalize_global_table(&mut chunks);
+        let binary = vybe_platform_wasm::write_wasm(&chunks);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&binary).expect("canonical write loop must be valid standard Wasm");
+    }
 }
 
 /// Read ONE `own<T>` element out of a `stream<own<T>>`.
@@ -515,10 +642,9 @@ pub fn emit_bytes_to_stream(chunk: &mut Chunk, line: u32) {
     // canon stream.new → ONE i64: `ri | (wi << 32)` (`CanonicalABI.md` §canon
     // {stream,future}.new). Same unpacking as `emit_payload_via_stream`.
     // Own slot for the packed i64 — see `emit_payload_via_stream`.
-    let packed = chunk.i64_scratch();
+    let packed = super::bits::raw_i64_scratch(chunk);
     chunk.emit_call(stream_new, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, packed, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, packed, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, packed, line);
     chunk.emit_i64_const(32, line);
     chunk.emit_op(Op::I64_SHR_U, line);
     chunk.emit_op(Op::I32_WRAP_I64, line);
@@ -534,14 +660,7 @@ pub fn emit_bytes_to_stream(chunk: &mut Chunk, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, src, line);
     });
 
-    chunk.emit_op_u16(Op::LOCAL_GET, wr, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ptr, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, n, line);
-    chunk.emit_call(stream_write, 3, line);
-    // The packed CopyResult is dropped for the same reason the sink form drops
-    // it: the whole payload is already in linear memory and the reader is the
-    // host, so there is no partial-write outcome a caller could act on.
-    chunk.emit_op(Op::DROP, line);
+    stream_write::emit_write_buffer(chunk, wr, ptr, n, stream_write, line);
 
     // Drop-writable BEFORE the handle is used. The reader drains until the
     // writable end is gone; handing over a still-open stream is a wait for
@@ -792,7 +911,13 @@ fn global_set(chunk: &mut Chunk, key: &str, line: u32) {
 /// never buffers pays nothing but the null check on its first write.
 pub fn emit_ob_stack(chunks: &mut [Chunk], current: usize, line: u32) {
     global_get(&mut chunks[current], OB_STACK, line);
+    let stack_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, stack_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stack_slot, line);
+    let undefined_test = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(undefined_test, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     super::collections::emit_array_new(chunks, current, 0, line);
     global_set(&mut chunks[current], OB_STACK, line);
@@ -811,9 +936,7 @@ pub fn emit_ob_depth(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_ob_top_frame(chunks: &mut [Chunk], current: usize, line: u32) {
     let stack_slot = chunks[current].alloc_scratch(1);
     emit_ob_stack(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, stack_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, stack_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, stack_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, stack_slot, line);
     super::collections::emit_array_length(&mut chunks[current], line);
     chunks[current].emit_i32_const(1, line);
@@ -908,7 +1031,7 @@ pub fn emit_write_descriptor_slot(
             // The future is discarded here for the same reason stdout's is:
             // this is the fire-and-forget shape. A caller that needs the
             // `result<_, error-code>` keeps the future instead.
-            chunk.emit_op(Op::DROP, line);
+            emit_discard_future(chunk, line);
         },
     );
 }
@@ -923,15 +1046,35 @@ pub fn emit_write_or_buffer(chunks: &mut [Chunk], current: usize, line: u32) {
     let str_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, str_slot, line);
 
-    emit_ob_depth(chunks, current, line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_op(Op::I32_GT_S, line);
+    // Capture the internal stack once. No guest callback runs between this
+    // lookup and the frame update, so repeating lazy initialization and top
+    // frame discovery for both the read and write cannot change the result.
+    let stack_slot = chunks[current].alloc_scratch(1);
+    emit_ob_stack(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, stack_slot, line);
+    super::collections::emit_array_length(&mut chunks[current], line);
+    // Wasm if consumes an i32 condition directly. Buffer depth is an
+    // unsigned array length: nonzero already means an active frame.
     chunks[current].emit_if(line);
 
-    emit_ob_top_field(chunks, current, OB_BUFFER, line);
+    let frame_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stack_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stack_slot, line);
+    super::collections::emit_array_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    super::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, frame_slot, line);
+    chunks[current].emit_string_const(OB_BUFFER, line);
+    // Keep [frame, key] below the old contents and new text so the update
+    // requires neither another frame walk nor another value scratch local.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, frame_slot, line);
+    chunks[current].emit_string_const(OB_BUFFER, line);
+    super::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, str_slot, line);
     super::strings::emit_concat(&mut chunks[current], 2, line);
-    emit_ob_set_top_field(chunks, current, OB_BUFFER, line);
+    super::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_else(line);
     emit_write_stdout_slot(&mut chunks[current], str_slot, line);
@@ -1012,18 +1155,12 @@ fn emit_when_buffering(
     line: u32,
     on_active: impl FnOnce(&mut [Chunk], usize),
 ) {
-    let result_slot = chunks[current].alloc_scratch(1);
     emit_ob_depth(chunks, current, line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_op(Op::I32_GT_S, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     on_active(chunks, current);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_else(line);
     chunks[current].emit_bool_const(false, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_end(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 /// Contents of the innermost buffer, or `false`. Stack: [] → [string|false].
@@ -1073,13 +1210,13 @@ pub fn emit_ob_clean(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Pop the innermost frame and leave its buffer contents on the stack.
 /// Stack: [] → [string]. Caller must have established depth > 0.
 fn emit_ob_pop(chunks: &mut [Chunk], current: usize, line: u32) {
-    let contents_slot = chunks[current].alloc_scratch(1);
-    emit_ob_top_field(chunks, current, OB_BUFFER, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, contents_slot, line);
+    // The internal stack contains ordinary frame maps. Keep the removed frame
+    // alive on the operand stack and read its contents directly; no callback
+    // runs between the pop and this field read.
     emit_ob_stack(chunks, current, line);
     super::collections::emit_pop(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, contents_slot, line);
+    chunks[current].emit_string_const(OB_BUFFER, line);
+    super::collections::emit_get(chunks, current, line);
 }
 
 /// Close the innermost buffer, discarding its contents. Stack: [] → [bool].
@@ -1130,16 +1267,15 @@ fn emit_ob_pop_and_flush(chunks: &mut [Chunk], current: usize, line: u32) {
 /// buffer. An empty string is different: it deliberately suppresses output.
 fn emit_ob_handler_output_or_raw(chunks: &mut [Chunk], current: usize, raw_slot: u16, line: u32) {
     let result_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, result_slot, line);
     let is_bool = chunks[current].add_import("wasm:js-boolean", "test");
     chunks[current].emit_call(is_bool, 1, line);
-    super::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    // The standard Boolean test is already a raw i32 predicate.
+    chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     super::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -1189,6 +1325,10 @@ pub fn emit_ob_flush(chunks: &mut [Chunk], current: usize, line: u32) {
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
         chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
+        let undefined_test = chunks[current].add_import("wasm:js-undefined", "test");
+        chunks[current].emit_call(undefined_test, 1, line);
+        chunks[current].emit_op(Op::I32_OR, line);
         chunks[current].emit_if(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, contents_slot, line);
         emit_write_or_buffer(chunks, current, line);
@@ -1256,8 +1396,7 @@ fn emit_ob_status_record(
     chunks[current].emit_op_u16(Op::LOCAL_GET, frame_slot, line);
     chunks[current].emit_string_const(OB_HANDLER, line);
     super::collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, name_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, name_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_string_const(default_name, line);

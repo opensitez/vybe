@@ -1,0 +1,25 @@
+// The first branch constructs the entire class, then fails. The second must
+// recover all members in their original order, including static buckets.
+program = { (class_decl ~ "!") | class_decl }
+// @grameo ast class_decl = NormalClass(name: identifier, members: member*, span: rule)
+class_decl = { class_name ~ "{" ~ member* ~ "}" ~ EOI }
+class_name = _{ "class" ~ identifier }
+// @grameo ast member = NormalMember(value: children)
+member = _{ static_method | method | static_field | field }
+// @grameo ast method = NormalMethod(name: identifier, body: block, span: rule)
+method = { "function" ~ identifier ~ "(" ~ ")" ~ block }
+// @grameo ast static_method = NormalStaticMethod(name: identifier, body: block, span: rule)
+static_method = { "static" ~ "function" ~ identifier ~ "(" ~ ")" ~ block }
+// @grameo ast field = NormalField(name: identifier, init: integer?, span: rule)
+field = { "var" ~ identifier ~ ("=" ~ integer)? ~ ";" }
+// @grameo ast static_field = NormalStaticField(name: identifier, init: integer?, span: rule)
+static_field = { "static" ~ "var" ~ identifier ~ ("=" ~ integer)? ~ ";" }
+// @grameo ast block = Block(body: return_statement*)
+block = { "{" ~ return_statement* ~ "}" }
+// @grameo ast return_statement = Return(value: integer?, span: rule)
+return_statement = { "return" ~ integer? ~ ";" }
+// @grameo ast integer = Integer(text: source, span: rule)
+integer = @{ ASCII_DIGIT+ }
+// @grameo ast identifier = Name(text: source)
+identifier = @{ XID_START ~ XID_CONTINUE* }
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }

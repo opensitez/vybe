@@ -53,6 +53,22 @@ fn validate(chunks: &[Chunk]) {
 }
 
 #[test]
+fn missing_dict_keys_are_absent_with_or_without_key_tracking() {
+    for tracked in [false, true] {
+        for value in [Value::I32(0), Value::Bool(false), Value::Null, Value::Undefined] {
+            let chunks = program(false, false);
+            validate(&chunks);
+            assert_eq!(runtime(object(value.clone(), tracked), "missing").run(chunks).unwrap(),
+                Value::Bool(false));
+            if tracked {
+                assert_eq!(runtime(object(value, true), "present").run(program(false, false)).unwrap(),
+                    Value::Bool(true));
+            }
+        }
+    }
+}
+
+#[test]
 fn dict_predicates_preserve_tracked_nulls_fallbacks_and_delete_results() {
     for tracked in [false, true] {
         for value in [

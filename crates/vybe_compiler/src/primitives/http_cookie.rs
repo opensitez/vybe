@@ -33,7 +33,7 @@ pub fn emit_parse_cookie_header(chunks: &mut [Chunk], current: usize, line: u32)
 
     // A missing Cookie header is an empty map, not an error.
     chunks[current].emit_op_u16(Op::LOCAL_GET, header, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_if(line);
     chunks[current].emit_string_const("", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, header, line);
@@ -175,7 +175,7 @@ pub fn emit_serialize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, attrs, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
@@ -183,9 +183,8 @@ pub fn emit_serialize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // `Date.prototype.toUTCString` produces exactly that format (RFC 9110
     // §5.6.7 IMF-fixdate), so no date formatting is hand-rolled here.
     emit_attr(chunks, current, attrs, "expires", line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, expires, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, expires, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, expires, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, expires, line);
@@ -218,9 +217,8 @@ pub fn emit_serialize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         ("samesite", "; SameSite=", samesite_slot),
     ] {
         emit_attr(chunks, current, attrs, key, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_op_u16(Op::LOCAL_TEE, slot, line);
+        super::delegates::emit_stack_is_nullish(chunks, current, line);
         chunks[current].emit_op(Op::I32_EQZ, line);
         chunks[current].emit_if(line);
         // An empty optional attribute is absent. In particular, `Domain=`
@@ -229,8 +227,7 @@ pub fn emit_serialize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
         let to_string = chunks[current].add_import("ecma:string", "String");
         chunks[current].emit_call(to_string, 1, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_TEE, slot, line);
         let length = chunks[current].add_import("wasm:js-string", "length");
         chunks[current].emit_call(length, 1, line);
         chunks[current].emit_i32_const(0, line);
@@ -251,9 +248,8 @@ pub fn emit_serialize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         ("httponly", "; HttpOnly", httponly_slot),
     ] {
         emit_attr(chunks, current, attrs, key, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_op_u16(Op::LOCAL_TEE, slot, line);
+        super::delegates::emit_stack_is_nullish(chunks, current, line);
         chunks[current].emit_op(Op::I32_EQZ, line);
         chunks[current].emit_if(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);

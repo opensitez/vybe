@@ -181,6 +181,12 @@ pub fn caps_for(no_sandbox: bool) -> Capabilities {
     }
 }
 
+fn stdout_completion_error() -> vybe_runtime::Value {
+    let mut error = vybe_runtime::value::Object::new();
+    error.properties.insert("__wasi_error".into(), vybe_runtime::Value::String(Arc::from("io")));
+    vybe_runtime::Value::Object(vybe_runtime::heap::alloc(error))
+}
+
 /// SAPI-style stdout override: bind the WASI stdout stream to the HTTP
 /// response body. PHP `echo`/`print` and other normal script output should use
 /// stdout; diagnostics stay on logging/stderr.
@@ -194,21 +200,32 @@ pub fn register_response_stdout(vm: &mut vybe_runtime::VM) {
         "wasi:cli/stdout",
         "write-via-stream",
         Box::new(|host_ctx, args| {
-            let stream_val = args.first().cloned().unwrap_or(vybe_runtime::Value::Null);
-            let bytes = host_ctx.stream_drain(&stream_val);
-            if !bytes.is_empty() {
-                match vybe_platform_node::http::with_context(|c| {
-                    c.response.lock().unwrap().write_bytes(bytes.clone());
-                }) {
-                    Some(()) => {}
-                    None => {
-                        use std::io::Write;
-                        let _ = std::io::stdout().write_all(&bytes);
-                    }
-                }
-            }
             let (fut, fut_id) = host_ctx.create_future();
-            host_ctx.resolve_future(fut_id, vybe_runtime::Value::Null);
+            let request = vybe_platform_node::http::context::current_context();
+            // The readable end arrives before the guest writes its buffer.
+            // Install a native consumer instead of draining an empty stream.
+            // Retain this request, not the thread-local tenant at callback time.
+            let result = args.first().ok_or("invalid stream").and_then(|stream| {
+                host_ctx.consume_byte_stream(stream, fut_id, Box::new(move |bytes| {
+                    if let Some(bytes) = bytes {
+                        if let Some(request) = &request {
+                            request.response.lock().unwrap().write_bytes(bytes.to_vec());
+                        } else {
+                            use std::io::Write;
+                            std::io::stdout().lock().write_all(bytes)
+                                .map_err(|_| stdout_completion_error())?;
+                        }
+                    } else if request.is_none() {
+                        use std::io::Write;
+                        std::io::stdout().lock().flush()
+                            .map_err(|_| stdout_completion_error())?;
+                    }
+                    Ok(())
+                }))
+            });
+            if result.is_err() {
+                host_ctx.resolve_future(fut_id, stdout_completion_error());
+            }
             fut
         }),
     );
@@ -316,7 +333,9 @@ pub fn run_request(
     // `compile_and_run_bundle` is exactly `compile_bundle` + `run_compiled`;
     // splitting it is what lets the compile half be answered from cache while
     // the run half still happens per request, against this request's globals.
-    let compiled = match cache.and_then(|c| c.get(script_path)) {
+    let compiled = match cache.and_then(|c| c.get(script_path)).filter(|hit| {
+        match hit { Ok(compiled) => compiled.libraries_available(runtime_compiler.vm()), Err(_) => true }
+    }) {
         Some(Ok(hit)) => hit,
         // A cached FAILURE. Same 500 the fresh compile produced, without paying
         // for the compile again — see `Outcome::Failed`.
@@ -555,7 +574,7 @@ fn _bytes_shim() -> Bytes {
     Bytes::new()
 }
 
-#[cfg(test)]
+#[cfg(all(test, vybe_linked_plugin = "vybe_language_php"))]
 mod tests {
     use super::{
         PHP_SESSION_COOKIE_NAME, PHP_SESSION_ID_GLOBAL, PHP_SESSION_STARTED_GLOBAL,
@@ -570,6 +589,91 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use vybe_runtime::value::ObjectKind;
     use vybe_runtime::{HostContext, VM, Value};
+
+    #[test]
+    fn response_stdout_invalid_stream_preserves_canonical_error_arm() {
+        let mut vm = VM::new();
+        super::register_response_stdout(&mut vm);
+        let mut chunk = vybe_runtime::Chunk::new("invalid-response-stream");
+        let sink = chunk.add_import("wasi:cli/stdout", "write-via-stream");
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        chunk.emit_call(sink, 1, 0);
+        chunk.emit_op(vybe_runtime::Op::RETURN, 0);
+        assert!(matches!(vm.run(vec![chunk]).unwrap(), Value::I32(_)));
+        let events = vm.event_loop.borrow();
+        let completion = events.future_states.values().next().unwrap();
+        assert_eq!(completion.phase, vybe_runtime::event_loop::FuturePhase::Resolved);
+        let value = completion.value.as_ref().unwrap();
+        let (case, payload) = vybe_runtime::canon_value::result_parts_public(value);
+        assert_eq!(case, 1);
+        assert!(matches!(payload, Value::String(ref code) if code.as_ref() == "io"));
+        let ty = vybe_runtime::component::ValType::Result(None, Some(Box::new(
+            vybe_runtime::component::ValType::Variant(vec![("io".into(), None)]),
+        )));
+        let memory = vybe_runtime::shared_memory::SharedMemory::new(8);
+        vybe_runtime::canon_value::store(&memory, value, &ty, 0).unwrap();
+        assert_eq!(memory.read_array::<2>(0).unwrap(), [1, 0]);
+    }
+
+    #[test]
+    fn response_stdout_retains_request_until_delayed_stream_completion() {
+        use vybe_runtime::{Chunk, Op};
+        let first = build_ctx("GET", "/first", &[], &[]);
+        let second = build_ctx("GET", "/second", &[], &[]);
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        first.response.lock().unwrap().sender = Some(first_tx);
+        second.response.lock().unwrap().sender = Some(second_tx);
+        let mut vm = VM::new();
+        super::register_response_stdout(&mut vm);
+        let mut start = Chunk::new("response-sink-before-write");
+        start.memory_min_pages.push(1);
+        let new = start.add_import("canon", "stream.new");
+        let sink = start.add_import("wasi:cli/stdout", "write-via-stream");
+        let packed = start.i64_scratch();
+        start.emit_call(new, 0, 0);
+        start.emit_op_u16(Op::LOCAL_SET, packed, 0);
+        start.emit_op_u16(Op::LOCAL_GET, packed, 0);
+        start.emit_op(Op::I32_WRAP_I64, 0);
+        start.emit_call(sink, 1, 0);
+        start.emit_op(Op::DROP, 0);
+        start.emit_op_u16(Op::LOCAL_GET, packed, 0);
+        start.emit_i64_const(32, 0);
+        start.emit_op(Op::I64_SHR_U, 0);
+        start.emit_op(Op::I32_WRAP_I64, 0);
+        start.emit_op(Op::RETURN, 0);
+        let writer = {
+            let _request = vybe_platform_node::http::context::install_context(first);
+            vm.run(vec![start]).unwrap().as_i32()
+        };
+        assert_eq!(vm.event_loop.borrow().future_states.values().next().unwrap().phase,
+            vybe_runtime::event_loop::FuturePhase::Pending);
+        vm.memory.write_array(8, b"abc").unwrap();
+        let mut finish = Chunk::new("response-delayed-write");
+        let write = finish.add_import("canon", "stream.write");
+        let close = finish.add_import("canon", "stream.drop-writable");
+        finish.emit_i32_const(writer, 0);
+        finish.emit_i32_const(8, 0);
+        finish.emit_i32_const(3, 0);
+        finish.emit_call(write, 3, 0);
+        finish.emit_op(Op::DROP, 0);
+        finish.emit_i32_const(writer, 0);
+        finish.emit_call(close, 1, 0);
+        finish.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        finish.emit_op(Op::RETURN, 0);
+        let _request = vybe_platform_node::http::context::install_context(second);
+        vm.run(vec![finish]).unwrap();
+        let bytes: Vec<u8> = first_rx.try_iter().filter_map(|message| match message {
+            vybe_platform_node::http::ResponseMessage::Data(bytes) => Some(bytes),
+            _ => None,
+        }).flatten().collect();
+        assert_eq!(bytes, b"abc");
+        assert!(second_rx.try_recv().is_err());
+        let events = vm.event_loop.borrow();
+        let completion = events.future_states.values().next().unwrap();
+        assert_eq!(completion.phase, vybe_runtime::event_loop::FuturePhase::Resolved);
+        assert!(matches!(completion.value, Some(Value::Null)));
+    }
     fn compile_php(src: &str) -> Vec<vybe_runtime::Chunk> {
         let module = vybe_language_php::parse(src).expect("parse php");
         let profile = vybe_compiler::profile::parse_profile(vybe_language_php::profile_source())
@@ -676,16 +780,25 @@ mod tests {
             "wasi:cli/stdout",
             "write-via-stream",
             Box::new(move |host_ctx: &mut HostContext, args: &[Value]| {
-                let stream = args.first().cloned().unwrap_or(Value::Null);
-                let bytes = host_ctx.stream_drain(&stream);
-                if !bytes.is_empty() {
-                    stdout_out
-                        .lock()
-                        .expect("lock output")
-                        .push(String::from_utf8_lossy(&bytes).into_owned());
-                }
                 let (fut, fut_id) = host_ctx.create_future();
-                host_ctx.resolve_future(fut_id, Value::Null);
+                let output = Arc::clone(&stdout_out);
+                let mut received = Vec::new();
+                let result = args.first().ok_or("invalid stream").and_then(|stream| {
+                    host_ctx.consume_byte_stream(stream, fut_id, Box::new(move |bytes| {
+                        if let Some(bytes) = bytes {
+                            received.extend_from_slice(bytes);
+                        } else if !received.is_empty() {
+                            // Test capture decodes a complete write so a UTF-8
+                            // codepoint split across stream chunks stays intact.
+                            output.lock().expect("lock output")
+                                .push(String::from_utf8_lossy(&received).into_owned());
+                        }
+                        Ok(())
+                    }))
+                });
+                if result.is_err() {
+                    host_ctx.resolve_future(fut_id, super::stdout_completion_error());
+                }
                 fut
             }),
         );

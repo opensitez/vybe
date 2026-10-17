@@ -123,8 +123,23 @@ fn emit_reads_stamp(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
         class_slots::Dest::Stack,
         line,
     );
+    // Dynamic field lookup returns undefined for an absent stamp. Undefined
+    // is a non-null externref; it must not opt a reference into value copying.
+    let stamp = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_TEE, stamp, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_i32(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stamp, line);
+    let is_undefined = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(is_undefined, 1, line);
     chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_end(line);
+    // The predicate stays on the operand stack. Release the temporary before
+    // later getters/copy work: an object-valued stamp must not gain a new root.
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, stamp, line);
 }
 
 /// Copy the value in `slot`, if its declaration said assignment copies.
@@ -412,6 +427,9 @@ pub fn may_be_value_instance(expr: &vybe_ast::Expression) -> bool {
     match &expr.kind {
         // A literal is a number, string, bool or null — never an instance.
         ExprKind::Lit(_) => false,
+        // Canonical Wasm integer operations cannot dispatch a user operator.
+        // Their result is an integer or an i32 predicate, never a record.
+        ExprKind::Binary { op: BinOp::Integer(_, _), .. } => false,
         // Arithmetic and comparison yield primitives whatever the operands
         // were. `+` is excluded: it is also string concatenation, and some
         // languages route it through a user `__add__` that can return anything.

@@ -21,6 +21,8 @@ pub mod canon;
 pub mod class_normalize;
 pub mod datetime;
 pub mod line_index;
+pub mod word_local_transport;
+pub use word_local_transport::WordLocalTransport;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Module (top-level compilation unit)
@@ -789,6 +791,8 @@ pub enum StmtKind {
     /// `(table $id? min max? funcref)` — a reference-table declaration.
     /// Declaration order is the table index.
     TableDecl {
+        /// Reference element type, normalized like a Wasm ref-type operand.
+        element_type: Expression,
         /// Minimum element count.
         min_size: u64,
         /// Maximum element count; `None` = unbounded.
@@ -1782,6 +1786,20 @@ pub enum TypeBinding {
 pub struct TypeHint {
     spelling: String,
     pub binding: TypeBinding,
+    /// Declaration access semantics, independent of canonical type spelling.
+    /// None is unknown, not permission to reorder or coalesce accesses.
+    pub access: Option<StorageAccess>,
+    /// Certified boxed numeric word domain, not physical local storage.
+    /// Consumers must additionally prove initialization, writes and non-escape.
+    pub word_value: Option<word_local_transport::WordInterpretation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageAccess {
+    Unknown,
+    Ordinary,
+    Volatile,
+    Atomic,
 }
 
 impl TypeHint {
@@ -1790,6 +1808,8 @@ impl TypeHint {
         TypeHint {
             spelling: spelling.into(),
             binding: TypeBinding::Converting,
+            access: None,
+            word_value: None,
         }
     }
 
@@ -1799,6 +1819,8 @@ impl TypeHint {
         TypeHint {
             spelling: spelling.into(),
             binding: TypeBinding::Descriptive,
+            access: None,
+            word_value: None,
         }
     }
 
@@ -1809,6 +1831,8 @@ impl TypeHint {
         TypeHint {
             spelling: spelling.into(),
             binding: TypeBinding::Checked,
+            access: None,
+            word_value: None,
         }
     }
 
@@ -1823,11 +1847,13 @@ impl TypeHint {
     /// whether the declaration converts, so the binding must survive.
     pub fn set_spelling(&mut self, spelling: impl Into<String>) {
         self.spelling = spelling.into();
+        self.word_value = None;
     }
 
     /// Append to the spelling, keeping the binding — the `()` array suffix.
     pub fn push_str(&mut self, suffix: &str) {
         self.spelling.push_str(suffix);
+        self.word_value = None;
     }
 
     /// Does binding a value to this declaration convert it?
@@ -4181,8 +4207,21 @@ pub enum Implementation {
     Abstract,
 }
 
+/// Linkage for frontend-generated library declarations. Definitions compile
+/// normally. Library identities must identify immutable declaration contents;
+/// the compiler service may reference a matching installed definition while
+/// retaining its complete AST for type/member analysis.
+#[derive(Debug, Clone, Default)]
+pub enum ClassLinkage {
+    #[default]
+    Definition,
+    Library { identity: String },
+    LibraryReference { identity: String },
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ClassModifiers {
+    pub linkage: ClassLinkage,
     pub visibility: Visibility,
     pub is_partial: bool,
     pub is_abstract: bool,
@@ -4537,6 +4576,32 @@ pub enum MethodReceiver {
     BindOnAccess,
 }
 
+/// Order for a program's registered termination callbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownOrder {
+    Registration,
+    ReverseRegistration,
+}
+
+/// Program termination policy. Callback entries are normalized as
+/// `[callable, argument, ...]` in the declared registry, independent of source
+/// language spelling. Languages can choose registration order or stack order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShutdownPolicy {
+    Disabled,
+    Callbacks { registry: String, order: ShutdownOrder },
+}
+
+/// The invocation contract for a value known to have a callable type.
+/// This describes source semantics, independently of its runtime representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableInvocation {
+    /// Invoke one callable, preserving its receiver and rest-argument contract.
+    Single,
+    /// Invoke the handlers of a multicast delegate in order.
+    Multicast,
+}
+
 /// A statement of policy. Every field is an `Option`: `None` means "not stated
 /// here", so the same type serves as a module's declared defaults and as an
 /// in-source delta that changes one thing and leaves the rest alone.
@@ -4589,6 +4654,15 @@ pub struct Directives {
     /// `statements.rs`) that recognised the SPELLINGS `exit`/`die` directly.
     pub exit_argument: Option<ExitArgument>,
 
+    /// Run registered shutdown callbacks at program termination. Module-only
+    /// policy: absent means disabled; included/evaluated units defer to their
+    /// enclosing program's lifecycle. PHP declares this on its module.
+    pub shutdown_callbacks: Option<ShutdownPolicy>,
+
+    /// Flush remaining output buffers at program termination. Module-only
+    /// policy, disabled unless the source language explicitly requests it.
+    pub flush_output_buffers: Option<bool>,
+
     /// Can a SPREAD argument carry NAMES as well as positions?
     ///
     /// Every language's `f(...xs)` unpacks positionally, which is the `None`
@@ -4631,6 +4705,17 @@ pub struct Directives {
     /// `None` preserves live dispatch; `Some(false)` permits a resolved,
     /// non-variadic method call to omit runtime callable-shape probes.
     pub method_bindings_live: Option<bool>,
+
+    /// Whether unconditional source-declared function bindings can be replaced.
+    /// None preserves live lookup. Some(false) permits a direct native call
+    /// only with an independently completed, declaration-owned entry receipt.
+    /// This says nothing about mutable function variables or foreign callables.
+    pub declared_function_bindings_live: Option<bool>,
+
+    /// Invocation semantics for statically callable values. An unstated policy
+    /// preserves legacy dispatch; it does not assume every function is a
+    /// multicast delegate. Nested directive frames inherit this policy.
+    pub callable_invocation: Option<CallableInvocation>,
 
     /// Declared properties and methods have independent source namespaces.
     pub separate_property_method_namespace: Option<bool>,
@@ -4878,6 +4963,51 @@ pub struct Directives {
     /// target.
     pub equality_fallback: Option<EqualityFallback>,
 
+    /// Whether relational comparison values are boxed Booleans rather than
+    /// integer predicates. Conditions still consume a raw Wasm i32. None
+    /// inherits the enclosing region's policy.
+    pub comparison_results_are_boolean: Option<bool>,
+
+    /// Whether `/` selects truncating integer division when both operands
+    /// are proven integral. `None` inherits; the default is real division.
+    /// This is a region's operator policy, not a language/profile identity.
+    pub integer_division_on_slash: Option<bool>,
+
+    /// Whether XOR on operands not proven integral materializes a Boolean.
+    /// Integral operands retain bitwise XOR. `None` inherits, default false.
+    pub xor_is_logical_for_non_integers: Option<bool>,
+
+    /// Whether logical and/or/not select bitwise operations for proven
+    /// integer operands. None inherits; the default is false.
+    pub logical_ops_bitwise_for_integers: Option<bool>,
+
+    /// Whether a cast to a declared integer type truncates toward zero.
+    /// Type names remain declaration facts. `None` inherits, default false.
+    pub integer_cast_truncates: Option<bool>,
+
+    /// Whether concatenation converts both operands through their declared
+    /// string-coercion slots before joining. `None` inherits, default false.
+    /// The slot target, not this policy, determines the conversion semantics.
+    pub concat_stringifies_operands: Option<bool>,
+
+    /// Whether unresolved arithmetic operands use runtime Number/BigInt
+    /// dispatch rather than direct numeric lowering. Applies to ordinary and
+    /// compound operators and runtime protocol decisions. `None` inherits;
+    /// the default is false. Static operand facts still select typed opcodes.
+    pub dynamic_numeric_dispatch: Option<bool>,
+    /// Apply ECMAScript ToPrimitive/ToNumber operator coercion. None inherits;
+    /// the default is false, independently of operator dispatch strategy.
+    pub ecma_operator_coercion: Option<bool>,
+
+    /// Addition concatenates when either operand is a string. Conversion and
+    /// user-defined operator behavior remain governed by coercion and slots.
+    /// None inherits; the default is false. Proven numbers still add directly.
+    pub add_concatenates_strings: Option<bool>,
+
+    /// Relational comparisons use the declared string comparison slot rather
+    /// than runtime rich-comparison discovery. None inherits, default false.
+    pub string_aware_relational: Option<bool>,
+
     /// How `switch`/`case` labels compare against the switch subject.
     ///
     /// Most languages use their ordinary equality operator. JavaScript is the
@@ -4885,6 +5015,21 @@ pub struct Directives {
     /// (`===`), not `==`. This is a statement-level equality policy, so it
     /// lives beside [`Self::equality_fallback`] instead of in a profile flag.
     pub switch_case_equality: Option<SwitchCaseEquality>,
+
+    /// Value-ABI transport for statically declared W64 integer operations and
+    /// casts in this region. Width and signedness still come from their types;
+    /// this policy neither infers a wide type nor changes arithmetic semantics.
+    ///
+    /// Raw Wasm i64 instructions, pointer addresses, and explicit conversions
+    /// to floating-point remain outside this policy. `None` inherits, with
+    /// [`WideIntegerTransport::Number`] as the compatibility fallback.
+    pub wide_integer_transport: Option<WideIntegerTransport>,
+
+    /// Permit producer-proven W32 local transport in this region. This is an
+    /// analysis opt-in, not a raw-local type assertion. Unknown producers,
+    /// escaped storage and incompatible joins retain boxed storage. None
+    /// inherits; the compatibility default is boxed for every language.
+    pub word_local_transport: Option<WordLocalTransport>,
 
     /// What a shift or rotate count outside `[0, width)` does in this region.
     ///
@@ -5167,6 +5312,15 @@ pub enum CaseAlphabet {
 }
 
 impl Directives {
+    /// Effective W64 value transport; unstated policy preserves Number behavior.
+    pub fn wide_integer_transport(&self) -> WideIntegerTransport {
+        self.wide_integer_transport.unwrap_or_default()
+    }
+
+    pub fn word_local_transport(&self) -> WordLocalTransport {
+        self.word_local_transport.unwrap_or_default()
+    }
+
     /// Whether a LOCAL/PARAMETER reference folds here, and over which alphabet.
     ///
     /// One accessor rather than two `Option` reads, because the defaults have
@@ -5212,6 +5366,15 @@ impl Directives {
     /// Apply `other` on top of `self`: a field `other` states wins, a field it
     /// leaves `None` is inherited. This is the only way directives combine.
     pub fn overlay(&mut self, other: &Directives) {
+        if other.comparison_results_are_boolean.is_some() {
+            self.comparison_results_are_boolean = other.comparison_results_are_boolean;
+        }
+        if other.shutdown_callbacks.is_some() {
+            self.shutdown_callbacks = other.shutdown_callbacks.clone();
+        }
+        if other.flush_output_buffers.is_some() {
+            self.flush_output_buffers = other.flush_output_buffers;
+        }
         if other.array_storage.is_some() {
             self.array_storage = other.array_storage;
         }
@@ -5239,8 +5402,41 @@ impl Directives {
         if other.equality_fallback.is_some() {
             self.equality_fallback = other.equality_fallback;
         }
+        if other.integer_division_on_slash.is_some() {
+            self.integer_division_on_slash = other.integer_division_on_slash;
+        }
+        if other.xor_is_logical_for_non_integers.is_some() {
+            self.xor_is_logical_for_non_integers = other.xor_is_logical_for_non_integers;
+        }
+        if other.logical_ops_bitwise_for_integers.is_some() {
+            self.logical_ops_bitwise_for_integers = other.logical_ops_bitwise_for_integers;
+        }
+        if other.integer_cast_truncates.is_some() {
+            self.integer_cast_truncates = other.integer_cast_truncates;
+        }
+        if other.concat_stringifies_operands.is_some() {
+            self.concat_stringifies_operands = other.concat_stringifies_operands;
+        }
+        if other.dynamic_numeric_dispatch.is_some() {
+            self.dynamic_numeric_dispatch = other.dynamic_numeric_dispatch;
+        }
+        if other.ecma_operator_coercion.is_some() {
+            self.ecma_operator_coercion = other.ecma_operator_coercion;
+        }
+        if other.add_concatenates_strings.is_some() {
+            self.add_concatenates_strings = other.add_concatenates_strings;
+        }
+        if other.string_aware_relational.is_some() {
+            self.string_aware_relational = other.string_aware_relational;
+        }
         if other.switch_case_equality.is_some() {
             self.switch_case_equality = other.switch_case_equality;
+        }
+        if other.wide_integer_transport.is_some() {
+            self.wide_integer_transport = other.wide_integer_transport;
+        }
+        if other.word_local_transport.is_some() {
+            self.word_local_transport = other.word_local_transport;
         }
         if other.receiver_binding.is_some() {
             self.receiver_binding = other.receiver_binding;
@@ -5273,6 +5469,12 @@ impl Directives {
         }
         if other.method_bindings_live.is_some() {
             self.method_bindings_live = other.method_bindings_live;
+        }
+        if other.declared_function_bindings_live.is_some() {
+            self.declared_function_bindings_live = other.declared_function_bindings_live;
+        }
+        if other.callable_invocation.is_some() {
+            self.callable_invocation = other.callable_invocation;
         }
         if other.separate_property_method_namespace.is_some() {
             self.separate_property_method_namespace = other.separate_property_method_namespace;
@@ -5355,6 +5557,20 @@ pub enum SwitchCaseEquality {
     Eq,
     /// Use strict equality (`===` semantics).
     StrictEq,
+}
+
+/// How statically declared W64 integers cross a region's value ABI, not how
+/// their width, signedness, overflow or shift behavior is selected. See
+/// [`Directives::wide_integer_transport()`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WideIntegerTransport {
+    /// Existing number-backed transport, which need not preserve arbitrary
+    /// 64-bit integer precision. The fallback for an unstated policy.
+    #[default]
+    Number,
+    /// Preserve all 64 integer bits using an exact value carrier at ABI joins,
+    /// bindings and calls. This does not turn raw Wasm i64s into boxed values.
+    Exact,
 }
 
 /// What a shift or rotate count outside `[0, width)` does — see
@@ -5574,12 +5790,26 @@ impl Expression {
     /// each new `ExprKind` variant had to be added to every copy. Passes match
     /// on the shapes they care about inside `f` and ignore the rest.
     ///
-    /// Coverage mirrors `expr_has_yield` — the best-exercised container map in
-    /// the tree. Contract: a NEW container variant must be added here (and
-    /// there); statement-carrying bodies (`Lambda`, `FunctionExpr`,
-    /// `ClassExpr`) are NOT descended into — statement slots are the driving
-    /// pass's job, exactly as they are for every existing pass.
+    /// Coverage follows the expression container map and crosses lambda and
+    /// function-expression statement bodies through the statement visitor.
+    /// Add new container variants here as well as to the read-only visitor.
+    /// Scope-local passes can use `walk_exprs_mut_pruned` to stop at nested
+    /// function boundaries without changing this visitor's coverage.
+    /// Visit all expression slots with the existing post-order semantics.
     pub fn walk_exprs_mut(&mut self, f: &mut dyn FnMut(&mut Expression)) {
+        self.walk_exprs_mut_impl::<false>(f, &mut |_| true);
+    }
+
+    /// Post-order visitor with a pre-order descent decision. When `descend`
+    /// returns false, visit that node once without traversing its children.
+    /// This lets scope-aware passes preserve nested function bodies without
+    /// cloning them. The existing `walk_exprs_mut` always descends.
+    pub fn walk_exprs_mut_pruned(&mut self, f: &mut dyn FnMut(&mut Expression), descend: &mut dyn FnMut(&Expression) -> bool) {
+        self.walk_exprs_mut_impl::<true>(f, descend);
+    }
+
+    fn walk_exprs_mut_impl<const PRUNE: bool>(&mut self, f: &mut dyn FnMut(&mut Expression), descend: &mut dyn FnMut(&Expression) -> bool) {
+        if PRUNE && !descend(self) { f(self); return; }
         match &mut self.kind {
             ExprKind::Unary { expr, .. }
             | ExprKind::IsType { expr, .. }
@@ -5590,25 +5820,25 @@ impl Expression {
             | ExprKind::YieldFrom(expr)
             | ExprKind::RefLoad(expr)
             | ExprKind::Void(expr)
-            | ExprKind::Delete(expr) => expr.walk_exprs_mut(f),
+            | ExprKind::Delete(expr) => expr.walk_exprs_mut_impl::<PRUNE>(f, descend),
             ExprKind::Yield(inner) => {
                 if let Some(expr) = inner {
-                    expr.walk_exprs_mut(f);
+                    expr.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::Async(op) => {
                 for child in op.children_mut() {
-                    child.walk_exprs_mut(f);
+                    child.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::Chan(op) => {
                 for child in op.children_mut() {
-                    child.walk_exprs_mut(f);
+                    child.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::Atomic(op) => {
                 for child in op.children_mut() {
-                    child.walk_exprs_mut(f);
+                    child.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::Binary { left, right, .. }
@@ -5626,66 +5856,72 @@ impl Expression {
                 end: right,
                 ..
             } => {
-                left.walk_exprs_mut(f);
-                right.walk_exprs_mut(f);
+                left.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                right.walk_exprs_mut_impl::<PRUNE>(f, descend);
             }
             ExprKind::StaticAccess { class, member } => {
-                class.walk_exprs_mut(f);
-                member.walk_exprs_mut(f);
+                class.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                member.walk_exprs_mut_impl::<PRUNE>(f, descend);
             }
             ExprKind::Ternary { cond, then, else_ } => {
-                cond.walk_exprs_mut(f);
-                then.walk_exprs_mut(f);
-                else_.walk_exprs_mut(f);
+                cond.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                then.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                else_.walk_exprs_mut_impl::<PRUNE>(f, descend);
             }
-            ExprKind::Member { object, .. } => object.walk_exprs_mut(f),
+            ExprKind::Member { object, .. } => object.walk_exprs_mut_impl::<PRUNE>(f, descend),
             ExprKind::CallableRef {
                 target,
                 receiver,
                 adapter,
                 ..
             } => {
-                target.walk_exprs_mut(f);
+                target.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 if let Some(receiver) = receiver {
-                    receiver.walk_exprs_mut(f);
+                    receiver.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
                 if let Some(adapter) = adapter {
                     match adapter {
-                        CallableAdapter::Expr { body, .. } => body.walk_exprs_mut(f),
+                        CallableAdapter::Expr { body, .. } => body.walk_exprs_mut_impl::<PRUNE>(f, descend),
                     }
                 }
             }
             ExprKind::Index { object, index, .. } => {
-                object.walk_exprs_mut(f);
-                index.walk_exprs_mut(f);
+                object.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                index.walk_exprs_mut_impl::<PRUNE>(f, descend);
             }
             ExprKind::Call { callee, args, .. } => {
-                callee.walk_exprs_mut(f);
+                callee.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 for arg in args {
-                    arg.value.walk_exprs_mut(f);
+                    arg.value.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::New { class, args } => {
-                class.walk_exprs_mut(f);
+                class.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 for arg in args {
-                    arg.value.walk_exprs_mut(f);
+                    arg.value.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::Proxy { target, handler } => {
-                target.walk_exprs_mut(f);
-                handler.walk_exprs_mut(f);
+                target.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                handler.walk_exprs_mut_impl::<PRUNE>(f, descend);
             }
             ExprKind::SuperCall { args, .. } => {
                 for arg in args {
-                    arg.value.walk_exprs_mut(f);
+                    arg.value.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                }
+            }
+            ExprKind::Map(entries) => {
+                for (key, value) in entries {
+                    key.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                    value.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::Array(items) => {
                 for item in items {
                     if let Some(key) = &mut item.key {
-                        key.walk_exprs_mut(f);
+                        key.walk_exprs_mut_impl::<PRUNE>(f, descend);
                     }
-                    item.value.walk_exprs_mut(f);
+                    item.value.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::Tuple(items)
@@ -5695,12 +5931,12 @@ impl Expression {
                 iterables: items, ..
             } => {
                 for item in items {
-                    item.walk_exprs_mut(f);
+                    item.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::NamedTuple { fields, .. } => {
                 for (_, value) in fields {
-                    value.walk_exprs_mut(f);
+                    value.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::Object(props) => {
@@ -5708,10 +5944,10 @@ impl Expression {
                     match prop {
                         ObjectProperty::KeyValue { key, value }
                         | ObjectProperty::Computed { key, value } => {
-                            key.walk_exprs_mut(f);
-                            value.walk_exprs_mut(f);
+                            key.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                            value.walk_exprs_mut_impl::<PRUNE>(f, descend);
                         }
-                        ObjectProperty::Spread(expr) => expr.walk_exprs_mut(f),
+                        ObjectProperty::Spread(expr) => expr.walk_exprs_mut_impl::<PRUNE>(f, descend),
                         _ => {}
                     }
                 }
@@ -5720,21 +5956,21 @@ impl Expression {
                 for part in parts {
                     match part {
                         InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
-                            expr.walk_exprs_mut(f)
+                            expr.walk_exprs_mut_impl::<PRUNE>(f, descend)
                         }
                         InterpolPart::Text(_) => {}
                     }
                 }
             }
             ExprKind::Match { subject, arms } => {
-                subject.walk_exprs_mut(f);
+                subject.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 for arm in arms {
                     if let Some(conditions) = &mut arm.conditions {
                         for c in conditions {
-                            c.walk_exprs_mut(f);
+                            c.walk_exprs_mut_impl::<PRUNE>(f, descend);
                         }
                     }
-                    arm.body.walk_exprs_mut(f);
+                    arm.body.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 }
             }
             ExprKind::Comprehension {
@@ -5742,19 +5978,19 @@ impl Expression {
                 generators,
                 ..
             } => {
-                element.walk_exprs_mut(f);
+                element.walk_exprs_mut_impl::<PRUNE>(f, descend);
                 for g in generators {
-                    g.target.walk_exprs_mut(f);
-                    g.iter.walk_exprs_mut(f);
+                    g.target.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                    g.iter.walk_exprs_mut_impl::<PRUNE>(f, descend);
                     for c in &mut g.conditions {
-                        c.walk_exprs_mut(f);
+                        c.walk_exprs_mut_impl::<PRUNE>(f, descend);
                     }
                 }
             }
             ExprKind::Slice { lower, upper, step } => {
                 for slot in [lower, upper, step] {
                     if let Some(expr) = slot {
-                        expr.walk_exprs_mut(f);
+                        expr.walk_exprs_mut_impl::<PRUNE>(f, descend);
                     }
                 }
             }
@@ -5763,14 +5999,14 @@ impl Expression {
             // reach nested bodies: the shapes being normalized appear inside
             // `async () => …` and function expressions.
             ExprKind::Lambda { body, .. } => match body {
-                LambdaBody::Expr(expr) => expr.walk_exprs_mut(f),
+                LambdaBody::Expr(expr) => expr.walk_exprs_mut_impl::<PRUNE>(f, descend),
                 LambdaBody::Block(stmts) => {
                     for stmt in stmts {
-                        stmt.walk_exprs_mut(f);
+                        stmt.walk_exprs_mut_impl::<PRUNE>(f, descend);
                     }
                 }
             },
-            ExprKind::FunctionExpr(decl) => decl.walk_exprs_mut(f),
+            ExprKind::FunctionExpr(decl) => decl.walk_exprs_mut_impl::<PRUNE>(f, descend),
             _ => {}
         }
         f(self);
@@ -5784,21 +6020,451 @@ impl Statement {
     /// `statement_has_yield` plus the declaration bodies it deliberately
     /// skips. Together the pair make a normalization pass one callback,
     /// instead of a hand-rolled recursion per pass per walker.
+    /// Visit all expression slots with the existing post-order semantics.
     pub fn walk_exprs_mut(&mut self, f: &mut dyn FnMut(&mut Expression)) {
-        fn body(stmts: &mut [Statement], f: &mut dyn FnMut(&mut Expression)) {
+        self.walk_exprs_mut_impl::<false>(f, &mut |_| true);
+    }
+
+    pub fn walk_exprs_mut_pruned(&mut self, f: &mut dyn FnMut(&mut Expression), descend: &mut dyn FnMut(&Expression) -> bool) {
+        self.walk_exprs_mut_impl::<true>(f, descend);
+    }
+
+    fn walk_exprs_mut_impl<const PRUNE: bool>(&mut self, f: &mut dyn FnMut(&mut Expression), descend: &mut dyn FnMut(&Expression) -> bool) {
+        fn body<const PRUNE: bool>(stmts: &mut [Statement], f: &mut dyn FnMut(&mut Expression), descend: &mut dyn FnMut(&Expression) -> bool) {
             for stmt in stmts {
-                stmt.walk_exprs_mut(f);
+                stmt.walk_exprs_mut_impl::<PRUNE>(f, descend);
             }
         }
         match &mut self.kind {
-            StmtKind::Expr(expr) => expr.walk_exprs_mut(f),
-            StmtKind::Block(stmts) => body(stmts, f),
+            StmtKind::Expr(expr) => expr.walk_exprs_mut_impl::<PRUNE>(f, descend),
+            StmtKind::Block(stmts) => body::<PRUNE>(stmts, f, descend),
             StmtKind::Select { arms, default } => {
                 for arm in arms {
                     for child in arm.comm.children_mut() {
-                        child.walk_exprs_mut(f);
+                        child.walk_exprs_mut_impl::<PRUNE>(f, descend);
                     }
-                    body(&mut arm.body, f);
+                    body::<PRUNE>(&mut arm.body, f, descend);
+                }
+                if let Some(default) = default {
+                    body::<PRUNE>(default, f, descend);
+                }
+            }
+            StmtKind::FunctionDecl {
+                body: b, params, ..
+            } => {
+                for param in params {
+                    if let Some(default) = &mut param.default {
+                        default.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                    }
+                }
+                body::<PRUNE>(b, f, descend);
+            }
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Field { init, .. } => {
+                            if let Some(expr) = init {
+                                expr.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                            }
+                        }
+                        ClassMember::Method(decl) | ClassMember::NestedType(decl) => {
+                            decl.walk_exprs_mut_impl::<PRUNE>(f, descend)
+                        }
+                        ClassMember::Constructor { body: b, .. } => body::<PRUNE>(b, f, descend),
+                        ClassMember::Property { getter, setter, .. } => {
+                            if let Some(stmts) = getter {
+                                body::<PRUNE>(stmts, f, descend);
+                            }
+                            if let Some(prop_setter) = setter {
+                                body::<PRUNE>(&mut prop_setter.body, f, descend);
+                            }
+                        }
+                        ClassMember::Const { value, .. } => value.walk_exprs_mut_impl::<PRUNE>(f, descend),
+                        _ => {}
+                    }
+                }
+            }
+            // InterfaceDecl members are SIGNATURES — no bodies to walk.
+            StmtKind::NamespaceDecl { body: b, .. } => body::<PRUNE>(b, f, descend),
+            StmtKind::Labeled { body: b, .. } => b.walk_exprs_mut_impl::<PRUNE>(f, descend),
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        init.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                    }
+                }
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                cond.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                body::<PRUNE>(then_body, f, descend);
+                for (c, b) in elifs {
+                    c.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                    body::<PRUNE>(b, f, descend);
+                }
+                if let Some(b) = else_body {
+                    body::<PRUNE>(b, f, descend);
+                }
+            }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body: b,
+            } => {
+                if let Some(stmt) = init {
+                    stmt.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                }
+                for slot in [cond, update] {
+                    if let Some(expr) = slot {
+                        expr.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                    }
+                }
+                body::<PRUNE>(b, f, descend);
+            }
+            StmtKind::ForIn {
+                iter,
+                body: b,
+                else_body,
+                ..
+            } => {
+                iter.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                body::<PRUNE>(b, f, descend);
+                if let Some(eb) = else_body {
+                    body::<PRUNE>(eb, f, descend);
+                }
+            }
+            StmtKind::While {
+                cond,
+                body: b,
+                else_body,
+            } => {
+                cond.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                body::<PRUNE>(b, f, descend);
+                if let Some(eb) = else_body {
+                    body::<PRUNE>(eb, f, descend);
+                }
+            }
+            StmtKind::DoWhile { body: b, cond, .. } => {
+                body::<PRUNE>(b, f, descend);
+                cond.walk_exprs_mut_impl::<PRUNE>(f, descend);
+            }
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
+                expr.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                for case in cases {
+                    body::<PRUNE>(&mut case.body, f, descend);
+                }
+                if let Some(b) = default {
+                    body::<PRUNE>(b, f, descend);
+                }
+            }
+            StmtKind::Try {
+                body: b,
+                catches,
+                else_body,
+                finally,
+            } => {
+                body::<PRUNE>(b, f, descend);
+                for catch in catches {
+                    if let Some(when) = &mut catch.when_clause {
+                        when.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                    }
+                    body::<PRUNE>(&mut catch.body, f, descend);
+                }
+                for slot in [else_body, finally] {
+                    if let Some(stmts) = slot {
+                        body::<PRUNE>(stmts, f, descend);
+                    }
+                }
+            }
+            StmtKind::With { items, body: b, .. } => {
+                for item in items {
+                    item.expr.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                }
+                body::<PRUNE>(b, f, descend);
+            }
+            StmtKind::Using {
+                resource, body: b, ..
+            } => {
+                resource.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                body::<PRUNE>(b, f, descend);
+            }
+            StmtKind::Lock { expr, body: b } => {
+                expr.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                body::<PRUNE>(b, f, descend);
+            }
+            StmtKind::Return(expr) | StmtKind::Exit { status: expr } => {
+                if let Some(expr) = expr {
+                    expr.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                }
+            }
+            StmtKind::Throw { expr, cause } => {
+                for slot in [expr, cause] {
+                    if let Some(expr) = slot {
+                        expr.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                    }
+                }
+            }
+            StmtKind::Assign { targets, value, .. } => {
+                for target in targets {
+                    target.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                }
+                value.walk_exprs_mut_impl::<PRUNE>(f, descend);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                target.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                value.walk_exprs_mut_impl::<PRUNE>(f, descend);
+            }
+            StmtKind::RaiseEvent { args, .. } | StmtKind::Delete(args) | StmtKind::Echo(args) => {
+                for arg in args {
+                    arg.walk_exprs_mut_impl::<PRUNE>(f, descend);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Expression {
+    /// Read-only post-order visitor with the same coverage as
+    /// [`Expression::walk_exprs_mut`]. Analyses can inspect nested expressions
+    /// without cloning the tree merely to obtain mutable access.
+    pub fn walk_exprs(&self, f: &mut dyn FnMut(&Expression)) {
+        match &self.kind {
+            ExprKind::Unary { expr, .. }
+            | ExprKind::IsType { expr, .. }
+            | ExprKind::Cast { expr, .. }
+            | ExprKind::TypeOf(expr)
+            | ExprKind::Spread(expr)
+            | ExprKind::Await(expr)
+            | ExprKind::YieldFrom(expr)
+            | ExprKind::RefLoad(expr)
+            | ExprKind::Void(expr)
+            | ExprKind::Delete(expr) => expr.walk_exprs(f),
+            ExprKind::Yield(inner) => {
+                if let Some(expr) = inner {
+                    expr.walk_exprs(f);
+                }
+            }
+            ExprKind::Async(op) => {
+                for child in op.children() {
+                    child.walk_exprs(f);
+                }
+            }
+            ExprKind::Chan(op) => {
+                for child in op.children() {
+                    child.walk_exprs(f);
+                }
+            }
+            ExprKind::Atomic(op) => {
+                for child in op.children() {
+                    child.walk_exprs(f);
+                }
+            }
+            ExprKind::Binary { left, right, .. }
+            | ExprKind::NullCoalesce { left, right }
+            | ExprKind::Assign {
+                target: left,
+                value: right,
+            }
+            | ExprKind::Walrus {
+                target: left,
+                value: right,
+            }
+            | ExprKind::Range {
+                start: left,
+                end: right,
+                ..
+            } => {
+                left.walk_exprs(f);
+                right.walk_exprs(f);
+            }
+            ExprKind::StaticAccess { class, member } => {
+                class.walk_exprs(f);
+                member.walk_exprs(f);
+            }
+            ExprKind::Ternary { cond, then, else_ } => {
+                cond.walk_exprs(f);
+                then.walk_exprs(f);
+                else_.walk_exprs(f);
+            }
+            ExprKind::Member { object, .. } => object.walk_exprs(f),
+            ExprKind::CallableRef {
+                target,
+                receiver,
+                adapter,
+                ..
+            } => {
+                target.walk_exprs(f);
+                if let Some(receiver) = receiver {
+                    receiver.walk_exprs(f);
+                }
+                if let Some(adapter) = adapter {
+                    match adapter {
+                        CallableAdapter::Expr { body, .. } => body.walk_exprs(f),
+                    }
+                }
+            }
+            ExprKind::Index { object, index, .. } => {
+                object.walk_exprs(f);
+                index.walk_exprs(f);
+            }
+            ExprKind::Call { callee, args, .. } => {
+                callee.walk_exprs(f);
+                for arg in args {
+                    arg.value.walk_exprs(f);
+                }
+            }
+            ExprKind::New { class, args } => {
+                class.walk_exprs(f);
+                for arg in args {
+                    arg.value.walk_exprs(f);
+                }
+            }
+            ExprKind::Proxy { target, handler } => {
+                target.walk_exprs(f);
+                handler.walk_exprs(f);
+            }
+            ExprKind::SuperCall { args, .. } => {
+                for arg in args {
+                    arg.value.walk_exprs(f);
+                }
+            }
+            ExprKind::Map(entries) => {
+                for (key, value) in entries {
+                    key.walk_exprs(f);
+                    value.walk_exprs(f);
+                }
+            }
+            ExprKind::Array(items) => {
+                for item in items {
+                    if let Some(key) = &item.key {
+                        key.walk_exprs(f);
+                    }
+                    item.value.walk_exprs(f);
+                }
+            }
+            ExprKind::Tuple(items)
+            | ExprKind::Set(items)
+            | ExprKind::Sequence(items)
+            | ExprKind::Zip {
+                iterables: items, ..
+            } => {
+                for item in items {
+                    item.walk_exprs(f);
+                }
+            }
+            ExprKind::NamedTuple { fields, .. } => {
+                for (_, value) in fields {
+                    value.walk_exprs(f);
+                }
+            }
+            ExprKind::Object(props) => {
+                for prop in props {
+                    match prop {
+                        ObjectProperty::KeyValue { key, value }
+                        | ObjectProperty::Computed { key, value } => {
+                            key.walk_exprs(f);
+                            value.walk_exprs(f);
+                        }
+                        ObjectProperty::Spread(expr) => expr.walk_exprs(f),
+                        _ => {}
+                    }
+                }
+            }
+            ExprKind::Interpolation(parts) => {
+                for part in parts {
+                    match part {
+                        InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                            expr.walk_exprs(f)
+                        }
+                        InterpolPart::Text(_) => {}
+                    }
+                }
+            }
+            ExprKind::Match { subject, arms } => {
+                subject.walk_exprs(f);
+                for arm in arms {
+                    if let Some(conditions) = &arm.conditions {
+                        for c in conditions {
+                            c.walk_exprs(f);
+                        }
+                    }
+                    arm.body.walk_exprs(f);
+                }
+            }
+            ExprKind::Comprehension {
+                element,
+                generators,
+                ..
+            } => {
+                element.walk_exprs(f);
+                for g in generators {
+                    g.target.walk_exprs(f);
+                    g.iter.walk_exprs(f);
+                    for c in &g.conditions {
+                        c.walk_exprs(f);
+                    }
+                }
+            }
+            ExprKind::Slice { lower, upper, step } => {
+                for slot in [lower, upper, step] {
+                    if let Some(expr) = slot {
+                        expr.walk_exprs(f);
+                    }
+                }
+            }
+            // Unlike the yield traversals (which stop at function boundaries
+            // because yield SCOPES to its function), a analysis pass must
+            // reach nested bodies: the shapes being normalized appear inside
+            // `async () => …` and function expressions.
+            ExprKind::Lambda { body, .. } => match body {
+                LambdaBody::Expr(expr) => expr.walk_exprs(f),
+                LambdaBody::Block(stmts) => {
+                    for stmt in stmts {
+                        stmt.walk_exprs(f);
+                    }
+                }
+            },
+            ExprKind::FunctionExpr(decl) => decl.walk_exprs(f),
+            _ => {}
+        }
+        f(self);
+    }
+}
+
+impl Statement {
+    /// Read-only statement visitor: visit every
+    /// expression slot in this statement, recursing through nested statement
+    /// bodies INCLUDING function and class declarations. Coverage mirrors
+    /// `statement_has_yield` plus the declaration bodies it deliberately
+    /// skips. Together the pair make a analysis pass one callback,
+    /// instead of a hand-rolled recursion per pass per walker.
+    pub fn walk_exprs(&self, f: &mut dyn FnMut(&Expression)) {
+        fn body(stmts: &[Statement], f: &mut dyn FnMut(&Expression)) {
+            for stmt in stmts {
+                stmt.walk_exprs(f);
+            }
+        }
+        match &self.kind {
+            StmtKind::Expr(expr) => expr.walk_exprs(f),
+            StmtKind::Block(stmts) => body(stmts, f),
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    for child in arm.comm.children() {
+                        child.walk_exprs(f);
+                    }
+                    body(&arm.body, f);
                 }
                 if let Some(default) = default {
                     body(default, f);
@@ -5808,8 +6474,8 @@ impl Statement {
                 body: b, params, ..
             } => {
                 for param in params {
-                    if let Some(default) = &mut param.default {
-                        default.walk_exprs_mut(f);
+                    if let Some(default) = &param.default {
+                        default.walk_exprs(f);
                     }
                 }
                 body(b, f);
@@ -5821,11 +6487,11 @@ impl Statement {
                     match member {
                         ClassMember::Field { init, .. } => {
                             if let Some(expr) = init {
-                                expr.walk_exprs_mut(f);
+                                expr.walk_exprs(f);
                             }
                         }
                         ClassMember::Method(decl) | ClassMember::NestedType(decl) => {
-                            decl.walk_exprs_mut(f)
+                            decl.walk_exprs(f)
                         }
                         ClassMember::Constructor { body: b, .. } => body(b, f),
                         ClassMember::Property { getter, setter, .. } => {
@@ -5833,21 +6499,21 @@ impl Statement {
                                 body(stmts, f);
                             }
                             if let Some(prop_setter) = setter {
-                                body(&mut prop_setter.body, f);
+                                body(&prop_setter.body, f);
                             }
                         }
-                        ClassMember::Const { value, .. } => value.walk_exprs_mut(f),
+                        ClassMember::Const { value, .. } => value.walk_exprs(f),
                         _ => {}
                     }
                 }
             }
             // InterfaceDecl members are SIGNATURES — no bodies to walk.
             StmtKind::NamespaceDecl { body: b, .. } => body(b, f),
-            StmtKind::Labeled { body: b, .. } => b.walk_exprs_mut(f),
+            StmtKind::Labeled { body: b, .. } => b.walk_exprs(f),
             StmtKind::VarDecl { declarations, .. } => {
                 for decl in declarations {
-                    if let Some(init) = &mut decl.init {
-                        init.walk_exprs_mut(f);
+                    if let Some(init) = &decl.init {
+                        init.walk_exprs(f);
                     }
                 }
             }
@@ -5857,10 +6523,10 @@ impl Statement {
                 elifs,
                 else_body,
             } => {
-                cond.walk_exprs_mut(f);
+                cond.walk_exprs(f);
                 body(then_body, f);
                 for (c, b) in elifs {
-                    c.walk_exprs_mut(f);
+                    c.walk_exprs(f);
                     body(b, f);
                 }
                 if let Some(b) = else_body {
@@ -5874,11 +6540,11 @@ impl Statement {
                 body: b,
             } => {
                 if let Some(stmt) = init {
-                    stmt.walk_exprs_mut(f);
+                    stmt.walk_exprs(f);
                 }
                 for slot in [cond, update] {
                     if let Some(expr) = slot {
-                        expr.walk_exprs_mut(f);
+                        expr.walk_exprs(f);
                     }
                 }
                 body(b, f);
@@ -5889,7 +6555,7 @@ impl Statement {
                 else_body,
                 ..
             } => {
-                iter.walk_exprs_mut(f);
+                iter.walk_exprs(f);
                 body(b, f);
                 if let Some(eb) = else_body {
                     body(eb, f);
@@ -5900,7 +6566,7 @@ impl Statement {
                 body: b,
                 else_body,
             } => {
-                cond.walk_exprs_mut(f);
+                cond.walk_exprs(f);
                 body(b, f);
                 if let Some(eb) = else_body {
                     body(eb, f);
@@ -5908,16 +6574,16 @@ impl Statement {
             }
             StmtKind::DoWhile { body: b, cond, .. } => {
                 body(b, f);
-                cond.walk_exprs_mut(f);
+                cond.walk_exprs(f);
             }
             StmtKind::Switch {
                 expr,
                 cases,
                 default,
             } => {
-                expr.walk_exprs_mut(f);
+                expr.walk_exprs(f);
                 for case in cases {
-                    body(&mut case.body, f);
+                    body(&case.body, f);
                 }
                 if let Some(b) = default {
                     body(b, f);
@@ -5931,10 +6597,10 @@ impl Statement {
             } => {
                 body(b, f);
                 for catch in catches {
-                    if let Some(when) = &mut catch.when_clause {
-                        when.walk_exprs_mut(f);
+                    if let Some(when) = &catch.when_clause {
+                        when.walk_exprs(f);
                     }
-                    body(&mut catch.body, f);
+                    body(&catch.body, f);
                 }
                 for slot in [else_body, finally] {
                     if let Some(stmts) = slot {
@@ -5944,45 +6610,45 @@ impl Statement {
             }
             StmtKind::With { items, body: b, .. } => {
                 for item in items {
-                    item.expr.walk_exprs_mut(f);
+                    item.expr.walk_exprs(f);
                 }
                 body(b, f);
             }
             StmtKind::Using {
                 resource, body: b, ..
             } => {
-                resource.walk_exprs_mut(f);
+                resource.walk_exprs(f);
                 body(b, f);
             }
             StmtKind::Lock { expr, body: b } => {
-                expr.walk_exprs_mut(f);
+                expr.walk_exprs(f);
                 body(b, f);
             }
-            StmtKind::Return(expr) => {
+            StmtKind::Return(expr) | StmtKind::Exit { status: expr } => {
                 if let Some(expr) = expr {
-                    expr.walk_exprs_mut(f);
+                    expr.walk_exprs(f);
                 }
             }
             StmtKind::Throw { expr, cause } => {
                 for slot in [expr, cause] {
                     if let Some(expr) = slot {
-                        expr.walk_exprs_mut(f);
+                        expr.walk_exprs(f);
                     }
                 }
             }
             StmtKind::Assign { targets, value, .. } => {
                 for target in targets {
-                    target.walk_exprs_mut(f);
+                    target.walk_exprs(f);
                 }
-                value.walk_exprs_mut(f);
+                value.walk_exprs(f);
             }
             StmtKind::CompoundAssign { target, value, .. } => {
-                target.walk_exprs_mut(f);
-                value.walk_exprs_mut(f);
+                target.walk_exprs(f);
+                value.walk_exprs(f);
             }
             StmtKind::RaiseEvent { args, .. } | StmtKind::Delete(args) | StmtKind::Echo(args) => {
                 for arg in args {
-                    arg.walk_exprs_mut(f);
+                    arg.walk_exprs(f);
                 }
             }
             _ => {}
@@ -6588,5 +7254,49 @@ mod protocol_slot_key_tests {
     fn an_unknown_slot_key_is_none() {
         assert_eq!(ProtocolSlot::from_key("no_such_slot"), None);
         assert_eq!(ProtocolSlot::from_key(""), None);
+    }
+}
+
+#[cfg(test)] mod pruned_scope_gate {
+ use super::*;
+ fn nested(depth:usize,block:bool)->Expression {
+  let body=if depth==0 {Expression::ident("$inner")}else{nested(depth-1,!block)};
+  Expression::new(ExprKind::Lambda {params:vec![],body:if block{LambdaBody::Block(vec![Statement::new(StmtKind::Expr(body))])}else{LambdaBody::Expr(Box::new(body))},is_async:false,captures:vec!["$captured".into()]})
+ }
+ fn bind(e:&mut Expression){if let ExprKind::Ident(name)=&mut e.kind{*name=format!("bound:{name}");}}
+ fn old(mut e:Expression)->Expression {
+  let mut saved=std::collections::HashMap::new();
+  e.walk_exprs(&mut |e|{if matches!(e.kind,ExprKind::Lambda{..}|ExprKind::FunctionExpr(_)){saved.insert(e as *const Expression as usize,e.kind.clone());}});
+  e.walk_exprs_mut(&mut |e|{if let Some(kind)=saved.remove(&(e as *const Expression as usize)){e.kind=kind;}else{bind(e);}});e
+ }
+ #[test] fn pruning_preserves_old_scope_restore_results() {
+  for depth in 0..20 {for block in [false,true]{let e=Expression::new(ExprKind::Tuple(vec![Expression::ident("$outer"),nested(depth,block),Expression::new(ExprKind::Binary{op:BinOp::Add,left:Box::new(Expression::ident("$left")),right:Box::new(nested(depth,!block))})]));let expected=old(e.clone());let mut actual=e;actual.walk_exprs_mut_pruned(&mut bind,&mut |e|!matches!(e.kind,ExprKind::Lambda{..}|ExprKind::FunctionExpr(_)));assert_eq!(format!("{expected:?}"),format!("{actual:?}"));}}
+ }
+ #[test] fn default_visits_functions_but_pruned_callback_keeps_boundary() {
+  let mut e=nested(4,true);let mut all=0;e.walk_exprs_mut(&mut |_|all+=1);assert_eq!(all,6);
+  let mut visits=0;e.walk_exprs_mut_pruned(&mut |_|visits+=1,&mut |e|!matches!(e.kind,ExprKind::Lambda{..}));assert_eq!(visits,1);
+ }
+}
+
+#[cfg(test)]
+mod declared_function_binding_policy_tests {
+    use super::*;
+    #[test]
+    fn unstated_function_binding_policy_stays_unstated() {
+        assert_eq!(Directives::default().declared_function_bindings_live, None);
+    }
+    #[test]
+    fn immutable_function_binding_policy_inherits() {
+        let mut parent = Directives { declared_function_bindings_live: Some(false), ..Default::default() };
+        parent.overlay(&Directives::default());
+        assert_eq!(parent.declared_function_bindings_live, Some(false));
+    }
+    #[test]
+    fn explicit_live_override_does_not_change_parent() {
+        let parent = Directives { declared_function_bindings_live: Some(false), ..Default::default() };
+        let mut child = parent.clone();
+        child.overlay(&Directives { declared_function_bindings_live: Some(true), ..Default::default() });
+        assert_eq!(child.declared_function_bindings_live, Some(true));
+        assert_eq!(parent.declared_function_bindings_live, Some(false));
     }
 }

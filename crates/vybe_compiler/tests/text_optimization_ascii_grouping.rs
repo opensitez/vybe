@@ -1,5 +1,5 @@
 use vybe_compiler::primitives::{bundle, globals, platforms};
-use vybe_runtime::{Chunk, Op, Value, VM};
+use vybe_runtime::{Chunk, Op, VM, Value};
 mod emitter {
     pub use vybe_language_php::emitter::*;
 }
@@ -113,12 +113,11 @@ fn ascii_group_boundaries_signs_fraction_and_strict_separator_errors_match() {
     };
     assert_eq!(
         count(&old_ops, Op::IF),
-        count(&new_ops, Op::IF) + 1,
-        "prefix eliminates separator branch"
+        count(&new_ops, Op::IF) + 2,
+        "prefix eliminates separator branch and initialization shares the decimal-point test"
     );
-    assert_eq!(
-        count(&old_ops, Op::I32_EQZ),
-        count(&new_ops, Op::I32_EQZ),
+    assert!(
+        count(&new_ops, Op::I32_EQZ) <= count(&old_ops, Op::I32_EQZ),
         "no extra zero-test"
     );
     let calls = |chunks: &[Chunk]| {
@@ -143,10 +142,21 @@ fn ascii_group_boundaries_signs_fraction_and_strict_separator_errors_match() {
         new_ops.len() < old_ops.len(),
         "fewer static opcodes than original generic"
     );
-    println!("ASCII grouping frozen-body emission bytes={}->{} wasm={old_native}->{new_native} opcodes={}->{} static_calls={}->{} IF={}->{} EQZ={}->{} locals={}->{}",
-        old[0].code.len(),new[0].code.len(),old_ops.len(),new_ops.len(),
-        count(&old_ops,Op::CALL),count(&new_ops,Op::CALL),count(&old_ops,Op::IF),count(&new_ops,Op::IF),
-        count(&old_ops,Op::I32_EQZ),count(&new_ops,Op::I32_EQZ),old[0].local_count,new[0].local_count);
+    println!(
+        "ASCII grouping frozen-body emission bytes={}->{} wasm={old_native}->{new_native} opcodes={}->{} static_calls={}->{} IF={}->{} EQZ={}->{} locals={}->{}",
+        old[0].code.len(),
+        new[0].code.len(),
+        old_ops.len(),
+        new_ops.len(),
+        count(&old_ops, Op::CALL),
+        count(&new_ops, Op::CALL),
+        count(&old_ops, Op::IF),
+        count(&new_ops, Op::IF),
+        count(&old_ops, Op::I32_EQZ),
+        count(&new_ops, Op::I32_EQZ),
+        old[0].local_count,
+        new[0].local_count
+    );
 
     let mut before = vm();
     let mut after = vm();
@@ -274,8 +284,8 @@ fn actual_php_tofixed_producer_normal_special_and_failure_cases_match() {
 #[test]
 fn hostile_non_string_separators_are_not_coerced_or_invoked() {
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
     for old in [true, false] {
         for text in ["123", "1234", "123456.7"] {
@@ -385,13 +395,17 @@ fn source_oracle(old: &[Chunk], oracle: fn(&mut [Chunk], usize, u32)) -> Vec<Chu
     assert!(original.block_i32_results.iter().all(|&key| key < offset));
     assert!(original.call_indirect_sigs.keys().all(|&key| key < offset));
     assert!(original.call_indirect_canon.keys().all(|&key| key < offset));
-    assert!(original
-        .stack_switch_handlers
-        .keys()
-        .all(|&key| key < offset));
-    assert!(original
-        .user_code_offset
-        .is_none_or(|key| (key as usize) < offset));
+    assert!(
+        original
+            .stack_switch_handlers
+            .keys()
+            .all(|&key| key < offset)
+    );
+    assert!(
+        original
+            .user_code_offset
+            .is_none_or(|key| (key as usize) < offset)
+    );
     let mut depth = 0usize;
     for &(position, op) in decoded.iter().take(start) {
         match op {
@@ -507,11 +521,13 @@ fn source_oracle(old: &[Chunk], oracle: fn(&mut [Chunk], usize, u32)) -> Vec<Chu
     // Extra specialization scratch may reuse a later cleanup temporary, but
     // cannot clobber any value live into that suffix. Every overlapping read
     // must follow a suffix write; prefix locals are allocated below `base`.
-    assert!(decoded
-        .iter()
-        .take(start)
-        .filter(|(_, op)| matches!(*op, Op::LOCAL_GET | Op::LOCAL_SET))
-        .all(|(position, _)| local(original, *position) < base));
+    assert!(
+        decoded
+            .iter()
+            .take(start)
+            .filter(|(_, op)| matches!(*op, Op::LOCAL_GET | Op::LOCAL_SET))
+            .all(|(position, _)| local(original, *position) < base)
+    );
     let old_group_local_end = frozen.local_count;
     let new_group_local_end = changed.local_count;
     let mut suffix_written = std::collections::HashSet::new();
@@ -605,8 +621,14 @@ fn actual_parsed_php_source_preserves_arguments_aliases_and_errors() {
         assert_eq!(old_result, new_result, "{body}");
         if body.starts_with("$order=") {
             let expected = Ok(Value::String("ndps|1,234,567.25".into()));
-            assert_eq!(old_result, expected, "positive baseline argument order and output");
-            assert_eq!(new_result, expected, "positive selected argument order and output");
+            assert_eq!(
+                old_result, expected,
+                "positive baseline argument order and output"
+            );
+            assert_eq!(
+                new_result, expected,
+                "positive selected argument order and output"
+            );
         }
     }
 }
@@ -712,7 +734,9 @@ fn candidate_reuses_dead_sign_slot_at_largest_generic_local_budget() {
         );
         if base == u16::MAX - 12 {
             assert_eq!(known_native_local_cap(&old), known_native_local_cap(&new));
-            println!("Grouping generic largest frame: VM old/new expected output passed; native both hit wasmparser MAX50000 local implementation cap (not native pass)");
+            println!(
+                "Grouping generic largest frame: VM old/new expected output passed; native both hit wasmparser MAX50000 local implementation cap (not native pass)"
+            );
         } else {
             validate(&old);
             validate(&new);
@@ -762,7 +786,9 @@ fn candidate_reuses_dead_sign_slot_at_largest_generic_local_budget() {
         native_caps.push(known_native_local_cap(&chunks));
     }
     assert_eq!(native_caps[0], native_caps[1]);
-    println!("Grouping PHP largest frame: VM old/new expected output passed; native both hit wasmparser MAX50000 local implementation cap (not native pass)");
+    println!(
+        "Grouping PHP largest frame: VM old/new expected output passed; native both hit wasmparser MAX50000 local implementation cap (not native pass)"
+    );
 }
 #[test]
 #[ignore = "interleaved opt-level-0 retained-callee grouping and actual PHP Source diagnostic"]
@@ -809,7 +835,12 @@ fn benchmark_loaded_grouping_and_actual_php_source() {
             for times in &mut times {
                 times.sort();
             }
-            println!("ASCII grouping loaded php={php} digits={digits} calls={calls} old={}ns new={}ns gain={:.2}x", times[0][3], times[1][3], times[0][3] as f64 / times[1][3] as f64);
+            println!(
+                "ASCII grouping loaded php={php} digits={digits} calls={calls} old={}ns new={}ns gain={:.2}x",
+                times[0][3],
+                times[1][3],
+                times[0][3] as f64 / times[1][3] as f64
+            );
         }
     }
     let new = parsed_php("return null;");
@@ -863,7 +894,12 @@ fn benchmark_loaded_grouping_and_actual_php_source() {
         for times in &mut times {
             times.sort();
         }
-        println!("ASCII grouping actual Source loaded digits={digits} calls={calls} old={}ns new={}ns gain={:.2}x", times[0][3],times[1][3], times[0][3] as f64 / times[1][3] as f64);
+        println!(
+            "ASCII grouping actual Source loaded digits={digits} calls={calls} old={}ns new={}ns gain={:.2}x",
+            times[0][3],
+            times[1][3],
+            times[0][3] as f64 / times[1][3] as f64
+        );
     }
 }
 
@@ -921,11 +957,20 @@ fn batched_report(label: &str, calls: usize, mut measure: impl FnMut(usize, usiz
         .map(|(old, new)| *old as f64 / *new as f64)
         .collect::<Vec<_>>();
     paired.sort_by(f64::total_cmp);
-    println!("ASCII grouping batch {label} iterations={iterations} calls_per_iteration={calls} raw_old_ns={:?} raw_new_ns={:?}",raw[0],raw[1]);
+    println!(
+        "ASCII grouping batch {label} iterations={iterations} calls_per_iteration={calls} raw_old_ns={:?} raw_new_ns={:?}",
+        raw[0], raw[1]
+    );
     for list in &mut raw {
         list.sort();
     }
-    println!("ASCII grouping batch {label} median_paired={:.2}x ratio_medians={:.2}x median_old_ns={} median_new_ns={}",paired[3],raw[0][3] as f64/raw[1][3] as f64,raw[0][3],raw[1][3]);
+    println!(
+        "ASCII grouping batch {label} median_paired={:.2}x ratio_medians={:.2}x median_old_ns={} median_new_ns={}",
+        paired[3],
+        raw[0][3] as f64 / raw[1][3] as f64,
+        raw[0][3],
+        raw[1][3]
+    );
 }
 #[test]
 #[ignore = "batched opt-level-0 cold and actual source retained calls under scheduler load"]
@@ -999,7 +1044,7 @@ fn benchmark_grouping_batched_scheduler_diagnostic() {
 }
 
 #[test]
-fn generic_unicode_emitter_retains_exact_frozen_instructions_and_behavior() {
+fn generic_unicode_emitter_reduces_instructions_and_retains_frozen_behavior() {
     for text in ["", "é😀123456", "😀123456.é", "-é12345"] {
         let emit = |old: bool| {
             let mut chunks = vec![Chunk::new("<generic-grouping-unchanged>")];
@@ -1016,8 +1061,14 @@ fn generic_unicode_emitter_retains_exact_frozen_instructions_and_behavior() {
         };
         let mut old = emit(true);
         let mut new = emit(false);
-        assert_eq!(old[0].code, new[0].code, "exact generic bytecode");
-        assert_eq!(old[0].lines, new[0].lines);
+        assert!(
+            new[0].code.len() < old[0].code.len(),
+            "smaller generic bytecode"
+        );
+        assert!(
+            ops(&new[0]).len() < ops(&old[0]).len(),
+            "fewer generic instructions"
+        );
         assert_eq!(old[0].constants, new[0].constants);
         assert_eq!(old[0].imports, new[0].imports);
         assert_eq!(old[0].global_imports, new[0].global_imports);

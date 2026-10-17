@@ -75,7 +75,8 @@ impl Compiler {
             // newline real php never writes, and writing straight to stdout
             // jumps ahead of buffered content.
             self.emit_u16(Op::LOCAL_GET, status_slot);
-            self.emit_common("php.echo_stringify", 1, line);
+            // The type test above already proves this value is a string.
+            // Message-or-status termination needs no language-specific coercion.
             let current = self.current;
             common::io::emit_write_or_buffer(&mut self.chunks, current, line);
             // A message exits SUCCESSFULLY — the string is output, never a status.
@@ -84,15 +85,19 @@ impl Compiler {
             self.chunk().emit_end(line);
         }
 
-        // PHP shutdown handlers run on `exit`/`die`, not only at normal module
-        // fallthrough. `emit_php_run_shutdown_fns` clears the callback list
+        // Declared shutdown handlers run on termination and normal module
+        // fallthrough. `emit_run_shutdown_callbacks` clears the callback list
         // before invoking it, so this is safe even if a shutdown callback exits.
-        if self.directives().exit_argument == Some(vybe_ast::ExitArgument::MessageOrStatus) {
-            self.emit_php_run_shutdown_fns();
+        if let Some(vybe_ast::ShutdownPolicy::Callbacks { registry, order }) =
+            self.directives().shutdown_callbacks.clone()
+        {
+            self.emit_run_shutdown_callbacks(&registry, order);
         }
 
-        let current = self.current;
-        common::io::emit_ob_flush_all(&mut self.chunks, current, line);
+        if self.directives().flush_output_buffers == Some(true) {
+            let current = self.current;
+            common::io::emit_ob_flush_all(&mut self.chunks, current, line);
+        }
 
         let exit_idx = self.import("wasi:cli/exit", "exit-with-code");
         self.emit_u16(Op::LOCAL_GET, status_slot);
@@ -225,8 +230,7 @@ impl Compiler {
         // step.done check
         self.emit_u16(Op::LOCAL_GET, step_slot);
         self.class_get_resolved(class_slots::ObjSource::Stack, &done_key_c);
-        self.emit_u16(Op::LOCAL_SET, done_slot);
-        self.emit_u16(Op::LOCAL_GET, done_slot);
+        self.emit_u16(Op::LOCAL_TEE, done_slot);
         {
             let line = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -342,14 +346,8 @@ impl Compiler {
             self.emit_buffered_generator_foreach_state(cont_slot, has_more_slot, value_slot);
         } else {
             self.emit_u16(Op::LOCAL_GET, has_more_slot);
-            {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            };
-            {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-            };
+            // emit_next guarantees i32 0/1 on both outgoing arms.
+            self.emit_i32_negated_condition();
             // br_if_label 1 → jump to $exit when has_more was 0.
             self.chunk().emit_br_if(1, line);
         }
@@ -416,14 +414,7 @@ impl Compiler {
         let skip_cleanup = self.chunk().emit_block(line);
         self.label_depth += 1;
         self.emit_u16(Op::LOCAL_GET, did_break_slot);
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        };
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-        };
+        self.emit_negated_condition();
         self.chunk().emit_br_if(0, line);
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
@@ -505,8 +496,31 @@ impl Compiler {
     /// destructure path consumes the N raw stack values directly.
     pub(super) fn compile_call_raw(&mut self, value: &Expression) -> Result<(), String> {
         if let ExprKind::Call { callee, args, .. } = &value.kind {
+            let multi_return_arity = self.multi_return_arity_for_callee(callee);
+            if self.profile.function_references
+                && multi_return_arity.is_some()
+                && args.iter().all(|arg| !arg.spread && !arg.by_ref && arg.name.is_none())
+            {
+                if let ExprKind::Member { .. } = &callee.kind {
+                    self.compile_expr(callee)?;
+                    let recv = {
+                        let abi = if self.universal_receiver() {
+                            vybe_runtime::chunk::ReceiverAbi::Parameter
+                        } else {
+                            vybe_runtime::chunk::ReceiverAbi::Ambient
+                        };
+                        let line = self.line;
+                        crate::primitives::callable::emit_callback_receiver(self.chunk(), abi, line)
+                    };
+                    for arg in args {
+                        self.compile_expr(&arg.value)?;
+                    }
+                    self.emit_direct_callable_invoke(args.len() as u8 + recv);
+                    return Ok(());
+                }
+            }
             if let ExprKind::Ident(name) = &callee.kind {
-                if self.multi_return_arity_for_callee(callee).is_some() {
+                if multi_return_arity.is_some() {
                     self.emit_var_get(name);
                     // §10.2.1: a multi-value receive is still an ordinary call,
                     // so the callee's receiver is argument 0 — `undefined`
@@ -786,21 +800,27 @@ impl Compiler {
         // only when the language folds case — php variables are case-SENSITIVE,
         // so for php the two diverge and asking with either one alone misses.
         let declared_open =
-            self.scope().declared_open(name) || self.scope().declared_open(&self.canon(name));
+            self.scope().declared_open(name) || self.scope().declared_open(self.canon_lookup(name).as_ref());
         if !declared_open {
             if let Some(holds) = self.scope().holds_reference(name) {
                 return holds;
             }
         }
-        let key = self.pointer_binding_key(name);
+        // Read-only queries borrow unchanged keys. Case-sensitive pointer
+        // keys keep the namespace marker, unlike canonical scope-open keys.
+        let key = if self.case_sensitive {
+            std::borrow::Cow::Borrowed(name)
+        } else {
+            self.canon_lookup(name)
+        };
         // Either a wrap that already happened, or — for a READER only — the
         // module-wide pre-pass saying one WILL happen later in this
         // compilation. The second is what makes
         // `function r(){ global $g; echo $g; }` — emitted before
         // `$g = 1; w($g);` promotes `$g` — deref correctly: whether a global is
         // a cell is a whole-module property being decided in a forward pass.
-        self.promoted_global_cells.contains(&key)
-            || (include_pending && self.module_addr_taken_globals.contains(&key))
+        self.promoted_global_cells.contains(key.as_ref())
+            || (include_pending && self.module_addr_taken_globals.contains(key.as_ref()))
     }
 
     /// Record that `name` denotes a reference.
@@ -872,9 +892,59 @@ impl Compiler {
         }
     }
 
+    /// Alias-binding languages may discover a callable's signature only at runtime.
+    /// Resolve argument carriers before defaults, narrowing, or cell promotion.
+    pub(super) fn bind_late_bound_arguments<'a>(
+        &mut self, params: impl IntoIterator<Item = &'a Param>,
+    ) {
+        if self.directives().reference_binding != Some(PassBy::Alias) {
+            return;
+        }
+        for p in params {
+            let Some(slot) = self.resolve_named_local_slot(&p.name) else { continue; };
+            let alias = p.pass_by == PassBy::Alias;
+            if p.is_rest {
+                crate::primitives::references::emit_bind_late_bound_rest_arguments(
+                    &mut self.chunks, self.current, slot, alias, self.line);
+            } else {
+                crate::primitives::references::emit_bind_late_bound_argument(
+                    &mut self.chunks, self.current, slot, alias, self.line);
+            }
+        }
+    }
+
+    /// Fresh value-binding storage must wrap even a pointer-valued initializer.
+    /// Alias bindings instead retain the caller's existing storage location.
+    pub(super) fn initialize_local_pointer_cell(&mut self, name: &str) -> Option<u16> {
+        if self.directives().reference_binding == Some(PassBy::Alias) {
+            return self.promote_local_binding_to_pointer_cell(name);
+        }
+        let slot = self.resolve_named_local_slot(name)?;
+        let line = self.line;
+        crate::primitives::references::emit_cell_new_from_local(
+            &mut self.chunks, self.current, slot, line,
+        );
+        self.emit_u16(Op::LOCAL_SET, slot);
+        self.mark_pointer_cell_binding(name);
+        if let (Some(env_slot), Some(index)) = (self.shared_env_slot, self.shared_env_index(name)) {
+            self.emit_u16(Op::LOCAL_GET, slot);
+            crate::primitives::closures::emit_env_set(self.chunk(), env_slot, index, line);
+        }
+        Some(slot)
+    }
+
     pub(super) fn promote_local_binding_to_pointer_cell(&mut self, name: &str) -> Option<u16> {
         let slot = self.resolve_named_local_slot(name)?;
-        if !self.binding_already_pointer_cell(name) {
+        let shared_binding = self.shared_env_slot.zip(self.shared_env_index(name));
+        if let Some((env_slot, index)) = shared_binding {
+            let line = self.line;
+            crate::primitives::closures::emit_env_get(self.chunk(), env_slot, index, line);
+            self.emit_u16(Op::LOCAL_SET, slot);
+        }
+        {
+            // A previous promotion may be in a branch that never executes.
+            // Test the runtime slot at every address-taking site; an existing
+            // reference keeps its identity without being boxed again.
             // A promotion inside a loop runs on every iteration. The local
             // may already hold the cell created on the first iteration even
             // though this source site was compiled only once.
@@ -896,6 +966,11 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, slot);
             self.chunk().emit_end(line);
             self.mark_pointer_cell_binding(name);
+        }
+        if let Some((env_slot, index)) = shared_binding {
+            let line = self.line;
+            self.emit_u16(Op::LOCAL_GET, slot);
+            crate::primitives::closures::emit_env_set(self.chunk(), env_slot, index, line);
         }
         Some(slot)
     }
@@ -935,27 +1010,17 @@ impl Compiler {
         self.promote_global_storage_key_to_pointer_cell(name, &global_key)
     }
 
-    pub(super) fn global_storage_key_uses_pointer_cell(&self, global_key: &str) -> bool {
-        self.promoted_global_cells
-            .contains(&self.pointer_binding_key(global_key))
-    }
-
     pub(super) fn promote_global_storage_key_to_pointer_cell(
         &mut self,
         mark_name: &str,
         global_key: &str,
     ) -> bool {
-        // The real-promotion set ONLY, never `binding_uses_pointer_cell`: that
-        // also answers `true` for the module-wide address-taken PRE-PASS, which
-        // is a "readers must deref" hint, not a record that the wrap happened.
-        // Consulting it here made promotion skip itself — readers deref a global
-        // that was never wrapped.
-        let already_promoted = self.global_storage_key_uses_pointer_cell(mark_name);
-        if !already_promoted {
+        // Compilation of another function is not proof its promotion ran.
+        // Keep the runtime check idempotent across every address-taking site.
+        {
             let value_slot = self.define_local("__ref_global_value");
             self.emit_global_read(global_key);
-            self.emit_u16(Op::LOCAL_SET, value_slot);
-            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_u16(Op::LOCAL_TEE, value_slot);
             crate::primitives::references::emit_is_reference_to_stack(
                 &mut self.chunks,
                 self.current,
@@ -1002,8 +1067,7 @@ impl Compiler {
         let pointer = self.define_local("__ref_global_init_pointer");
         self.emit_u16(Op::LOCAL_SET, value);
         self.emit_global_read(global_key);
-        self.emit_u16(Op::LOCAL_SET, pointer);
-        self.emit_u16(Op::LOCAL_GET, pointer);
+        self.emit_u16(Op::LOCAL_TEE, pointer);
         let line = self.line;
         crate::primitives::references::emit_is_reference_to_stack(
             &mut self.chunks, self.current, line,
@@ -1020,7 +1084,9 @@ impl Compiler {
 
     pub(super) fn is_pointer_runtime_field(field: &str) -> bool {
         matches!(field, "__ref_kind" | "__base" | "__idx" | "__value" | "__byte_backed"
-            | crate::primitives::pointers::REFERENCE_BYTE_OFFSET_KEY)
+            | crate::primitives::pointers::REFERENCE_BYTE_OFFSET_KEY
+            | crate::primitives::pointers::REFERENCE_BYTE_ROOT_KEY
+            | crate::primitives::pointers::REFERENCE_BYTE_FIELDS_KEY)
     }
 
     pub(super) fn emit_string_slot_eq_literal(&mut self, slot: u16, literal: &str) {
@@ -1100,6 +1166,9 @@ impl Compiler {
 
         self.compile_expr(expr)?;
         self.emit_wrap_top_of_stack_in_pointer_cell();
+        if let Some(layout) = self.reference_record_byte_layout(expr) {
+            self.annotate_record_reference(&layout);
+        }
         Ok(())
     }
 
@@ -1116,24 +1185,54 @@ impl Compiler {
     /// with a local worked (§10d, pre-existing #2). One concept, two spellings,
     /// one resolution — the recurring failure this plan exists to end.
     pub(super) fn compile_ident_reference(&mut self, name: &str) {
-        let has_byte_layout = self.reference_record_byte_layout(&Expression::ident(name)).is_some();
+        let byte_layout = self.reference_record_byte_layout(&Expression::ident(name));
         if let Some(binding) = self.static_local_binding(name) {
             let global_name = binding.global_name.clone();
             self.promote_global_storage_key_to_pointer_cell(&global_name, &global_name);
             self.emit_global_read(&global_name);
-            if has_byte_layout { self.annotate_reference_byte_coordinate(0); }
+            if let Some(layout) = byte_layout { self.annotate_record_reference(&layout); }
             return;
         }
-        if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
-            self.emit_u16(Op::LOCAL_GET, slot);
-            if has_byte_layout { self.annotate_reference_byte_coordinate(0); }
+        if let (Some(env_slot), Some(index)) = (self.shared_env_slot, self.shared_env_index(name)) {
+            if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
+                self.emit_u16(Op::LOCAL_GET, slot);
+                if let Some(layout) = byte_layout { self.annotate_record_reference(&layout); }
+                return;
+            }
+            // Captured locals are read and written through the shared env.
+            // Their frame slot can still contain an old cell, so taking its
+            // address would reference different storage from an ordinary read.
+            let key_slot = self.define_local("__ref_env_index");
+            let line = self.line;
+            self.chunk().emit_i32_const(index as i32, line);
+            self.emit_u16(Op::LOCAL_SET, key_slot);
+            crate::primitives::references::emit_carray_new(
+                &mut self.chunks, self.current, env_slot, key_slot, line);
+            if let Some(layout) = byte_layout { self.annotate_record_reference(&layout); }
             return;
+        }
+        let declared_open = self.scope().declared_open(name)
+            || self.scope().declared_open(self.canon_lookup(name).as_ref());
+        if self.profile.reference_creates_local
+            && self.current_func_name.is_some()
+            && self.is_variable_name(name)
+            && self.scope().resolve(name).is_none()
+            && !declared_open
+        {
+            self.define_source_local(name);
+        }
+        if !declared_open {
+            if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
+                self.emit_u16(Op::LOCAL_GET, slot);
+                if let Some(layout) = byte_layout { self.annotate_record_reference(&layout); }
+                return;
+            }
         }
         self.promote_global_binding_to_pointer_cell(name);
         // Same key the promotion wrote — see `variable_global_binding_key`.
         let global_key = self.variable_global_binding_key(name);
         self.emit_global_read(&global_key);
-        if has_byte_layout { self.annotate_reference_byte_coordinate(0); }
+        if let Some(layout) = byte_layout { self.annotate_record_reference(&layout); }
     }
 
     fn reference_record_byte_layout(&self, object: &Expression) -> Option<vybe_ast::RecordByteLayout> {
@@ -1148,6 +1247,30 @@ impl Compiler {
         crate::primitives::references::emit_byte_coordinate(
             &mut self.chunks, self.current, offset, self.line,
         );
+    }
+
+    fn annotate_record_reference(&mut self, layout: &vybe_ast::RecordByteLayout) {
+        let line = self.line;
+        let root = self.define_local("__ref_byte_root");
+        self.emit_u16(Op::LOCAL_SET, root);
+        let fields = self.define_local("__ref_byte_fields");
+        crate::primitives::class_slots::emit_class_alloc(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, fields);
+        for field in &layout.fields {
+            self.emit_u16(Op::LOCAL_GET, fields);
+            let key = crate::primitives::class_slots::resolve_interned(
+                self.chunk(), &crate::primitives::class_slots::ClassSlot::internal(&field.offset.to_string()),
+                &crate::primitives::class_slots::PlainNames,
+            );
+            self.compile_expr(&Expression::string(&self.canon(&field.name))).expect("literal field key");
+            crate::primitives::class_slots::emit_class_set(self.chunk(),
+                crate::primitives::class_slots::ObjSource::Stack, &key,
+                crate::primitives::class_slots::ValueSource::Stack, line);
+        }
+        self.emit_u16(Op::LOCAL_GET, root);
+        crate::primitives::references::emit_byte_projection_metadata(
+            &mut self.chunks, self.current, None, fields, self.line);
+        self.annotate_reference_byte_coordinate(0);
     }
 
     /// `&container[key]` → `{__ref_kind:"carray", __base, __idx}`.
@@ -1177,6 +1300,23 @@ impl Compiler {
             key_slot,
             self.line,
         );
+        let element = Expression::new(ExprKind::Index {
+            object: Box::new(object.clone()), index: Box::new(index.clone()), null_safe: false,
+        });
+        if let Some(layout) = self.reference_record_byte_layout(&element) {
+            self.annotate_record_reference(&layout);
+            let line = self.line;
+            self.chunk().emit_dup(line);
+            let key = crate::primitives::class_slots::resolve_interned(self.chunk(),
+                &crate::primitives::class_slots::ClassSlot::internal(crate::primitives::pointers::REFERENCE_BYTE_OFFSET_KEY),
+                &crate::primitives::class_slots::PlainNames);
+            self.emit_u16(Op::LOCAL_GET, key_slot);
+            self.chunk().emit_f64_const(layout.bytes as f64, line);
+            self.emit(Op::F64_MUL);
+            crate::primitives::class_slots::emit_class_set(self.chunk(),
+                crate::primitives::class_slots::ObjSource::Stack, &key,
+                crate::primitives::class_slots::ValueSource::Stack, line);
+        }
         Ok(())
     }
 
@@ -1196,8 +1336,51 @@ impl Compiler {
     ) -> Result<(), String> {
         let offset = self.reference_record_byte_layout(object)
             .and_then(|layout| layout.field(field).map(|field| field.offset));
+        if let Some(offset) = offset {
+            self.compile_address_of_expr(object)?;
+            let root = self.define_local("__ref_member_root");
+            self.emit_u16(Op::LOCAL_TEE, root);
+            self.emit_autoderef_pointer_cell();
+            let base = self.define_local("__ref_member_base");
+            self.emit_u16(Op::LOCAL_SET, base);
+            self.compile_expr(&Expression::string(field))?;
+            let key = self.define_local("__ref_member_key");
+            self.emit_u16(Op::LOCAL_SET, key);
+            crate::primitives::references::emit_carray_new(
+                &mut self.chunks, self.current, base, key, self.line);
+            let pointer = self.define_local("__ref_member_pointer");
+            self.emit_u16(Op::LOCAL_SET, pointer);
+            self.compile_expr(&Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("__ref_member_root")),
+                field: crate::primitives::pointers::REFERENCE_BYTE_FIELDS_KEY.into(),
+                null_safe: false,
+            }))?;
+            let fields = self.define_local("__ref_member_fields");
+            self.emit_u16(Op::LOCAL_SET, fields);
+            self.emit_u16(Op::LOCAL_GET, pointer);
+            crate::primitives::references::emit_byte_projection_metadata(
+                &mut self.chunks, self.current, Some(root), fields, self.line);
+            let coordinate = Expression::new(ExprKind::Binary {
+                op: vybe_ast::BinOp::Add,
+                left: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident("__ref_member_root")),
+                    field: crate::primitives::pointers::REFERENCE_BYTE_OFFSET_KEY.into(),
+                    null_safe: false,
+                })),
+                right: Box::new(Expression::int(offset as i64)),
+            });
+            let line = self.line;
+            self.chunk().emit_dup(line);
+            let coordinate_key = crate::primitives::class_slots::resolve_interned(self.chunk(),
+                &crate::primitives::class_slots::ClassSlot::internal(crate::primitives::pointers::REFERENCE_BYTE_OFFSET_KEY),
+                &crate::primitives::class_slots::PlainNames);
+            self.compile_expr(&coordinate)?;
+            crate::primitives::class_slots::emit_class_set(self.chunk(),
+                crate::primitives::class_slots::ObjSource::Stack, &coordinate_key,
+                crate::primitives::class_slots::ValueSource::Stack, line);
+            return Ok(());
+        }
         self.compile_index_reference(object, &Expression::string(field))?;
-        if let Some(offset) = offset { self.annotate_reference_byte_coordinate(offset); }
         Ok(())
     }
 
@@ -1419,14 +1602,7 @@ impl Compiler {
             let line = self.line;
             crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
         };
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        };
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-        };
+        self.emit_negated_condition();
         let block_p = self.chunk().emit_block(line);
         self.label_depth += 1;
         self.chunk().emit_br_if(0, line); // skip wrap if !(idx < 0)
@@ -1461,20 +1637,28 @@ impl Compiler {
             // Function-scoped languages release source bindings on return.
             // Return values are already on the expression stack, so a returned
             // object remains reachable while the local holding it is cleared.
-            let locals = self.scope().defined_names.clone();
             let mut seen = std::collections::HashSet::new();
-            for local in locals.iter().rev() {
-                if !local.is_source()
-                    || !self.is_variable_name(&local.name)
-                    || !seen.insert(local.slot)
-                {
-                    continue;
-                }
-                let old = self.define_local("__return_release_old");
-                self.emit_u16(Op::LOCAL_GET, local.slot);
+            // Emission can add compiler temporaries to the scope. Snapshot
+            // only the source slots that need releasing, in the same reverse
+            // declaration order, rather than cloning every local's name.
+            let slots: Vec<u16> = self.scope().defined_names.iter().rev()
+                .filter(|local| local.is_source()
+                    && self.is_variable_name(&local.name)
+                    && seen.insert(local.slot))
+                .map(|local| local.slot)
+                .collect();
+            let mut release_slot = None;
+            for slot in slots {
+                // Each finalizer consumes the spill before the next release.
+                // Keep its compiler origin, but reserve one slot per return
+                // rather than one slot per source binding.
+                let old = *release_slot.get_or_insert_with(|| {
+                    self.define_local("__return_release_old")
+                });
+                self.emit_u16(Op::LOCAL_GET, slot);
                 self.emit_u16(Op::LOCAL_SET, old);
                 self.emit_null();
-                self.emit_u16(Op::LOCAL_SET, local.slot);
+                self.emit_u16(Op::LOCAL_SET, slot);
                 self.emit_rebound_value_finalizer(old, emit_finalizer);
             }
         }
@@ -1546,6 +1730,16 @@ impl Compiler {
         &mut self,
         result_count: usize,
     ) -> Result<(), String> {
+        if self.frame_cf().active_finally_blocks.is_empty()
+            && self
+                .current_ref_out_params
+                .as_ref()
+                .is_none_or(|slots| slots.is_empty())
+        {
+            self.emit_return();
+            return Ok(());
+        }
+
         // Preferred path: a single-value return that must cross only
         // `try_table` joins (no `using`/dispose, no ref-out packing) routes
         // through the innermost join — `finally` runs OUTSIDE the handler, then
@@ -1950,14 +2144,15 @@ pub fn build_iif(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_iif");
     c.arity = 3;
     c.local_count = 3;
-    // SELECT pops [a, b, cond]; returns a if cond truthy.
-    // Args land in locals in declaration order: cond=0, a=1, b=2.
-    // We need stack [a, b, cond] for SELECT.
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // a (true branch)
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0); // b (false branch)
-    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // cond
+    // All arguments are already evaluated. Select between arbitrary Values
+    // with a value-result if; its condition is the primitive's strict i32.
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
-    c.emit_op(Op::SELECT, 0);
+    c.emit_if_value(0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_else(0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_end(0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2483,3 +2678,7 @@ fn collect_goto_targets(s: &Statement, out: &mut std::collections::HashSet<Strin
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "declared_open_reference_tests.rs"]
+mod declared_open_reference_tests;

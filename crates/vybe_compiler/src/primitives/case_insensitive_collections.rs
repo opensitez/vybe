@@ -53,6 +53,10 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, keys_slot);
                     self.emit(Op::REF_IS_NULL);
+                    self.emit_u16(Op::LOCAL_GET, keys_slot);
+                    let undefined_test = self.import("wasm:js-undefined", "test");
+                    self.emit_host_call(undefined_test, 1);
+                    self.emit(Op::I32_OR);
                     let line = self.line;
                     self.chunk().emit_if(line);
 

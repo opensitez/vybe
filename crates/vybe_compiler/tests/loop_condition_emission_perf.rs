@@ -128,3 +128,41 @@ fn direct_range_condition_execution_benchmark() {
         timings[0][4].as_secs_f64() / timings[1][4].as_secs_f64()
     );
 }
+
+#[test]
+fn stop_range_preserves_tags_and_non_numeric_outcomes() {
+    for inclusive in [false, true] {
+        for stop in [Value::I32(8), Value::F64(3.5), Value::F64(-0.0),
+            Value::F64(f64::NAN), Value::Null, Value::Undefined,
+            Value::Bool(true), Value::String("3".into()),
+            Value::String("nonnumeric".into())] {
+            let args = [stop];
+            let old = vm(&args).run(program(true, 1, inclusive)).map(items).map_err(|e| e.message);
+            let new = vm(&args).run(program(false, 1, inclusive)).map(items).map_err(|e| e.message);
+            assert_eq!(old, new, "{args:?}, inclusive={inclusive}");
+            if matches!(args[0], Value::I32(8)) {
+                let values = new.unwrap();
+                assert_eq!(values.len(), if inclusive { 9 } else { 8 });
+                assert!(matches!(values[0], Value::I32(0)));
+                assert!(matches!(values[1], Value::F64(1.0)));
+            }
+        }
+    }
+}
+
+#[test]
+fn implicit_unit_step_preserves_dynamic_start_coercion() {
+    for inclusive in [false, true] {
+        for start in [Value::Null, Value::Undefined, Value::Bool(false),
+            Value::Bool(true), Value::F64(-0.0), Value::F64(f64::NAN),
+            Value::F64(0.5), Value::String("".into()), Value::String("a".into())] {
+            let stop = if matches!(start, Value::String(_)) {
+                Value::String("d".into())
+            } else { Value::I32(3) };
+            let args = [start, stop];
+            let old = vm(&args).run(program(true, 2, inclusive)).map(items).map_err(|e| e.message);
+            let new = vm(&args).run(program(false, 2, inclusive)).map(items).map_err(|e| e.message);
+            assert_eq!(old, new, "{args:?}, inclusive={inclusive}");
+        }
+    }
+}

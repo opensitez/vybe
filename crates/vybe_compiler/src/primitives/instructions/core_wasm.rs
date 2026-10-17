@@ -59,3 +59,30 @@ pub fn emit_value(c: &mut Chunk, line: u32, val: &Value) {
         other => panic!("emit_value: no WASM-compliant encoding for {:?}", other),
     }
 }
+
+/// Store the top value while retaining it as the next operand.
+/// Used only where the original local.set/local.get were adjacent emissions.
+pub fn local_tee(c: &mut Chunk, line: u32, slot: u16) {
+    #[cfg(feature = "primitive-benchmarks")]
+    if !REUSE_LOCAL_TEE.with(|v| v.get()) {
+        c.emit_op_u16(Op::LOCAL_SET, slot, line);
+        c.emit_op_u16(Op::LOCAL_GET, slot, line);
+        return;
+    }
+    c.emit_op_u16(Op::LOCAL_TEE, slot, line);
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+thread_local! {
+    static REUSE_LOCAL_TEE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_with_local_tee<R>(reuse: bool, build: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { REUSE_LOCAL_TEE.with(|v| v.set(self.0)); }
+    }
+    let _restore = Restore(REUSE_LOCAL_TEE.with(|v| v.replace(reuse)));
+    build()
+}

@@ -38,6 +38,11 @@ fn emit_f64_pow(chunk: &mut Chunk, line: u32) {
 }
 
 impl Compiler {
+    pub(super) fn proven_boxed_signed_word(&self, expression: &Expression) -> bool {
+        matches!(&expression.kind, ExprKind::Ident(name)
+            if self.directives().word_local_transport() == vybe_ast::WordLocalTransport::ProvenW32
+                && self.scopes.last().is_some_and(|scope| scope.is_normalized_signed_word(name)))
+    }
     /// ECMA-262 §13.10.2 — `a instanceof B`.
     ///
     /// `B[Symbol.hasInstance]` (canonical name `hasinstance`) is consulted
@@ -72,8 +77,7 @@ impl Compiler {
             &class_slots::ClassSlot::internal("hasinstance"),
         );
         let method_slot = self.define_local("__has_inst_method");
-        self.emit_u16(Op::LOCAL_SET, method_slot);
-        self.emit_u16(Op::LOCAL_GET, method_slot);
+        self.emit_u16(Op::LOCAL_TEE, method_slot);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
         self.chunk().emit_if_value(line);
@@ -123,8 +127,7 @@ impl Compiler {
 impl Compiler {
     pub(super) fn emit_to_primitive(&mut self, hint: &str) {
         let value_slot = self.define_local("__to_primitive_value");
-        self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_u16(Op::LOCAL_TEE, value_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
         // `is_object` is `ref.test struct` — it already yields an i32, and
@@ -451,6 +454,37 @@ impl Compiler {
         }
     }
 
+    fn emit_equality_slot_target(
+        &mut self, target: &str, line: u32, what: &str,
+        operands: Option<(&Expression, &Expression)>,
+    ) {
+        if let Some(name) = target.strip_prefix("common:")
+            && let Some((_, right)) = operands
+        {
+            use vybe_runtime::registry::emitter_results::EmitRequest;
+            let request = match &right.kind {
+                ExprKind::Lit(Literal::Str(literal)) => {
+                    // The operand path just emitted this immutable literal.
+                    let key = vybe_runtime::chunk::imported_global_key(
+                        vybe_runtime::chunk::STRING_CONSTANTS_MODULE, literal,
+                    );
+                    let constant = self.chunk().intern_string_constant(&key);
+                    Some(EmitRequest::StringLiteralRhs { constant })
+                }
+                // emit_null produces ref.null extern; no declaration or
+                // mutable identifier can establish this producer fact.
+                ExprKind::Lit(Literal::Null) => Some(EmitRequest::NullLiteralRhs),
+                _ => None,
+            };
+            if let Some(request) = request {
+                self.emit_common_with_emit_request(name, 2, line, request);
+                self.sync_scope_slots_with_chunk();
+                return;
+            }
+        }
+        self.emit_slot_target(target, 2, line, what);
+    }
+
     /// Call a 2-argument `Contains` target on operands already on the stack in
     /// `(collection, value)` order.
     fn emit_contains_target_call(&mut self, target: &str) {
@@ -608,7 +642,13 @@ impl Compiler {
         self.emit_const(Value::I32(0));
         let line = self.line;
         cmp_fn(self.chunk(), line);
-        if self.profile.materialize_bool_results {
+        if std::mem::take(&mut self.want_i32_condition) {
+            self.gave_i32_condition = true;
+            return;
+        }
+        // A unit's explicit result policy wins. Retain the legacy default
+        // only for frontends not yet migrated to the inherited directive.
+        if self.comparison_results_are_boolean(self.profile.materialize_bool_results) {
             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
         }
     }
@@ -858,11 +898,31 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_compound_numeric_proof(&mut self, enabled: bool) {
+        self.compound_numeric_proof = enabled;
+    }
+
     pub(super) fn expr_is_provably_number(&self, expr: &Expression) -> bool {
         if Self::is_emitted_number_literal(expr) {
             return true;
         }
         match &expr.kind {
+            ExprKind::Binary { op: op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), left, right }
+                if self.expr_is_provably_number(left) && self.expr_is_provably_number(right) =>
+            {
+                #[cfg(feature = "primitive-benchmarks")]
+                if !self.compound_numeric_proof {
+                    return false;
+                }
+                // Match the operation that compile_binop_operands actually emits.
+                // A language may bind a builtin slot to an arbitrary adapter;
+                // its result cannot inherit a Number proof from its arguments.
+                return self.resolve_static_builtin_operator(op, left, right)
+                    .is_none_or(|target| matches!(target.target.as_str(),
+                        "opcode:f64.add" | "opcode:f64.sub" | "opcode:f64.mul" |
+                        "opcode:i32.add" | "opcode:i32.sub" | "opcode:i32.mul"));
+            }
             ExprKind::Sequence(parts) => {
                 return parts.last().is_some_and(|part| self.expr_is_provably_number(part));
             }
@@ -952,9 +1012,15 @@ impl Compiler {
         left: &Expression,
         right: &Expression,
     ) -> Option<BuiltinType> {
-        use BinOp::*;
         let left_ty = self.builtin_type_of(left)?;
         let right_ty = self.builtin_type_of(right)?;
+        Self::static_builtin_operator_result_type(op, left_ty, right_ty)
+    }
+
+    pub(super) fn static_builtin_operator_result_type(
+        op: &BinOp, left_ty: BuiltinType, right_ty: BuiltinType,
+    ) -> Option<BuiltinType> {
+        use BinOp::*;
         match op {
             Add | Sub | Mul | Div | Mod | Eq | NotEq | StrictEq | StrictNotEq | Lt | LtEq | Gt
             | GtEq => match (left_ty, right_ty) {
@@ -1033,8 +1099,43 @@ impl Compiler {
             })
     }
 
+    pub(super) fn static_builtin_operator_consumes_i32(
+        &self, op: &BinOp, left: &Expression, right: &Expression,
+    ) -> bool {
+        let consumes_word = self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+            && self.type_resolution() == vybe_ast::TypeResolution::Static
+            && self.resolve_static_builtin_operator(op, left, right).is_some_and(|resolved| {
+                    matches!(resolved.target.as_str(), "opcode:i32.add" | "opcode:i32.sub"
+                        | "opcode:i32.mul" | "opcode:i32.div_s" | "opcode:i32.div_u"
+                        | "opcode:i32.rem_s" | "opcode:i32.rem_u" | "opcode:i32.and"
+                        | "opcode:i32.or" | "opcode:i32.xor" | "opcode:i32.eq" | "opcode:i32.ne"
+                        | "opcode:i32.lt_s" | "opcode:i32.le_s" | "opcode:i32.gt_s"
+                        | "opcode:i32.ge_s" | "opcode:i32.lt_u" | "opcode:i32.le_u"
+                        | "opcode:i32.gt_u" | "opcode:i32.ge_u")
+                });
+        if !consumes_word {
+            return false;
+        }
+        // Nested declarations can alter return-type metadata during operand
+        // compilation. Do not wrap literals before the final target is known.
+        let mut has_nested_callable = false;
+        for operand in [left, right] {
+            operand.walk_exprs(&mut |expr| {
+                has_nested_callable |= matches!(expr.kind,
+                    ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_)
+                    | ExprKind::ClassExpr { .. } | ExprKind::ArrayMap { .. }
+                    | ExprKind::CallableRef { adapter: Some(_), .. })
+                    || matches!(&expr.kind, ExprKind::Object(properties)
+                        if properties.iter().any(|property|
+                            matches!(property, crate::ast::ObjectProperty::Method { .. })));
+            });
+        }
+        !has_nested_callable
+    }
+
     fn emit_static_builtin_operator_target(
         &mut self, resolved: &StaticOperatorTarget, operands: (&Expression, &Expression),
+        emitted_words: (bool, bool), operand_spans: Option<(usize, usize)>, want_i32_word: bool,
     ) {
         match resolved.target.as_str() {
             "opcode:i32.shl" => {
@@ -1048,26 +1149,89 @@ impl Compiler {
             _ => {}
         }
         let word_comparison = match resolved.target.as_str() {
-            "opcode:i32.eq" => Some(Op::I32_EQ),
-            "opcode:i32.ne" => Some(Op::I32_NE),
-            "opcode:i32.lt_s" => Some(Op::I32_LT_S),
-            "opcode:i32.le_s" => Some(Op::I32_LE_S),
-            "opcode:i32.gt_s" => Some(Op::I32_GT_S),
-            "opcode:i32.ge_s" => Some(Op::I32_GE_S),
-            "opcode:i32.lt_u" => Some(Op::I32_LT_U),
-            "opcode:i32.le_u" => Some(Op::I32_LE_U),
-            "opcode:i32.gt_u" => Some(Op::I32_GT_U),
-            "opcode:i32.ge_u" => Some(Op::I32_GE_U),
+            "opcode:i32.eq" => Some((vybe_ast::IntOp::Eq, Op::I32_EQ)),
+            "opcode:i32.ne" => Some((vybe_ast::IntOp::Ne, Op::I32_NE)),
+            "opcode:i32.lt_s" => Some((vybe_ast::IntOp::LtS, Op::I32_LT_S)),
+            "opcode:i32.le_s" => Some((vybe_ast::IntOp::LeS, Op::I32_LE_S)),
+            "opcode:i32.gt_s" => Some((vybe_ast::IntOp::GtS, Op::I32_GT_S)),
+            "opcode:i32.ge_s" => Some((vybe_ast::IntOp::GeS, Op::I32_GE_S)),
+            "opcode:i32.lt_u" => Some((vybe_ast::IntOp::LtU, Op::I32_LT_U)),
+            "opcode:i32.le_u" => Some((vybe_ast::IntOp::LeU, Op::I32_LE_U)),
+            "opcode:i32.gt_u" => Some((vybe_ast::IntOp::GtU, Op::I32_GT_U)),
+            "opcode:i32.ge_u" => Some((vybe_ast::IntOp::GeU, Op::I32_GE_U)),
             _ => None,
         };
-        if let Some(opcode) = word_comparison {
+        let word_arithmetic = match resolved.target.as_str() {
+            "opcode:i32.add" => Some(vybe_ast::IntOp::Add),
+            "opcode:i32.sub" => Some(vybe_ast::IntOp::Sub),
+            "opcode:i32.mul" => Some(vybe_ast::IntOp::Mul),
+            "opcode:i32.div_s" => Some(vybe_ast::IntOp::DivS),
+            "opcode:i32.div_u" => Some(vybe_ast::IntOp::DivU),
+            "opcode:i32.rem_s" => Some(vybe_ast::IntOp::RemS),
+            "opcode:i32.rem_u" => Some(vybe_ast::IntOp::RemU),
+            "opcode:i32.and" => Some(vybe_ast::IntOp::And),
+            "opcode:i32.or" => Some(vybe_ast::IntOp::Or),
+            "opcode:i32.xor" => Some(vybe_ast::IntOp::Xor),
+            _ => None,
+        };
+        if let Some(operation) = word_arithmetic {
+            // A spelling is insufficient: bindings require whole-body value proof.
+            let normalized = |expr: &Expression| match &expr.kind {
+                ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. } => true,
+                ExprKind::Binary { op, left, right } =>
+                    self.static_builtin_operator_returns_i32(op, left, right),
+                _ => self.proven_boxed_signed_word(expr),
+            };
+            let proofs = (normalized(operands.0) || emitted_words.0,
+                normalized(operands.1) || emitted_words.1);
+            let line = self.line;
+            let enabled = crate::primitives::bits::static_word_constants_enabled();
+            let left_is_word = emitted_words.0 || matches!(&operands.0.kind,
+                ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. });
+            let optimized = enabled && operand_spans.is_some_and(|(start, middle)| {
+                let operation = BinOp::Integer(operation, vybe_ast::BitLane::W32);
+                crate::primitives::bits::fold_emitted_word_binary(self.chunk(), start, middle, &operation, line)
+                    || (emitted_words.1 && (left_is_word || !proofs.0)
+                        && crate::primitives::bits::emit_word_right_constant(
+                            self.chunk(), middle, &operation, left_is_word, line,
+                        ))
+            });
+            if !optimized {
+                crate::primitives::bits::emit_integer_binary_with_normalized_operands(
+                    self.chunk(), vybe_ast::BitLane::W32, operation, proofs, line,
+                );
+            }
+            self.sync_scope_slots_with_chunk();
+            // The resolved opcode actually emitted a physical i32. This report
+            // belongs to this producer; a type spelling alone is insufficient.
+            // Comparison slots may still box this result as Boolean below.
+            if enabled && want_i32_word && !matches!(resolved.slot,
+                vybe_ast::ProtocolSlot::Eq | vybe_ast::ProtocolSlot::Ne
+                | vybe_ast::ProtocolSlot::Lt | vybe_ast::ProtocolSlot::Le
+                | vybe_ast::ProtocolSlot::Gt | vybe_ast::ProtocolSlot::Ge)
+            { self.gave_i32_word = true; }
+        } else if let Some((operation, opcode)) = word_comparison {
             let line = self.line;
             let normalized = |expr: &Expression| matches!(&expr.kind,
+                ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. })
+                || self.proven_boxed_signed_word(expr);
+            let proofs = (normalized(operands.0) || emitted_words.0,
+                normalized(operands.1) || emitted_words.1);
+            let left_is_word = emitted_words.0 || matches!(&operands.0.kind,
                 ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. });
-            let proofs = (normalized(operands.0), normalized(operands.1));
-            crate::primitives::bits::emit_word_comparison_with_normalized_operands(
-                self.chunk(), opcode, proofs, line,
-            );
+            let optimized = crate::primitives::bits::static_word_constants_enabled() && operand_spans.is_some_and(|(start, middle)| {
+                let operation = BinOp::Integer(operation, vybe_ast::BitLane::W32);
+                crate::primitives::bits::fold_emitted_word_binary(self.chunk(), start, middle, &operation, line)
+                    || (emitted_words.1 && (left_is_word || !proofs.0)
+                        && crate::primitives::bits::emit_word_right_constant(
+                            self.chunk(), middle, &operation, left_is_word, line,
+                        ))
+            });
+            if !optimized {
+                crate::primitives::bits::emit_word_comparison_with_normalized_operands(
+                    self.chunk(), opcode, proofs, line,
+                );
+            }
             self.sync_scope_slots_with_chunk();
         } else {
             self.emit_slot_target(&resolved.target, 2, self.line, "static builtin operator");
@@ -1085,7 +1249,29 @@ impl Compiler {
                 self.gave_i32_condition = true;
                 return;
             }
-            if self.profile.ecma_operator_coercion || self.profile.materialize_bool_results {
+            // These standard compare producers prove an i32 predicate. Other
+            // slot emitters keep their existing value-representation contract.
+            let raw_predicate = word_comparison.is_some()
+                || matches!(resolved.target.as_str(),
+                    "opcode:f32.eq" | "opcode:f32.ne"
+                    | "opcode:f32.lt" | "opcode:f32.le"
+                    | "opcode:f32.gt" | "opcode:f32.ge"
+                    | "opcode:f64.eq" | "opcode:f64.ne"
+                    | "opcode:f64.lt" | "opcode:f64.le"
+                    | "opcode:f64.gt" | "opcode:f64.ge"
+                    | "opcode:i64.eq" | "opcode:i64.ne"
+                    | "opcode:i64.lt_s" | "opcode:i64.lt_u"
+                    | "opcode:i64.le_s" | "opcode:i64.le_u"
+                    | "opcode:i64.gt_s" | "opcode:i64.gt_u"
+                    | "opcode:i64.ge_s" | "opcode:i64.ge_u");
+            let legacy_boolean =
+                self.uses_ecma_operator_coercion() || self.profile.materialize_bool_results;
+            let boolean_result = if raw_predicate {
+                self.comparison_results_are_boolean(legacy_boolean)
+            } else {
+                legacy_boolean
+            };
+            if boolean_result {
                 let line = self.line;
                 crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
             } else if self.operator_dispatch() != vybe_ast::OperatorDispatch::StaticBuiltin
@@ -1118,14 +1304,16 @@ impl Compiler {
             self.gave_i32_condition = true;
             return;
         }
-        if self.profile.ecma_operator_coercion || self.profile.materialize_bool_results {
+        if self.comparison_results_are_boolean(
+            self.uses_ecma_operator_coercion() || self.profile.materialize_bool_results,
+        ) {
             let line = self.line;
             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
         }
     }
 
     pub(super) fn compile_binop(&mut self, op: &BinOp) {
-        self.compile_binop_operands(op, None);
+        self.compile_binop_operands(op, None, (false, false));
     }
 
     fn is_constructed_string(expr: &Expression) -> bool {
@@ -1164,7 +1352,7 @@ impl Compiler {
             // Specialize the same equality primitive selected below. Its
             // null/undefined contract and the caller's Boolean result ABI
             // remain intact; both operand expressions have already run.
-            if self.profile.ecma_operator_coercion {
+            if self.uses_ecma_operator_coercion() {
                 crate::primitives::ops::emit_js_strict_eq_null_operand(
                     self.chunk(), null_on_left, line,
                 );
@@ -1175,9 +1363,54 @@ impl Compiler {
             }
             return;
         }
+        // Both expressions already ran; a Boolean literal is emitted as Bool.
+        // Keep this within the strict ECMA primitive: other profiles may bind
+        // their general equality through an observable comparison helper.
+        if self.uses_ecma_operator_coercion()
+            && !operands.is_some_and(|(left, right)| [left, right].iter().any(|expr|
+                matches!(&expr.kind, ExprKind::Lit(Literal::Str(_)) | ExprKind::TypeOf(_))))
+        {
+            let facts = operands.map(|(left, right)| {
+                let fact = |expr: &Expression| match &expr.kind {
+                    ExprKind::Lit(Literal::Bool(value)) => Some(*value),
+                    _ => None,
+                };
+                (fact(left), fact(right))
+            });
+            if let Some((left, right)) = facts {
+                if left.is_some() || right.is_some() {
+                    let base = self.chunk().alloc_scratch(2);
+                    let (right_slot, left_slot) = (base, base + 1);
+                    self.emit_u16(Op::LOCAL_SET, right_slot);
+                    self.emit_u16(Op::LOCAL_SET, left_slot);
+                    if let (Some(a), Some(b)) = (left, right) {
+                        self.chunk().emit_i32_const(i32::from(a == b), line);
+                    } else {
+                        let other = if left.is_some() { right_slot } else { left_slot };
+                        self.emit_u16(Op::LOCAL_GET, other);
+                        let test = self.import("wasm:js-boolean", "test");
+                        self.emit_host_call(test, 1);
+                        self.chunk().emit_if_i32(line);
+                        self.emit_u16(Op::LOCAL_GET, other);
+                        let cast = self.import("wasm:js-boolean", "cast");
+                        self.emit_host_call(cast, 1);
+                        self.chunk().emit_i32_const(i32::from(left.or(right).unwrap()), line);
+                        self.emit(Op::I32_EQ);
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, left_slot);
+                        self.emit_u16(Op::LOCAL_GET, right_slot);
+                        // Preserve the existing non-Boolean reference fallback,
+                        // including its separately classified native behavior.
+                        self.emit(Op::REF_EQ);
+                        self.chunk().emit_end(line);
+                    }
+                    return;
+                }
+            }
+        }
         // Only an actually emitted number literal establishes this fact.
         // Both operand expressions already ran in their original order.
-        if self.profile.ecma_operator_coercion {
+        if self.uses_ecma_operator_coercion() {
             let (left_number, right_number) = operands.map_or((false, false), |(left, right)| (
                 Self::is_emitted_number_literal(left),
                 Self::is_emitted_number_literal(right),
@@ -1243,7 +1476,7 @@ impl Compiler {
             let equals = self.import("wasm:js-string", "equals");
             self.emit_host_call(equals, 2);
             self.chunk().emit_else(line);
-            if self.profile.ecma_operator_coercion {
+            if self.uses_ecma_operator_coercion() {
                 self.emit_const(Value::I32(0));
             } else {
                 self.emit_u16(Op::LOCAL_GET, base);
@@ -1251,10 +1484,26 @@ impl Compiler {
                 crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
             }
             self.chunk().emit_end(line);
-        } else if self.profile.ecma_operator_coercion {
+        } else if self.uses_ecma_operator_coercion() {
             crate::primitives::ops::emit_js_strict_eq(self.chunk(), line);
         } else {
             crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        }
+    }
+
+    /// The original numeric value is a signed i32, including explicit word
+    /// operations and certified boxed bindings. Unsigned Number hints do not
+    /// establish this fact.
+    pub(super) fn proven_signed_word_operand(&self, expr: &Expression) -> bool {
+        match &expr.kind {
+            ExprKind::Binary { op: BinOp::Integer(inner, vybe_ast::BitLane::W32), .. }
+                => !inner.is_comparison(),
+            ExprKind::Binary { op: BinOp::RotL(vybe_ast::BitLane::W32)
+                | BinOp::RotR(vybe_ast::BitLane::W32), .. } => true,
+            ExprKind::Unary { op: UnaryOp::PopCount(vybe_ast::BitLane::W32)
+                | UnaryOp::LeadingZeros(vybe_ast::BitLane::W32)
+                | UnaryOp::TrailingZeros(vybe_ast::BitLane::W32), .. } => true,
+            _ => self.proven_boxed_signed_word(expr),
         }
     }
 
@@ -1269,14 +1518,70 @@ impl Compiler {
         &mut self,
         op: &BinOp,
         operands: Option<(&Expression, &Expression)>,
+        i32_results: (bool, bool),
     ) {
+        self.compile_binop_operands_with_spans(op, operands, i32_results, None, false);
+    }
+
+    pub(super) fn compile_binop_operands_with_spans(
+        &mut self, op: &BinOp, operands: Option<(&Expression, &Expression)>,
+        i32_results: (bool, bool), operand_spans: Option<(usize, usize)>, want_i32_word: bool,
+    ) {
+        if let BinOp::RotL(lane) | BinOp::RotR(lane) = op {
+            // Boxed bindings are reusable only with an explicit value proof.
+            let normalized = |expr: &Expression| *lane == vybe_ast::BitLane::W32
+                && (matches!(&expr.kind, ExprKind::Binary {
+                    op: BinOp::Integer(operation, vybe_ast::BitLane::W32), ..
+                } if !operation.is_comparison()) || self.proven_boxed_signed_word(expr));
+            let proofs = operands.map(|(left, right)| (
+                normalized(left) || i32_results.0,
+                normalized(right) || i32_results.1,
+            )).unwrap_or((false, false));
+            let line = self.line;
+            crate::primitives::bits::emit_rotate_with_normalized_operands(
+                self.chunk(), *lane, matches!(op, BinOp::RotL(_)), proofs, line,
+            );
+            return;
+        }
         if let BinOp::Integer(operation, lane) = op {
             let line = self.line;
+            if *lane == vybe_ast::BitLane::W64
+                && (operation.is_comparison() || matches!(operation,
+                    vybe_ast::IntOp::And | vybe_ast::IntOp::Or | vybe_ast::IntOp::Xor
+                    | vybe_ast::IntOp::Add | vybe_ast::IntOp::Sub))
+                && crate::primitives::bits::wide_signed_words_enabled() {
+                let proofs = operands.map(|(left, right)| (
+                    self.proven_signed_word_operand(left) || i32_results.0,
+                    self.proven_signed_word_operand(right) || i32_results.1,
+                )).unwrap_or((false, false));
+                if operation.is_comparison() {
+                    crate::primitives::bits::emit_wide_comparison_with_signed_word_operands(
+                        self.chunk(), *operation, proofs, line,
+                    );
+                    if std::mem::take(&mut self.want_i32_condition) { self.gave_i32_condition = true; }
+                    return;
+                } else if proofs == (true, true) {
+                    if matches!(operation, vybe_ast::IntOp::Add | vybe_ast::IntOp::Sub) {
+                        crate::primitives::bits::emit_wide_sum_with_signed_word_operands(
+                            self.chunk(), *operation, proofs, line,
+                        );
+                    } else {
+                        crate::primitives::bits::emit_wide_bitwise_with_signed_word_operands(
+                            self.chunk(), *operation, proofs, line,
+                        );
+                    }
+                    return;
+                }
+            }
             let normalized = |expr: &Expression| {
                 *lane == vybe_ast::BitLane::W32 && matches!(&expr.kind,
                     ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. })
+                    || (*lane == vybe_ast::BitLane::W32 && self.proven_boxed_signed_word(expr))
             };
-            let proofs = operands.map(|(left, right)| (normalized(left), normalized(right)))
+            let proofs = operands.map(|(left, right)| (
+                normalized(left) || i32_results.0,
+                normalized(right) || i32_results.1,
+            ))
                 .unwrap_or((false, false));
             if *operation == vybe_ast::IntOp::Or
                 && operands.is_some_and(|(_, right)| matches!(&right.kind, ExprKind::Lit(Literal::Int(0))))
@@ -1329,7 +1634,7 @@ impl Compiler {
         let both_provably_number = left_is_number && right_is_number;
         if let Some((left, right)) = operands {
             if let Some(target) = self.resolve_static_builtin_operator(op, left, right) {
-                self.emit_static_builtin_operator_target(&target, (left, right));
+                self.emit_static_builtin_operator_target(&target, (left, right), i32_results, operand_spans, want_i32_word);
                 return;
             }
             if matches!(op, BinOp::Eq | BinOp::NotEq)
@@ -1369,14 +1674,14 @@ impl Compiler {
                 // string operands (`"2026" + 4 == 2030`). `F64_ADD`
                 // coerces both sides via `Value::as_f64()`; `DYN_ADD`
                 // has the JS-style string-concat special case.
-                if self.profile.dynamic_add {
+                if self.directives().add_concatenates_strings.unwrap_or(false) {
                     // JS profile: ECMA §13.15.4 — call ToPrimitive on
                     // both operands with hint "default" before adding.
                     // The polyfill returns the operand unchanged for
                     // primitives (fast path) and unboxes Objects via
                     // their valueOf/toString chain (Date, custom
                     // valueOf, class instances).
-                    if self.profile.ecma_operator_coercion {
+                    if self.uses_ecma_operator_coercion() {
                         let idx = self.import("ecma:value", "add");
                         self.emit_host_call(idx, 2);
                         return;
@@ -1429,7 +1734,20 @@ impl Compiler {
                     // `LanguageHooks::arith_add`, looked up by language NAME
                     // (builtinslotplan.md §3c).
                     let line = self.line;
-                    self.emit_slot_target(&target, 2, line, "array add");
+                    let scalar_literal = |expr: &Expression| matches!(expr.kind,
+                        ExprKind::Lit(Literal::Int(_) | Literal::Float(_) |
+                            Literal::Str(_) | Literal::Bool(_) | Literal::Null));
+                    if let Some(name) = target.strip_prefix("common:")
+                        && operands.is_some_and(|(left, right)| scalar_literal(left) || scalar_literal(right))
+                    {
+                        // Forward a physical producer fact to the selected
+                        // language adapter; unhandled requests retain its recipe.
+                        self.emit_common_with_emit_request(name, 2, line,
+                            vybe_runtime::registry::emitter_results::EmitRequest::ScalarLiteralOperand);
+                        self.sync_scope_slots_with_chunk();
+                    } else {
+                        self.emit_slot_target(&target, 2, line, "array add");
+                    }
                 } else {
                     self.emit(Op::F64_ADD);
                 }
@@ -1441,12 +1759,12 @@ impl Compiler {
                     self.emit(Op::F64_SUB);
                     return;
                 }
-                if self.profile.dynamic_numeric_dispatch {
+                if self.uses_dynamic_numeric_dispatch() {
                     self.emit_js_dynamic_arith("sub", NumberArith::Sub);
                 } else if self.uses_rich_operators() {
                     self.emit_rich_binop(vybe_ast::ProtocolSlot::Sub, emit_f64_sub);
                 } else {
-                    if self.profile.ecma_operator_coercion {
+                    if self.uses_ecma_operator_coercion() {
                         self.coerce_top_two_to_number();
                     }
                     self.emit(Op::F64_SUB);
@@ -1458,24 +1776,24 @@ impl Compiler {
                     self.emit(Op::F64_MUL);
                     return;
                 }
-                if self.profile.dynamic_numeric_dispatch {
+                if self.uses_dynamic_numeric_dispatch() {
                     self.emit_js_dynamic_arith("mul", NumberArith::Mul);
                 } else if self.uses_rich_operators() {
                     self.emit_rich_binop(vybe_ast::ProtocolSlot::Mul, emit_f64_mul);
                 } else {
-                    if self.profile.ecma_operator_coercion {
+                    if self.uses_ecma_operator_coercion() {
                         self.coerce_top_two_to_number();
                     }
                     self.emit(Op::F64_MUL);
                 }
             }
             BinOp::Div => {
-                if self.profile.dynamic_numeric_dispatch {
+                if self.uses_dynamic_numeric_dispatch() {
                     self.emit_js_dynamic_arith("div", NumberArith::Div);
                 } else if self.uses_rich_operators() {
                     self.emit_rich_binop(vybe_ast::ProtocolSlot::Div, emit_f64_div);
                 } else {
-                    if self.profile.ecma_operator_coercion {
+                    if self.uses_ecma_operator_coercion() {
                         self.coerce_top_two_to_number();
                     }
                     self.emit(Op::F64_DIV);
@@ -1532,7 +1850,7 @@ impl Compiler {
                     .map(str::to_string)
                 {
                     self.emit_slot_target(&target, 2, l, "int mod");
-                } else if self.profile.dynamic_numeric_dispatch {
+                } else if self.uses_dynamic_numeric_dispatch() {
                     self.emit_js_dynamic_arith("rem", NumberArith::Mod);
                 } else if self.uses_rich_operators() {
                     // Same missing reader as `IDiv` above: a class binding
@@ -1564,7 +1882,7 @@ impl Compiler {
                     vybe_ast::EqualityFallback::Slot => {
                         if let Some(target) = self.loose_eq_target() {
                             let line = self.line;
-                            self.emit_slot_target(&target, 2, line, "equality fallback");
+                            self.emit_equality_slot_target(&target, line, "equality fallback", operands);
                             return;
                         }
                     }
@@ -1715,7 +2033,7 @@ impl Compiler {
                         }) {
                             let derived = self.loose_ne_target().is_none();
                             let line = self.line;
-                            self.emit_slot_target(&target, 2, line, "inequality fallback");
+                            self.emit_equality_slot_target(&target, line, "inequality fallback", operands);
                             if derived {
                                 crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                             }
@@ -1851,13 +2169,13 @@ impl Compiler {
                     );
                     return;
                 }
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     self.coerce_top_two_to_primitive(
                         left_num_lit || left_is_number,
                         right_num_lit || right_is_number,
                     );
                 }
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
                     // The known flags carry provably-numeric, not just
                     // literal: ToPrimitive and ToNumber are the identity on a
@@ -1911,13 +2229,13 @@ impl Compiler {
                     );
                     return;
                 }
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     self.coerce_top_two_to_primitive(
                         left_num_lit || left_is_number,
                         right_num_lit || right_is_number,
                     );
                 }
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands;
                     // the known flags carry provably-numeric (see the Lt arm).
                     let line = self.line;
@@ -1965,13 +2283,13 @@ impl Compiler {
                     );
                     return;
                 }
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     self.coerce_top_two_to_primitive(
                         left_num_lit || left_is_number,
                         right_num_lit || right_is_number,
                     );
                 }
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands;
                     // the known flags carry provably-numeric (see the Lt arm).
                     let line = self.line;
@@ -2019,13 +2337,13 @@ impl Compiler {
                     );
                     return;
                 }
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     self.coerce_top_two_to_primitive(
                         left_num_lit || left_is_number,
                         right_num_lit || right_is_number,
                     );
                 }
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands;
                     // the known flags carry provably-numeric (see the Lt arm).
                     let line = self.line;
@@ -2075,7 +2393,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, left_slot);
                 self.emit_u16(Op::LOCAL_GET, right_slot);
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     // `<=>` reloads the operands from slots, so the top two are
                     // still (left, right) and the literal facts still hold.
                     self.coerce_top_two_to_primitive(left_num_lit, right_num_lit);
@@ -2093,7 +2411,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, left_slot);
                 self.emit_u16(Op::LOCAL_GET, right_slot);
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     // `<=>` reloads the operands from slots, so the top two are
                     // still (left, right) and the literal facts still hold.
                     self.coerce_top_two_to_primitive(left_num_lit, right_num_lit);
@@ -2114,47 +2432,33 @@ impl Compiler {
             }
             BinOp::And | BinOp::Or => unreachable!(), // handled with short-circuit
             BinOp::Xor => {
-                self.emit(Op::I32_XOR);
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                };
+                self.emit_i32_xor_condition(false);
             }
             BinOp::Eqv => {
-                self.emit(Op::I32_XOR);
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                };
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                };
+                self.emit_i32_xor_condition(true);
             }
             BinOp::Imp => {
                 let rhs_slot = self.define_local("__imp_rhs");
-                let lhs_slot = self.define_local("__imp_lhs");
                 self.emit_u16(Op::LOCAL_SET, rhs_slot);
-                self.emit_u16(Op::LOCAL_SET, lhs_slot);
-                self.emit_u16(Op::LOCAL_GET, lhs_slot);
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                };
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                };
+                // The left operand already remains on the stack; no spill is read.
+                #[cfg(feature = "primitive-benchmarks")]
+                if !self.integer_truthiness_reuse {
+                    let lhs_slot = self.define_local("__imp_lhs");
+                    self.emit_u16(Op::LOCAL_TEE, lhs_slot);
+                }
+                self.emit_negated_condition();
                 self.emit_u16(Op::LOCAL_GET, rhs_slot);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 self.emit(Op::I32_OR);
-                {
+                // Both operands were normalized to 0/1 above.
+                #[cfg(feature = "primitive-benchmarks")]
+                if !self.integer_truthiness_reuse {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                };
+                }
             }
             BinOp::RotL(lane) | BinOp::RotR(lane) => {
                 let left = matches!(op, BinOp::RotL(_));
@@ -2207,7 +2511,7 @@ impl Compiler {
             }
             BinOp::UShr => {
                 self.emit_shift(Op::I32_SHR_U);
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     // ECMA-262 §13.10.2: `>>>` produces an unsigned 32-bit
                     // integer (Number). I32_SHR_U leaves the bit pattern
                     // in i32, but if the high bit is set (e.g. `-1 >>> 0`)
@@ -2216,8 +2520,7 @@ impl Compiler {
                     // negative — keeps within the f64 53-bit mantissa.
                     self.emit(Op::F64_FROM_I32);
                     let unsigned_slot = self.define_local("__js_ushr_result");
-                    self.emit_u16(Op::LOCAL_SET, unsigned_slot);
-                    self.emit_u16(Op::LOCAL_GET, unsigned_slot);
+                    self.emit_u16(Op::LOCAL_TEE, unsigned_slot);
                     self.emit_const(Value::F64(0.0));
                     self.emit(Op::F64_LT);
                     let line = self.line;
@@ -2404,8 +2707,8 @@ impl Compiler {
     pub(super) fn compile_compound_op(&mut self, op: &CompoundOp) {
         match op {
             CompoundOp::Add => {
-                if self.profile.dynamic_add {
-                    if self.profile.ecma_operator_coercion {
+                if self.directives().add_concatenates_strings.unwrap_or(false) {
+                    if self.uses_ecma_operator_coercion() {
                         self.coerce_top_two_to_default_primitive();
                     }
                     {
@@ -2417,25 +2720,25 @@ impl Compiler {
                 }
             }
             CompoundOp::Sub => {
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     self.coerce_top_two_to_number();
                 }
                 self.emit(Op::F64_SUB);
             }
             CompoundOp::Mul => {
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     self.coerce_top_two_to_number();
                 }
                 self.emit(Op::F64_MUL);
             }
             CompoundOp::Div => {
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     self.coerce_top_two_to_number();
                 }
                 self.emit(Op::F64_DIV);
             }
             CompoundOp::IDiv => {
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     self.coerce_top_two_to_number();
                 }
                 self.emit(Op::F64_DIV);
@@ -2443,7 +2746,7 @@ impl Compiler {
                 common::math::emit_trunc(self.chunk(), l);
             }
             CompoundOp::Mod => {
-                if self.profile.ecma_operator_coercion {
+                if self.uses_ecma_operator_coercion() {
                     self.coerce_top_two_to_number();
                 }
                 let l = self.line;
@@ -2560,6 +2863,30 @@ mod tests {
 
     fn str_lit(value: &str) -> Expression {
         Expression::new(ExprKind::Lit(Literal::Str(value.into())))
+    }
+
+    #[test]
+    fn static_word_arithmetic_normalizes_number_backed_operands() {
+        for (target, slot, opcode) in [
+            ("opcode:i32.add", vybe_ast::ProtocolSlot::Add, Op::I32_ADD),
+            ("opcode:i32.sub", vybe_ast::ProtocolSlot::Sub, Op::I32_SUB),
+            ("opcode:i32.mul", vybe_ast::ProtocolSlot::Mul, Op::I32_MUL),
+            ("opcode:i32.div_u", vybe_ast::ProtocolSlot::Div, Op::I32_DIV_U),
+        ] {
+            let mut compiler = compiler();
+            let left = int_lit(3_221_225_472);
+            let right = int_lit(0);
+            compiler.compile_expr(&left).unwrap();
+            compiler.compile_expr(&right).unwrap();
+            compiler.emit_static_builtin_operator_target(
+                &StaticOperatorTarget { target: target.into(), slot }, (&left, &right),
+                (false, false), None, false,
+            );
+            let dump = vybe_runtime::debug::disassemble(compiler.chunk());
+            assert_eq!(dump.matches("i64.trunc_f64_s").count(), 2, "{target}: {dump}");
+            assert_eq!(dump.matches("i32.wrap_i64").count(), 2, "{target}: {dump}");
+            assert!(dump.contains(opcode.wasm_name()), "{target}: {dump}");
+        }
     }
 
     #[test]

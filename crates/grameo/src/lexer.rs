@@ -17,8 +17,32 @@ pub(crate) struct Token {
     pub span: Span,
 }
 
-pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
-    let mut lexer = Lexer { source, offset: 0 };
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnnotationKind {
+    Ast,
+    Optimize,
+    Pratt,
+    Operator,
+    SharedPrefix,
+    SharedWrapperPrefix,
+    SharedGroupPrefix,
+    SharedInnerPrefix,
+    ChoiceHeads,
+    SourceUnit,
+    CodeSpace,
+    OwnedCaptureBoundary,
+    EmptySuccessHeads,
+    EmptySuffixHeads,
+}
+#[derive(Debug, Clone)]
+pub(crate) struct Annotation {
+    pub kind: AnnotationKind,
+    pub text: String,
+    pub span: Span,
+}
+
+pub(crate) fn lex_with_annotations(source: &str) -> Result<(Vec<Token>, Vec<Annotation>), Diagnostic> {
+    let mut lexer = Lexer { source, offset: 0, annotations: Vec::new() };
     let mut tokens = Vec::new();
     loop {
         lexer.skip_trivia()?;
@@ -28,7 +52,7 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 kind: Kind::Eof,
                 span: Span { start, end: start },
             });
-            return Ok(tokens);
+            return Ok((tokens, lexer.annotations));
         };
         let kind = match ch {
             '"' => Kind::String(lexer.quoted('"', start)?),
@@ -89,6 +113,7 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
 struct Lexer<'a> {
     source: &'a str,
     offset: usize,
+    annotations: Vec<Annotation>,
 }
 
 impl Lexer<'_> {
@@ -121,12 +146,22 @@ impl Lexer<'_> {
                 .unwrap_or(self.source.len() - self.offset);
             self.offset += whitespace;
             if self.rest().starts_with("//") {
+                let start = self.offset;
                 // LF is always a UTF-8 boundary; Unicode and CR inside a line
                 // comment retain the original behavior. Stop before LF so the
                 // next whitespace pass consumes it.
                 let remaining = self.rest().as_bytes();
                 self.offset += remaining.iter().position(|byte| *byte == b'\n')
                     .unwrap_or(remaining.len());
+                let comment = self.source[start + 2..self.offset].trim();
+                for (prefix, kind) in [("@grameo ast", AnnotationKind::Ast), ("@grameo optimize", AnnotationKind::Optimize), ("@grameo pratt", AnnotationKind::Pratt), ("@grameo operator", AnnotationKind::Operator), ("@grameo shared_prefix", AnnotationKind::SharedPrefix), ("@grameo shared_wrapper_prefix", AnnotationKind::SharedWrapperPrefix), ("@grameo shared_group_prefix", AnnotationKind::SharedGroupPrefix), ("@grameo shared_inner_prefix", AnnotationKind::SharedInnerPrefix), ("@grameo choice_heads", AnnotationKind::ChoiceHeads), ("@grameo source_unit", AnnotationKind::SourceUnit), ("@grameo code_space", AnnotationKind::CodeSpace),
+                        ("@grameo owned_capture_boundary", AnnotationKind::OwnedCaptureBoundary), ("@grameo empty_success_heads", AnnotationKind::EmptySuccessHeads), ("@grameo empty_suffix_heads", AnnotationKind::EmptySuffixHeads)] {
+                    if let Some(annotation) = comment.strip_prefix(prefix)
+                        .filter(|tail| tail.is_empty() || tail.as_bytes()[0].is_ascii_whitespace()) {
+                        self.annotations.push(Annotation {kind, text: annotation.trim().to_owned(), span: Span { start, end: self.offset }});
+                        break;
+                    }
+                }
             } else if self.rest().starts_with("/*") {
                 let start = self.offset;
                 self.offset += 2;

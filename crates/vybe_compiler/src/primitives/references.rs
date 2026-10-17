@@ -16,6 +16,92 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
+const ARGUMENT_PLACE: &str = "__vybe_argument_place";
+const ARGUMENT_VALUE: &str = "__vybe_argument_value";
+
+/// Carry an evaluated value and its place until a late-bound signature is known.
+/// The snapshot is separate from the place: a later argument can mutate the place.
+pub fn emit_late_bound_argument(
+    chunks: &mut [Chunk], current: usize, place: u16, value: u16, line: u32,
+) {
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    for (name, slot) in [(ARGUMENT_PLACE, place), (ARGUMENT_VALUE, value)] {
+        chunks[current].emit_dup(line);
+        let key = class_slots::resolve_interned(&mut chunks[current],
+            &class_slots::ClassSlot::internal(name), &class_slots::PlainNames);
+        class_slots::emit_class_set(&mut chunks[current], class_slots::ObjSource::Stack,
+            &key, class_slots::ValueSource::Local(slot), line);
+    }
+}
+
+/// Select the signature's value or alias without changing ordinary arguments.
+pub fn emit_bind_late_bound_argument(
+    chunks: &mut [Chunk], current: usize, slot: u16, alias: bool, line: u32,
+) {
+    lget(&mut chunks[current], slot, line);
+    recipes::is_object(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], slot, line);
+    emit_field_get(chunks, current, ARGUMENT_PLACE, line);
+    let place = chunks[current].alloc_scratch(1);
+    lset(&mut chunks[current], place, line);
+    emit_is_reference_from_slot(chunks, current, place, line);
+    chunks[current].emit_if(line);
+    if alias {
+        lget(&mut chunks[current], place, line);
+    } else {
+        lget(&mut chunks[current], slot, line);
+        emit_field_get(chunks, current, ARGUMENT_VALUE, line);
+    }
+    lset(&mut chunks[current], slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+/// A rest parameter contains argument carriers, not one carrier for the array.
+pub fn emit_bind_late_bound_rest_arguments(
+    chunks: &mut [Chunk], current: usize, slot: u16, alias: bool, line: u32,
+) {
+    let index = chunks[current].alloc_scratch(1);
+    let length = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let len = chunks[current].add_import("ecma:array", "length");
+    let get = chunks[current].add_import("ecma:array", "get");
+    let set = chunks[current].add_import("ecma:array", "set");
+    let to_i32 = chunks[current].add_import("wasm:js-number", "toI32");
+    lget(&mut chunks[current], slot, line);
+    chunks[current].emit_call(len, 1, line);
+    chunks[current].emit_call(to_i32, 1, line);
+    lset(&mut chunks[current], length, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], index, line);
+    let block = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], index, line);
+    lget(&mut chunks[current], length, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    lget(&mut chunks[current], slot, line);
+    lget(&mut chunks[current], index, line);
+    chunks[current].emit_call(get, 2, line);
+    lset(&mut chunks[current], value, line);
+    emit_bind_late_bound_argument(chunks, current, value, alias, line);
+    lget(&mut chunks[current], slot, line);
+    lget(&mut chunks[current], index, line);
+    lget(&mut chunks[current], value, line);
+    chunks[current].emit_call(set, 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    lget(&mut chunks[current], index, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+}
+
 fn emit_field_get(chunks: &mut [Chunk], current: usize, field: &str, line: u32) {
     let key = class_slots::resolve(
         &class_slots::ClassSlot::internal(field),
@@ -42,6 +128,24 @@ pub fn emit_byte_coordinate(chunks: &mut [Chunk], current: usize, offset: u64, l
     chunk.emit_f64_const(offset as f64, line);
     class_slots::emit_class_set(chunk, class_slots::ObjSource::Stack, &key,
         class_slots::ValueSource::Stack, line);
+}
+
+pub fn emit_byte_projection_metadata(
+    chunks: &mut [Chunk], current: usize, root: Option<u16>, fields: u16, line: u32,
+) {
+    let chunk = &mut chunks[current];
+    for (name, slot) in [
+        (super::pointers::REFERENCE_BYTE_ROOT_KEY, root),
+        (super::pointers::REFERENCE_BYTE_FIELDS_KEY, Some(fields)),
+    ] {
+        let Some(slot) = slot else { continue; };
+        chunk.emit_dup(line);
+        let key = class_slots::resolve_interned(chunk,
+            &class_slots::ClassSlot::internal(name), &class_slots::PlainNames);
+        lget(chunk, slot, line);
+        class_slots::emit_class_set(chunk, class_slots::ObjSource::Stack,
+            &key, class_slots::ValueSource::Stack, line);
+    }
 }
 
 fn emit_kind_eq(chunks: &mut [Chunk], current: usize, obj_slot: u16, kind_key: &str, line: u32) {
@@ -98,6 +202,14 @@ pub fn emit_cell_new_from_local(chunks: &mut [Chunk], current: usize, local_slot
 pub fn emit_is_reference_to_stack(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], value, line);
+    emit_is_reference_from_slot(chunks, current, value, line);
+}
+
+/// Test an already-rooted value without extending the frame with another copy.
+/// Keep the guarded tag read fresh: it may be backed by an observable getter.
+fn emit_is_reference_from_slot(
+    chunks: &mut [Chunk], current: usize, value: u16, line: u32,
+) {
     lget(&mut chunks[current], value, line);
     recipes::is_object(&mut chunks[current], line);
     chunks[current].emit_if_i32(line);
@@ -126,8 +238,7 @@ pub fn emit_autoderef_to_stack(chunks: &mut [Chunk], current: usize, line: u32) 
     }
     let chunk = &mut chunks[current];
     let value = chunk.autoderef_scratch();
-    lset(chunk, value, line);
-    lget(chunk, value, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, value, line);
     recipes::is_object(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, value, line);
@@ -147,13 +258,30 @@ pub fn emit_autoderef_to_stack(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_end(line);
 }
 
+/// Preserve the exact reference-read scratch ownership for a value whose
+/// physical producer guarantees it is not an aggregate/reference wrapper.
+/// This is not a dynamic test and must never be used for annotations or calls
+/// to writable language helpers.
+pub fn emit_nonreference_temporary_to_stack(chunks: &mut [Chunk], current: usize, line: u32) {
+    // The inlined helper path reserves additional branch-local slots and
+    // keeps a distinct frame-root region. Retain it exactly in that mode.
+    if crate::primitives::polyfills::is_compiling_runtime_helper() {
+        emit_autoderef_inline(chunks, current, line);
+        return;
+    }
+    let chunk = &mut chunks[current];
+    let value = chunk.autoderef_scratch();
+    chunk.emit_op_u16(Op::LOCAL_TEE, value, line);
+}
+
 pub fn build_autoderef() -> Chunk {
     let mut chunk = Chunk::new("__stdlib_autoderef");
     chunk.arity = 1;
     chunk.local_count = 1;
-    lget(&mut chunk, 0, 0);
     let mut chunks = vec![chunk];
-    emit_autoderef_inline(&mut chunks, 0, 0);
+    // The argument is already rooted in this helper's frame. Dispatch from
+    // it directly instead of copying it into another frame-long local.
+    emit_autoderef_from_slot(&mut chunks, 0, 0, 0);
     chunks[0].emit_op(Op::RETURN, 0);
     chunks.pop().unwrap()
 }
@@ -216,6 +344,13 @@ fn clear_guarded_read_temporaries(chunk: &mut Chunk, first: u16, line: u32) {
 fn emit_autoderef_inline(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj_slot = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], obj_slot, line);
+
+    emit_autoderef_from_slot(chunks, current, obj_slot, line);
+}
+
+fn emit_autoderef_from_slot(
+    chunks: &mut [Chunk], current: usize, obj_slot: u16, line: u32,
+) {
 
     lget(&mut chunks[current], obj_slot, line);
     recipes::is_object(&mut chunks[current], line);

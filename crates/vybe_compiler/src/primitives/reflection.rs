@@ -2370,6 +2370,7 @@ pub const FIELD_METHODS_PUBLIC: &str = "__methods_public";
 pub const FIELD_ATTRIBUTES: &str = "__attributes";
 pub const FIELD_TAGS: &str = "__tags";
 pub const FIELD_KIND: &str = "__kind";
+pub const FIELD_LIBRARY_IDENTITY: &str = "__vybe_library_identity";
 pub const FIELD_VALUE: &str = "__value";
 pub const FIELD_REF: &str = "__ref";
 
@@ -3283,8 +3284,7 @@ pub fn emit_reflect_field(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let index = chunks[current].alloc_scratch(1);
     let recv = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, recv, line);
     emit_descriptor_field(&mut chunks[current], FIELD_FIELDS, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     collections::emit_get(chunks, current, line);
@@ -3292,15 +3292,130 @@ pub fn emit_reflect_field(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
 /// Stack: `[descriptor, name] -> [field_descriptor|null]`.
 ///
-/// Language walkers may statically lower name lookups into direct field/index
-/// access when they have declaration metadata. The runtime fallback is null so
-/// unknown reflection queries remain non-panicking.
+/// Lookup uses the canonical class member tokens, including inherited tokens
+/// in the published resolution order. Unknown queries return null.
 pub fn emit_reflect_field_by_name(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let name = chunks[current].alloc_scratch(1);
     let recv = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, name, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
-    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    let lookup = build_reflect_field_lookup(chunks, line);
+    common::functions::emit_ref_func(&mut chunks[current], lookup, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
+}
+
+fn build_reflect_field_lookup(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__reflection_field_by_name");
+    c.arity = 2;
+    c.local_count = 2;
+    let order = c.alloc_scratch(1);
+    let owner_index = c.alloc_scratch(1);
+    let owner_count = c.alloc_scratch(1);
+    let owner = c.alloc_scratch(1);
+    let fields = c.alloc_scratch(1);
+    let field_index = c.alloc_scratch(1);
+    let field_count = c.alloc_scratch(1);
+    let token = c.alloc_scratch(1);
+    let get = c.add_import("ecma:object", "get");
+    let at = c.add_import("ecma:array", "get");
+    let length = c.add_import("ecma:array", "length");
+    let to_f64 = c.add_import("wasm:js-number", "toF64");
+    let from_f64 = c.add_import("wasm:js-number", "fromF64");
+    let undefined = c.add_import("wasm:js-undefined", "test");
+    let nullish = |c: &mut Chunk, slot: u16| {
+        c.emit_op_u16(Op::LOCAL_GET, slot, line);
+        c.emit_op(Op::REF_IS_NULL, line);
+        c.emit_op_u16(Op::LOCAL_GET, slot, line);
+        c.emit_call(undefined, 1, line);
+        c.emit_op(Op::I32_OR, line);
+    };
+    let array_index = |c: &mut Chunk, array: u16, index: u16| {
+        c.emit_op_u16(Op::LOCAL_GET, array, line);
+        c.emit_op_u16(Op::LOCAL_GET, index, line);
+        c.emit_op(Op::F64_FROM_I32, line);
+        c.emit_call(from_f64, 1, line);
+        c.emit_call(at, 2, line);
+    };
+    let array_length = |c: &mut Chunk, array: u16, dest: u16| {
+        c.emit_op_u16(Op::LOCAL_GET, array, line);
+        c.emit_call(length, 1, line);
+        c.emit_call(to_f64, 1, line);
+        c.emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+        c.emit_op_u16(Op::LOCAL_SET, dest, line);
+    };
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_string_const("__mro__", line);
+    c.emit_call(get, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, order, line);
+    nullish(&mut c, order);
+    c.emit_if(line);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_array_new_fixed(0, 1, line);
+    c.emit_op_u16(Op::LOCAL_SET, order, line);
+    c.emit_end(line);
+    array_length(&mut c, order, owner_count);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, owner_index, line);
+    let owners_block = c.emit_block(line);
+    let (owners_loop, _) = c.emit_loop_s(line);
+    c.emit_op_u16(Op::LOCAL_GET, owner_index, line);
+    c.emit_op_u16(Op::LOCAL_GET, owner_count, line);
+    c.emit_op(Op::I32_GE_S, line);
+    c.emit_br_if(1, line);
+    array_index(&mut c, order, owner_index);
+    crate::primitives::instructions::core_wasm::local_tee(&mut c, line, owner);
+    c.emit_string_const(FIELD_FIELDS, line);
+    c.emit_call(get, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, fields, line);
+    nullish(&mut c, fields);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    array_length(&mut c, fields, field_count);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, field_index, line);
+    let fields_block = c.emit_block(line);
+    let (fields_loop, _) = c.emit_loop_s(line);
+    c.emit_op_u16(Op::LOCAL_GET, field_index, line);
+    c.emit_op_u16(Op::LOCAL_GET, field_count, line);
+    c.emit_op(Op::I32_GE_S, line);
+    c.emit_br_if(1, line);
+    array_index(&mut c, fields, field_index);
+    crate::primitives::instructions::core_wasm::local_tee(&mut c, line, token);
+    c.emit_f64_const(2.0, line);
+    c.emit_call(from_f64, 1, line);
+    c.emit_call(at, 2, line);
+    c.emit_op_u16(Op::LOCAL_GET, 1, line);
+    ops::emit_js_strict_eq(&mut c, line);
+    c.emit_if(line);
+    c.emit_op_u16(Op::LOCAL_GET, token, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+    c.emit_op_u16(Op::LOCAL_GET, field_index, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_SET, field_index, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(fields_loop);
+    c.emit_end(line);
+    c.patch_block(fields_block);
+    c.emit_end(line);
+    c.emit_op_u16(Op::LOCAL_GET, owner_index, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_SET, owner_index, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(owners_loop);
+    c.emit_end(line);
+    c.patch_block(owners_block);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    c.emit_op(Op::RETURN, line);
+    let index = chunks.len();
+    chunks.push(c);
+    index
 }
 
 /// Stack: `[value_descriptor] -> [len(value_descriptor.__value)]`.
@@ -3314,8 +3429,7 @@ pub fn emit_reflect_index(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let index = chunks[current].alloc_scratch(1);
     let recv = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, recv, line);
     emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     collections::emit_get(chunks, current, line);
@@ -3327,8 +3441,7 @@ pub fn emit_reflect_map_index(chunks: &mut Vec<Chunk>, current: usize, line: u32
     let key = chunks[current].alloc_scratch(1);
     let recv = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, recv, line);
     emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
     emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
@@ -3360,8 +3473,7 @@ pub fn emit_reflect_can_set(chunks: &mut Vec<Chunk>, current: usize, line: u32) 
 /// Stack: `[value_descriptor] -> [bool]`.
 pub fn emit_reflect_is_zero(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let recv = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, recv, line);
     emit_descriptor_field(&mut chunks[current], FIELD_KIND, line);
     chunks[current].emit_string_const("string", line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
@@ -3384,12 +3496,10 @@ pub fn emit_reflect_is_zero(chunks: &mut Vec<Chunk>, current: usize, line: u32) 
 /// Stack: `[value_descriptor] -> [value_descriptor.__elem ?? value_descriptor]`.
 pub fn emit_reflect_elem(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let recv = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, recv, line);
     emit_descriptor_field(&mut chunks[current], "__elem", line);
     let elem = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, elem, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, elem, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, elem, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -3403,8 +3513,7 @@ pub fn emit_reflect_set_value(chunks: &mut Vec<Chunk>, current: usize, line: u32
     let value = chunks[current].alloc_scratch(1);
     let recv = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
     emit_set_field_from_stack(&mut chunks[current], FIELD_VALUE, line);
@@ -3416,8 +3525,7 @@ pub fn emit_reflect_set_primitive(chunks: &mut Vec<Chunk>, current: usize, line:
     let value = chunks[current].alloc_scratch(1);
     let recv = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     emit_set_field_from_stack(&mut chunks[current], FIELD_VALUE, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -3637,15 +3745,15 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
     crate::primitives::expressions::emit_const_index(&mut c, v12, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
 
+    // Every successful classification branches here, then returns result.
+    // The null/array checks must not branch out of the function itself.
+    let done = c.emit_block(0);
+
     // null / Nothing → Empty (0)
+    let is_null = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    // ⛔ THE CONDITION IS PUSHED OUTSIDE AND CONSUMED INSIDE. A VM block
-    // shares one operand stack so `(0,0)` worked; a WASM block ISOLATES
-    // its stack and cannot see a value left below it — V8/wasm-tools:
-    // `expected externref but nothing on stack`. It takes one param.
-    let is_null = c.emit_block_params(0, 1, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     crate::primitives::expressions::emit_const_index(&mut c, v0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
@@ -3670,8 +3778,6 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
     emit_typeof_in_chunk(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, tag, 0);
 
-    let done = c.emit_block(0);
-
     macro_rules! check {
         ($s:expr, $v:expr) => {
             c.emit_op_u16(Op::LOCAL_GET, tag, 0);
@@ -3685,7 +3791,7 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
             // matched: set result and exit outer block
             crate::primitives::expressions::emit_const_index(&mut c, $v, 0);
             c.emit_op_u16(Op::LOCAL_SET, result, 0);
-            c.emit_br(2, 0);
+            c.emit_br(1, 0);
             c.emit_end(0);
             c.patch_block(_block);
             c.emit_op(Op::DROP, 0); // drop the leftover bool
@@ -3739,7 +3845,7 @@ pub fn build_vartype(imports: &mut Chunk) -> Chunk {
         0,
     );
     crate::primitives::expressions::emit_const_index(&mut c, dt_str, 0);
-    crate::primitives::strings::emit_str_equals(&mut c, 0);
+    crate::primitives::strings::emit_equals_if_string(&mut c, false, 0);
     let _is_dt = c.emit_block_params(0, 1, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);

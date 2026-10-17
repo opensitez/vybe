@@ -8,6 +8,8 @@ license.workspace = true
 [features]
 default = []
 gui_forms = []
+primitive-benchmarks = ["vybe_runtime/primitive-benchmarks"]
+service-verification = []
 
 [dependencies]
 vybe_platform_ecma = { workspace = true }
@@ -26,6 +28,7 @@ quick-xml = "0.39"
 
 
 [dev-dependencies]
+serde_json = { workspace = true }
 vybe_platform_wasm = { workspace = true }
 wasmparser = "0.244.0"
 # Test-only. These tests exercise the BUNDLER against real php/cobol sources,

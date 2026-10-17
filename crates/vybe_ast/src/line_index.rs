@@ -55,6 +55,22 @@ impl Drop for LineIndex {
     }
 }
 
+// Index of the final line start at or before offset. The caller has proved
+// starts is nonempty; its first entry is always zero.
+fn line_start_index(starts: &[usize], offset: usize) -> usize {
+    let mut low = 0;
+    let mut high = starts.len();
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if starts[mid] <= offset {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    low - 1
+}
+
 /// 1-based `(line, column)` for a byte offset, matching pest's `line_col`, or
 /// `None` when no index is installed.
 ///
@@ -68,7 +84,7 @@ pub fn line_col(offset: usize) -> Option<(u32, u32)> {
             return None;
         }
         // The last line start at or before `offset`.
-        let idx = starts.partition_point(|&s| s <= offset) - 1;
+        let idx = line_start_index(&starts, offset);
         Some((idx as u32 + 1, (offset - starts[idx]) as u32 + 1))
     })
 }
@@ -85,7 +101,7 @@ fn ends(start: usize, end: usize) -> Option<((u32, u32), (u32, u32))> {
         if starts.is_empty() {
             return None;
         }
-        let start_idx = starts.partition_point(|&s| s <= start) - 1;
+        let start_idx = line_start_index(&starts, start);
         // Expression spans commonly fit on one line. Reuse that lookup;
         // an endpoint at the next line's start must still select the next line.
         let end_idx = if end >= starts[start_idx]
@@ -93,7 +109,7 @@ fn ends(start: usize, end: usize) -> Option<((u32, u32), (u32, u32))> {
         {
             start_idx
         } else {
-            starts.partition_point(|&s| s <= end) - 1
+            line_start_index(&starts, end)
         };
         Some((
             (start_idx as u32 + 1, (start - starts[start_idx]) as u32 + 1),

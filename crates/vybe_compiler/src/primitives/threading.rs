@@ -177,8 +177,7 @@ pub fn emit_object_monitor_addr(chunk: &mut Chunk, line: u32) {
     let get_idx = chunk.add_import("ecma:object", "get");
     let set_idx = chunk.add_import("ecma:object", "set");
 
-    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, obj_slot, line);
     chunk.emit_string_const("__vybe_monitor_addr", line);
     chunk.emit_call(get_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_TEE, addr_slot, line);

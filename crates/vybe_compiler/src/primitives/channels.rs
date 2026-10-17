@@ -24,11 +24,9 @@
 //! buffer shared across go-pointer copies), plus `__zero`.
 
 use crate::primitives::class_slots;
-use std::sync::Arc;
 
 use vybe_ast::{ChanOp, ExprKind, Expression, ObjectProperty, SelectArm, Statement};
 use vybe_runtime::Chunk;
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
 use crate::primitives::collections;
@@ -43,8 +41,7 @@ fn deref_cell_into(imports: &mut Chunk, c: &mut Chunk, line: u32) {
     let obj = c.local_count;
     let out = c.local_count + 1;
     c.local_count += 2;
-    c.emit_op_u16(Op::LOCAL_SET, obj, line);
-    c.emit_op_u16(Op::LOCAL_GET, obj, line);
+    c.emit_op_u16(Op::LOCAL_TEE, obj, line);
     c.emit_op_u16(Op::LOCAL_SET, out, line);
 
     // object-like = non-null and not undefined/number/string/boolean/bigint
@@ -76,8 +73,7 @@ fn deref_cell_into(imports: &mut Chunk, c: &mut Chunk, line: u32) {
         class_slots::Dest::Stack,
         line,
     );
-    c.emit_string_const("cell", line);
-    ops::emit_dyn_eq_into(imports, c, line);
+    ops::emit_dyn_eq_string_literal(c, "cell", line);
     c.emit_if(line);
     c.emit_op_u16(Op::LOCAL_GET, obj, line);
     let value_key = class_slots::resolve(
@@ -276,6 +272,8 @@ fn wait_slice(
     c.emit_op(Op::I32_EQ, line);
     c.emit_if(line);
     collections::emit_import_call_into(imports, c, "wasm:threads", "all_parked", 0, line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::I32_NE, line);
     c.emit_if(line);
     c.emit_op_u16(Op::LOCAL_GET, streak_slot, line);
     c.emit_i32_const(1, line);
@@ -336,8 +334,7 @@ pub fn build_chan_send(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, cap, line);
     // eff = cap == 0 ? 1 : cap  (unbuffered = one-slot rendezvous)
     c.emit_op_u16(Op::LOCAL_GET, cap, line);
-    core_wasm::i32_const(&mut c, line, 0);
-    ops::emit_dyn_eq_into(imports, &mut c, line);
+    ops::emit_dyn_eq_i32_literal(&mut c, 0, line);
     c.emit_if_value(line);
     core_wasm::i32_const(&mut c, line, 1);
     c.emit_else(line);
@@ -363,7 +360,7 @@ pub fn build_chan_send(imports: &mut Chunk) -> Chunk {
     // room? cnt < eff (dyn compare handles i32 vs f64 capacity)
     c.emit_op_u16(Op::LOCAL_GET, cnt, line);
     c.emit_op_u16(Op::LOCAL_GET, eff, line);
-    ops::emit_dyn_lt_into(imports, &mut c, line);
+    ops::emit_dyn_lt_number_lhs_into(imports, &mut c, line);
     c.emit_if(line); // $if1
     // reserve: cmpxchg(addr, cnt, cnt+1)
     c.emit_op_u16(Op::LOCAL_GET, addr, line);
@@ -383,8 +380,7 @@ pub fn build_chan_send(imports: &mut Chunk) -> Chunk {
     notify_all(&mut c, addr, line);
     // unbuffered: wait until the value is TAKEN (count back to 0)
     c.emit_op_u16(Op::LOCAL_GET, cap, line);
-    core_wasm::i32_const(&mut c, line, 0);
-    ops::emit_dyn_eq_into(imports, &mut c, line);
+    ops::emit_dyn_eq_i32_literal(&mut c, 0, line);
     c.emit_if(line); // $if3
     let (drain_loop, _) = c.emit_loop_s(line); // $drain
     c.emit_op_u16(Op::LOCAL_GET, addr, line);
@@ -460,8 +456,7 @@ fn build_chan_recv_impl(
     let (retry_loop, _) = c.emit_loop_s(line); // $retry
     c.emit_op_u16(Op::LOCAL_GET, addr, line);
     atomic(&mut c, Op::I32_ATOMIC_LOAD, line);
-    c.emit_op_u16(Op::LOCAL_SET, cnt, line);
-    c.emit_op_u16(Op::LOCAL_GET, cnt, line);
+    c.emit_op_u16(Op::LOCAL_TEE, cnt, line);
     core_wasm::i32_const(&mut c, line, 0);
     c.emit_op(Op::I32_GT_S, line);
     c.emit_if(line); // $if1 — buffered value claimed?
@@ -483,14 +478,12 @@ fn build_chan_recv_impl(
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     queue_into(imports, &mut c, line);
     collections::emit_len_into(imports, &mut c, line);
-    ops::emit_dyn_lt_into(imports, &mut c, line); // 0 < len
-    ops::emit_dyn_to_bool_into(imports, &mut c, line);
+    ops::emit_dyn_lt_number_lhs_into(imports, &mut c, line); // 0 < len
     c.emit_if(line); // $if3
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     queue_into(imports, &mut c, line);
     collections::emit_shift_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, v, line);
-    c.emit_op_u16(Op::LOCAL_GET, v, line);
+    c.emit_op_u16(Op::LOCAL_TEE, v, line);
     if with_ok {
         c.emit_bool_const(true, line);
         collections::emit_array_new_into(imports, &mut c, 2, line);
@@ -510,7 +503,7 @@ fn build_chan_recv_impl(
     c.emit_if(line); // $if4
     if throw_err_arg {
         c.emit_op_u16(Op::LOCAL_GET, 1, line); // err arg
-        c.emit_op(Op::THROW, line);
+        errors::emit_throw(&mut c, line);
     } else {
         c.emit_op_u16(Op::LOCAL_GET, ch, line);
         let zero_key = class_slots::resolve_interned(
@@ -566,8 +559,7 @@ pub fn build_chan_len(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if_value(line);
     core_wasm::i32_const(&mut c, line, 0);
@@ -601,8 +593,7 @@ pub fn build_chan_cap(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if_value(line);
     core_wasm::i32_const(&mut c, line, 0);
@@ -675,8 +666,7 @@ pub fn build_chan_ready_recv(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if_value(line);
     c.emit_bool_const(false, line);
@@ -702,8 +692,7 @@ pub fn build_chan_ready_send(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if_value(line);
     c.emit_bool_const(false, line);
@@ -728,8 +717,7 @@ pub fn build_chan_ready_send(imports: &mut Chunk) -> Chunk {
         class_slots::Dest::Stack,
         line,
     );
-    ops::emit_dyn_lt_into(imports, &mut c, line); // count < cap
-    ops::emit_dyn_to_bool_into(imports, &mut c, line);
+    ops::emit_dyn_lt_number_lhs_into(imports, &mut c, line); // count < cap
     // OR: unbuffered with a parked receiver
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     class_slots::emit_class_get(
@@ -739,8 +727,7 @@ pub fn build_chan_ready_send(imports: &mut Chunk) -> Chunk {
         class_slots::Dest::Stack,
         line,
     );
-    core_wasm::i32_const(&mut c, line, 0);
-    ops::emit_dyn_eq_into(imports, &mut c, line);
+    ops::emit_dyn_eq_i32_literal(&mut c, 0, line);
     c.emit_if_value(line);
     load_recv_waiters(&mut c, addr, line);
     core_wasm::i32_const(&mut c, line, 0);
@@ -774,8 +761,7 @@ pub fn build_chan_wait_slice(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line);
@@ -820,8 +806,7 @@ pub fn build_chan_try_send(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if(line);
     c.emit_bool_const(false, line);
@@ -843,8 +828,7 @@ pub fn build_chan_try_send(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, cap, line);
     load_futex_addr(&mut c, ch, addr, line);
     c.emit_op_u16(Op::LOCAL_GET, cap, line);
-    core_wasm::i32_const(&mut c, line, 0);
-    ops::emit_dyn_eq_into(imports, &mut c, line);
+    ops::emit_dyn_eq_i32_literal(&mut c, 0, line);
     c.emit_if(line);
     // UNBUFFERED: deliverable iff a receiver is parked. Reserve the
     // rendezvous slot (0→1) and hand the value off — the parked receiver
@@ -880,10 +864,9 @@ pub fn build_chan_try_send(imports: &mut Chunk) -> Chunk {
     c.emit_end(line);
     c.emit_op_u16(Op::LOCAL_GET, addr, line);
     atomic(&mut c, Op::I32_ATOMIC_LOAD, line);
-    c.emit_op_u16(Op::LOCAL_SET, cnt, line);
-    c.emit_op_u16(Op::LOCAL_GET, cnt, line);
+    c.emit_op_u16(Op::LOCAL_TEE, cnt, line);
     c.emit_op_u16(Op::LOCAL_GET, cap, line);
-    ops::emit_dyn_lt_into(imports, &mut c, line);
+    ops::emit_dyn_lt_number_lhs_into(imports, &mut c, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line); // full
     c.emit_bool_const(false, line);
@@ -950,8 +933,7 @@ pub fn build_chan_try_recv(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if(line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -965,8 +947,7 @@ pub fn build_chan_try_recv(imports: &mut Chunk) -> Chunk {
     atomic(&mut c, Op::I32_ATOMIC_LOAD, line);
     c.emit_op_u16(Op::LOCAL_TEE, cnt, line);
     core_wasm::i32_const(&mut c, line, 0);
-    c.emit_op(Op::I32_GT_S, line);
-    c.emit_op(Op::I32_EQZ, line);
+    c.emit_op(Op::I32_LE_S, line);
     c.emit_if(line); // nothing buffered
     emit_zero_false_pair(imports, &mut c, ch, line);
     c.emit_op(Op::RETURN, line);
@@ -985,7 +966,7 @@ pub fn build_chan_try_recv(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     queue_into(imports, &mut c, line);
     collections::emit_len_into(imports, &mut c, line);
-    ops::emit_dyn_lt_into(imports, &mut c, line);
+    ops::emit_dyn_lt_number_lhs_into(imports, &mut c, line);
     c.emit_if(line);
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     queue_into(imports, &mut c, line);
@@ -1020,8 +1001,7 @@ pub fn build_chan_try_peek(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if(line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -1034,7 +1014,7 @@ pub fn build_chan_try_peek(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     queue_into(imports, &mut c, line);
     collections::emit_len_into(imports, &mut c, line);
-    ops::emit_dyn_lt_into(imports, &mut c, line);
+    ops::emit_dyn_lt_number_lhs_into(imports, &mut c, line);
     c.emit_if(line);
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     queue_into(imports, &mut c, line);
@@ -1060,8 +1040,7 @@ pub fn build_chan_drained(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if_value(line);
     c.emit_bool_const(false, line);
@@ -1087,8 +1066,7 @@ pub fn build_chan_closed(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     deref_cell_into(imports, &mut c, line);
-    c.emit_op_u16(Op::LOCAL_SET, ch, line);
-    c.emit_op_u16(Op::LOCAL_GET, ch, line);
+    c.emit_op_u16(Op::LOCAL_TEE, ch, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if_value(line);
     c.emit_bool_const(false, line);

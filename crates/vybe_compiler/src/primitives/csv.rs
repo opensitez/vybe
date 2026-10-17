@@ -40,7 +40,7 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn call(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -405,8 +405,7 @@ pub(crate) fn emit_parse_document_body(
                     get(&mut chunks[current], i, line);
                     chunks[current].emit_f64_const(1.0, line);
                     chunks[current].emit_op(Op::F64_ADD, line);
-                    set(&mut chunks[current], next, line);
-                    get(&mut chunks[current], next, line);
+                    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, next);
                     get(&mut chunks[current], n, line);
                     chunks[current].emit_op(Op::F64_LT, line);
                     chunks[current].emit_if(line);
@@ -745,8 +744,7 @@ fn emit_plain_run(
         // Reuse future positions and cache misses as n. Each token search
         // resumes only after the preceding occurrence has been consumed.
         get(&mut chunks[current], token_cache + probe as u16, line);
-        set(&mut chunks[current], candidate, line);
-        get(&mut chunks[current], candidate, line);
+        crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, candidate);
         get(&mut chunks[current], search_start, line);
         chunks[current].emit_op(Op::F64_LT, line);
         chunks[current].emit_if(line);
@@ -760,8 +758,7 @@ fn emit_plain_run(
         }
         get(&mut chunks[current], search_start, line);
         call(chunks, current, "ecma:string", "indexOf", 3, line);
-        set(&mut chunks[current], candidate, line);
-        get(&mut chunks[current], candidate, line);
+        crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, candidate);
         chunks[current].emit_f64_const(0.0, line);
         chunks[current].emit_op(Op::F64_LT, line);
         chunks[current].emit_if(line);

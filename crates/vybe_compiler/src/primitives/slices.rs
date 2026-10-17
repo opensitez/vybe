@@ -156,15 +156,26 @@ fn is_string(chunks: &mut [Chunk], current: usize, obj: u16, line: u32) {
 
 /// Emit `dst = neg ? a : b`, where `a`/`b` are provided as closures that push
 /// one value. Uses step sign as the selector when `neg` names the step slot.
+#[derive(Clone, Copy)]
+enum StepSign {
+    Dynamic(u16),
+    Positive,
+}
+
 fn set_by_step_sign(
     chunks: &mut [Chunk],
     current: usize,
-    step: u16,
+    step: StepSign,
     dst: u16,
     line: u32,
     neg_branch: impl Fn(&mut [Chunk], usize, u32),
     pos_branch: impl Fn(&mut [Chunk], usize, u32),
 ) {
+    let StepSign::Dynamic(step) = step else {
+        pos_branch(chunks, current, line);
+        set(chunks, current, dst, line);
+        return;
+    };
     is_neg(chunks, current, step, line);
     chunks[current].emit_if(line);
     neg_branch(chunks, current, line);
@@ -185,7 +196,7 @@ fn normalize_bound(
     current: usize,
     raw: u16,
     dst: u16,
-    step: u16,
+    step: StepSign,
     len: u16,
     line: u32,
     default_neg: i32,
@@ -298,11 +309,11 @@ fn normalize_slice_into(
 
     // lo default: step<0 ? len-1 : 0 ; clamp low: step<0 ? -1 : 0
     normalize_bound(
-        chunks, current, lower_in, lo, step_n, len, line, LEN_M1, 0, -1,
+        chunks, current, lower_in, lo, StepSign::Dynamic(step_n), len, line, LEN_M1, 0, -1,
     );
     // hi default: step<0 ? -1 : len ; clamp low: step<0 ? -1 : 0
     normalize_bound(
-        chunks, current, upper_in, hi, step_n, len, line, -1, LEN, -1,
+        chunks, current, upper_in, hi, StepSign::Dynamic(step_n), len, line, -1, LEN, -1,
     );
 
     // Empty policy: if step still 0, force an empty range (lo=hi=0, step=1).
@@ -322,27 +333,350 @@ fn normalize_slice_into(
 }
 
 /// Strided slice. Stack: `[obj, lower, upper, step] -> [result]`, where any of
-/// `lower`/`upper`/`step` may be NULL (absent bound). Emits inline CPython
-/// slice normalization + strided copy; string operands rejoin to a string.
-pub fn emit_stepped(chunks: &mut [Chunk], current: usize, line: u32, opts: Options) {
-    let base = chunks[current].alloc_scratch(11);
-    let obj = base;
-    let lower_in = base + 1;
-    let upper_in = base + 2;
-    let step_in = base + 3;
-    let len = base + 4;
-    let step_n = base + 5;
-    let lo = base + 6;
-    let hi = base + 7;
-    let i = base + 8;
-    let result = base + 9;
-    let cond = base + 10;
+/// `lower`/`upper`/`step` may be NULL (absent bound). Emits one shared CPython
+/// normalization/copy helper per module and policy; strings rejoin to a string.
+pub fn emit_stepped(chunks: &mut Vec<Chunk>, current: usize, line: u32, opts: Options) {
+    let name = format!("__primitive_slice_step_{}_{}", if opts.zero_step == ZeroStep::Raise { "raise" } else { "empty" }, opts.value_error);
+    let helper = if let Some(index) = chunks.iter().position(|chunk| chunk.name == name) {
+        index
+    } else {
+        let mut body = Chunk::new(name.as_str());
+        body.arity = 4;
+        body.param_count = 4;
+        body.local_count = 4;
+        let mut owned = vec![body];
+        emit_guarded_slice(&mut owned, 0, 0, opts, 0);
+        owned[0].emit_op(Op::RETURN, 0);
+        chunks.push(owned.remove(0));
+        chunks.len() - 1
+    };
+    let args = chunks[current].alloc_scratch(4);
+    for slot in (0..4).rev() { set(chunks, current, args + slot, line); }
+    crate::primitives::functions::emit_ref_func(&mut chunks[current], helper, 0, line);
+    for slot in 0..4 { get(chunks, current, args + slot, line); }
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 4, line);
+}
 
-    // Pop [obj, lower, upper, step] (step on top).
-    set(chunks, current, step_in, line);
-    set(chunks, current, upper_in, line);
-    set(chunks, current, lower_in, line);
-    set(chunks, current, obj, line);
+fn emit_guarded_slice(chunks: &mut Vec<Chunk>, current: usize, args: u16, opts: Options, line: u32) {
+    // A Number or absent bound cannot run user coercion callbacks. Every
+    // other value retains the original dynamic normalization and copy body.
+    for slot in 1..4 {
+        get(chunks, current, args + slot, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        get(chunks, current, args + slot, line);
+        let test = chunks[current].add_import("wasm:js-number", "test");
+        chunks[current].emit_call(test, 1, line);
+        chunks[current].emit_op(Op::I32_OR, line);
+        if slot > 1 { chunks[current].emit_op(Op::I32_AND, line); }
+    }
+    // Restrict the sequence to built-in strings and arrays, whose length
+    // is numeric. Custom objects and typed arrays keep the original path.
+    is_string(chunks, current, args, line);
+    get(chunks, current, args, line);
+    let array_test = chunks[current].add_import("ecma:array", "isArray");
+    chunks[current].emit_call(array_test, 1, line);
+    let boolean_cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(boolean_cast, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    emit_numeric_slice(chunks, current, args, opts, line);
+    chunks[current].emit_else(line);
+    emit_stepped_inline(chunks, current, line, opts);
+    chunks[current].emit_end(line);
+}
+
+fn numeric_bound_const(chunks: &mut [Chunk], current: usize, len: u16, v: i32, line: u32) {
+    match v {
+        LEN => get(chunks, current, len, line),
+        LEN_M1 => {
+            get(chunks, current, len, line);
+            core_wasm::i32_const(&mut chunks[current], line, 1);
+            chunks[current].emit_op(Op::I32_SUB, line);
+        }
+        _ => core_wasm::i32_const(&mut chunks[current], line, v),
+    }
+}
+
+/// Push i32 bool: `slot < 0`.
+fn numeric_is_neg(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    get(chunks, current, slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::F64_LT, line);
+}
+
+/// Emit `dst = neg ? a : b`, where `a`/`b` are provided as closures that push
+/// one value. Uses step sign as the selector when `neg` names the step slot.
+fn numeric_set_by_step_sign(
+    chunks: &mut [Chunk],
+    current: usize,
+    step: u16,
+    dst: u16,
+    line: u32,
+    neg_branch: impl Fn(&mut [Chunk], usize, u32),
+    pos_branch: impl Fn(&mut [Chunk], usize, u32),
+) {
+    numeric_is_neg(chunks, current, step, line);
+    chunks[current].emit_if(line);
+    neg_branch(chunks, current, line);
+    set(chunks, current, dst, line);
+    chunks[current].emit_else(line);
+    pos_branch(chunks, current, line);
+    set(chunks, current, dst, line);
+    chunks[current].emit_end(line);
+}
+
+/// Normalize one bound (`raw` -> `dst`) per CPython `PySlice_AdjustIndices`.
+/// `default_neg`/`default_pos` supply the value when `raw` is NULL (absent),
+/// chosen by step sign. `clamp_low_neg`/`clamp_low_pos` supply the value when
+/// the bound underflows (`< 0`); overflow (`>= len`) clamps to `len-1`/`len`.
+#[allow(clippy::too_many_arguments)]
+fn numeric_normalize_bound(
+    chunks: &mut [Chunk],
+    current: usize,
+    raw: u16,
+    dst: u16,
+    step: u16,
+    len: u16,
+    line: u32,
+    default_neg: i32,
+    default_pos: i32,
+    clamp_low_neg: i32,
+) {
+    // if raw is NULL -> default by step sign
+    get(chunks, current, raw, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    numeric_set_by_step_sign(
+        chunks,
+        current,
+        step,
+        dst,
+        line,
+        move |c, cur, l| numeric_bound_const(c, cur, len, default_neg, l),
+        move |c, cur, l| numeric_bound_const(c, cur, len, default_pos, l),
+    );
+    chunks[current].emit_else(line);
+    // provided: dst = raw
+    get(chunks, current, raw, line);
+    set(chunks, current, dst, line);
+    // negative wrap: if dst < 0 { dst += len } — canonical, ecma-slice parity.
+    numeric_is_neg(chunks, current, dst, line);
+    chunks[current].emit_if(line);
+    get(chunks, current, dst, line);
+    get(chunks, current, len, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(chunks, current, dst, line);
+    chunks[current].emit_end(line);
+    // clamp low: if dst < 0 { dst = (step<0) ? clamp_low_neg : 0 }
+    numeric_is_neg(chunks, current, dst, line);
+    chunks[current].emit_if(line);
+    numeric_set_by_step_sign(
+        chunks,
+        current,
+        step,
+        dst,
+        line,
+        move |c, cur, l| core_wasm::i32_const(&mut c[cur], l, clamp_low_neg),
+        |c, cur, l| core_wasm::i32_const(&mut c[cur], l, 0),
+    );
+    chunks[current].emit_else(line);
+    // clamp high: else if dst >= len { dst = (step<0) ? len-1 : len }
+    get(chunks, current, dst, line);
+    get(chunks, current, len, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    chunks[current].emit_if(line);
+    numeric_set_by_step_sign(
+        chunks,
+        current,
+        step,
+        dst,
+        line,
+        move |c, cur, l| {
+            get(c, cur, len, l);
+            core_wasm::i32_const(&mut c[cur], l, 1);
+            c[cur].emit_op(Op::I32_SUB, l); // len - 1
+        },
+        move |c, cur, l| get(c, cur, len, l),
+    );
+    chunks[current].emit_end(line); // end (dst >= len)
+    chunks[current].emit_end(line); // end (dst < 0)
+    chunks[current].emit_end(line); // end (raw NULL?)
+}
+
+/// Fill the `step_n`/`lo`/`hi` slots from the raw `lower_in`/`upper_in`/
+/// `step_in` slots and `len`, per CPython `PySlice_AdjustIndices`. Shared by
+/// strided read, assignment, and deletion. `opts.zero_step` is honored (Raise
+/// emits a throw; Empty forces an empty range).
+#[allow(clippy::too_many_arguments)]
+fn numeric_normalize_slice_into(
+    chunks: &mut [Chunk],
+    current: usize,
+    lower_in: u16,
+    upper_in: u16,
+    step_in: u16,
+    len: u16,
+    step_n: u16,
+    lo: u16,
+    hi: u16,
+    opts: Options,
+    line: u32,
+) {
+    // step_n = step_in ?? 1
+    get(chunks, current, step_in, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    set(chunks, current, step_n, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, step_in, line);
+    set(chunks, current, step_n, line);
+    chunks[current].emit_end(line);
+
+    // step == 0 policy (Raise diverges; Empty handled after normalization).
+    if opts.zero_step == ZeroStep::Raise {
+        get(chunks, current, step_n, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op(Op::F64_EQ, line);
+        chunks[current].emit_if(line);
+        class_slots::emit_class_alloc(&mut chunks[current], line);
+        chunks[current].emit_dup(line);
+        chunks[current].emit_string_const("slice step cannot be zero", line);
+        errors::emit_exception_new_finalize(&mut chunks[current], opts.value_error, line);
+        errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+    }
+
+    // lo default: step<0 ? len-1 : 0 ; clamp low: step<0 ? -1 : 0
+    numeric_normalize_bound(
+        chunks, current, lower_in, lo, step_n, len, line, LEN_M1, 0, -1,
+    );
+    // hi default: step<0 ? -1 : len ; clamp low: step<0 ? -1 : 0
+    numeric_normalize_bound(
+        chunks, current, upper_in, hi, step_n, len, line, -1, LEN, -1,
+    );
+
+    // Empty policy: if step still 0, force an empty range (lo=hi=0, step=1).
+    if opts.zero_step == ZeroStep::Empty {
+        get(chunks, current, step_n, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op(Op::F64_EQ, line);
+        chunks[current].emit_if(line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        set(chunks, current, lo, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        set(chunks, current, hi, line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        set(chunks, current, step_n, line);
+        chunks[current].emit_end(line);
+    }
+}
+
+fn emit_numeric_slice(chunks: &mut Vec<Chunk>, current: usize, args: u16, opts: Options, line: u32) {
+    let obj = args;
+    let lower_in = args + 1;
+    let upper_in = args + 2;
+    let step_in = args + 3;
+    let base = chunks[current].alloc_scratch(6);
+    let len = base;
+    let step_n = base + 1;
+    let lo = base + 2;
+    let hi = base + 3;
+    let i = base + 4;
+    let result = base + 5;
+    let string_flag = lower_in;
+    // result = []
+    collections::emit_array_new(chunks, current, 0, line);
+    set(chunks, current, result, line);
+
+    // len = length(obj)
+    get(chunks, current, obj, line);
+    collections::emit_len(chunks, current, line);
+    set(chunks, current, len, line);
+
+    numeric_normalize_slice_into(
+        chunks, current, lower_in, upper_in, step_in, len, step_n, lo, hi, opts, line,
+    );
+
+    is_string(chunks, current, obj, line);
+    set(chunks, current, string_flag, line);
+
+    // i = lo
+    get(chunks, current, lo, line);
+    set(chunks, current, i, line);
+
+    // while ( (step>0 && i<hi) || (step<0 && i>hi) ) { result.push(obj[i]); i += step }
+    let st = loops::emit_loop_start(chunks, current, line);
+    // cond = (step_n > 0) ? (i < hi) : (i > hi)
+    get(chunks, current, step_n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if_i32(line);
+    get(chunks, current, i, line);
+    get(chunks, current, hi, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, i, line);
+    get(chunks, current, hi, line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_end(line);
+    loops::emit_loop_cond_from_i32(chunks, current, line); // break when false
+
+    // result.push( is_string(obj) ? charAt(obj,i) : obj[i] )
+    get(chunks, current, result, line);
+    get(chunks, current, string_flag, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, obj, line);
+    get(chunks, current, i, line);
+    {
+        let idx = chunks[current].add_import("ecma:string", "charAt");
+        chunks[current].emit_call(idx, 2, line);
+    }
+    chunks[current].emit_else(line);
+    get(chunks, current, obj, line);
+    get(chunks, current, i, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // i += step_n
+    get(chunks, current, i, line);
+    get(chunks, current, step_n, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(chunks, current, i, line);
+
+    loops::emit_loop_end(chunks, current, st, line);
+
+    // Rejoin strings: is_string(obj) ? result.join("") : result
+    get(chunks, current, string_flag, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, result, line);
+    chunks[current].emit_string_const("", line);
+    collections::emit_join(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, result, line);
+    chunks[current].emit_end(line);
+
+    // Preserve tuple-ness: tuple[i:j:k] stays a tuple (no-op for lists/strings).
+    get(chunks, current, obj, line);
+    tuples::emit_propagate_tag(chunks, current, line);
+}
+
+fn emit_stepped_inline(chunks: &mut [Chunk], current: usize, line: u32, opts: Options) {
+    // The helper's four parameters already hold the evaluated inputs.
+    let obj = 0;
+    let lower_in = 1;
+    let upper_in = 2;
+    let step_in = 3;
+    let base = chunks[current].alloc_scratch(7);
+    let len = base;
+    let step_n = base + 1;
+    let lo = base + 2;
+    let hi = base + 3;
+    let i = base + 4;
+    let result = base + 5;
+    let cond = base + 6;
 
     // result = []
     collections::emit_array_new(chunks, current, 0, line);
@@ -442,15 +776,14 @@ fn emit_stride_cond(chunks: &mut [Chunk], current: usize, step_n: u16, i: u16, h
 /// Stack: `[obj, lower|null, upper|null, value] -> []`. Bounds wrap from the end
 /// and clamp; the array is mutated in place (remove the range, insert `value`).
 pub fn emit_splice_assign(chunks: &mut [Chunk], current: usize, line: u32) {
-    let b = chunks[current].alloc_scratch(8);
+    let b = chunks[current].alloc_scratch(7);
     let obj = b;
     let lower_in = b + 1;
     let upper_in = b + 2;
     let value = b + 3;
     let len = b + 4;
-    let one = b + 5;
-    let lo = b + 6;
-    let hi = b + 7;
+    let lo = b + 5;
+    let hi = b + 6;
 
     set(chunks, current, value, line);
     set(chunks, current, upper_in, line);
@@ -460,21 +793,19 @@ pub fn emit_splice_assign(chunks: &mut [Chunk], current: usize, line: u32) {
     get(chunks, current, obj, line);
     collections::emit_len(chunks, current, line);
     set(chunks, current, len, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    set(chunks, current, one, line);
 
     // Contiguous (step = 1): reuse the CPython bound normalization.
-    normalize_bound(chunks, current, lower_in, lo, one, len, line, LEN_M1, 0, -1);
-    normalize_bound(chunks, current, upper_in, hi, one, len, line, -1, LEN, -1);
+    normalize_bound(chunks, current, lower_in, lo, StepSign::Positive, len, line, LEN_M1, 0, -1);
+    normalize_bound(chunks, current, upper_in, hi, StepSign::Positive, len, line, -1, LEN, -1);
 
     // count = max(hi - lo, 0)  (stored back into hi)
     get(chunks, current, hi, line);
     get(chunks, current, lo, line);
     chunks[current].emit_op(Op::I32_SUB, line);
-    set(chunks, current, hi, line);
-    get(chunks, current, hi, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, hi);
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    ops::emit_dyn_lt(&mut chunks[current], line);
+    // I32_SUB above and the literal zero are physical signed words.
+    chunks[current].emit_op(Op::I32_LT_S, line);
     chunks[current].emit_if(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     set(chunks, current, hi, line);
@@ -738,8 +1069,7 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
 
     // step=0 would otherwise spin forever; return empty slice.
     c.emit_op_u16(Op::LOCAL_GET, 7, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_eq_i32_literal(&mut c, 0, 0);
     c.emit_if(0);
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op(Op::RETURN, 0);

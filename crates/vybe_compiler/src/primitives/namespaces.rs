@@ -61,11 +61,19 @@ pub(crate) fn resolve_in(
 }
 
 pub(crate) fn normalize_source_path(name: &str) -> String {
-    name.trim_start_matches(['\\', '.'])
-        .split(['\\', '.'])
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(".")
+    // Most lookups are already a single identifier. Avoid allocating an
+    // intermediate segment vector for those and for qualified identities.
+    if !name.as_bytes().iter().any(|byte| matches!(byte, b'\\' | b'.')) {
+        return name.to_owned();
+    }
+    let mut normalized = String::with_capacity(name.len());
+    for part in name.split(['\\', '.']).filter(|part| !part.is_empty()) {
+        if !normalized.is_empty() {
+            normalized.push('.');
+        }
+        normalized.push_str(part);
+    }
+    normalized
 }
 
 /// Runtime twin of [`normalize_source_path`] — stack: `[string] → [string]`.
@@ -331,6 +339,53 @@ mod tests {
 
     // The registry is process-global; serialize tests that touch it.
     static LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn type_lookup_borrows_tables_for_direct_and_leaf_resolution() {
+        let mut methods = Subtree::new();
+        methods.insert("Read".into(), host_fn("probe", "read"));
+        let mut statics = Subtree::new();
+        statics.insert("Create".into(), host_fn("probe", "create"));
+        let mut types = Subtree::new();
+        types.insert("Widget".into(), NamespaceNode::Type {
+            ctor: None, ctor_call: None, statics, methods,
+            member_returns: Default::default(),
+        });
+        let mut tree = Subtree::new();
+        tree.insert("platform".into(), NamespaceNode::Namespace(types));
+        let NamespaceNode::Namespace(types) = &tree["platform"] else { panic!() };
+        let NamespaceNode::Type { statics, methods, .. } = &types["Widget"] else { panic!() };
+        let scopes = ["platform".to_owned()];
+        for name in ["platform.Widget", "Widget"] {
+            let (found_statics, found_methods) = find_type_node(&tree, &scopes, name, None).unwrap();
+            assert!(std::ptr::eq(statics, found_statics));
+            assert!(std::ptr::eq(methods, found_methods));
+        }
+        assert!(find_type_node(&tree, &scopes, "widget", None).is_none());
+        assert!(find_type_node(&tree, &scopes, "widget", FOLD_ASCII).is_some());
+        assert!(find_type_node(&tree, &["other".into()], "Widget", FOLD_ASCII).is_none());
+    }
+
+    #[test]
+    fn source_path_normalization_preserves_separator_and_unicode_semantics() {
+        let alphabet = ["", "a", "App", "é", "类", ".", "\\", "..", "\\\\", " "];
+        for a in alphabet {
+            for b in alphabet {
+                for c in alphabet {
+                    for d in alphabet {
+                        let name = format!("{a}{b}{c}{d}");
+                        let expected = name.trim_start_matches(['\\', '.'])
+                            .split(['\\', '.'])
+                            .filter(|part| !part.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(".");
+                        assert_eq!(normalize_source_path(&name), expected, "{name:?}");
+                    }
+                }
+            }
+        }
+    }
+
 
     fn seed() {
         clear_registry_for_tests();
@@ -916,10 +971,11 @@ pub fn has_root(root: &str) -> bool {
 /// classes: `Text` is a Flutter widget AND a .NET-ish name, and an unscoped
 /// search answers whichever registered first. A language declares which roots
 /// its type names come from — a property of the language, not its identity.
-fn find_type_node(scope: &[String], class_name: &str, fold: Fold) -> Option<(Subtree, Subtree)> {
+// The caller holds the registry read lock. Return borrowed tables so a
+// single-member query does not clone every member of the matched type.
+fn find_type_node<'a>(tree: &'a Subtree, scope: &[String], class_name: &str, fold: Fold) -> Option<(&'a Subtree, &'a Subtree)> {
     let wanted = class_name.trim().to_string();
     let leaf = wanted.rsplit('.').next().unwrap_or(&wanted).to_string();
-    let guard = registry().read().unwrap();
 
     for root in scope {
         let mut direct: Vec<&str> = Vec::new();
@@ -934,7 +990,7 @@ fn find_type_node(scope: &[String], class_name: &str, fold: Fold) -> Option<(Sub
         if direct.is_empty() {
             continue;
         }
-        let Some(mut node) = fold_get(&guard.tree, direct[0], fold) else {
+        let Some(mut node) = fold_get(tree, direct[0], fold) else {
             continue;
         };
         let mut ok = true;
@@ -965,16 +1021,16 @@ fn find_type_node(scope: &[String], class_name: &str, fold: Fold) -> Option<(Sub
                 statics, methods, ..
             } = node
         {
-            return Some((statics.clone(), methods.clone()));
+            return Some((statics, methods));
         }
     }
 
-    fn walk(
-        node: &NamespaceNode,
+    fn walk<'a>(
+        node: &'a NamespaceNode,
         leaf: &str,
         wanted: &str,
         path: &str,
-        out: &mut Option<(Subtree, Subtree)>,
+        out: &mut Option<(&'a Subtree, &'a Subtree)>,
         fold: Fold,
     ) {
         if out.is_some() {
@@ -1001,7 +1057,7 @@ fn find_type_node(scope: &[String], class_name: &str, fold: Fold) -> Option<(Sub
                             .to_ascii_lowercase()
                             .ends_with(&wanted.to_ascii_lowercase()))
                 {
-                    *out = Some((statics.clone(), methods.clone()));
+                    *out = Some((statics, methods));
                 }
             }
             _ => {}
@@ -1015,7 +1071,7 @@ fn find_type_node(scope: &[String], class_name: &str, fold: Fold) -> Option<(Sub
         // root comes from a REGISTRAR, which now writes the declared case.
         // Those two no longer have to agree letter-for-letter, and this is the
         // seam where they meet.
-        if let Some(v) = fold_get(&guard.tree, root, fold) {
+        if let Some(v) = fold_get(tree, root, fold) {
             walk(v, &leaf, &wanted, root, &mut out, fold);
         }
     }
@@ -1148,8 +1204,9 @@ pub fn lookup_type_instance_member(
     member: &str,
     fold: Fold,
 ) -> Option<NamespaceNode> {
-    let (_, methods) = find_type_node(scope, class_name, fold)?;
-    fold_get(&methods, member, fold).cloned()
+    let guard = registry().read().unwrap();
+    let (_, methods) = find_type_node(&guard.tree, scope, class_name, fold)?;
+    fold_get(methods, member, fold).cloned()
 }
 
 /// A static member of `class_name`, from the type's registered `statics`.
@@ -1159,8 +1216,9 @@ pub fn lookup_type_static_member(
     member: &str,
     fold: Fold,
 ) -> Option<NamespaceNode> {
-    let (statics, _) = find_type_node(scope, class_name, fold)?;
-    fold_get(&statics, member, fold).cloned()
+    let guard = registry().read().unwrap();
+    let (statics, _) = find_type_node(&guard.tree, scope, class_name, fold)?;
+    fold_get(statics, member, fold).cloned()
 }
 
 /// The declared return type of `member` on `class_name`, if a platform
@@ -1643,7 +1701,8 @@ pub fn declares_path(path: &[&str], fold: Fold) -> bool {
 
 /// True when any registered platform contributed a `Type` node for this name.
 pub fn is_registered_type(scope: &[String], class_name: &str, fold: Fold) -> bool {
-    find_type_node(scope, class_name, fold).is_some()
+    let guard = registry().read().unwrap();
+    find_type_node(&guard.tree, scope, class_name, fold).is_some()
 }
 
 /// Test-only: wipe the registry so unit tests are order-independent.
@@ -1753,6 +1812,13 @@ pub fn mount_host_exports<I>(exports: I)
 where
     I: IntoIterator<Item = (String, String)>,
 {
+    // Every namespace resolution asks for this mount, including concurrent
+    // include emitters. Once installed, no mutation is needed: let those
+    // lookups share a read lock rather than serialize on the write lock.
+    // The write-side recheck below still arbitrates the first mount and reset.
+    if registry().read().unwrap().host_exports_mounted {
+        return;
+    }
     let mut guard = registry().write().unwrap();
     // Checked and set under the SAME lock as the tree it describes.
     if guard.host_exports_mounted {

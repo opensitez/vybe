@@ -1,0 +1,13 @@
+[package]
+name = "vybe_ast_bindings"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+description = "Shared common-AST constructors for Grameo grammar bindings"
+
+[workspace]
+
+[dependencies]
+grameo = { path = "../grameo" }
+vybe_ast = { path = "../vybe_ast" }

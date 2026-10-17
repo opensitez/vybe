@@ -25,6 +25,19 @@ impl CaptureRule {
     }
 }
 
+/// Parse-local capture token supplied to an opt-in semantic finish hook.
+/// Store it transactionally with the value it describes. It is usable only
+/// with the successful capture tree from that build; rollback or child pruning
+/// can invalidate it. Typed anchors validate source, range, rule and span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureHandle {
+    pub(crate) index: usize,
+    pub(crate) rule: usize,
+    pub(crate) span: Span,
+    pub(crate) source_ptr: usize,
+    pub(crate) source_len: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Node {
     pub rule: usize,
@@ -68,6 +81,13 @@ impl Nodes {
             Self::Wide(Vec::new())
         }
     }
+    pub(crate) fn collapse_wrapper(&mut self, index: usize) {
+        match self {
+            Self::Compact(nodes) => { nodes.remove(index); for node in &mut nodes[index..] { node.subtree_end -= 1; } }
+            Self::Wide(nodes) => { nodes.remove(index); for node in &mut nodes[index..] { node.subtree_end -= 1; } }
+        }
+    }
+    pub(crate) fn retag_wrapper(&mut self,index:usize,rule:usize){match self {Self::Compact(v)=>v[index].rule=rule as u32,Self::Wide(v)=>v[index].rule=rule}}
     pub(crate) fn reserve(&mut self, additional: usize) {
         match self {
             Self::Compact(nodes) => nodes.reserve(additional),
@@ -146,6 +166,21 @@ pub struct ParseTree<'g, 'i> {
 }
 
 impl<'g, 'i> ParseTree<'g, 'i> {
+    /// Copy only one finalized subtree for a semantic callback while matching
+    /// continues. Absolute source spans stay unchanged; arena indexes are local.
+    pub(crate) fn completed_subtree(grammar: &'g dyn Program, source: &'i str,
+        nodes: &Nodes, index: usize) -> Self {
+        let root = nodes.get(index);
+        let mut subtree = Nodes::new(source.len());
+        subtree.reserve(root.subtree_end - index);
+        for i in index..root.subtree_end {
+            let mut node = nodes.get(i);
+            node.subtree_end -= index;
+            subtree.push(node);
+        }
+        Self { grammar, source, nodes: subtree, consumed: root.span.end }
+    }
+
     pub fn consumed(&self) -> usize {
         self.consumed
     }

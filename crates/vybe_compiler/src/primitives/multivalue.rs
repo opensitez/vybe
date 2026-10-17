@@ -6,9 +6,8 @@
 //! It is intentionally separate from `packing.rs`, which is binary/data layout.
 
 use crate::primitives::class_slots;
-use std::sync::Arc;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 pub const MULTI_VALUE_TAG: &str = "__vybe_multi_value";
 

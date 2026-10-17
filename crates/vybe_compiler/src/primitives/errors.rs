@@ -5,9 +5,8 @@
 //! - try_end pops the handler on normal (non-throwing) exit
 
 use crate::primitives::class_slots;
-use std::sync::Arc;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 use crate::primitives::reflection;
 use vybe_ast::{CatchClause, ExprKind, Expression, Statement, StmtKind};

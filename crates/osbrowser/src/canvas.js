@@ -6,6 +6,8 @@ window.vybeCanvas = (() => {
     : Object.entries(value)[0];
   const prop = name => name[0].toLowerCase() + name.slice(1);
   const rgba = values => `rgba(${values[0]},${values[1]},${values[2]},${values[3] / 255})`;
+  const pixelView = pixels => pixels instanceof Uint8ClampedArray
+    ? pixels : Uint8ClampedArray.from(pixels);
 
   function targetOf(name, doc, nodes) {
     if (name.startsWith('n') && /^n\d+$/.test(name)) return nodes.get(Number(name.slice(1)));
@@ -40,7 +42,7 @@ window.vybeCanvas = (() => {
     const canvas = document.createElement('canvas');
     canvas.width = width; canvas.height = height;
     const ctx = canvas.getContext('2d');
-    ctx.putImageData(new ImageData(Uint8ClampedArray.from(pixels), width, height), 0, 0);
+    ctx.putImageData(new ImageData(pixelView(pixels), width, height), 0, 0);
     return canvas;
   }
 
@@ -100,10 +102,10 @@ window.vybeCanvas = (() => {
       case 'ClipPath': ctx.clip(path(a[0]), a[1]); break;
       case 'AppendPath': path(a, ctx); break;
       case 'PutImageData':
-        ctx.putImageData(new ImageData(Uint8ClampedArray.from(a.pixels), a.width, a.height),
+        ctx.putImageData(new ImageData(pixelView(a.pixels), a.width, a.height),
           a.dx, a.dy); break;
       case 'PutImageDataDirty':
-        ctx.putImageData(new ImageData(Uint8ClampedArray.from(a.pixels), a.width, a.height),
+        ctx.putImageData(new ImageData(pixelView(a.pixels), a.width, a.height),
           a.dx, a.dy, a.dirty_x, a.dirty_y, a.dirty_w, a.dirty_h); break;
       case 'DrawImageRgba':
         ctx.drawImage(image(a.pixels, a.width, a.height), a.dx, a.dy, a.dw, a.dh); break;
@@ -204,6 +206,12 @@ window.vybeCanvas = (() => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return 'Absent';
     if (operation === 'CanvasEnsure') return 'None';
+    if (operation === 'CanvasDrawImage') {
+      const source = targetOf(args.payload.source, doc, nodes);
+      if (!source) return 'Absent';
+      ctx.drawImage(source, ...args.payload.rect);
+      return 'None';
+    }
     if (operation === 'CanvasApply') return apply(ctx, canvas, args.payload);
     if (operation === 'CanvasQuery') return query(ctx, canvas, args.payload);
     throw new Error(`unsupported canvas command: ${operation}`);

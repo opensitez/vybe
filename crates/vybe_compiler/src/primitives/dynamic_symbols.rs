@@ -17,6 +17,69 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
+#[cfg(test)]
+mod temporary_tests {
+    use super::*;
+
+    fn compiler() -> Compiler {
+        let mut profile = crate::profile::parse_profile("[compiler]\n").unwrap();
+        profile.source_function_callable_aliases = true;
+        Compiler::with_profile(profile)
+    }
+    fn run(mut compiler: Compiler) -> vybe_runtime::Value {
+        compiler.emit(Op::RETURN);
+        let mut chunks = compiler.chunks;
+        crate::primitives::bundle::finalize_with_runtime_helpers(&mut chunks);
+        crate::primitives::globals::declare_free_globals(&mut chunks);
+        crate::primitives::globals::normalize_global_table(&mut chunks);
+        let wasm = vybe_platform_wasm::write_wasm(&chunks);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&wasm).unwrap();
+        let mut vm = vybe_runtime::VM::new();
+        crate::primitives::platforms::register_platforms_all(&mut vm);
+        vm.run(chunks).unwrap()
+    }
+
+    #[test]
+    fn repeated_designator_temporaries_leave_source_scope_intact() {
+        let mut compiler = compiler();
+        compiler.scopes.last_mut().unwrap().set_pending_origin(vybe_runtime::chunk::LocalOrigin::Source);
+        let source_slot = compiler.define_local("source");
+        compiler.chunk().emit_i32_const(17, 1);
+        compiler.emit_u16(Op::LOCAL_SET, source_slot);
+        for _ in 0..32 {
+            compiler.emit_class_designator(&Expression::int(23)).unwrap();
+            compiler.emit(Op::DROP);
+            compiler.emit_callable_designator_in_slot(source_slot);
+        }
+        let scope = compiler.scopes.last().unwrap();
+        assert_eq!(scope.locals.len(), 1);
+        assert_eq!(scope.defined_names.len(), 1);
+        assert_eq!(scope.resolve("source"), Some(source_slot));
+        assert!(compiler.chunks[0].local_count > source_slot + 1);
+        compiler.emit_u16(Op::LOCAL_GET, source_slot);
+        assert_eq!(run(compiler), vybe_runtime::Value::I32(17));
+    }
+
+    #[test]
+    fn runtime_symbol_temporaries_do_not_consume_pending_source_origin() {
+        let mut compiler = compiler();
+        compiler.scopes.last_mut().unwrap().set_pending_origin(vybe_runtime::chunk::LocalOrigin::Source);
+        compiler.chunk().emit_string_const("missing_symbol", 1);
+        compiler.emit_symbol_ref_for_name_on_stack();
+        compiler.emit(Op::DROP);
+        assert!(compiler.scopes.last().unwrap().locals.is_empty());
+        let slot = compiler.define_local("actual_source");
+        let scope = compiler.scopes.last().unwrap();
+        assert_eq!(scope.defined_names.len(), 1);
+        assert_eq!(scope.defined_names[0].origin, vybe_runtime::chunk::LocalOrigin::Source);
+        assert!(slot >= 2);
+        compiler.chunk().emit_i32_const(29, 1);
+        compiler.emit_u16(Op::LOCAL_TEE, slot);
+        assert_eq!(run(compiler), vybe_runtime::Value::I32(29));
+    }
+}
+
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
 }
@@ -58,8 +121,7 @@ fn emit_stack_load(chunk: &mut Chunk, stack_global: &str, line: u32) {
     emit_undefined_test(chunk, line);
     chunk.emit_if(line);
     chunk.emit_array_new_fixed(0, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, slot, line);
     crate::primitives::globals::emit_write(chunk, stack_global, line);
     chunk.emit_end(line);
 
@@ -192,8 +254,7 @@ pub fn emit_resolver_stack_invoke(
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     // Both operands are internal nonnegative array counters. Dynamic
     // coercion here generated object/string arithmetic at every class lookup.
-    chunk.emit_op(Op::I32_LT_U, line);
-    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_GE_U, line);
     chunk.emit_br_if(1, line);
 
     // Already resolved by an earlier resolver — stop.
@@ -543,14 +604,14 @@ impl Compiler {
     /// Stack: `[] -> [class]`.
     pub(crate) fn emit_class_designator(&mut self, class: &Expression) -> Result<(), String> {
         let line = self.line;
-        // Both slots are defined BEFORE the branch. `emit_symbol_ref_for_name_on_stack`
+        // Both scratch slots are allocated BEFORE the branch. `emit_symbol_ref_for_name_on_stack`
         // opens one `if`/`end` per declared symbol, and nesting that inside a
         // value-producing block while also defining its locals there emitted
         // bytecode the VM rejected outright (`Invalid opcode`). A plain `if`
         // that writes a pre-declared slot keeps every block value-less, so the
         // nesting depth stops mattering.
-        let slot = self.define_local("__class_designator");
-        let out = self.define_local("__class_designator_out");
+        let slot = self.define_temp_local("__class_designator");
+        let out = self.define_temp_local("__class_designator_out");
         if let ExprKind::Ident(name) = &class.kind {
             if self.profile.supports_autoload && !name.starts_with('$') {
                 let global = self.canon_type_global(name);
@@ -561,8 +622,7 @@ impl Compiler {
         } else {
             self.compile_expr(class)?;
         }
-        self.emit_u16(Op::LOCAL_SET, slot);
-        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_u16(Op::LOCAL_TEE, slot);
         self.emit_u16(Op::LOCAL_SET, out);
 
         self.emit_u16(Op::LOCAL_GET, slot);
@@ -611,11 +671,11 @@ impl Compiler {
         }
         let line = self.line;
 
-        // Every local is declared BEFORE the first branch — see the note in
+        // Every scratch local is allocated BEFORE the first branch — see the note in
         // `emit_class_designator`.
-        let member_slot = self.define_local("__callable_designator_member");
-        let receiver_slot = self.define_local("__callable_designator_receiver");
-        let resolved_slot = self.define_local("__callable_designator_resolved");
+        let member_slot = self.define_temp_local("__callable_designator_member");
+        let receiver_slot = self.define_temp_local("__callable_designator_receiver");
+        let resolved_slot = self.define_temp_local("__callable_designator_resolved");
 
         // Guarded by `isArray`, not by a length probe on any object:
         // `collections::emit_len` falls back to `Object.keys().length`, so an
@@ -692,8 +752,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, receiver_slot);
         let bind_idx = self.import("ecma:function", "bind");
         self.emit_host_call(bind_idx, 2);
-        self.emit_u16(Op::LOCAL_SET, slot);
-        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_u16(Op::LOCAL_TEE, slot);
         self.emit_u16(Op::LOCAL_GET, receiver_slot);
         self.class_set(
             class_slots::ObjSource::Stack,
@@ -710,8 +769,7 @@ impl Compiler {
             self.chunk().emit_if(line);
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
             self.emit_symbol_ref_for_name_on_stack();
-            self.emit_u16(Op::LOCAL_SET, receiver_slot);
-            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+            self.emit_u16(Op::LOCAL_TEE, receiver_slot);
             crate::primitives::reflection::emit_typeof_is(self.chunk(), "function", line);
             self.chunk().emit_if(line);
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
@@ -730,10 +788,10 @@ impl Compiler {
     /// stack. Stack: `[name] -> [symbol | undefined]`.
     pub(crate) fn emit_symbol_ref_for_name_on_stack(&mut self) {
         let line = self.line;
-        let key_slot = self.define_local("__symbol_key");
+        let key_slot = self.define_temp_local("__symbol_key");
         self.emit_u16(Op::LOCAL_SET, key_slot);
 
-        let result_slot = self.define_local("__symbol_result");
+        let result_slot = self.define_temp_local("__symbol_result");
         crate::primitives::instructions::core_wasm::undefined(self.chunk(), line);
         self.emit_u16(Op::LOCAL_SET, result_slot);
 
@@ -749,12 +807,10 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, key_slot);
             let normalize = self.import("php:dynamic", "autoloadName");
             self.emit_host_call(normalize, 1);
-            self.emit_u16(Op::LOCAL_SET, key_slot);
-            self.emit_u16(Op::LOCAL_GET, key_slot);
+            self.emit_u16(Op::LOCAL_TEE, key_slot);
             let lookup = self.import("php:dynamic", "globalByName");
             self.emit_host_call(lookup, 1);
-            self.emit_u16(Op::LOCAL_SET, result_slot);
-            self.emit_u16(Op::LOCAL_GET, result_slot);
+            self.emit_u16(Op::LOCAL_TEE, result_slot);
             self.emit(Op::REF_IS_NULL);
             self.emit_u16(Op::LOCAL_GET, result_slot);
             let is_undefined = self.import("wasm:js-undefined", "test");

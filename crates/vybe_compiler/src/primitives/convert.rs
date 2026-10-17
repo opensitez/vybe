@@ -169,8 +169,7 @@ pub fn build_is_numeric(_imports: &mut Chunk) -> Chunk {
     // F32/I32/I64 and NaN. Result remains the original boxed-I320/1 ABI.
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_call(test_number, 1, 0);
-    c.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_TEE, 1, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_call(test_string, 1, 0);

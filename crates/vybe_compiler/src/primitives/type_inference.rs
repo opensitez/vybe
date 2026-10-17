@@ -26,7 +26,7 @@ impl Compiler {
     /// One pending class, by whatever spelling reaches here.
     fn pending_class_entry(&self, class_name: &str) -> Option<&PendingClass> {
         self.pending_classes
-            .get(&self.canon(class_name))
+            .get(self.canon_lookup(class_name).as_ref())
             .or_else(|| self.pending_classes.get(class_name))
     }
 
@@ -232,7 +232,7 @@ impl Compiler {
                         }
                     }
                 }
-                self.function_return_types.get(&self.canon(name)).cloned()
+                self.function_return_types.get(self.canon_lookup(name).as_ref()).cloned()
             }
             ExprKind::Member { object, field, .. } => {
                 let receiver_type = self.infer_expr_type_hint(object);
@@ -269,7 +269,7 @@ impl Compiler {
                 return Some(return_type.clone());
             }
         }
-        self.function_return_types.get(&self.canon(field)).cloned()
+        self.function_return_types.get(self.canon_lookup(field).as_ref()).cloned()
     }
 
     pub(super) fn infer_array_element_type_hint<'a>(
@@ -355,6 +355,11 @@ impl Compiler {
             .is_some_and(|hint| self.classes_with_indexer.contains(&hint))
     }
 
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_infer_expression_type(&self, expr: &Expression) -> Option<String> {
+        self.infer_expr_type_hint(expr)
+    }
+
     pub(super) fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
         let _debug_infer = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
             format!("compiler infer expression line {}", expr.span.start_line)
@@ -379,10 +384,9 @@ impl Compiler {
             // Measured neutral name-for-name over 164 class tests across
             // csharp/java/vb/js/python, including the JS lexical-`this`
             // categories.
-            ExprKind::This => {
-                let self_kw = self.profile.self_keyword.clone();
-                self.lookup_var_type_hint(&self_kw).map(str::to_string)
-            }
+            ExprKind::This => self
+                .lookup_var_type_hint(&self.profile.self_keyword)
+                .map(str::to_string),
             ExprKind::Lit(Literal::Int(_)) => Some("int".into()),
             ExprKind::Lit(Literal::Float(_)) => Some("double".into()),
             ExprKind::Lit(Literal::BigInt(_)) => Some("bigint".into()),
@@ -562,7 +566,7 @@ impl Compiler {
                 // without `new` (Dart, Python) arrive here rather than at
                 // `ExprKind::New`, and would otherwise have no type at all.
                 if let ExprKind::Ident(name) = &callee.kind {
-                    if self.defined_classes.contains(&self.canon(name)) {
+                    if self.defined_classes.contains(self.canon_lookup(name).as_ref()) {
                         return Some(name.clone());
                     }
                 }
@@ -630,6 +634,11 @@ impl Compiler {
                         .strip_suffix("()")
                         .map(str::to_string)
                         .or_else(|| Self::pascal_indexed_type_hint(trimmed))
+                        .or_else(|| {
+                            (self.type_resolution() == vybe_ast::TypeResolution::Static)
+                                .then(|| trimmed.strip_suffix('*').map(|element| element.trim().to_string()))
+                                .flatten()
+                        })
                 })
             }
             ExprKind::Member { object, field, .. } => {
@@ -671,7 +680,7 @@ impl Compiler {
                 }
                 let enum_type = Self::expr_terminal_type_name(object)?;
                 self.enum_value_names
-                    .contains_key(&self.canon(&enum_type))
+                    .contains_key(self.canon_lookup(&enum_type).as_ref())
                     .then_some(enum_type)
             }
             ExprKind::Binary {
@@ -708,14 +717,32 @@ impl Compiler {
                 // known Number throws at runtime). Inferring through chains
                 // like `(a * b) % c` keeps every step on the bigint path even
                 // when intermediate results have no other type evidence.
-                let left_bigint = self.hint_is_bigint(self.infer_expr_type_hint(left).as_deref());
-                let right_bigint = self.hint_is_bigint(self.infer_expr_type_hint(right).as_deref());
+                // Frozen former recursion, excluded from default builds.
+                #[cfg(feature = "primitive-benchmarks")]
+                if !crate::primitives::bits::linear_numeric_inference_enabled() {
+                    let left_bigint = self.hint_is_bigint(self.infer_expr_type_hint(left).as_deref());
+                    let right_bigint = self.hint_is_bigint(self.infer_expr_type_hint(right).as_deref());
+                    return if left_bigint || right_bigint {
+                        Some("bigint".into())
+                    } else if let Some(ty) = self.static_builtin_operator_type(op, left, right) {
+                        Some(ty.as_key().to_string())
+                    } else { None };
+                }
+                // Infer each child once. Calling static_builtin_operator_type
+                // here used to infer both children again, doubling recursive
+                // work at every arithmetic level of a non-BigInt expression.
+                let left_hint = self.infer_expr_type_hint(left);
+                let right_hint = self.infer_expr_type_hint(right);
+                let left_bigint = self.hint_is_bigint(left_hint.as_deref());
+                let right_bigint = self.hint_is_bigint(right_hint.as_deref());
                 if left_bigint || right_bigint {
                     Some("bigint".into())
-                } else if let Some(ty) = self.static_builtin_operator_type(op, left, right) {
-                    Some(ty.as_key().to_string())
                 } else {
-                    None
+                    let classify = |hint: Option<&str>| hint.and_then(|hint|
+                        vybe_ast::builtin_types::classify_with(&self.profile.builtin_type_spellings, hint));
+                    classify(left_hint.as_deref()).zip(classify(right_hint.as_deref()))
+                        .and_then(|(left, right)| Self::static_builtin_operator_result_type(op, left, right))
+                        .map(|ty| ty.as_key().to_string())
                 }
             }
             // UNREACHABLE, and load-bearing that way. The arm above matches the
@@ -735,7 +762,7 @@ impl Compiler {
                 let left_type = self.infer_expr_type_hint(left)?;
                 let right_type = self.infer_expr_type_hint(right)?;
                 if left_type.eq_ignore_ascii_case(&right_type)
-                    && self.enum_value_names.contains_key(&self.canon(&left_type))
+                    && self.enum_value_names.contains_key(self.canon_lookup(&left_type).as_ref())
                 {
                     Some(left_type)
                 } else {
@@ -763,6 +790,7 @@ impl Compiler {
     pub(super) fn type_hint_stores_by_value(resolved: &str) -> Option<&str> {
         let trimmed = resolved.trim().trim_end_matches('?').trim();
         if trimmed.starts_with('*')
+            || trimmed.ends_with('*')
             || trimmed.starts_with('^')
             || trimmed.starts_with("[]")
             || trimmed.starts_with("map[")
@@ -821,7 +849,7 @@ impl Compiler {
     /// Gated on `logical_ops_bitwise_for_integers`, so the six shared call
     /// sites need no per-language condition of their own.
     pub(super) fn expr_is_integer_like(&self, expr: &Expression) -> bool {
-        if !self.profile.logical_ops_bitwise_for_integers {
+        if !self.directives().logical_ops_bitwise_for_integers.unwrap_or(false) {
             return false;
         }
         match &expr.kind {
@@ -984,11 +1012,11 @@ impl Compiler {
         // `normalized_classes` is keyed by the CANONICAL name the declaration
         // pass inserted (`link.rs`), so ask through `canon` — a raw or
         // normalized spelling misses, silently, and the copy never happens.
-        let bare = hint.split('<').next().unwrap_or(&hint).trim().to_string();
-        let canon = self.canon(&bare);
+        let bare = hint.split('<').next().unwrap_or(&hint).trim();
+        let canon = self.canon_lookup(bare);
         self.normalized_classes
-            .get(&canon)
-            .or_else(|| self.normalized_classes.get(&bare))
+            .get(canon.as_ref())
+            .or_else(|| self.normalized_classes.get(bare))
             .or_else(|| {
                 self.normalized_classes
                     .get(&Self::normalize_type_hint(&hint))
@@ -1439,5 +1467,22 @@ impl Compiler {
                 .infer_expr_type_hint(expr)
                 .is_some_and(|type_hint| Self::is_string_type_hint(&type_hint)),
         }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::Compiler;
+
+    #[test]
+    fn pointer_hints_do_not_copy_the_pointee() {
+        for hint in ["*Point", "^Point", "Point*", "Point *", "Point**", "Point*?"] {
+            assert_eq!(Compiler::type_hint_stores_by_value(hint), None, "{hint}");
+        }
+        for hint in ["[]Point", "map[string]Point", "chan Point", "func(Point)"] {
+            assert_eq!(Compiler::type_hint_stores_by_value(hint), None, "{hint}");
+        }
+        assert_eq!(Compiler::type_hint_stores_by_value("Point"), Some("Point"));
+        assert_eq!(Compiler::type_hint_stores_by_value("Point?"), Some("Point"));
     }
 }

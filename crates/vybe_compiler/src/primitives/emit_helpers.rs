@@ -205,10 +205,18 @@ impl Compiler {
     ///
     pub(crate) fn canon(&self, name: &str) -> String {
         let name = self.variable_name_body(name);
-        if self.case_sensitive {
-            name.to_string()
+        if self.case_sensitive { name.to_string() } else { name.to_lowercase() }
+    }
+
+    /// Borrow unchanged keys for read-only symbol lookup. Owned registry
+    /// insertions still use `canon`; Unicode folding retains `to_lowercase`
+    /// semantics, including mappings that change the string length.
+    pub(crate) fn canon_lookup<'a>(&self, name: &'a str) -> std::borrow::Cow<'a, str> {
+        let name = self.variable_name_body(name);
+        if self.case_sensitive || (name.is_ascii() && !name.bytes().any(|byte| byte.is_ascii_uppercase())) {
+            std::borrow::Cow::Borrowed(name)
         } else {
-            name.to_lowercase()
+            std::borrow::Cow::Owned(name.to_lowercase())
         }
     }
 
@@ -292,11 +300,7 @@ impl Compiler {
         }
         self.defined_classes.contains(name)
             || self.defined_classes.contains(&self.canon(name))
-            || (!self.case_sensitive
-                && self
-                    .defined_classes
-                    .iter()
-                    .any(|g| g.eq_ignore_ascii_case(name)))
+            || (!self.case_sensitive && self.defined_classes.contains_ascii_folded(name))
     }
 
     /// The shadow question, folded the way the NAMESPACE-TREE lookups fold.
@@ -317,10 +321,7 @@ impl Compiler {
     /// declaration, not about the tree's.
     pub(crate) fn user_owns_type_spelling(&self, name: &str) -> bool {
         self.shadows_builtin_type(name)
-            || self
-                .defined_classes
-                .iter()
-                .any(|g| g.eq_ignore_ascii_case(name))
+            || self.defined_classes.contains_ascii_folded(name)
     }
 
     /// Whether the receiver's own class DECLARES this member.
@@ -695,24 +696,33 @@ impl Compiler {
             return;
         };
         let normalized = Self::normalize_type_hint(&type_hint);
-        inst!(self, core_wasm::dup);
+        let integer = match normalized.as_str() {
+            "integer" | "int" | "int32" | "longint" | "long" | "int64" | "short" | "int16"
+            | "uint" | "uint32" | "ulong" | "uint64" | "ushort" | "uint16" | "byte" | "sbyte" => true,
+            "real" | "double" | "float" | "single" | "decimal" => false,
+            // These hints emit no coercion. Avoid a null test, empty block,
+            // and scratch local for a value that is left unchanged.
+            _ => return,
+        };
+        let value_slot = self.chunk().alloc_scratch(1);
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit(Op::REF_IS_NULL);
         self.emit(Op::I32_EQZ);
         let line = self.line;
-        self.chunk().emit_if(line);
-        match normalized.as_str() {
-            "integer" | "int" | "int32" | "longint" | "long" | "int64" | "short" | "int16"
-            | "uint" | "uint32" | "ulong" | "uint64" | "ushort" | "uint16" | "byte" | "sbyte" => {
-                let number_idx = self.import("ecma:number", "Number");
-                self.emit_host_call(number_idx, 1);
-                common::convert::emit_to_int(self.chunk(), line);
-            }
-            "real" | "double" | "float" | "single" | "decimal" => {
-                let number_idx = self.import("ecma:number", "Number");
-                self.emit_host_call(number_idx, 1);
-            }
-            _ => {}
+        // Each branch produces its own value. A void Wasm if cannot consume
+        // the original value below its entry stack height or return its cast.
+        self.chunk().emit_if_value(line);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        let number_idx = self.import("ecma:number", "Number");
+        self.emit_host_call(number_idx, 1);
+        if integer {
+            common::convert::emit_to_int(self.chunk(), line);
+            let boxed = self.import("wasm:js-number", "fromI32");
+            self.emit_host_call(boxed, 1);
         }
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
         self.chunk().emit_end(line);
     }
 
@@ -808,8 +818,7 @@ impl Compiler {
         let skip_trim = self.chunk().emit_block(line);
         self.emit_u16(Op::LOCAL_GET, rows_slot);
         common::collections::emit_array_length(self.chunk(), line);
-        self.emit_u16(Op::LOCAL_SET, len_slot);
-        self.emit_u16(Op::LOCAL_GET, len_slot);
+        self.emit_u16(Op::LOCAL_TEE, len_slot);
         inst!(self, core_wasm::i32_const, 0);
         {
             let line = self.line;
@@ -1130,5 +1139,88 @@ impl Compiler {
             )
             || bare.ends_with("[]")
             || normalized.ends_with("()")
+    }
+}
+
+#[cfg(test)]
+mod assignment_coercion_tests {
+    use super::*;
+
+    fn setup(hint: &str) -> Compiler {
+        let profile=crate::profile::parse_profile("[compiler]\n").unwrap();
+        let mut compiler=Compiler::with_profile(profile);
+        compiler.define_local_typed("target",Some(hint.to_string().into()));
+        compiler
+    }
+
+    #[test]
+    fn nonnumeric_assignment_has_no_empty_coercion_block() {
+        for hint in ["string","str","bool","boolean","CustomRecord","object","dynamic"] {
+            let mut compiler=setup(hint);
+            let locals=compiler.chunk().local_count;
+            compiler.emit_assignment_type_coercion_for_ident("target");
+            assert!(compiler.chunk().code.is_empty(),"hint={hint}");
+            assert_eq!(compiler.chunk().local_count,locals,"hint={hint}");
+        }
+    }
+
+    #[test]
+    fn numeric_assignment_coercion_validates_and_preserves_values() {
+        use vybe_runtime::{Value,VM};
+        for (hint,integer) in [("int",true),("int64",true),("uint",true),("double",false),("decimal",false)] {
+            for input in [Value::Null,Value::F64(12.75),Value::F64(-12.75),Value::String("42".into())] {
+                let mut compiler=setup(hint);compiler.emit_const(input.clone());
+                compiler.emit_assignment_type_coercion_for_ident("target");compiler.emit(Op::RETURN);
+                crate::primitives::globals::declare_free_globals(&mut compiler.chunks);
+                crate::primitives::globals::normalize_global_table(&mut compiler.chunks);
+                let native=vybe_platform_wasm::write_wasm(&compiler.chunks);
+                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&native).unwrap();
+                let mut vm=VM::new();crate::primitives::platforms::register_platforms_all(&mut vm);
+                let actual=vm.run(compiler.chunks).unwrap();
+                let expected=if matches!(input,Value::Null){Value::Null}else {let n=if let Value::String(_) = input {42.0}else{input.as_f64()};if integer{Value::I32(n as i32)}else{Value::F64(n)}};
+                assert_eq!(format!("{actual:?}"),format!("{expected:?}"),"hint={hint}");
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_integer_assignment_needs_no_record_copy() {
+        use vybe_ast::{BinOp, BitLane, IntOp, Statement, StmtKind};
+        let operations = [
+            IntOp::Add, IntOp::Sub, IntOp::Mul, IntOp::DivS, IntOp::DivU,
+            IntOp::RemS, IntOp::RemU, IntOp::Shl, IntOp::ShrS, IntOp::ShrU,
+            IntOp::And, IntOp::Or, IntOp::Xor, IntOp::Eq, IntOp::Ne,
+            IntOp::LtS, IntOp::LtU, IntOp::LeS, IntOp::LeU, IntOp::GtS,
+            IntOp::GtU, IntOp::GeS, IntOp::GeU,
+        ];
+        for lane in [BitLane::W32, BitLane::W64] {
+            for operation in operations {
+                let value = Expression::new(ExprKind::Binary {
+                    op: BinOp::Integer(operation, lane),
+                    left: Box::new(Expression::int(17)),
+                    right: Box::new(Expression::int(3)),
+                });
+                let target = Expression::ident("target");
+                let mut direct = setup("dynamic");
+                let mut assigned = setup("dynamic");
+                direct.compile_expr(&value).unwrap();
+                direct.compile_assign_target(&target).unwrap();
+                assigned.compile_stmt(&Statement::new(StmtKind::Assign {
+                    targets: vec![target], value, by_ref: false,
+                })).unwrap();
+                assert_eq!(assigned.chunk().code, direct.chunk().code,
+                    "operation={operation:?} lane={lane:?}");
+                // compile_stmt releases expression scratch at statement exit;
+                // direct expression emission can retain that temporary.
+                assert!(assigned.chunk().local_count <= direct.chunk().local_count,
+                    "operation={operation:?} lane={lane:?}");
+            }
+        }
+        let dynamic_add = Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expression::ident("left")),
+            right: Box::new(Expression::ident("right")),
+        });
+        assert!(crate::primitives::records::may_be_value_instance(&dynamic_add));
     }
 }

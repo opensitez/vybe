@@ -1,6 +1,6 @@
 use vybe_compiler::primitives::{bundle, callable, globals, platforms, polyfills};
 use vybe_runtime::value::{Object, ObjectKind};
-use vybe_runtime::{Chunk, Op, Value, VM};
+use vybe_runtime::{Chunk, Op, VM, Value};
 #[path = "fixtures/collection_optimization_dict_factories.rs"]
 mod baseline;
 fn array(values: Vec<Value>) -> Value {
@@ -157,7 +157,7 @@ fn dictionary_get(value: &Value, key: &str) -> Value {
     }
 }
 #[test]
-fn setdefault_preserves_raw_null_overwrite_false_values_and_default_identity() {
+fn setdefault_restores_missing_defaults_preserving_false_values_and_identity() {
     let programs = [program(true, true, 1), program(false, true, 1)];
     for chunks in &programs {
         validate(chunks);
@@ -172,15 +172,23 @@ fn setdefault_preserves_raw_null_overwrite_false_values_and_default_identity() {
             Value::I32(7),
         ] {
             for key in ["present", "missing"] {
-                for chunks in &programs {
+                for (side, chunks) in programs.iter().enumerate() {
                     let input = dictionary(map, existing.clone());
                     let default = array(vec![Value::I32(99)]);
-                    let expected =
-                        if key == "missing" || matches!(existing, Value::Null | Value::Undefined) {
-                            default.clone()
-                        } else {
-                            existing.clone()
-                        };
+                    let lookup = if key == "missing" {
+                        Value::Undefined
+                    } else {
+                        existing.clone()
+                    };
+                    // The frozen pre-strict-null emitter misses Undefined.
+                    // Production restores the documented absent-key contract.
+                    let expected = if matches!(lookup, Value::Null)
+                        || (side == 1 && matches!(lookup, Value::Undefined))
+                    {
+                        default.clone()
+                    } else {
+                        lookup
+                    };
                     let result = vm(input.clone(), Value::String(key.into()), default)
                         .run(chunks.clone())
                         .unwrap();

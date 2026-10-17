@@ -55,8 +55,7 @@ pub fn emit_comparator(chunks: &mut [Chunk], current: usize, value: u16, line: u
 pub fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
     let comparator = chunks[current].alloc_scratch(1);
     emit_comparator(chunks, current, value, line);
-    set(&mut chunks[current], comparator, line);
-    get(&mut chunks[current], comparator, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, comparator);
     host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("function", line);
     let equals = chunks[current].add_import("wasm:js-string", "equals");
@@ -85,8 +84,7 @@ pub fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, li
 /// Tag the array on the stack as set-shaped. Stack: `[list] -> [list]`.
 pub fn emit_mark_set_collection(chunks: &mut [Chunk], current: usize, line: u32) {
     let list = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], list, line);
-    get(&mut chunks[current], list, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, list);
     chunks[current].emit_string_const(SET_COLLECTION_KEY, line);
     chunks[current].emit_bool_const(true, line);
     host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
@@ -116,8 +114,7 @@ pub fn emit_sorted_collection_new(
         collections::emit_array_new(chunks, current, 0, line);
     }
     let collection = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], collection, line);
-    get(&mut chunks[current], collection, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, collection);
     chunks[current].emit_string_const(COMPARATOR_KEY, line);
     get(&mut chunks[current], comparator, line);
     host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
@@ -139,8 +136,7 @@ pub fn emit_sorted_add(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let list = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], value, line);
-    set(&mut chunks[current], list, line);
-    get(&mut chunks[current], list, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, list);
     get(&mut chunks[current], value, line);
     collections::emit_contains(chunks, current, line);
     host::emit(&mut chunks[current], "wasm:js-boolean", "cast", 1, line);
@@ -332,8 +328,7 @@ pub fn emit_sorted_set_range_view(
 pub fn emit_sorted_map_key_set(chunks: &mut [Chunk], current: usize, line: u32) {
     let map = chunks[current].alloc_scratch(1);
     let keys = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], map, line);
-    get(&mut chunks[current], map, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, map);
     host::emit(&mut chunks[current], "ecma:map", "keys", 1, line);
     set(&mut chunks[current], keys, line);
     emit_comparator(chunks, current, map, line);
@@ -368,8 +363,7 @@ pub fn emit_sorted_map_values(chunks: &mut [Chunk], current: usize, line: u32) {
     let out = chunks[current].alloc_scratch(1);
     let index = chunks[current].alloc_scratch(1);
     let len = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], map, line);
-    get(&mut chunks[current], map, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, map);
     emit_sorted_map_key_set(chunks, current, line);
     set(&mut chunks[current], keys, line);
     collections::emit_array_new(chunks, current, 0, line);
@@ -415,8 +409,7 @@ pub fn emit_sorted_map_entries(chunks: &mut [Chunk], current: usize, line: u32) 
     let index = chunks[current].alloc_scratch(1);
     let len = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], map, line);
-    get(&mut chunks[current], map, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, map);
     emit_sorted_map_key_set(chunks, current, line);
     set(&mut chunks[current], keys, line);
     collections::emit_array_new(chunks, current, 0, line);

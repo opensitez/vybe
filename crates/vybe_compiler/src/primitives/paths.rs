@@ -649,8 +649,7 @@ fn emit_canonicalize(chunk: &mut Chunk, line: u32) {
     let arr_pop = chunk.add_import("ecma:array", "pop");
     let arr_join = chunk.add_import("ecma:array", "join");
 
-    chunk.emit_op_u16(Op::LOCAL_SET, input, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, input, line);
     chunk.emit_string_const(SEP, line);
     chunk.emit_call(split, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, parts, line);
@@ -757,8 +756,7 @@ pub fn emit_full_path(chunk: &mut Chunk, line: u32) {
     chunk.emit_else(line);
     {
         chunk.emit_call(get_cwd, 0, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, cwd, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, cwd, line);
+        chunk.emit_op_u16(Op::LOCAL_TEE, cwd, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
         chunk.emit_if_value(line);
         chunk.emit_op_u16(Op::LOCAL_GET, s, line);
@@ -796,8 +794,7 @@ pub fn emit_temp_path(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, out, line);
 
     chunk.emit_call(get_env, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, env, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, env, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, env, line);
     chunk.emit_call(len, 1, line);
     chunk.emit_call(to_i32, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, n, line);

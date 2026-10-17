@@ -80,11 +80,69 @@ pub fn emit_common_with_result_provenance(
             }
         }
     }
+    // This owned strict Wasm producer returns an i32 UTF-16 code unit.
+    if request == emitter_results::EmitRequest::I32Word && name == "str_char_code_at"
+        && emit_common(name, chunks, current, argc, line)
+    {
+        return (EmitOutcome::Handled(ResultRepresentation::RawI32Word), true);
+    }
+    // These primitives are owned here. A replacement namespace dispatcher
+    // must supply its own contract; its legacy output is not a word proof.
+    if request == emitter_results::EmitRequest::I32Word
+        && crate::languages::emit_dispatch_for("pointers").is_none()
+        && matches!(name,
+            "pointers.linear_i32_load" | "pointers.linear_i32_load8_u"
+            | "pointers.linear_i32_load8_s" | "pointers.linear_i32_load16_u"
+            | "pointers.linear_i32_load16_s")
+        && emit_common(name, chunks, current, argc, line)
+    {
+        return (EmitOutcome::Handled(ResultRepresentation::RawI32Word), true);
+    }
     if emit_common(name, chunks, current, argc, line) {
         (EmitOutcome::Handled(ResultRepresentation::Unknown), false)
     } else {
         (EmitOutcome::Unhandled, false)
     }
+}
+
+pub(super) fn owned_memory_word_arguments(name: &str, argc: usize) -> bool {
+    let arity = match name {
+        "pointers.linear_i32_load" | "pointers.linear_i32_load8_u"
+        | "pointers.linear_i32_load8_s" | "pointers.linear_i32_load16_u"
+        | "pointers.linear_i32_load16_s" => 1,
+        "pointers.linear_i32_store" | "pointers.linear_i32_store8"
+        | "pointers.linear_i32_store16" => 2,
+        _ => return false,
+    };
+    argc == arity && crate::languages::emit_dispatch_for("pointers").is_none()
+}
+
+// Only the owned store may consume this physical RHS proof. Its assignment
+// result remains the exact operand, including signed words and truncated bytes.
+pub(super) fn emit_owned_memory_word_arguments(
+    name: &str,
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+    request: vybe_runtime::registry::emitter_results::EmitRequest,
+    words: &[bool],
+) -> Option<vybe_runtime::registry::emitter_results::ResultRepresentation> {
+    use vybe_runtime::registry::emitter_results::{EmitRequest, ResultRepresentation};
+    if !owned_memory_word_arguments(name, words.len()) || words.get(1) != Some(&true) {
+        return None;
+    }
+    let op = match name {
+        "pointers.linear_i32_store" => Op::I32_STORE,
+        "pointers.linear_i32_store8" => Op::I32_STORE8,
+        "pointers.linear_i32_store16" => Op::I32_STORE16,
+        _ => return None,
+    };
+    pointers::emit_linear_word_store(&mut chunks[current], op, line);
+    Some(if request == EmitRequest::I32Word {
+        ResultRepresentation::RawI32Word
+    } else {
+        ResultRepresentation::Unknown
+    })
 }
 
 pub fn emit_common(
@@ -628,10 +686,14 @@ pub fn emit_common(
         "pointers.linear_i64_load" => pointers::emit_linear_i64_load(chunks, current, line),
         "pointers.linear_i32_store" => pointers::emit_linear_i32_store(chunks, current, line),
         "pointers.linear_i32_store8" => pointers::emit_linear_i32_store8(chunks, current, line),
+        "pointers.linear_byte_store" => pointers::emit_linear_byte_store(chunks, current, line),
         "pointers.linear_i32_store16" => pointers::emit_linear_i32_store16(chunks, current, line),
         "pointers.linear_i64_store" => pointers::emit_linear_i64_store(chunks, current, line),
         "pointers.linear_memory_size" => pointers::emit_linear_memory_size(chunks, current, line),
         "pointers.linear_memory_grow" => pointers::emit_linear_memory_grow(chunks, current, line),
+        "pointers.linear_byte_compare" => crate::primitives::memory_compare::emit_linear_byte_compare(chunks, current, line),
+        "pointers.linear_string_compare" => crate::primitives::memory_compare::emit_linear_string_compare(chunks, current, false, line),
+        "pointers.linear_string_ncompare" => crate::primitives::memory_compare::emit_linear_string_compare(chunks, current, true, line),
         "pointers.linear_memory_copy" => pointers::emit_linear_memory_copy(chunks, current, line),
         "pointers.linear_memory_fill" => pointers::emit_linear_memory_fill(chunks, current, line),
         "pointers.byte_copy" => pointers::emit_byte_copy(chunks, current, line),
@@ -696,6 +758,7 @@ pub fn emit_common(
         "collections.compact_adjacent" => collections::emit_compact_adjacent(chunks, current, line),
         "collections.map_clone" => collections::emit_map_clone(chunks, current, line),
         "collections.map_copy" => collections::emit_map_copy(chunks, current, line),
+        "collections.map_copy_void" => collections::emit_map_copy_void(chunks, current, line),
         "collections.map_delete_func" => collections::emit_map_delete_func(chunks, current, line),
         "collections.sequence_compare" => collections::emit_sequence_compare(chunks, current, line),
         "collections.is_sorted" => collections::emit_is_sorted(chunks, current, line),

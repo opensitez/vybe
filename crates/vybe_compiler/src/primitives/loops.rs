@@ -111,6 +111,14 @@ pub fn emit_loop_cond_from_i32(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_br_if(1, line);
 }
 
+/// Exit a loop when an already computed i32 predicate is nonzero.
+/// Callers can invert a standard integer comparison and branch directly,
+/// avoiding the extra `i32.eqz` in [`emit_loop_cond_from_i32`].
+/// The label layout is the same block/loop pair as [`emit_loop_start`].
+pub fn emit_loop_break_if_from_i32(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_br_if(1, line);
+}
+
 /// End of loop: branch back to loop start, emit END for loop and block.
 pub fn emit_loop_end(chunks: &mut [Chunk], current: usize, state: LoopState, line: u32) {
     // br_label 0 = continue loop (jump to loop start)
@@ -207,6 +215,31 @@ pub fn emit_for_in_start(
     idx_slot: u16,
     line: u32,
 ) -> LoopState {
+    emit_for_in_start_with_length(chunks, current, arr_slot, idx_slot, None, line)
+}
+
+/// Iterate a compiler-owned snapshot whose length cannot change in the body.
+/// `length_slot` must contain its raw i32 length. Mutable user arrays must use
+/// `emit_for_in_start` instead, which reloads the length on every iteration.
+pub fn emit_for_in_snapshot_start(
+    chunks: &mut [Chunk],
+    current: usize,
+    arr_slot: u16,
+    idx_slot: u16,
+    length_slot: u16,
+    line: u32,
+) -> LoopState {
+    emit_for_in_start_with_length(chunks, current, arr_slot, idx_slot, Some(length_slot), line)
+}
+
+fn emit_for_in_start_with_length(
+    chunks: &mut [Chunk],
+    current: usize,
+    arr_slot: u16,
+    idx_slot: u16,
+    length_slot: Option<u16>,
+    line: u32,
+) -> LoopState {
     // i = 0
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
@@ -222,15 +255,17 @@ pub fn emit_for_in_start(
     // only handles ObjectKind::Array. This ensures HOF polyfills work
     // uniformly for both plain arrays and typed-array receivers.
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    {
+    if let Some(length_slot) = length_slot {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, length_slot, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
         let idx = chunks[current].add_import("ecma:array", "length");
         chunks[current].emit_call(idx, 1, line);
     }
     // Both the counter and ecma:array.length have the declared i32 ABI.
     // No dynamic type dispatch or Boolean coercion is needed here.
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    emit_loop_break_if_from_i32(chunks, current, line);
 
     // block $body { — continue targets this, skips to increment
     let body_block_patch = chunks[current].emit_block(line);
@@ -244,6 +279,31 @@ pub fn emit_for_in_start(
         block_patch,
         loop_patch,
         body_block_patch: Some(body_block_patch),
+    }
+}
+
+#[cfg(test)]
+mod snapshot_iteration_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_loop_does_not_import_a_per_iteration_length_call() {
+        let mut chunks = vec![Chunk::new("snapshot_iteration")];
+        chunks[0].local_count = 3;
+        let state = emit_for_in_snapshot_start(&mut chunks, 0, 0, 1, 2, 1);
+        chunks[0].emit_op(Op::DROP, 1);
+        emit_for_in_end(&mut chunks, 0, 1, state, 1);
+        assert!(chunks[0].imports.is_empty());
+    }
+
+    #[test]
+    fn mutable_array_loop_retains_live_length_import() {
+        let mut chunks = vec![Chunk::new("mutable_iteration")];
+        chunks[0].local_count = 2;
+        let state = emit_for_in_start(&mut chunks, 0, 0, 1, 1);
+        chunks[0].emit_op(Op::DROP, 1);
+        emit_for_in_end(&mut chunks, 0, 1, state, 1);
+        assert_eq!(chunks[0].imports.len(), 1);
     }
 }
 
@@ -465,8 +525,8 @@ pub fn emit_reduce(
         let idx = chunks[current].add_import("ecma:array", "length");
         chunks[current].emit_call(idx, 1, line);
     }
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    emit_loop_break_if_from_i32(chunks, current, line);
 
     emit_reduce_step(chunks, current, fn_slot, arr_slot, acc_slot, idx_slot, line);
 

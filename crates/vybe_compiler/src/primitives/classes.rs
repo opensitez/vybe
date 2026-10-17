@@ -10,6 +10,8 @@ use crate::primitives::ArrayBindingMetadata;
 use crate::primitives::class_normalize::{Access, BaseCall, NormalConstructor, NormalMethod};
 use crate::primitives::class_slots;
 
+const IMPLICIT_CTOR_FORWARD_ARGS: u8 = 16;
+
 /// Global name of the arity-specialized constructor overload for `prefix`.
 ///
 /// Overloaded constructors emit one global per arity (`Point$arity2`), with the
@@ -23,47 +25,49 @@ pub fn ctor_global_for(prefix: &str, arity: usize) -> String {
 }
 
 impl Compiler {
+    /// Host-side A/B control; no guest-visible opcode or language policy.
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_inherited_gc_fields(&mut self, enabled: bool) {
+        self.inherited_gc_fields = enabled;
+    }
+
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_compact_parent_forwarding(&mut self, enabled: bool) {
+        self.compact_parent_forwarding = enabled;
+    }
+
     fn compile_function_body_stmt(
         &mut self,
         function_name: &str,
         statement_index: usize,
         statement: &Statement,
+        trace_path: Option<&str>,
     ) -> Result<(), String> {
-        let timing = compiler_timing_path();
-        let debug_function = std::env::var("VYBE_COMPILER_DEBUG_FUNCTION").ok();
-        let should_trace = timing.is_some()
-            && debug_function
-                .as_deref()
-                .is_some_and(|target| target == function_name || target == "*");
-        let started = std::time::Instant::now();
-        if should_trace {
-            if let Some(path) = timing.as_deref() {
-                let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
-                let local_count = self.chunks[self.current].local_count;
-                write_compiler_timing(
-                    path,
-                    &format!(
-                        "compile_function_stmt_start {function_name}[{statement_index}] line={} scope_next={scope_next} local_count={local_count}",
-                        statement.span.start_line
-                    ),
-                    std::time::Duration::ZERO,
-                );
-            }
+        let started = trace_path.map(|_| std::time::Instant::now());
+        if let Some(path) = trace_path {
+            let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
+            let local_count = self.chunks[self.current].local_count;
+            write_compiler_timing(
+                path,
+                &format!(
+                    "compile_function_stmt_start {function_name}[{statement_index}] line={} scope_next={scope_next} local_count={local_count}",
+                    statement.span.start_line
+                ),
+                std::time::Duration::ZERO,
+            );
         }
         let result = self.compile_stmt(statement);
-        if should_trace {
-            if let Some(path) = timing.as_deref() {
-                let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
-                let local_count = self.chunks[self.current].local_count;
-                write_compiler_timing(
-                    path,
-                    &format!(
-                        "compile_function_stmt_done {function_name}[{statement_index}] line={} scope_next={scope_next} local_count={local_count}",
-                        statement.span.start_line
-                    ),
-                    started.elapsed(),
-                );
-            }
+        if let (Some(path), Some(started)) = (trace_path, started) {
+            let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
+            let local_count = self.chunks[self.current].local_count;
+            write_compiler_timing(
+                path,
+                &format!(
+                    "compile_function_stmt_done {function_name}[{statement_index}] line={} scope_next={scope_next} local_count={local_count}",
+                    statement.span.start_line
+                ),
+                started.elapsed(),
+            );
         }
         result
     }
@@ -123,8 +127,7 @@ impl Compiler {
             class_slots::ObjSource::Stack,
             &class_slots::ClassSlot::internal("__static_init__"),
         );
-        self.emit_u16(Op::LOCAL_SET, init_slot);
-        self.emit_u16(Op::LOCAL_GET, init_slot);
+        self.emit_u16(Op::LOCAL_TEE, init_slot);
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
         let after_static_init = self.chunk().emit_block(line);
@@ -512,15 +515,19 @@ impl Compiler {
             Some((chunk_idx, rest_fixed)) => {
                 let bind_on_access = self.methods_bind_on_access();
                 let base_key = format!("__base_{}${}", owner, method_name);
-                crate::primitives::object::emit_bind_bound_method(
-                    self.chunk(),
-                    this_slot,
-                    &base_key,
-                    chunk_idx,
-                    rest_fixed,
-                    bind_on_access,
-                    line,
-                );
+                if self.method_values_carry_receiver() {
+                    crate::primitives::object::emit_bind_bound_method(
+                        self.chunk(), this_slot, &base_key, chunk_idx,
+                        rest_fixed, bind_on_access, line,
+                    );
+                } else {
+                    // The call supplies `this`. Stamping an interned funcref
+                    // would retain this instance through global method tables.
+                    crate::primitives::object::emit_bind_method_with_slot(
+                        self.chunk(), this_slot, &base_key, None,
+                        chunk_idx, rest_fixed, line,
+                    );
+                }
             }
             None => {
                 emit_save_base_method(self.chunk(), this_slot, owner, method_name, line);
@@ -673,6 +680,60 @@ impl Compiler {
         self.emit_parent_value(parent_name, false, Some(arity));
     }
 
+    /// Exact trailing-receiver position of a locally declared single
+    /// initializer. Class-object metadata retains the correct lexical captures.
+    fn local_parent_initializer_arity(&self, parent_name: &str) -> Option<usize> {
+        let class = self.normalized_classes.get(&self.canon(parent_name))?;
+        match class.constructors.as_slice() {
+            [] => {
+                let Some(parent) = class.parent.as_deref() else { return Some(0); };
+                #[cfg(feature = "primitive-benchmarks")]
+                let compact = self.compact_parent_forwarding;
+                #[cfg(not(feature = "primitive-benchmarks"))]
+                let compact = true;
+                if compact && self.receiver_preserving_classes.contains(&self.canon(parent_name)) {
+                    self.local_parent_initializer_arity(parent)
+                } else { Some(IMPLICIT_CTOR_FORWARD_ARGS as usize) }
+            },
+            [ctor] if ctor.named_name.is_none() && !ctor.params.iter().any(|p| p.is_rest || p.is_kwargs) => {
+                Some(ctor.params.len().saturating_sub(usize::from(class.explicit_self_param)))
+            }
+            _ => None,
+        }
+    }
+
+    /// A fully local chain of implicit initializers cannot observe forwarded
+    /// user arguments or replace the receiver with a source return value.
+    /// This proof does not depend on indexed fields or field-shadowing policy.
+    fn local_implicit_initializer_chain(&self, class_name: &str) -> bool {
+        if self.ecma_new_dispatch() {
+            return false;
+        }
+        #[cfg(feature = "primitive-benchmarks")]
+        if !self.compact_parent_forwarding {
+            return false;
+        }
+        let mut next = Some(class_name);
+        for _ in 0..=self.normalized_classes.len() {
+            let Some(name) = next else { return true; };
+            let Some(class) = self.normalized_classes.get(&self.canon(name)) else {
+                return false;
+            };
+            if !class.constructors.is_empty() {
+                return false;
+            }
+            next = class.parent.as_deref();
+        }
+        // A cyclic inheritance graph is not proof of an implicit root.
+        false
+    }
+
+    fn emit_local_parent_initializer(&mut self, parent_name: &str) {
+        self.emit_parent_class_value(parent_name);
+        self.class_get(class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_constructor_initializer"));
+    }
+
     /// Is the parent's constructor a value this module can call: a declared
     /// class, a local / upvalue / static binding, a defined global, or an
     /// ECMA intrinsic constructor the profile exposes.
@@ -814,10 +875,13 @@ impl Compiler {
         // parameter. The class publishes its initializer arity at runtime,
         // so initialize can pad the arguments before passing that receiver.
         if self.profile.name == "php"
-            && !self.pending_classes.contains_key(&self.canon(parent_name))
             && !common::errors::is_exception_type(parent_name)
         {
-            self.emit_parent_ctor_value(parent_name);
+            // Parent construction initializes the existing derived receiver.
+            // A public class factory may be available even when its constructor
+            // helper belongs to another module; calling that factory with an
+            // extra receiver argument allocates a replacement instead.
+            self.emit_parent_class_value(parent_name);
             self.emit_u16(Op::LOCAL_GET, this_slot);
             for arg in args {
                 self.compile_expr(arg)?;
@@ -849,11 +913,19 @@ impl Compiler {
             } else {
                 Some(this_slot)
             };
-            self.emit_parent_ctor_value_for_arity(parent_name, args.len());
+            let fixed_arity = self.receiver_preserving_classes.contains(&self.canon(class_name))
+                .then(|| self.local_parent_initializer_arity(parent_name)).flatten()
+                .filter(|arity| args.len() <= *arity && *arity < u8::MAX as usize);
+            if fixed_arity.is_some() { self.emit_local_parent_initializer(parent_name); }
+            else { self.emit_parent_ctor_value_for_arity(parent_name, args.len()); }
             for a in args {
                 self.compile_expr(a)?;
             }
             let mut argc = args.len() as u8;
+            if let Some(arity) = fixed_arity {
+                for _ in args.len()..arity { inst!(self, core_wasm::undefined); }
+                argc = arity as u8;
+            }
             if let Some(receiver) = receiver {
                 self.emit_u16(Op::LOCAL_GET, receiver);
                 argc = argc.saturating_add(1);
@@ -900,61 +972,8 @@ impl Compiler {
         }
     }
 
-    /// A parent exception instance from constructor arguments: the tree's
-    /// adapter constructor when the platform declares one, else the shared
-    /// shape. Leaves the instance on the stack.
-    pub(crate) fn emit_exception_parent_instance(
-        &mut self,
-        parent_name: &str,
-        args: &[&Expression],
-    ) -> Result<(), String> {
-        if let Some(backing) = self.tree_common_ctor_backing(parent_name) {
-            for arg in args {
-                self.compile_expr(arg)?;
-            }
-            let line = self.line;
-            self.emit_common(&backing, args.len() as u8, line);
-            return Ok(());
-        }
-        self.emit_js_exception_ctor_value(parent_name, args)
-    }
 
-    /// Initialises the receiver in `this_slot` — the derived class's own typed
-    /// instance — as the parent exception, through the tree adapter. Answers
-    /// false when the parent has no adapter constructor.
-    pub(crate) fn emit_exception_parent_into(
-        &mut self,
-        parent_name: &str,
-        args: &[&Expression],
-        this_slot: u16,
-    ) -> Result<bool, String> {
-        let Some(backing) = self.tree_common_ctor_backing(parent_name) else {
-            return Ok(false);
-        };
-        for arg in args {
-            self.compile_expr(arg)?;
-        }
-        self.emit_u16(Op::LOCAL_GET, this_slot);
-        let line = self.line;
-        let into = format!("{backing}{}", crate::component_classes::CTOR_INTO_SUFFIX);
-        self.emit_common(&into, args.len() as u8 + 1, line);
-        self.emit_u16(Op::LOCAL_SET, this_slot);
-        Ok(true)
-    }
 
-    /// Same as [`Self::emit_exception_parent_instance`], from a message
-    /// already on the stack.
-    pub(crate) fn emit_exception_parent_from_message_value(
-        &mut self,
-        parent_name: &str,
-    ) -> Result<(), String> {
-        if let Some(backing) = self.tree_common_ctor_backing(parent_name) {
-            let line = self.line;
-            self.emit_common(&backing, 1, line);
-            return Ok(());
-        }
-        self.emit_js_exception_ctor_from_message_value(parent_name)
-    }
 
     fn parent_ctor_needs_ecma_construct_dispatch(&mut self, parent_name: &str) -> bool {
         if !self.ecma_new_dispatch() || self.defined_classes.contains(&self.canon(parent_name)) {
@@ -1277,8 +1296,7 @@ impl Compiler {
         if self.class_prototype_dispatch() && !self.ecma_new_dispatch() {
             let proto_local = self.define_local(&format!("__{}_link_proto", name));
             self.emit_load_instance_proto(name);
-            self.emit_u16(Op::LOCAL_SET, proto_local);
-            self.emit_u16(Op::LOCAL_GET, proto_local);
+            self.emit_u16(Op::LOCAL_TEE, proto_local);
             self.emit(Op::REF_IS_NULL);
             self.emit(Op::I32_EQZ);
             self.chunks[self.current].emit_if(line);
@@ -1497,6 +1515,7 @@ impl Compiler {
         }
 
         let bind_on_access = self.methods_bind_on_access();
+        let carries_receiver = self.method_values_carry_receiver();
         for (mname, chunk_idx, rest_fixed) in binds {
             if let Some(prop) = mname.strip_prefix("__get_") {
                 crate::primitives::object::emit_bind_getter(
@@ -1514,7 +1533,7 @@ impl Compiler {
                     chunk_idx,
                     line,
                 );
-            } else {
+            } else if carries_receiver {
                 crate::primitives::object::emit_bind_bound_method(
                     self.chunk(),
                     this_slot,
@@ -1523,6 +1542,11 @@ impl Compiler {
                     rest_fixed,
                     bind_on_access,
                     line,
+                );
+            } else {
+                crate::primitives::object::emit_bind_method_with_slot(
+                    self.chunk(), this_slot, &mname, None,
+                    chunk_idx, rest_fixed, line,
                 );
             }
         }
@@ -1609,8 +1633,7 @@ impl Compiler {
         }
         let nt_slot = self.define_local("__js_default_new_target_probe");
         self.emit_global_read("__js_new_target");
-        self.emit_u16(Op::LOCAL_SET, nt_slot);
-        self.emit_u16(Op::LOCAL_GET, nt_slot);
+        self.emit_u16(Op::LOCAL_TEE, nt_slot);
         self.emit(Op::REF_IS_NULL);
         self.emit_u16(Op::LOCAL_GET, nt_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
@@ -1630,8 +1653,8 @@ impl Compiler {
     fn emit_load_instance_proto(&mut self, class_name: &str) {
         self.emit_global_read("__js_new_target");
         inst!(self, core_wasm::dup);
-        self.emit(Op::REF_IS_NULL);
         let line = self.line;
+        crate::primitives::delegates::emit_stack_is_nullish_in_chunk(self.chunk(), line);
         // ⛔ TAKES THE VALUE AS A PARAM: the `drop` below is discarding a value
         // pushed OUTSIDE this `if`, which a VM's shared operand stack allows and a
         // WASM block does not. Both arms leave one value — `(1, 1)`.
@@ -1686,8 +1709,27 @@ impl Compiler {
         // carries a receiver.
         let no_intern = self.methods_bind_on_access() && bind_receiver;
 
-        for bind_name in bind_names {
+        // A protocol key is another name for this same bound method. Prepare
+        // captures/receiver/rest metadata once, but never share across instances
+        // or collapse observable prototype lookups/private naming operations.
+        // Bare canonical refs are already cheap: avoid adding a local for them.
+        let shared_alias = (bind_names.len() > 1
+            && proto_class.is_none()
+            && !method_name.starts_with("__js_private_")
+            && (!capture_names.is_empty() || bind_receiver || rest_fixed_count.is_some()))
+            .then(|| self.define_temp_local("__bound_protocol_alias"));
+
+        for (bind_index, bind_name) in bind_names.into_iter().enumerate() {
             self.emit_u16(Op::LOCAL_GET, this_slot);
+            if let Some(slot) = shared_alias.filter(|_| bind_index != 0) {
+                self.emit_u16(Op::LOCAL_GET, slot);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal(&bind_name),
+                    class_slots::ValueSource::Stack,
+                );
+                continue;
+            }
             if let Some(class_name) = &proto_class {
                 let cname = self.canon(class_name);
                 self.emit_global_read(&cname);
@@ -1747,6 +1789,9 @@ impl Compiler {
                     &rest_key,
                     class_slots::ValueSource::Stack,
                 );
+            }
+            if let Some(slot) = shared_alias {
+                self.emit_u16(Op::LOCAL_TEE, slot);
             }
             self.class_set(
                 class_slots::ObjSource::Stack,
@@ -1971,15 +2016,38 @@ impl Compiler {
         // need shared-word storage, so there is no per-profile opt-in the way
         // the C-only at-entry cell promotion has.
         let saved_atomic_words = std::mem::take(&mut self.current_atomic_word_locals);
-        crate::primitives::collect_atomic_place_idents(body, &mut self.current_atomic_word_locals);
+        if !self.source_atomic_free_bodies.contains(
+            &(body.as_ptr() as usize, body.len())
+        ) {
+            crate::primitives::collect_atomic_place_idents(body, &mut self.current_atomic_word_locals);
+        }
         // Capture parent shared env for nested function upvalue resolution
         let parent_shared_env_slot = self.shared_env_slot;
         let parent_shared_env_names = self.shared_env_names.clone();
         let frame_books = self.enter_closure_frame(&parent_shared_env_names);
-        crate::primitives::collect_closure_captured_idents(
-            body,
-            &mut self.current_closure_captured_locals,
+        let closure_receiver_fact = if self.fused_closure_analysis {
+            Some(super::closure_analysis::analyze(
+                body,
+                &mut self.current_closure_captured_locals,
+            ))
+        } else {
+            crate::primitives::collect_closure_captured_idents(
+                body,
+                &mut self.current_closure_captured_locals,
+            );
+            None
+        };
+        // Opt-in boxed value reuse; declaration spellings do not certify words.
+        let word_proof = crate::word_local_proof::prove_subset(
+            self.directives(), body, |hint| hint.word_value, |_| None,
         );
+        let word_bindings: Vec<_> = word_proof.eligible.into_iter().filter(|binding| {
+                binding.interpretation == vybe_ast::word_local_transport::WordInterpretation::Signed
+                    && !self.current_addr_taken_locals.contains(&binding.name)
+                    && !self.current_atomic_word_locals.contains(&binding.name)
+                    && !self.current_closure_captured_locals.contains(&binding.name)
+            }).map(|binding| binding.name).collect();
+        self.scopes.last_mut().unwrap().normalized_word_bindings.extend(word_bindings);
         // ECMA-262 §11.2.2: inherit strict mode and additionally enable it on
         // a `"use strict"` directive prologue in this function's body.
         let saved_strict = self.in_strict;
@@ -2012,8 +2080,7 @@ impl Compiler {
         let js_arguments_slot = if uses_js_arguments {
             let slot = self.define_source_local("arguments");
             self.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
-            self.emit_u16(Op::LOCAL_SET, slot);
-            self.emit_u16(Op::LOCAL_GET, slot);
+            self.emit_u16(Op::LOCAL_TEE, slot);
             self.emit_var_get(name);
             self.class_set(
                 class_slots::ObjSource::Stack,
@@ -2076,6 +2143,15 @@ impl Compiler {
             }
         }
 
+        // Fixed synchronous continuation entry receives control at its final
+        // positional argument. Reserve it before closure environment/scratch:
+        // capture initialization must never overwrite the incoming packet.
+        let early_generator_control_slot = if is_generator && !is_async && generator_control_arity == 1 {
+            let slot=self.define_local("__generator_entry_control");
+            assert_eq!(slot,u16::from(arity)-1,"fixed generator positional control");
+            Some(slot)
+        } else {None};
+
         let js_arguments_len_slot = if uses_js_arguments {
             let len_slot = self.define_local("__vybe_js_arguments_length");
             self.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
@@ -2114,6 +2190,7 @@ impl Compiler {
             }
         }
 
+        self.bind_late_bound_arguments(params);
         for (param_index, p) in params.iter().enumerate() {
             // Default parameters: ECMA-262 §15.2.3 — only `undefined`
             // triggers the default (not `null`). The VM now pads
@@ -2179,7 +2256,11 @@ impl Compiler {
         if !self.current_addr_taken_locals.is_empty() {
             for p in params {
                 if self.current_addr_taken_locals.contains(&p.name) {
-                    self.promote_local_binding_to_pointer_cell(&p.name);
+                    if p.pass_by == PassBy::Alias {
+                        self.promote_local_binding_to_pointer_cell(&p.name);
+                    } else {
+                        self.initialize_local_pointer_cell(&p.name);
+                    }
                 }
             }
         }
@@ -2197,10 +2278,16 @@ impl Compiler {
         // moved the collision into the paragraph instead of removing it.
         self.closure_env_slot();
 
-        let generator_control_slot =
-            is_generator.then(|| self.define_local("__generator_entry_control"));
+        let generator_control_slot = early_generator_control_slot.or_else(||
+            is_generator.then(|| self.define_local("__generator_entry_control")));
 
         if let Some(control_slot) = generator_control_slot {
+            if !is_async && generator_control_arity == 1 {
+                self.chunk().local_names.push(vybe_runtime::chunk::LocalName::new(
+                    control_slot, format!("<native-generator-entry:{}:{}>", control_slot, arity-1),
+                    vybe_runtime::chunk::LocalOrigin::Compiler,
+                ));
+            }
             self.emit_generator_entry_control(control_slot)?;
         }
 
@@ -2250,7 +2337,8 @@ impl Compiler {
 
         // One decision, one place — see `capture_receiver_for_inner_closures`.
         // This is the site for functions and function expressions.
-        let closures_use_this = crate::primitives::closures_in_body_reference_this(body);
+        let closures_use_this = closure_receiver_fact
+            .unwrap_or_else(|| crate::primitives::closures_in_body_reference_this(body));
         let self_kw_for_capture = self.profile.self_keyword.clone();
         let declares_own_receiver = self.scope().resolve(&self_kw_for_capture).is_some();
         self.capture_receiver_for_inner_closures(closures_use_this, declares_own_receiver);
@@ -2280,9 +2368,9 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, env_slot);
                 self.shared_env_slot = Some(env_slot);
                 self.shared_env_names = captured_names.clone();
-                let mut local_decls: HashSet<String> =
-                    params.iter().map(|p| p.name.clone()).collect();
-                crate::primitives::collect_declared_names(body, &mut local_decls);
+                // The declaration set above is unchanged: emission has not
+                // modified the borrowed body or parameters. Reuse it for the
+                // enclosing-environment decision rather than walk the body again.
                 for (idx, cap_name) in captured_names.iter().enumerate() {
                     if let Some(param_slot) = self.scope().resolve(cap_name) {
                         self.emit_u16(Op::LOCAL_GET, param_slot);
@@ -2292,7 +2380,7 @@ impl Compiler {
                             idx as u16,
                             line,
                         );
-                    } else if !local_decls.contains(cap_name) && parent_shared_env_slot.is_some() {
+                    } else if !fn_scope_names.contains(cap_name) && parent_shared_env_slot.is_some() {
                         if let Some(parent_idx) =
                             parent_shared_env_names.iter().position(|n| n == cap_name)
                         {
@@ -2315,15 +2403,22 @@ impl Compiler {
             }
         }
 
+        // Diagnostics configuration is fixed for this function's emission.
+        // Avoid environment locking/allocation and clock reads per statement
+        // on the ordinary compilation path.
+        let trace_path = compiler_timing_path().filter(|_| {
+            std::env::var("VYBE_COMPILER_DEBUG_FUNCTION").ok()
+                .is_some_and(|target| target.as_str() == name.as_str() || target == "*")
+        });
         if self.body_declarations_first() {
             for (statement_index, statement) in body.iter().enumerate() {
                 if matches!(&statement.kind, StmtKind::VarDecl { .. }) {
-                    self.compile_function_body_stmt(name, statement_index, statement)?;
+                    self.compile_function_body_stmt(name, statement_index, statement, trace_path.as_deref())?;
                 }
             }
             for (statement_index, statement) in body.iter().enumerate() {
                 if matches!(&statement.kind, StmtKind::FunctionDecl { .. }) {
-                    self.compile_function_body_stmt(name, statement_index, statement)?;
+                    self.compile_function_body_stmt(name, statement_index, statement, trace_path.as_deref())?;
                 }
             }
             for (statement_index, statement) in body.iter().enumerate() {
@@ -2333,11 +2428,11 @@ impl Compiler {
                 ) {
                     continue;
                 }
-                self.compile_function_body_stmt(name, statement_index, statement)?;
+                self.compile_function_body_stmt(name, statement_index, statement, trace_path.as_deref())?;
             }
         } else {
             for (statement_index, statement) in body.iter().enumerate() {
-                self.compile_function_body_stmt(name, statement_index, statement)?;
+                self.compile_function_body_stmt(name, statement_index, statement, trace_path.as_deref())?;
             }
         }
 
@@ -2387,9 +2482,11 @@ impl Compiler {
 
         let ns = self.scope().next_slot;
         self.chunks[func_idx].finalize_local_count(ns);
-        let local_names = self.scope().defined_names.clone();
-        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[func_idx], &local_names);
+        let local_names = std::mem::take(&mut self.scopes.last_mut().unwrap().defined_names);
+        crate::primitives::bundle::finalize_source_local_names_owned(&mut self.chunks[func_idx], local_names);
         let uvs = self.scopes.last().unwrap().upvalues.clone();
+        // Completed producer fact, never inferred from an unfinished zero count.
+        self.chunks[func_idx].direct_entry_has_captures = Some(!uvs.is_empty());
         let inner_scope_idx = self.scopes.len() - 1;
         let uv_names: Vec<Option<String>> = (0..uvs.len())
             .map(|i| self.captured_name_for_upvalue(inner_scope_idx, i as u8))
@@ -2399,6 +2496,8 @@ impl Compiler {
         self.static_local_bindings.pop();
         self.current = saved;
         self.function_label_base = saved_label_base;
+        self.complete_immutable_function_entry(name, params, body, func_idx,
+            binds_in_enclosing_scope || uses_js_arguments || has_rest);
 
         let line = self.line;
         if uvs.is_empty() {
@@ -2461,22 +2560,12 @@ impl Compiler {
             let function_slot = self.define_local("__declared_function_callable");
             self.emit_u16(Op::LOCAL_SET, function_slot);
             if let Some(callable_global) = self.source_function_callable_global_name(name) {
-                self.emit_u16(Op::LOCAL_GET, function_slot);
-                self.emit_global_write(&callable_global);
-                if self.profile.name == "php" {
-                    // PHP callable names are case-insensitive even though its
-                    // variable namespace is case-sensitive. Publish the folded
-                    // alias once so runtime lookups need no candidate scan.
-                    let folded = format!("__vybe_func${}",
-                        crate::primitives::namespaces::normalize_source_path(name)
-                            .to_ascii_lowercase());
-                    if folded != callable_global {
-                        self.emit_u16(Op::LOCAL_GET, function_slot);
-                        self.emit_global_write(&folded);
-                    }
+                let _ = callable_global;
+                for alias in self.source_function_publication_aliases(name) {
+                    self.emit_u16(Op::LOCAL_GET, function_slot);
+                    self.emit_global_write(&alias);
+                    self.publish_immutable_function_alias(name, &alias, params, body, func_idx);
                 }
-                self.emit_u16(Op::LOCAL_GET, function_slot);
-                self.emit_global_write(&format!("__php_fn_{}", name.replace('.', "__")));
             }
         } else {
             if enclosing_fn_slot.is_some() {
@@ -2491,6 +2580,7 @@ impl Compiler {
                     self.emit_global_read(name);
                 }
                 self.emit_global_write(&callable_global);
+                self.publish_immutable_function_alias(name, &callable_global, params, body, func_idx);
             }
         }
 
@@ -2783,10 +2873,10 @@ impl Compiler {
         // top-level function body — sees the same shape.
         let ClassStorageLayout {
             type_slot,
-            mut fields,
-            mut field_inits,
-            mut static_field_inits,
-            mut field_storage_names,
+            fields,
+            field_inits,
+            static_field_inits,
+            field_storage_names,
         } = self.publish_class_storage(class);
 
         // Store field list for implicit self resolution
@@ -2855,6 +2945,10 @@ impl Compiler {
                 let const_name = self.canon(name);
                 static_member_names.push(const_name.clone());
                 static_const_names.push(const_name);
+                // Constants are a class-wide declaration surface, including
+                // references from methods and earlier constant initializers.
+                self.defined_globals
+                    .insert(self.canon(&format!("{}.{}", class.name, name)));
             }
         }
 
@@ -3091,11 +3185,12 @@ impl Compiler {
                     || is_static && mname.eq_ignore_ascii_case("new")
             };
 
-            let user_params: Vec<&Param> = if class.explicit_self_param {
-                m.params.iter().skip(1).collect()
+            let user_params: &[Param] = if class.explicit_self_param {
+                m.params.get(1..).unwrap_or_default()
             } else {
-                m.params.iter().collect()
+                m.params.as_slice()
             };
+            let method_signature = CallSignature::from_params(user_params);
             let param_types: Vec<String> = user_params
                 .iter()
                 .map(|param| {
@@ -3138,12 +3233,7 @@ impl Compiler {
             cc.function_signatures
                 .entry(bound_name.clone())
                 .or_default()
-                .push(CallSignature::from_params(
-                    &user_params
-                        .iter()
-                        .map(|param| (*param).clone())
-                        .collect::<Vec<_>>(),
-                ));
+                .push(method_signature.clone());
             if let Some(return_type) = m.return_type.as_ref() {
                 cc.function_return_types
                     .insert(bound_name.clone(), return_type.clone());
@@ -3336,7 +3426,7 @@ impl Compiler {
                     class_slots::ValueSource::ConstStr("Arguments".to_string()),
                 );
             }
-            for p in &user_params {
+            for p in user_params {
                 cc.define_source_local_typed(&p.name, p.type_hint.clone());
                 let normalized_type_hint =
                     p.type_hint.as_deref().map(Compiler::normalize_type_hint);
@@ -3365,13 +3455,13 @@ impl Compiler {
             // the caller passed a cell and the body read it as an ordinary
             // value, so a read saw the cell object and a write replaced it,
             // leaving the caller's storage untouched.
-            cc.bind_alias_params(user_params.iter().copied());
+            cc.bind_late_bound_arguments(user_params.iter());
+            cc.bind_alias_params(user_params.iter());
 
             let js_arguments_len_slot = if uses_js_arguments {
                 let slot = cc.define_source_local("arguments");
                 cc.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
-                cc.emit_u16(Op::LOCAL_SET, slot);
-                cc.emit_u16(Op::LOCAL_GET, slot);
+                cc.emit_u16(Op::LOCAL_TEE, slot);
                 cc.chunk().emit_string_const("Arguments", 0);
                 // `ClassSlot::TypeIdentity`, not the string "__type" — this is
                 // the slot M6 converts to a typeidx, so it must go through the
@@ -3470,7 +3560,7 @@ impl Compiler {
             // the default. JS profile uses `REF_IS_UNDEFINED` (only
             // explicit `undefined` triggers); other languages use
             // `REF_IS_NULL` which matches either tag.
-            for p in &user_params {
+            for p in user_params {
                 if let Some(ref default) = p.default {
                     let slot = cc.scope().resolve(&p.name).unwrap();
                     cc.emit_u16(Op::LOCAL_GET, slot);
@@ -3538,13 +3628,6 @@ impl Compiler {
                     cc.emit_u16(Op::LOCAL_SET, env_slot);
                     cc.shared_env_slot = Some(env_slot);
                     cc.shared_env_names = captured_names.clone();
-
-                    let mut local_decls: std::collections::HashSet<String> =
-                        user_params.iter().map(|p| p.name.clone()).collect();
-                    if has_receiver {
-                        local_decls.insert(self_kw.clone());
-                    }
-                    crate::primitives::collect_declared_names(&m.body, &mut local_decls);
 
                     for (idx, cap_name) in captured_names.iter().enumerate() {
                         if let Some(param_slot) = cc.scope().resolve(cap_name) {
@@ -3668,8 +3751,8 @@ impl Compiler {
 
             let ns = cc.scope().next_slot;
             cc.chunks[ci].finalize_local_count(ns);
-            let local_names = cc.scope().defined_names.clone();
-            crate::primitives::bundle::finalize_source_local_names(&mut cc.chunks[ci], &local_names);
+            let local_names = std::mem::take(&mut cc.scopes.last_mut().unwrap().defined_names);
+            crate::primitives::bundle::finalize_source_local_names_owned(&mut cc.chunks[ci], local_names);
             let method_scope_idx = cc.scopes.len() - 1;
             let mut capture_names: Vec<String> = cc.scopes[method_scope_idx]
                 .upvalues
@@ -3698,10 +3781,12 @@ impl Compiler {
             cc.scopes.pop();
             cc.static_local_bindings.pop();
             cc.current = saved;
+            cc.chunks[ci].direct_entry_has_captures = Some(!capture_names.is_empty());
             method_capture_name_map.insert(ci, capture_names);
             // Read the dispatch policy BEFORE taking the mutable borrow below:
             // it is a property of the UNIT, constant across this loop.
             let virtual_by_default = cc.methods_virtual_by_default();
+            let private_methods_bind_lexically = cc.profile.private_methods_bind_lexically;
             if let Some(pending) = cc.pending_classes.get_mut(name) {
                 let overloads = if is_static {
                     &mut pending.static_method_overloads
@@ -3717,7 +3802,11 @@ impl Compiler {
                 let is_virtual = m.is_virtual
                     || m.is_override
                     || m.is_abstract
-                    || (virtual_by_default && !is_static && !m.raw_modifiers.is_not_overridable);
+                    || (virtual_by_default
+                        && !is_static
+                        && !(private_methods_bind_lexically
+                            && m.raw_modifiers.visibility == crate::ast::Visibility::Private)
+                        && !m.raw_modifiers.is_not_overridable);
                 overloads
                     .entry(bound_name.clone())
                     .or_default()
@@ -3725,8 +3814,8 @@ impl Compiler {
                         param_types: param_types.clone(),
                         chunk_idx: ci,
                         return_type: m.return_type.clone(),
-                        signature: CallSignature::from_params(&if uses_js_arguments {
-                            vec![Param {
+                        signature: if uses_js_arguments {
+                            CallSignature::from_params(&[Param {
                                 name: "__vybe_js_arguments_array".to_string(),
                                 type_hint: None,
                                 default: None,
@@ -3735,13 +3824,10 @@ impl Compiler {
                                 is_kwargs: false,
                                 is_optional: false,
                                 is_nullable: false,
-                            }]
+                            }])
                         } else {
-                            user_params
-                                .iter()
-                                .map(|param| (*param).clone())
-                                .collect::<Vec<_>>()
-                        }),
+                            method_signature.clone()
+                        },
                         is_virtual,
                     });
             }
@@ -3769,12 +3855,7 @@ impl Compiler {
                     cc.function_signatures
                         .entry(overload_storage_name.clone())
                         .or_default()
-                        .push(CallSignature::from_params(
-                            &user_params
-                                .iter()
-                                .map(|param| (*param).clone())
-                                .collect::<Vec<_>>(),
-                        ));
+                        .push(method_signature.clone());
                     if let Some(return_type) = m.return_type.as_ref() {
                         cc.function_return_types
                             .insert(overload_storage_name.clone(), return_type.clone());
@@ -3795,17 +3876,62 @@ impl Compiler {
             compile_normal_method(self, m, true)?;
         }
 
-        // --- Events / Consts / NestedTypes (from raw_extra_members) ---
+        // Emit constant dependencies first. Declaration order does not limit
+        // the visibility of immutable class members. Inspect the common AST,
+        // including references nested in arrays and operator helper calls.
+        let constants: Vec<_> = class.raw_extra_members.iter().filter_map(|member| {
+            if let ClassMember::Const { name, value, .. } = member {
+                Some((self.canon(&format!("{}.{}", class.name, name)), value))
+            } else { None }
+        }).collect();
+        let constant_indices: HashMap<_, _> = constants.iter().enumerate()
+            .map(|(index, (name, _))| (name.clone(), index)).collect();
+        let mut dependents = vec![Vec::new(); constants.len()];
+        let mut dependency_counts = vec![0usize; constants.len()];
+        for (index, (_, value)) in constants.iter().enumerate() {
+            let mut dependencies = HashSet::new();
+            value.walk_exprs(&mut |expression| {
+                if let ExprKind::StaticAccess { class, member } = &expression.kind {
+                    if let (ExprKind::Ident(class_name), ExprKind::Ident(member_name)) =
+                        (&class.kind, &member.kind)
+                    {
+                        let key = self.canon(&format!("{}.{}", class_name, member_name));
+                        if let Some(&dependency) = constant_indices.get(&key) {
+                            dependencies.insert(dependency);
+                        }
+                    }
+                }
+            });
+            dependency_counts[index] = dependencies.len();
+            for dependency in dependencies { dependents[dependency].push(index); }
+        }
+        let mut ready: std::collections::VecDeque<_> = dependency_counts.iter().enumerate()
+            .filter_map(|(index, count)| (*count == 0).then_some(index)).collect();
+        let mut initialized = vec![false; constants.len()];
+        while let Some(index) = ready.pop_front() {
+            let (global_name, value) = &constants[index];
+            self.compile_expr(value)?;
+            self.emit_global_write(global_name);
+            initialized[index] = true;
+            for &dependent in &dependents[index] {
+                dependency_counts[dependent] -= 1;
+                if dependency_counts[dependent] == 0 { ready.push_back(dependent); }
+            }
+        }
+        // The dependency scan is conservative: a conditional initializer can
+        // contain an unreachable back-reference. Preserve its runtime branch
+        // semantics rather than rejecting a potential cycle syntactically.
+        for (index, (global_name, value)) in constants.iter().enumerate() {
+            if !initialized[index] {
+                self.compile_expr(value)?;
+                self.emit_global_write(global_name);
+            }
+        }
+
+        // --- Events / NestedTypes (from raw_extra_members) ---
         for m in &class.raw_extra_members {
             match m {
-                ClassMember::Const {
-                    name: cname, value, ..
-                } => {
-                    self.compile_expr(value)?;
-                    let global_name = self.canon(&format!("{}.{}", name, cname));
-                    self.emit_global_write(&global_name);
-                    self.defined_globals.insert(global_name);
-                }
+                ClassMember::Const { .. } => { /* initialized above */ }
                 ClassMember::Event { .. } => { /* type-level only */ }
                 ClassMember::NestedType(stmt) => {
                     let nested = Self::qualify_nested_type_stmt(stmt, name);
@@ -3846,6 +3972,7 @@ impl Compiler {
             }
         }
 
+        let mut raw_field_writers: HashMap<String, usize> = HashMap::new();
         // --- Properties: getter → __get_<prop>, setter → __set_<prop> ---
         for p in &class.properties {
             // Auto-properties are handled as plain fields in pass-1.
@@ -3915,7 +4042,12 @@ impl Compiler {
                     // no registered type, and must stay in step with the
                     // setter or the halves address different storage.
                     if let Some(slot) = self.scope().resolve(&self_kw) {
-                        let backing = self.auto_property_backing_slot(&class.name, &pname_canon);
+                        let backing_name = if self.separate_property_method_namespace() {
+                            self.canon(&p.source_name)
+                        } else {
+                            pname_canon.clone()
+                        };
+                        let backing = self.auto_property_backing_slot(&class.name, &backing_name);
                         self.emit_u16(Op::LOCAL_GET, slot);
                         self.class_get(class_slots::ObjSource::Stack, &backing);
                         self.emit(Op::RETURN);
@@ -3941,8 +4073,8 @@ impl Compiler {
                 {
                     let ns = self.scope().next_slot;
                     self.chunks[ci].finalize_local_count(ns);
-                    let local_names = self.scope().defined_names.clone();
-                    crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[ci], &local_names);
+                    let local_names = std::mem::take(&mut self.scopes.last_mut().unwrap().defined_names);
+                    crate::primitives::bundle::finalize_source_local_names_owned(&mut self.chunks[ci], local_names);
                 }
                 self.scopes.pop();
                 self.current = saved;
@@ -3981,7 +4113,12 @@ impl Compiler {
                         if let Some(val_slot) = self.scope().resolve(&value_param_name) {
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                         }
-                        let backing = self.auto_property_backing_slot(&class.name, &pname_canon);
+                        let backing_name = if self.separate_property_method_namespace() {
+                            self.canon(&p.source_name)
+                        } else {
+                            pname_canon.clone()
+                        };
+                        let backing = self.auto_property_backing_slot(&class.name, &backing_name);
                         self.class_set(
                             class_slots::ObjSource::Stack,
                             &backing,
@@ -3999,14 +4136,44 @@ impl Compiler {
                 {
                     let ns = self.scope().next_slot;
                     self.chunks[ci].finalize_local_count(ns);
-                    let local_names = self.scope().defined_names.clone();
-                    crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[ci], &local_names);
+                    let local_names = std::mem::take(&mut self.scopes.last_mut().unwrap().defined_names);
+                    crate::primitives::bundle::finalize_source_local_names_owned(&mut self.chunks[ci], local_names);
                 }
                 self.scopes.pop();
                 self.current = saved;
                 self.current_member_is_static = saved_member_static;
                 method_chunks.push((set_name, ci, false, prop_is_static));
             }
+        }
+
+        // Raw operations are not bound as source-level methods. Their
+        // identities are funcrefs on the canonical reflection member token.
+        for property in &class.properties {
+            let Some(writer) = property.raw_setter.as_ref() else { continue; };
+            if property.is_static { continue; }
+            let ci = self.chunks.len();
+            let mut chunk = common::functions::create_function_chunk("<raw-property-write>", 2);
+            chunk.is_method = true;
+            self.chunks.push(chunk);
+            self.declare_receiver_first_accessor(ci);
+            self.scopes.push(Scope::new_function(self.directives().variable_fold()));
+            let saved = self.current;
+            let saved_static = self.current_member_is_static;
+            self.current = ci;
+            self.current_member_is_static = false;
+            self.define_local_typed(&self_kw,
+                Some(vybe_ast::TypeHint::descriptive(class.name.clone())));
+            let value_name = writer.params.first().map(|param| param.name.as_str()).unwrap_or("value");
+            self.define_local(value_name);
+            for statement in &writer.body { self.compile_stmt(statement)?; }
+            self.emit_null();
+            self.emit_return();
+            let local_count = self.scope().next_slot;
+            self.chunks[ci].finalize_local_count(local_count);
+            self.scopes.pop();
+            self.current = saved;
+            self.current_member_is_static = saved_static;
+            raw_field_writers.insert(property.source_name.clone(), ci);
         }
 
         self.current_class = saved_class;
@@ -4034,8 +4201,7 @@ impl Compiler {
                 let parent_init = format!("__php_field_defaults_{}", self.canon(parent_name));
                 let parent_fn = self.define_local("__php_parent_field_defaults");
                 self.emit_global_read(&parent_init);
-                self.emit_u16(Op::LOCAL_SET, parent_fn);
-                self.emit_u16(Op::LOCAL_GET, parent_fn);
+                self.emit_u16(Op::LOCAL_TEE, parent_fn);
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
                 self.emit_u16(Op::LOCAL_GET, parent_fn);
@@ -4061,8 +4227,8 @@ impl Compiler {
             self.emit(Op::RETURN);
             let ns = self.scope().next_slot;
             self.chunks[helper_idx].finalize_local_count(ns);
-            let local_names = self.scope().defined_names.clone();
-            crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[helper_idx], &local_names);
+            let local_names = std::mem::take(&mut self.scopes.last_mut().unwrap().defined_names);
+            crate::primitives::bundle::finalize_source_local_names_owned(&mut self.chunks[helper_idx], local_names);
             self.scopes.pop();
             self.current = saved_cur;
             self.current_class = saved_class;
@@ -4071,7 +4237,6 @@ impl Compiler {
             None
         };
 
-        const IMPLICIT_CTOR_FORWARD_ARGS: u8 = 16;
         let instance_methods: Vec<&(String, usize, bool, bool)> = method_chunks
             .iter()
             .filter(|(_, _, ic, is_static)| !*ic && !*is_static)
@@ -4130,11 +4295,8 @@ impl Compiler {
                     ctor.params.len().saturating_sub(skip)
                 })
                 .unwrap_or_else(|| {
-                    if parent.is_some() {
-                        IMPLICIT_CTOR_FORWARD_ARGS as usize
-                    } else {
-                        0
-                    }
+                    self.local_parent_initializer_arity(name)
+                        .unwrap_or(IMPLICIT_CTOR_FORWARD_ARGS as usize)
                 });
             self.defined_globals
                 .insert(ctor_global_for(&ctor_global_prefix, explicit_arity));
@@ -4164,22 +4326,29 @@ impl Compiler {
             let ctor_auto_base = ctor_variant
                 .map(|c| matches!(c.base_call, BaseCall::Auto))
                 .unwrap_or(false);
-            let ctor_this_args: Option<Vec<Expression>> = ctor_variant.and_then(|c| {
+            let ctor_this_args: Option<&[vybe_ast::Argument]> = ctor_variant.and_then(|c| {
                 if let BaseCall::This(args) = &c.base_call {
-                    Some(args.iter().map(|a| a.value.clone()).collect())
+                    Some(args.as_slice())
                 } else {
                     None
                 }
             });
             let ctor_body: Option<(&Vec<Statement>, &Vec<Param>)> =
                 ctor_variant.map(|c| (&c.body, &c.params));
-            if let Some((_, params)) = ctor_body {
-                let skip = if class.explicit_self_param { 1 } else { 0 };
-                let ctor_params: Vec<Param> = params.iter().skip(skip).cloned().collect();
+            let ctor_params: &[Param] = ctor_body
+                .map(|(_, params)| {
+                    if class.explicit_self_param {
+                        params.get(1..).unwrap_or_default()
+                    } else {
+                        params.as_slice()
+                    }
+                })
+                .unwrap_or_default();
+            if ctor_body.is_some() {
                 self.constructor_signatures
                     .entry(self.canon(name))
                     .or_default()
-                    .push(CallSignature::from_params(&ctor_params));
+                    .push(CallSignature::from_params(ctor_params));
             }
             let user_params: Vec<String> = ctor_body
                 .map(|(_, params)| {
@@ -4202,7 +4371,8 @@ impl Compiler {
                 .unwrap_or(0);
             let synthesized_forward_args = ctor_body.is_none() && parent.is_some();
             let user_arity = if synthesized_forward_args {
-                IMPLICIT_CTOR_FORWARD_ARGS
+                self.local_parent_initializer_arity(name)
+                    .unwrap_or(IMPLICIT_CTOR_FORWARD_ARGS as usize) as u8
             } else {
                 user_params.len() as u8
             };
@@ -4255,16 +4425,6 @@ impl Compiler {
             self.current_class = Some(name.to_string());
             self.current_class_implicit_self = class.implicit_self_fields;
 
-            let ctor_param_defaults: Vec<Option<Expression>> = ctor_body
-                .map(|(_, params)| {
-                    let skip = if class.explicit_self_param { 1 } else { 0 };
-                    params
-                        .iter()
-                        .skip(skip)
-                        .map(|p| p.default.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
             for p in &user_params {
                 self.define_source_local(p);
             }
@@ -4273,7 +4433,7 @@ impl Compiler {
                 self.bind_alias_params(params.iter().skip(skip));
             }
             if synthesized_forward_args {
-                for i in 0..IMPLICIT_CTOR_FORWARD_ARGS {
+                for i in 0..user_arity {
                     self.define_local(&format!("__implicit_arg_{}", i));
                 }
             }
@@ -4285,6 +4445,10 @@ impl Compiler {
                 Some(vybe_ast::TypeHint::descriptive(class.name.clone())),
             );
             let this_slot = user_arity as u16;
+            if let Some((_, params)) = ctor_body {
+                let skip = usize::from(class.explicit_self_param);
+                self.bind_late_bound_arguments(params.iter().skip(skip));
+            }
             // §15.7.14: class constructors require `new` (JS only).
             // `__js_new_target` is null on plain calls; every `new` chain
             // (incl. super()) sets or defaults it before this body runs.
@@ -4293,7 +4457,7 @@ impl Compiler {
                 crate::primitives::classes::emit_class_requires_new_guard(self.chunk(), name, line);
             }
             for (i, p) in user_params.iter().enumerate() {
-                if let Some(Some(default)) = ctor_param_defaults.get(i) {
+                if let Some(default) = ctor_params.get(i).and_then(|param| param.default.as_ref()) {
                     let slot = self.scope().resolve(p).unwrap();
                     self.emit_u16(Op::LOCAL_GET, slot);
                     if self.missing_arg_is_undefined() {
@@ -4324,8 +4488,8 @@ impl Compiler {
             if let Some(this_args) = ctor_this_args {
                 let ctor_global = ctor_global_for(&ctor_global_prefix, this_args.len());
                 self.emit_var_get(&ctor_global);
-                for expr in &this_args {
-                    self.compile_expr(expr)?;
+                for arg in this_args {
+                    self.compile_expr(&arg.value)?;
                 }
                 self.emit_direct_callable_invoke(this_args.len() as u8);
                 self.emit_u16(Op::LOCAL_SET, this_slot);
@@ -4401,7 +4565,8 @@ impl Compiler {
                     // constructor. Keep a supplied receiver so a separately
                     // compiled parent does not allocate another object and
                     // lose properties written before parent::__construct().
-                    if self.profile.name != "php" {
+                    let fixed_receiver = self.receiver_preserving_classes.contains(&self.canon(name));
+                    if self.profile.name != "php" && !fixed_receiver {
                         self.emit_null();
                         self.emit_u16(Op::LOCAL_SET, this_slot);
                     }
@@ -4512,7 +4677,20 @@ impl Compiler {
                             }
                         }
                     } else if let Some(parent_name) = parent {
-                        if self.parent_ctor_needs_ecma_construct_dispatch(parent_name) {
+                        let fixed_parent = (fixed_receiver && synthesized_forward_args)
+                            .then(|| self.local_parent_initializer_arity(parent_name)).flatten()
+                            .filter(|arity| *arity <= IMPLICIT_CTOR_FORWARD_ARGS as usize);
+                        if let Some(arity) = fixed_parent {
+                            // The helper declares every user slot followed by
+                            // its receiver. Omitted slots are already Undefined.
+                            // Passing all fixed slots avoids the count ladder
+                            // and never mistakes the receiver for a user arg.
+                            self.emit_local_parent_initializer(parent_name);
+                            for slot in 0..arity { self.emit_u16(Op::LOCAL_GET, slot as u16); }
+                            self.emit_u16(Op::LOCAL_GET, this_slot);
+                            self.emit_direct_callable_invoke(arity as u8 + 1);
+                            self.emit_u16(Op::LOCAL_SET, this_slot);
+                        } else if self.parent_ctor_needs_ecma_construct_dispatch(parent_name) {
                             self.emit_default_js_new_target(name);
                             if synthesized_forward_args {
                                 self.emit_parent_ctor_value(parent_name);
@@ -4899,8 +5077,7 @@ impl Compiler {
                         let proto_local =
                             self.define_local(&format!("__{}_link_proto_base", helper_name));
                         self.emit_load_instance_proto(name);
-                        self.emit_u16(Op::LOCAL_SET, proto_local);
-                        self.emit_u16(Op::LOCAL_GET, proto_local);
+                        self.emit_u16(Op::LOCAL_TEE, proto_local);
                         self.emit(Op::REF_IS_NULL);
                         self.emit(Op::I32_EQZ);
                         self.chunks[self.current].emit_if(line);
@@ -4924,8 +5101,7 @@ impl Compiler {
                             class_slots::ObjSource::Stack,
                             &class_slots::ClassSlot::internal("constructor"),
                         );
-                        self.emit_u16(Op::LOCAL_SET, existing_ctor);
-                        self.emit_u16(Op::LOCAL_GET, existing_ctor);
+                        self.emit_u16(Op::LOCAL_TEE, existing_ctor);
                         self.emit(Op::REF_IS_NULL);
                         self.emit_u16(Op::LOCAL_GET, existing_ctor);
                         fn_call!(self, "wasm:js-undefined", "test", 1);
@@ -5048,7 +5224,7 @@ impl Compiler {
                     }
                 }
                 let mut interface_names = class.interfaces.clone();
-                interface_names.extend(self.reflection_interfaces(name));
+                interface_names.extend(self.reflection_interface_closure(name));
                 let mut seen_interfaces = std::collections::HashSet::new();
                 for interface_name in interface_names {
                     if !seen_interfaces.insert(self.canon(&interface_name)) {
@@ -5067,8 +5243,7 @@ impl Compiler {
                 if self.class_prototype_dispatch() {
                     self.emit_load_instance_proto(name);
                     let tmp = self.define_local("__final_proto");
-                    self.emit_u16(Op::LOCAL_SET, tmp);
-                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_u16(Op::LOCAL_TEE, tmp);
                     self.emit(Op::REF_IS_NULL);
                     self.emit(Op::I32_EQZ);
                     self.chunks[self.current].emit_if(line);
@@ -5097,8 +5272,8 @@ impl Compiler {
             {
                 let ns = self.scope().next_slot;
                 self.chunks[helper_idx].finalize_local_count(ns);
-                let local_names = self.scope().defined_names.clone();
-                crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[helper_idx], &local_names);
+                let local_names = std::mem::take(&mut self.scopes.last_mut().unwrap().defined_names);
+                crate::primitives::bundle::finalize_source_local_names_owned(&mut self.chunks[helper_idx], local_names);
             }
             // Names, not slot coordinates — see `emit_helper_ref`. Resolved
             // while the helper's scope is still on the stack, since
@@ -5204,6 +5379,12 @@ impl Compiler {
                 .min_by_key(|(arity, _, _, _, _)| *arity)
         };
         for count in (1..=ctor_arity as usize).rev() {
+            // An unsupported count previously emitted only a pure presence
+            // test and an empty if. It cannot select a constructor, so omit
+            // that branch rather than repeating it in every class wrapper.
+            let Some((_, _, helper_idx, helper_captures, _)) = helper_for_count(count) else {
+                continue;
+            };
             self.emit_u16(Op::LOCAL_GET, (count - 1) as u16);
             // Argument-presence test: a *missing* trailing arg is `undefined`,
             // so `new C(null)` must still dispatch to the 1-arg constructor
@@ -5217,14 +5398,12 @@ impl Compiler {
             // Result is already I32(0/1) — no dyn_to_bool needed
             self.emit(Op::I32_EQZ);
             self.chunks[self.current].emit_if(line);
-            if let Some((_, _, helper_idx, helper_captures, _)) = helper_for_count(count) {
-                emit_helper_ref(self, *helper_idx, helper_captures)?;
-                for arg_index in 0..count {
-                    self.emit_u16(Op::LOCAL_GET, arg_index as u16);
-                }
-                self.emit_direct_callable_invoke(count as u8);
-                self.emit_return_through_finally(1)?;
+            emit_helper_ref(self, *helper_idx, helper_captures)?;
+            for arg_index in 0..count {
+                self.emit_u16(Op::LOCAL_GET, arg_index as u16);
             }
+            self.emit_direct_callable_invoke(count as u8);
+            self.emit_return_through_finally(1)?;
             self.chunks[self.current].emit_end(line);
         }
         if let Some((_, _, helper_idx, helper_captures, _)) = helper_for_count(0) {
@@ -5237,8 +5416,8 @@ impl Compiler {
         {
             let ns = self.scope().next_slot;
             self.chunks[ctor_idx].finalize_local_count(ns);
-            let local_names = self.scope().defined_names.clone();
-            crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[ctor_idx], &local_names);
+            let local_names = std::mem::take(&mut self.scopes.last_mut().unwrap().defined_names);
+            crate::primitives::bundle::finalize_source_local_names_owned(&mut self.chunks[ctor_idx], local_names);
         }
         let ctor_upvalues = self.scope().upvalues.clone();
         self.scopes.pop();
@@ -5366,8 +5545,7 @@ impl Compiler {
                     &class_slots::ClassSlot::Prototype,
                 );
                 let parent_proto_local = self.define_local(&format!("__{}_parent_prototype", name));
-                self.emit_u16(Op::LOCAL_SET, parent_proto_local);
-                self.emit_u16(Op::LOCAL_GET, parent_proto_local);
+                self.emit_u16(Op::LOCAL_TEE, parent_proto_local);
                 self.emit(Op::REF_IS_NULL);
                 self.emit(Op::I32_EQZ);
                 self.chunks[self.current].emit_if(line);
@@ -6055,15 +6233,28 @@ impl Compiler {
             line,
         );
 
+        // A derived user class must not inherit its provider's identity.
+        crate::primitives::object::stamp_local_string_field(
+            self.chunk(), ctor_local,
+            crate::primitives::reflection::FIELD_LIBRARY_IDENTITY,
+            class.library_identity.as_deref().unwrap_or(""), line,
+        );
+
         // The class's own member list, for languages whose reflection surface
         // reads it at runtime rather than deriving it at compile time.
         if class.member_metadata {
-            let fields: Vec<(String, Option<String>, i64)> = class
+            let mut fields: Vec<(String, Option<String>, i64, Option<usize>)> = class
                 .instance_fields
                 .iter()
                 .chain(class.static_fields.iter())
-                .map(|f| (f.name.clone(), f.type_hint.clone(), 0))
+                .map(|f| (f.name.clone(), f.type_hint.clone(), 0,
+                    raw_field_writers.get(&f.name).copied()))
                 .collect();
+            for property in &class.properties {
+                if fields.iter().any(|field| field.0 == property.source_name) { continue; }
+                fields.push((property.source_name.clone(), None, 0,
+                    raw_field_writers.get(&property.source_name).copied()));
+            }
             let methods: Vec<(String, usize, Option<String>, Vec<String>, i64)> = class
                 .instance_methods
                 .iter()
@@ -6194,8 +6385,13 @@ impl Compiler {
         // languages (flexclassplan §1873), so the data was always here — this
         // is the "the data exists but this lookup can't see it" shape §1453
         // names.
-        let canon_interfaces: Vec<String> =
-            class.interfaces.iter().map(|i| self.canon(i)).collect();
+        let mut interface_names = class.interfaces.clone();
+        interface_names.extend(self.reflection_interface_closure(name));
+        let mut seen_interfaces = std::collections::HashSet::new();
+        let canon_interfaces: Vec<String> = interface_names.iter()
+            .map(|interface| self.canon(interface))
+            .filter(|interface| seen_interfaces.insert(interface.clone()))
+            .collect();
         crate::primitives::classes::register_type(
             &mut self.chunks,
             &canon_name,
@@ -6383,6 +6579,8 @@ pub(crate) enum CtorResult {
     Keep,
 }
 
+mod descriptors;
+
 pub fn emit_new_typed_object(
     chunk: &mut Chunk,
     this_slot: u16,
@@ -6409,47 +6607,28 @@ pub fn emit_new_typed_object(
     // it, not replace it — the derived allocation is the one that carries the
     // correct rtt, and WASM GC has no way to retype it afterwards.
     //
-    // The test is truthiness, not `ref.is_null`: an omitted argument arrives as
-    // `Undefined` (ECMA-262 §10.2.1.1, `calls.rs:580`) and `is_null_ref` is
-    // false for it, so a null check alone would skip the allocation on every
-    // plain `new Base()`.
+    // A registered class needs exactly one structural receiver test. It both
+    // preserves a derived instance during base-constructor chaining and rejects
+    // undefined, null, scalars and ambient untyped receivers. A truthiness
+    // conversion before this test adds no useful evidence and emits a dynamic
+    // coercion ladder plus a second copy of the allocation branch.
+    //
+    // Keep the legacy truthiness contract only for unregistered allocations.
+    // The writer lowers the registered class allocation to its custom-
+    // descriptor form; no string identity or post-allocation RTT mutation is
+    // needed to decide whether the supplied receiver can be reused.
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    // ⛔ TRUTHY IS NOT ENOUGH — the receiver must be an INSTANCE OF THIS TYPE.
-    //
-    // Two very different things arrive in `this_slot`: a derived construction
-    // hands down the already-allocated instance (must be initialised, never
-    // replaced — it carries the rtt, and WASM GC cannot retype afterwards),
-    // and a dart NAMED CONSTRUCTOR arrives as a MEMBER CALL whose receiver is a
-    // generic untyped object that was never allocated as this class at all.
-    //
-    // Truthiness cannot tell them apart, so the named-ctor case initialised the
-    // ambient object: every call returned the SAME object (`identical(a, b)`
-    // was `true`), and because the object had no rtt its indexed field writes
-    // landed in `fields[]` while reads of an untyped object bridge BY NAME and
-    // found nothing — `Db._().ready` read `null` for `bool ready = true`.
-    // Measured: with the seam-3 licence withheld the same program prints
-    // `true 7`; licensed, `null null`.
-    //
-    // `ref.test` is exactly the question being asked, and it answers both cases
-    // correctly by construction: a derived instance IS a subtype of the base,
-    // so base-constructor chaining still reuses it; a generic ambient object is
-    // not, so it gets a properly typed allocation instead.
     if typeidx != 0 {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_ref_type_op(
             Op::REF_TEST,
             vybe_runtime::opcode::heaptype::HeapType::Concrete(typeidx as u32),
             line,
         );
-        chunk.emit_if(line);
-        chunk.emit_else(line);
-        chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, typeidx, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-        chunk.emit_end(line);
+    } else {
+        crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     }
-    chunk.emit_else(line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
     if typeidx != 0 {
         chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, typeidx, line);
     } else {
@@ -6631,7 +6810,7 @@ pub fn emit_stamp_class_members(
     current: usize,
     ctor_slot: u16,
     class_name: &str,
-    fields: &[(String, Option<String>, i64)],
+    fields: &[(String, Option<String>, i64, Option<usize>)],
     methods: &[(String, usize, Option<String>, Vec<String>, i64)],
     line: u32,
 ) {
@@ -6645,7 +6824,8 @@ pub fn emit_stamp_class_members(
                       type_name: &Option<String>,
                       return_type: &Option<String>,
                       param_types: &[String],
-                      modifiers: i64| {
+                      modifiers: i64,
+                      raw_writer: Option<usize>| {
         chunks[current].emit_string_const(kind, line);
         chunks[current].emit_string_const(class_name, line);
         chunks[current].emit_string_const(name, line);
@@ -6663,10 +6843,18 @@ pub fn emit_stamp_class_members(
         }
         chunks[current].emit_array_new_fixed(0, param_types.len() as u16, line);
         chunks[current].emit_i32_const(modifiers as i32, line);
-        chunks[current].emit_array_new_fixed(0, 8, line);
+        if kind == reflection::MEMBER_KIND_FIELD {
+            match raw_writer {
+                Some(writer) => common::functions::emit_ref_func(&mut chunks[current], writer, 0, line),
+                None => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+            }
+            chunks[current].emit_array_new_fixed(0, 9, line);
+        } else {
+            chunks[current].emit_array_new_fixed(0, 8, line);
+        }
     };
 
-    for (name, type_name, modifiers) in fields {
+    for (name, type_name, modifiers, raw_writer) in fields {
         push_token(
             chunks,
             reflection::MEMBER_KIND_FIELD,
@@ -6676,6 +6864,7 @@ pub fn emit_stamp_class_members(
             &None,
             &[],
             *modifiers,
+            *raw_writer,
         );
     }
     chunks[current].emit_array_new_fixed(0, fields.len() as u16, line);
@@ -6706,6 +6895,7 @@ pub fn emit_stamp_class_members(
             return_type,
             param_types,
             *modifiers,
+            None,
         );
     }
     chunks[current].emit_array_new_fixed(0, methods.len() as u16, line);
@@ -6925,8 +7115,7 @@ pub fn ensure_super_lookup_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_op_u16(Op::LOCAL_GET, elem, line);
         c.emit_op_u16(Op::LOCAL_GET, method_a, line);
         c.emit_call(obj_get, 2, line);
-        c.emit_op_u16(Op::LOCAL_SET, m, line);
-        c.emit_op_u16(Op::LOCAL_GET, m, line);
+        c.emit_op_u16(Op::LOCAL_TEE, m, line);
         c.emit_op(Op::REF_IS_NULL, line);
         c.emit_op(Op::I32_EQZ, line); // 1 if m not null
         c.emit_op_u16(Op::LOCAL_GET, found, line);
@@ -7021,6 +7210,9 @@ impl Compiler {
             line,
         );
         emit_finalizer(self.chunk(), line);
+        // A language finalizer may reserve private spill locals. Keep later
+        // source declarations above them instead of reusing their slot IDs.
+        self.sync_scope_slots_with_chunk();
     }
 
     /// Run the referent's [`ProtocolSlot::Destructor`] before a name stops
@@ -7719,13 +7911,12 @@ fn collect_this_assigned_fields(body: &[Statement], out: &mut Vec<String>) {
         if let StmtKind::CompoundAssign { target, .. } = &stmt.kind {
             note(target, out);
         }
-        // Expression-level `this.x = v`, at any depth — `walk_exprs_mut`
+        // Expression-level `this.x = v`, at any depth — `walk_exprs`
         // recurses through nested statements, so an assignment inside an `if`
         // or a loop is reached without this function having to enumerate every
         // `StmtKind` container (a list that would silently rot as variants are
         // added).
-        let mut owned = stmt.clone();
-        owned.walk_exprs_mut(&mut |e| {
+        stmt.walk_exprs(&mut |e| {
             if let ExprKind::Assign { target, .. } = &e.kind {
                 note(target, out);
             }
@@ -8257,6 +8448,8 @@ impl Compiler {
                 ..Default::default()
             });
         }
+        descriptors::link_supertypes(&mut self.chunks[0].types)
+            .expect("compiler descriptor inheritance must match class inheritance");
     }
 
     pub(crate) fn finalize_type_prefixes(&mut self) {
@@ -8305,13 +8498,11 @@ impl Compiler {
             // root later acquires one; skipping is the conservative answer
             // either way.
             let canon_name = self.canon(&self.chunks[0].types[i].name);
-            if self.seam3_indexable.contains(&canon_name) {
-                continue;
-            }
+            let stable_fields = self.seam3_indexable.contains(&canon_name);
             let parent_fields = self.chunks[0].types[parent - 1].fields.clone();
             let parent_methods = self.chunks[0].types[parent - 1].methods.clone();
 
-            if !parent_fields.is_empty() {
+            if !stable_fields && !parent_fields.is_empty() {
                 let entry = &mut self.chunks[0].types[i];
                 if !entry.fields.starts_with(&parent_fields) {
                     let mut merged = parent_fields;
@@ -8466,11 +8657,54 @@ impl crate::Compiler {
     /// the declaring class owns a registered type carrying the property's
     /// slot, else the `__`-prefixed key. Both accessors ask this one question
     /// so they cannot disagree.
+    pub(super) fn declared_property_getter_for_receiver(
+        &self,
+        receiver: &Expression,
+        field: &str,
+    ) -> Option<String> {
+        // Only the declared separate property/method namespace needs this
+        // distinction. Other class models keep their existing member lookup.
+        if !self.separate_property_method_namespace() {
+            return None;
+        }
+        let hint = crate::primitives::calls::resolve_receiver_type_hint(self, receiver)?;
+        let owner = self.resolve_pending_class_name_for_type_hint(&hint)?;
+        let wanted = self.canon(field);
+        for key in self.resolution_chain(&self.canon(&owner)) {
+            let Some(class) = self.normalized_classes.get(&key) else { continue; };
+            if let Some(property) = class.properties.iter().find(|property| {
+                !property.is_static && self.canon(&property.source_name) == wanted
+            }) {
+                if property.auto_field.is_some() || property.getter.is_none() {
+                    return None;
+                }
+                let storage = self.field_storage_name_for_class(&class.name, field)
+                    .unwrap_or_else(|| self.canon(&property.canonical_name));
+                return Some(format!("__get_{storage}"));
+            }
+            if class.instance_fields.iter().any(|entry| self.canon(&entry.name) == wanted) {
+                return None;
+            }
+        }
+        None
+    }
+
     fn auto_property_backing_slot(
         &self,
         class_name: &str,
         pname_canon: &str,
     ) -> class_slots::ClassSlot {
+        let backing_name = format!("__{pname_canon}");
+        if self.separate_property_method_namespace()
+            && let Some(storage) = self.visible_instance_field_storage_name_for_class(
+            class_name, &backing_name,
+        ) {
+            let slot = class_slots::ClassSlot::instance_of(class_name.to_string(), &backing_name);
+            if matches!(self.resolve_slot(&slot), class_slots::ResolvedSlot::Indexed { .. }) {
+                return slot;
+            }
+            return class_slots::ClassSlot::internal(&storage);
+        }
         let slot = class_slots::ClassSlot::instance_of(class_name.to_string(), pname_canon);
         if matches!(
             self.resolve_slot(&slot),
@@ -8478,7 +8712,7 @@ impl crate::Compiler {
         ) {
             return slot;
         }
-        class_slots::ClassSlot::internal(&format!("__{pname_canon}"))
+        class_slots::ClassSlot::internal(&backing_name)
     }
 
     pub(crate) fn publish_class_storage(
@@ -8535,6 +8769,19 @@ impl crate::Compiler {
         )> = Vec::new();
         for f in &class.instance_fields {
             let field_canon = self.canon(&f.name);
+            // Keep implicit backing storage separate from both the public
+            // property access key and methods, including inherited hooks.
+            let property_backing = if self.separate_property_method_namespace() {
+                class.properties.iter().find(|property| {
+                    !property.is_static
+                        && property.auto_field.is_none()
+                        && property.raw_setter.is_some()
+                        && property.getter.as_ref().is_some_and(|getter| getter.body.is_empty())
+                        && field_canon == format!("__{}", self.canon(&property.source_name))
+                })
+            } else {
+                None
+            };
             // Field hiding (java/C#/VB): a field that shadows an ancestor's
             // gets a declaring-class-qualified slot so both survive on the
             // object and access resolves by the reference's declared type.
@@ -8569,6 +8816,8 @@ impl crate::Compiler {
                 && self.field_hides_ancestor(class.parent.as_deref(), &field_canon)
             {
                 format!("__hide_{}${}", self.canon(&class.name), field_canon)
+            } else if property_backing.is_some() {
+                format!("__prop${field_canon}")
             } else {
                 field_storage_slot_name(self, &f.name, &colliding_method_names)
             };
@@ -8616,6 +8865,17 @@ impl crate::Compiler {
             }
         }
         for f in &class.static_fields {
+            if class.late_static_binding && self.separate_property_method_namespace() {
+                // Inherited PHP statics share the declaring class's storage.
+                // Copying this owner reference to a child preserves that
+                // identity; redeclaration publishes a new owner instead.
+                static_field_inits.push((
+                    format!("__static_property_owner${}", self.canon(&f.name)),
+                    None,
+                    Some(Expression::ident(&self.profile.self_keyword)),
+                    None,
+                ));
+            }
             // The DECLARATION side of the same distinction — both ends must
             // agree on the key or the static slot is written under one name and
             // read under another.
@@ -8653,6 +8913,14 @@ impl crate::Compiler {
                 && self.field_hides_ancestor(class.parent.as_deref(), &prop_canon)
             {
                 format!("__hide_{}${}", self.canon(&class.name), prop_canon)
+            } else if self.separate_property_method_namespace()
+                && !p.is_static
+                && p.auto_field.is_none()
+            {
+                // Hook dispatch belongs to the property namespace, not the
+                // method's source key. Its backing field has its own key, so
+                // a hook's internal store cannot recursively invoke itself.
+                format!("__prop${prop_canon}")
             } else {
                 prop_canon.clone()
             };
@@ -8717,6 +8985,32 @@ impl crate::Compiler {
             }
         }
 
+        // A child's logical indices must already include its parent's prefix
+        // before any body can embed an index. Only a locally proven parent
+        // grants this fact; final registration must not shift these fields.
+        #[cfg(feature = "primitive-benchmarks")]
+        let inherit_indices = self.inherited_gc_fields;
+        #[cfg(not(feature = "primitive-benchmarks"))]
+        let inherit_indices = true;
+        let stable_parent = inherit_indices
+            && self.directives().field_shadowing == Some(vybe_ast::FieldShadowing::Hide)
+            && class.bases.len() <= 1
+            && class.parent.as_deref().is_some_and(|parent| {
+                (self.seam3_indexable.contains(&self.canon(parent))
+                        || self.receiver_preserving_classes.contains(&self.canon(parent)))
+                    && self.local_parent_initializer_arity(parent).is_some_and(|arity| arity <= IMPLICIT_CTOR_FORWARD_ARGS as usize)
+            });
+        let own_fields = fields.clone();
+        if stable_parent {
+            let parent = self.canon(class.parent.as_deref().unwrap());
+            let mut prefix = self.chunks[0].types.iter()
+                .find(|entry| entry.name == parent)
+                .expect("indexed parent has a published type")
+                .fields.clone();
+            for field in fields { if !prefix.contains(&field) { prefix.push(field); } }
+            fields = prefix;
+        }
+
         // ▶▶ SEAM 3 PREREQUISITE — publish the field list to the RESERVED type
         // slot as soon as it is complete.
         //
@@ -8740,59 +9034,18 @@ impl crate::Compiler {
                 Some(entry) => entry.fields == fields,
                 None => false,
             };
-            // ⛔ TWO conditions, and the second is the one that bites.
-            //
-            // 1. THIS compiler authored the field order (`published`).
-            // 2. The class has NO PARENT.
-            //
-            // (2) is not about fields at all — it is about ALLOCATION. Under
-            // the base-constructor model the most-derived constructor does not
-            // allocate: it delegates to the base, which allocates with the
-            // BASE's typeidx. So a derived class's instance carries the base's
-            // arity while its own constructor indexes against the derived
-            // type's field list. `Dog(name)` allocates as `Animal`
-            // (`struct.new_default 23`) and then writes `struct.set type=24
-            // field=0` — a slot the object does not have.
-            //
-            // Measured by Rook: 23 regressions across VB and C#, every one
-            // inheritance-shaped, zero exceptions. dart and js — the corpora
-            // this was gated on — exercise far less class inheritance, so the
-            // gate was blind to the axis rather than wrong.
-            //
-            // ⚠ Since the indexed write now GROWS rather than traps, this would
-            // be a SILENT wrong-slot write rather than a failure. Withholding
-            // the licence is not a conservatism, it is the difference between a
-            // caught bug and a corrupt object.
-            //
-            // ▶▶ Destination is the invariant `indexed_field`'s docstring
-            // already states: grant the licence on a fact about the
-            // ALLOCATION — "the class's own typeidx is what
-            // `struct.new_default` actually used". M5 moves allocation to the
-            // most-derived constructor, at which point a parent stops
-            // disqualifying anything and this becomes one condition again.
-            // 3. The language does not require the field to be an own
-            //    ENUMERABLE property.
-            //
-            // ⛔ (3) is not a third kind of caution — it is the difference
-            // between two storage locations and one. Indexed storage puts the
-            // value in the GC struct's `fields`, while every reflective
-            // surface (`Object.keys`, `in`, `for…in`, `JSON.stringify`, and
-            // the host's own key walk) reads the `properties` map. For a
-            // language whose declared fields ARE own properties — ECMA-262
-            // §10.2.11 performs `CreateDataPropertyOrThrow` — taking the
-            // licence makes the field readable (`d.a` is 1) and invisible
-            // (`Object.keys(d)` was `[]`, against node's `["a"]`).
-            //
-            // The tell was that adding a PARENT fixed it: same field, same
-            // initializer, opposite answers, switched by condition (2). Found
-            // by Kestrel, who measured 10 of 12 remaining js regressions on
-            // this one defect.
-            //
-            // ▶▶ This condition disappears when the host can enumerate a typed
-            // object's declared fields from `TypeEntry.fields` and merge them
-            // into the key walk. Then indexed storage is observable and the
-            // optimization comes back for every language at once. Withholding
-            // it is the correct answer only while enumeration cannot see it.
+            if published {
+                if let Some(pending) = self.pending_classes.get_mut(&cname) {
+                    pending.fields = own_fields.clone();
+                    pending.field_storage_names = field_storage_names.clone();
+                }
+            }
+            // Index only layouts published here. A derived layout also needs
+            // a stable parent prefix and an initializer chain that preserves
+            // the most-derived receiver. Other constructor shapes retain
+            // named storage.
+            // Languages requiring enumerable own fields retain named storage
+            // until reflection can enumerate the GC field vector as well.
             let has_parent = class.parent.is_some();
             // Conditions (1) and (2) alone are ALLOCATION IDENTITY — the
             // class's own typeidx is what `struct.new_default` used — which is
@@ -8801,16 +9054,64 @@ impl crate::Compiler {
             if published && !has_parent {
                 self.rtt_testable.insert(cname.clone());
             }
-            if published && !has_parent && !self.instance_fields_are_own_properties() {
-                self.seam3_indexable.insert(cname.clone());
+            // Receiver identity and constructor arity do not depend on
+            // whether fields are enumerable own properties. A wholly implicit
+            // local chain has no source constructor that could observe extra
+            // arguments, so it can use the existing fixed initializer path
+            // even when its field accesses deliberately remain named.
+            if published && self.local_implicit_initializer_chain(&class.name) {
+                self.receiver_preserving_classes.insert(cname.clone());
+            }
+            if published && !self.instance_fields_are_own_properties() {
+                if !has_parent { self.seam3_indexable.insert(cname.clone()); }
+                // Constructor receiver preservation is independent of field
+                // indexing. Derived named fields currently execute faster in
+                // debug than repeated guarded indexed reads.
+                if stable_parent { self.receiver_preserving_classes.insert(cname.clone()); }
             }
         }
         ClassStorageLayout {
             type_slot,
-            fields,
+            fields: own_fields,
             field_inits,
             static_field_inits,
             field_storage_names,
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod instance_prototype_fallback_tests {
+    use super::*;
+    use vybe_runtime::{Value, VM};
+
+    fn constructor(prototype: Value) -> Value {
+        let mut object = vybe_runtime::value::Object::new();
+        object.set("prototype".into(), prototype);
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    fn missing_and_null_new_target_use_own_class_but_explicit_target_wins() {
+        let own_proto = Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new()));
+        let derived_proto = Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new()));
+        for (target, expected) in [
+            (None, own_proto.clone()),
+            (Some(Value::Undefined), own_proto.clone()),
+            (Some(Value::Null), own_proto.clone()),
+            (Some(constructor(derived_proto.clone())), derived_proto.clone()),
+        ] {
+            let mut compiler = Compiler::with_profile(crate::profile::parse_profile(vybe_language_js::profile_source()).expect("JS profile"));
+            compiler.emit_load_instance_proto("own_class");
+            compiler.emit(Op::RETURN);
+            globals::declare_free_globals(&mut compiler.chunks);
+            globals::normalize_global_table(&mut compiler.chunks);
+            let mut vm = VM::new();
+            crate::primitives::platforms::register_platforms_all(&mut vm);
+            vm.set_global("own_class", constructor(own_proto.clone()));
+            if let Some(target) = target { vm.set_global("__js_new_target", target); }
+            assert_eq!(vm.run(compiler.chunks).expect("instance prototype fallback"), expected);
         }
     }
 }

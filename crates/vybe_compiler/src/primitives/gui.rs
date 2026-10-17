@@ -786,6 +786,13 @@ impl Compiler {
         }
         let value_idx = self.import(DOCUMENT_MODULE, if setting { "setValue" } else { "value" });
         self.emit_host_call(value_idx, if setting { 3 } else { 2 });
+        if setting {
+            // Host setters are void; the property emitter promises a Value.
+            // VM calls leave Null. The Wasm writer consumes DROP for void
+            // imports, then the explicit standard null supplies the join.
+            self.emit(Op::DROP);
+            self.chunk().emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        }
         self.chunk().emit_else(line);
         self.chunk().emit_call(doc_idx, 0, line);
         self.emit_u16(Op::LOCAL_GET, ctrl);
@@ -801,6 +808,10 @@ impl Compiler {
             },
         );
         self.emit_host_call(text_idx, if setting { 3 } else { 2 });
+        if setting {
+            self.emit(Op::DROP);
+            self.chunk().emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        }
         self.chunk().emit_end(line);
     }
 
@@ -1728,6 +1739,12 @@ impl Compiler {
         };
         let idx = self.import(module, func);
         self.emit_host_call(idx, argc);
+        if module == DOCUMENT_MODULE && func == "setValue" {
+            // The value role has the same Value-returning setter contract as
+            // text/caption; keep its VM Null result with a truthful void host.
+            self.emit(Op::DROP);
+            self.chunk().emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        }
     }
 }
 
@@ -2194,7 +2211,6 @@ impl Compiler {
             None => true,
             Some(hint) => {
                 let class_name = Self::tree_type_key(&hint);
-                let scopes = &self.profile.namespaces.type_scopes;
                 // The test is "does the receiver's type DECLARE this member",
                 // not "is the type registered". `Object` IS registered — it is
                 // the root of the .NET hierarchy — so an `is_registered_type`
@@ -2610,57 +2626,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, element);
     }
 
-    /// Declare a container `position: absolute`.
-    ///
-    /// A child's `Left`/`Top` is relative to its parent in every framework here
-    /// — VCL, WinForms and Flutter's `Positioned` all mean it. CSS spells that
-    /// as an absolutely positioned box resolving against its nearest
-    /// **positioned** ancestor, and a `position: static` box is not one. So a
-    /// container has to say it is positioned, or a browser handed this document
-    /// would place every nested control against the body.
-    ///
-    /// `absolute` rather than `relative`, and the difference is not cosmetic.
-    /// Both are positioned, so both establish a containing block — but a
-    /// container in these frameworks carries its OWN `Left`/`Top` too, and
-    /// those two values mean different things per CSS: an absolute box is
-    /// placed AT its coordinates, a relative box keeps its flow slot and is
-    /// merely offset from it. Declaring `relative` said the second and meant
-    /// the first, which only worked because the widget layer treated any
-    /// positioned box with coordinates as out of flow. That conflation is what
-    /// left `position: relative` with no way to mean what CSS says it means.
-    ///
-    /// It is DECLARED, into the document, rather than assumed by the widget
-    /// layer. A behavioural assumption would render correctly here and wrongly
-    /// in a real engine — which defeats the point of being HTML underneath. The
-    /// emitted markup is now what you would write by hand:
-    ///
-    /// ```html
-    /// <div style="position: absolute; left: 10px; top: 10px">
-    ///   <button style="position: absolute; left: 20px; top: 50px">…</button>
-    /// </div>
-    /// ```
-    ///
-    /// The element is on the stack and stays there; this consumes a copy.
-    fn emit_container_is_positioned(&mut self, line: u32) {
-        // `LOCAL_TEE` stores and leaves the value on the stack, so the element
-        // stays put for the caller while this reads a copy of it.
-        let element = self.define_local("__gui_container");
-        self.emit_u16(Op::LOCAL_TEE, element);
-        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
-        self.chunk().emit_call(doc_idx, 0, line);
-        self.emit_u16(Op::LOCAL_GET, element);
-        emit_string_const(self.chunk(), "position", line);
-        emit_string_const(self.chunk(), "absolute", line);
-        let set_idx = self.import(CSSOM_MODULE, "setStyleProperty");
-        self.emit_host_call(set_idx, 4);
-        // A host call leaves its result on the stack — the convention every
-        // `gui::emit_*` helper follows. `emit_control_element` promises to
-        // leave exactly the element, so the result is dropped here. Without
-        // this the extra value corrupts the rest of the constructor: the
-        // calculator lost all twenty of its form-parented buttons and the form
-        // collapsed to the height of its one panel.
-        self.chunk().emit_op(Op::DROP, line);
-    }
 }
 
 // Construction goes through `CtorSpec::control_fn` → `emit_control_element`,

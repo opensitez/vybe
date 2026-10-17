@@ -1,0 +1,44 @@
+[package]
+name = "vx"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+build = "../vybex/build.rs"
+
+# One CLI implementation; this manifest determines the linked plugin set.
+# Shared CLI unit tests stay in vybex; this package tests its actual bundle.
+[lib]
+path = "../vybex/src/lib.rs"
+test = false
+doctest = false
+
+[dependencies]
+vybe_language_c = { workspace = true }
+vybe_language_go = { workspace = true }
+vybe_language_js = { workspace = true }
+vybe_language_php = { workspace = true }
+vybe_language_python = { workspace = true }
+vybe_compiler = { workspace = true }
+vybe_runtime = { workspace = true }
+vybe_platform_wasm = { workspace = true }
+vybe_platform_libc = { workspace = true }
+vybe_platform_ecma = { workspace = true }
+vybe_platform_web = { workspace = true, features = ["engine-webcore", "engine-osbrowser"] }
+vybe_platform_wasi = { workspace = true }
+vybe_platform_node = { workspace = true }
+webcore = { workspace = true }
+tiny-skia = "0.12"
+uuid = { workspace = true }
+tokio = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+percent-encoding = { workspace = true }
+form_urlencoded = { workspace = true }
+indexmap = { workspace = true }
+mime_guess = { workspace = true }
+dashmap = { workspace = true }
+serde_json = { workspace = true }

@@ -206,6 +206,11 @@ fn emit_snapshot_keys_map(
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    // The ECMA missing-property contract returns Undefined. Keep the frozen
+    // recipe's initialization valid under that existing correctness repair.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    call_host(chunks, current, "wasm:js-undefined", "test", 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     call_host(chunks, current, "ecma:map", "new", 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);

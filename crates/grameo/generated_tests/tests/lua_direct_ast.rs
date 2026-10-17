@@ -10,6 +10,55 @@ use grameo::{MatchOptions, builder::Builder, engine::build_program};
 use vybe_parser_generated_tests::lua::{Parser, Rule};
 
 #[test]
+fn opaque_tokens_preserve_exact_work_depth_and_rollback_boundaries() {
+    use vybe_parser_generated_tests::lua_pratt::Parser as PrattParser;
+    for source in ["a+1", "f('é\\n',0xF,1.25e2)", "a + 'unfinished", "not identifier^23"] {
+        let mut baseline = direct::Ast::with_pratt(source);
+        let steps = build_program(&PrattParser, "expr", source, MatchOptions::default(), &mut baseline)
+            .map(|r| r.steps).unwrap_or(180).min(250);
+        for max_steps in (0..=steps).chain([usize::MAX]) {
+            for max_rule_depth in [0, 1, 2, 7, 4096] {
+                let options = MatchOptions { max_steps, max_rule_depth };
+                let mut regular = direct::Ast::with_pratt(source);
+                let expected = build_program(&PrattParser, "expr", source, options, &mut regular)
+                    .map(|r| r.consumed);
+                let mut opaque = direct::Ast::with_pratt(source).with_opaque_tokens();
+                let actual = grameo::engine::build_ast_program(&PrattParser, "expr", source, options, &mut opaque);
+                assert_eq!(actual, expected, "{source}: steps={max_steps}, depth={max_rule_depth}");
+                if actual.is_ok() {
+                    compare::expression(&opaque.into_expression(), &regular.into_expression());
+                } else {
+                    assert!(opaque.is_empty(), "failed build must restore every frame and value");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fast_direct_ast_preserves_pratt_ast_spans_and_transactional_failures() {
+    use vybe_parser_generated_tests::lua_pratt::{Parser as PrattParser, Rule as PrattRule};
+    for source in samples::cases() {
+        let mut regular = direct::Ast::with_pratt(&source);
+        let expected = build_program(&PrattParser, "expr", &source, MatchOptions::default(), &mut regular)
+            .map(|r| r.consumed);
+        let mut fast = direct::Ast::with_pratt(&source).with_opaque_tokens();
+        let actual = PrattParser.build_ast(PrattRule::expr, &source, &mut fast);
+        assert_eq!(actual, expected, "{source}");
+        if actual.is_ok() {
+            compare::expression(&fast.into_expression(), &regular.into_expression());
+        } else {
+            assert!(fast.is_empty(), "{source}");
+        }
+    }
+    for source in module_samples::cases() {
+        let mut builder = direct::Ast::with_pratt(&source).with_opaque_tokens();
+        assert_eq!(PrattParser.build_ast(PrattRule::chunk, &source, &mut builder).unwrap(), source.len());
+        compare::module(&builder.into_module(), &walker::parse(&source).unwrap());
+    }
+}
+
+#[test]
 fn native_pratt_direct_ast_preserves_complete_expression_fields_and_spans() {
     use vybe_parser_generated_tests::lua_pratt::Parser as PrattParser;
     for source in samples::cases() {
@@ -625,6 +674,31 @@ fn numeric_for_preserves_bounds_scope_and_exact_rollback() {
                 .is_err()
             );
             assert!(builder.is_empty(), "{invalid}");
+        }
+    }
+}
+
+#[test]
+fn hybrid_capture_constructs_common_ast_with_exact_fields_and_spans() {
+    use vybe_parser_generated_tests::lua_pratt::{Parser as PrattParser, Rule as PrattRule};
+    for source in module_samples::cases() {
+        let mut builder = direct::Ast::with_pratt(&source).with_opaque_tokens();
+        let tree = PrattParser.build_captures(PrattRule::chunk, &source, &mut builder).unwrap();
+        assert_eq!(tree.consumed(), source.len());
+        assert!(tree.capture_count() > 0);
+        compare::module(&builder.into_module(), &walker::parse(&source).unwrap());
+    }
+    for source in samples::cases() {
+        let mut builder = direct::Ast::with_pratt(&source).with_opaque_tokens();
+        let actual = PrattParser.build_captures(PrattRule::expr, &source, &mut builder);
+        let expected = walker::expression_for_conformance(&source);
+        match (actual, expected) {
+            (Ok(tree), Ok((expected, consumed))) => {
+                assert_eq!(tree.consumed(), consumed, "{source}");
+                compare::expression(&builder.into_expression(), &expected);
+            }
+            (Err(_), Err(_)) => assert!(builder.is_empty()),
+            (actual, expected) => panic!("{source}: {actual:?}; {expected:?}"),
         }
     }
 }

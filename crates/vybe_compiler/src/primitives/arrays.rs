@@ -368,8 +368,7 @@ impl Compiler {
             let line = self.line;
             self.chunk().emit_if(line);
             common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-            self.emit_u16(Op::LOCAL_SET, arr_slot);
-            self.emit_u16(Op::LOCAL_GET, arr_slot);
+            self.emit_u16(Op::LOCAL_TEE, arr_slot);
             self.emit_var_set(name);
             self.chunk().emit_end(line);
 
@@ -409,6 +408,7 @@ impl Compiler {
             .as_deref()
             .map(|name| self.canon(name))
             .unwrap_or_else(|| "anon".to_string());
+        let declaration_scope_depth = self.scopes.len();
         let Some(bindings) = self.static_local_bindings.last_mut() else {
             return Err(format!("static local `{name}` declared outside a function"));
         };
@@ -420,6 +420,7 @@ impl Compiler {
             init_flag_name: format!("{}__init", global_name),
             global_name,
             type_hint: normalized_type_hint,
+            declaration_scope_depth,
         };
         bindings.insert(canon_name, binding.clone());
         Ok(binding)
@@ -1135,7 +1136,7 @@ pub fn build_array_set_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, index, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, i, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_dyn_add_number_rhs_into(imports, &mut c, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, src, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, i, 0);
     c.emit_call(get_import, 2, 0);
@@ -1173,10 +1174,12 @@ pub fn build_array_binary_search(_imports: &mut Chunk) -> Chunk {
 }
 
 // ── array_reverse_range(arr, index, count) → null ───────────────────────
-pub fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
+pub fn build_array_reverse_range(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_array_reverse_range");
     c.arity = 3;
-    c.local_count = 6;
+    c.local_count = 9;
+    let numeric = 6;
+    let args = 7;
     let arr = 0u16;
     let index = 1;
     let count = 2;
@@ -1187,23 +1190,25 @@ pub fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     let get_import = c.add_import("ecma:array", "get");
     let set_import = c.add_import("ecma:array", "set");
 
-    // lo = index; hi = index + count - 1
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, index, 0);
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, lo, 0);
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, index, 0);
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, count, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    // The previous constant negation produces precisely boxed F64(-1).
-    c.emit_f64_const(-1.0, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, hi, 0);
+    // Numeric bounds keep both cursors numeric throughout all swaps.
+    let number_test = c.add_import("wasm:js-number", "test");
+    for slot in [index, count] {
+        c.emit_op_u16(vybe_runtime::Op::LOCAL_GET, slot, 0);
+        c.emit_call(number_test, 1, 0);
+    }
+    c.emit_op(vybe_runtime::Op::I32_AND, 0);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_SET, numeric, 0);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_SET, lo, 0);
+    emit_range_math(&mut c, numeric, args, RangeOperand::Local(index), RangeOperand::Local(count), false);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_SET, hi, 0);
+    emit_range_math(&mut c, numeric, args, RangeOperand::Local(hi), RangeOperand::F64(-1.0), false);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_SET, hi, 0);
 
     let blk = c.emit_block(0);
     let (lp, _) = c.emit_loop_s(0);
     // while lo < hi
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, lo, 0);
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, hi, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
+    emit_range_math(&mut c, numeric, args, RangeOperand::Local(lo), RangeOperand::Local(hi), true);
     c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(1, 0);
     // tmp = arr[lo]
@@ -1225,16 +1230,10 @@ pub fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, tmp, 0);
     c.emit_call(set_import, 3, 0);
     c.emit_op(vybe_runtime::opcode::Op::DROP, 0);
-    // lo++; hi--
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, lo, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, lo, 0);
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, hi, 0);
-    // The previous constant negation produces precisely boxed F64(-1).
-    c.emit_f64_const(-1.0, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, hi, 0);
+    emit_range_math(&mut c, numeric, args, RangeOperand::Local(lo), RangeOperand::I32(1), false);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_SET, lo, 0);
+    emit_range_math(&mut c, numeric, args, RangeOperand::Local(hi), RangeOperand::F64(-1.0), false);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_SET, hi, 0);
     c.emit_br(0, 0);
     c.emit_end(0);
     c.patch_loop(lp);
@@ -1244,6 +1243,51 @@ pub fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     c.emit_op(vybe_runtime::opcode::Op::RETURN, 0);
     c
 }
+#[derive(Clone, Copy)]
+enum RangeOperand { Local(u16), I32(i32), F64(f64) }
+fn emit_range_operand(c: &mut Chunk, value: RangeOperand) {
+    match value {
+        RangeOperand::Local(slot) => c.emit_op_u16(vybe_runtime::Op::LOCAL_GET, slot, 0),
+        RangeOperand::I32(value) => c.emit_i32_const(value, 0),
+        RangeOperand::F64(value) => c.emit_f64_const(value, 0),
+    }
+}
+fn emit_range_math(c: &mut Chunk, numeric: u16, args: u16, left: RangeOperand, right: RangeOperand, compare: bool) {
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_GET, numeric, 0);
+    c.emit_if_value(0);
+    emit_range_operand(c, left);
+    emit_range_operand(c, right);
+    c.emit_op(if compare { vybe_runtime::Op::F64_LT } else { vybe_runtime::Op::F64_ADD }, 0);
+    c.emit_else(0);
+    emit_range_operand(c, left);
+    emit_range_operand(c, right);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_SET, args + 1, 0);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_SET, args, 0);
+    crate::primitives::bundle::emit_private_range_call_from_slots(
+        c, if compare { "primitive.array_range_lt" } else { "primitive.array_range_add" }, args, 0,
+    );
+    c.emit_end(0);
+}
+pub(crate) fn build_range_binary(name: &str) -> Chunk {
+    let mut c = Chunk::new(name);
+    c.func_sig = Some(("externref,externref".into(), "externref".into()));
+    c.arity = 2;
+    c.param_count = 2;
+    c.local_count = 2;
+    crate::primitives::bundle::mark_private_helper_body(&mut c);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(vybe_runtime::Op::LOCAL_GET, 1, 0);
+    let mut imports = Chunk::new("imports");
+    if name == "primitive.array_range_add" {
+        crate::primitives::ops::emit_dyn_add_into(&mut imports, &mut c, 0);
+    } else {
+        assert_eq!(name, "primitive.array_range_lt");
+        crate::primitives::ops::emit_dyn_lt_into(&mut imports, &mut c, 0);
+    }
+    c.emit_op(vybe_runtime::Op::RETURN, 0);
+    c
+}
+
 
 // ── array_last_index_of(arr, value) → i32 ───────────────────────────────
 #[allow(dead_code)]

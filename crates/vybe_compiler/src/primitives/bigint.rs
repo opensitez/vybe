@@ -148,7 +148,7 @@ pub fn emit_step(chunk: &mut Chunk, add: bool, line: u32) {
     // same way `emit_step_by_one` always has. Subtraction keeps the raw op,
     // also matching that path.
     if add {
-        crate::primitives::ops::emit_dyn_add(chunk, line);
+        crate::primitives::ops::emit_dyn_add_known(chunk, line, false, true);
     } else {
         chunk.emit_op(Op::F64_SUB, line);
     }

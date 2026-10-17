@@ -18,7 +18,7 @@ const POLL: Duration = Duration::from_millis(200);
 /// the CLI args to hand each child run (the original args with `--watch`/`-W`
 /// removed so the child runs a single normal pass). Diverges — Ctrl-C stops it.
 pub fn run_watch(entry: PathBuf, child_args: Vec<String>) -> ! {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("vybex"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from(env!("CARGO_PKG_NAME")));
     eprintln!("── watch mode ── {} (Ctrl-C to stop)", entry.display());
     loop {
         let baseline = mtime(&entry);

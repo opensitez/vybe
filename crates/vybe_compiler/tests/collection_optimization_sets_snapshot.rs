@@ -13,7 +13,8 @@ fn array(values: Vec<Value>) -> Value {
 }
 fn function(index: usize, arity: u8) -> Value {
     object(Object {
-        kind: ObjectKind::Function(Function {
+        descriptor: None,
+            kind: ObjectKind::Function(Function {
             name: Some("callback".into()),
             arity,
             chunk_index: index,
@@ -223,7 +224,7 @@ fn actual_custom_iterable_continuation_keeps_both_reads() {
         let mut cont = Object::new();
         cont.kind = ObjectKind::Continuation(ContinuationState {
             entry: Value::Null,
-            saved: Mutex::new(None),
+            saved: Box::new(Mutex::new(None)),
             state: Mutex::new(ContinuationPhase::Ready),
         });
         cont.properties.insert("length".into(), Value::I32(2));
@@ -339,3 +340,42 @@ fn snapshot_private_arithmetic_reduces_full_module_emission() {
         );
     }
 }
+
+#[test]
+fn constructor_render_callbacks_keep_live_source_reads_and_error_order() {
+    for fail in [false,true] {
+        let outcomes=[program(true,false,true),program(false,false,true)].map(|chunks| {
+            validate(&chunks);
+            let elements=(0..3).map(|id| {
+                let mut o=Object::new();
+                o.properties.insert("id".into(),Value::I32(id));
+                o.properties.insert(vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq).to_string(),function(1,1));
+                o.properties.insert("toJSON".into(),function(1,1));
+                object(o)
+            }).collect();
+            let input=array(elements);let observed_input=input.clone();
+            let calls=Arc::new(Mutex::new(Vec::new()));let observed=calls.clone();
+            let mut runtime=vm(&[("input",input)]);
+            runtime.register_host_fn("ecma:string","charAt",Box::new(move |ctx,args| {
+                assert_eq!(args[0],Value::String("render".into()));
+                let Value::Object(this)=ctx.current_js_this() else {panic!("render receiver")};
+                let id=this.lock().unwrap().properties["id"].as_i32();
+                observed.lock().unwrap().push(id);
+                if id==0 {
+                    let Value::Object(input)=&observed_input else {unreachable!()};
+                    let mut input=input.lock().unwrap();
+                    let ObjectKind::Array(values)=&mut input.kind else {unreachable!()};
+                    values[1]=Value::String("changed".into());
+                }
+                if fail && id==2 {ctx.throw_value(Value::String("constructor-render-error".into()));return Value::Undefined;}
+                Value::String(format!("key{id}").into())
+            }));
+            let result=runtime.run(chunks).map(|v|key_labels(&v)).map_err(error);
+            let trace=calls.lock().unwrap().clone();(result,trace)
+        });
+        assert_eq!(outcomes[0],outcomes[1]);
+        assert_eq!(outcomes[0].1,vec![0,2]);
+        if fail {assert!(outcomes[0].0.is_err());} else {assert_eq!(outcomes[0].0.as_ref().unwrap().len(),3);}
+    }
+}
+

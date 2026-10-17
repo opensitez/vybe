@@ -309,8 +309,11 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
         "__stdlib_bytes_to_binary_string",
         "__stdlib_bytes_to_binary_string_all",
         "__stdlib_binary_string_to_bytes",
+        "__stdlib_base64_decode_bytes",
+        "__stdlib_binary_string_to_uint8_array",
         "__stdlib_encoding_bin2hex",
         "__stdlib_encoding_hex2bin",
+        "__stdlib_encoding_hex2bytes",
         "__stdlib_encoding_str_rot13",
         "__stdlib_encoding_quoted_printable_encode",
         "__stdlib_encoding_quoted_printable_decode",
@@ -516,8 +519,6 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_id");
     chunks.push(crate::primitives::reflection::build_hash(imports));
     exports.push("__stdlib_hash");
-    chunks.push(crate::primitives::strings::build_vb_format(imports));
-    exports.push("__stdlib_vb_format");
     chunks.push(vybe_runtime::registry::platform_numeric_format_helper()
         .expect("no platform registered a numeric-format helper")(
         imports
@@ -559,7 +560,7 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_redim");
     chunks.push(crate::primitives::slices::build_slice_step(imports));
     exports.push("__stdlib_slicestep");
-    chunks.push(crate::primitives::ops::build_dyn_mul(imports));
+    chunks.push(crate::primitives::ops::build_dyn_mul());
     exports.push("__stdlib_dynmul");
     chunks.push(crate::primitives::math::build_fmod(imports));
     exports.push("__stdlib_fmod");
@@ -583,7 +584,6 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_array_reverse_range");
     // The receiver ABI is a MODULE property and rides on the module chunk —
     // which `imports` IS. Read it before the `&mut` borrows below.
-    let abi = imports.module_receiver_abi;
     chunks.push(build_generator_next(imports));
     exports.push("__stdlib_generator_next");
     chunks.push(build_async_generator_next(imports));
@@ -690,7 +690,9 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         | "__stdlib_csv_format_whitespace" => crate::primitives::csv::build_shared_helper(name),
         "__stdlib_bytes_to_binary_string"
         | "__stdlib_bytes_to_binary_string_all"
-        | "__stdlib_binary_string_to_bytes" => crate::primitives::base64::build_shared_helper(name),
+        | "__stdlib_binary_string_to_bytes"
+        | "__stdlib_base64_decode_bytes"
+        | "__stdlib_binary_string_to_uint8_array" => crate::primitives::base64::build_shared_helper(name),
         "__stdlib_autoderef" => cached_context_free_helper(name, || {
             crate::primitives::references::build_autoderef()
         }),
@@ -702,6 +704,7 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         | "__stdlib_encoding_base64_decode_lenient"
         | "__stdlib_encoding_bin2hex"
         | "__stdlib_encoding_hex2bin"
+        | "__stdlib_encoding_hex2bytes"
         | "__stdlib_encoding_str_rot13"
         | "__stdlib_encoding_quoted_printable_encode"
         | "__stdlib_encoding_quoted_printable_decode"
@@ -808,7 +811,6 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_to_bytes" => crate::primitives::convert::build_to_bytes(imports),
         "__stdlib_id" => crate::primitives::reflection::build_id(imports),
         "__stdlib_hash" => crate::primitives::reflection::build_hash(imports),
-        "__stdlib_vb_format" => crate::primitives::strings::build_vb_format(imports),
         "__stdlib_dotnet_numeric_format" => {
             vybe_runtime::registry::platform_numeric_format_helper()
                 .expect("no platform registered a numeric-format helper")(imports)
@@ -829,7 +831,7 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_js_get_method" => crate::primitives::object::build_js_get_method(imports),
         "__stdlib_redim" => crate::primitives::arrays::build_redim(imports),
         "__stdlib_slicestep" => crate::primitives::slices::build_slice_step(imports),
-        "__stdlib_dynmul" => crate::primitives::ops::build_dyn_mul(imports),
+        "__stdlib_dynmul" => crate::primitives::ops::build_dyn_mul(),
         "__stdlib_fmod" => crate::primitives::math::build_fmod(imports),
         "__stdlib_array_insert" => crate::primitives::arrays::build_array_insert(imports),
         "__stdlib_array_remove_at" => crate::primitives::arrays::build_array_remove_at(imports),
@@ -847,16 +849,13 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
             crate::primitives::arrays::build_array_reverse_range(imports)
         }
         "__stdlib_generator_next" => {
-            let abi = imports.module_receiver_abi;
             build_generator_next(imports)
         }
         "__stdlib_async_generator_next" => {
-            let abi = imports.module_receiver_abi;
             build_async_generator_next(imports)
         }
         "__stdlib_generator_self" => crate::primitives::generators::build_generator_self(),
         "__stdlib_iter_drain" => {
-            let abi = imports.module_receiver_abi;
             crate::primitives::generators::build_iter_drain(imports)
         }
         "__stdlib_regex_replace_pat_first" => {
@@ -881,6 +880,22 @@ pub struct RuntimeHelpers {
 #[cfg(test)]
 mod context_free_helper_cache_tests {
     use super::*;
+
+    #[test]
+    fn scalar_temporary_helper_preserves_exact_fresh_inline_roots() {
+        with_polyfill_guard(|| {
+            let mut before = vec![vybe_runtime::Chunk::new("helper")];
+            before[0].local_count = 1;
+            before[0].emit_op_u16(vybe_runtime::Op::LOCAL_GET, 0, 37);
+            let mut after = before.clone();
+            crate::primitives::references::emit_autoderef_to_stack(&mut before, 0, 37);
+            crate::primitives::references::emit_nonreference_temporary_to_stack(&mut after, 0, 37);
+            assert_eq!(before[0].code, after[0].code);
+            assert_eq!(before[0].local_count, after[0].local_count);
+            assert_eq!(before[0].autoderef_scratch_slot, after[0].autoderef_scratch_slot);
+            assert_eq!(after[0].local_count, 5);
+        });
+    }
 
     #[test]
     fn cached_helpers_match_fresh_bodies_without_touching_module_imports() {

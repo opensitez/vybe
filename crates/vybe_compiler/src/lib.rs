@@ -42,8 +42,12 @@ pub mod platforms {
 }
 pub use vybe_runtime::profile;
 pub mod preparation;
+pub mod statement_codegen;
+mod compilation_timeline;
+pub(crate) mod compile_dependencies;
 mod php_include_hints;
 pub mod projects;
+pub mod word_local_proof;
 pub mod registry; // platform class-library registration (dotnet BCL, pascal plib)
 
 /// Register the built-in (statically-linked) languages into the `vybe_plugin`
@@ -61,3 +65,5 @@ pub(crate) fn ensure_languages_registered() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(register_builtin_languages);
 }
+
+pub mod frontend_preparation;

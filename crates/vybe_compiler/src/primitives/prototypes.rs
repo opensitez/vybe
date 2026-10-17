@@ -13,7 +13,6 @@
 //! helpers rather than inlining raw opcodes.
 
 use crate::primitives::class_slots;
-use std::sync::Arc;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 

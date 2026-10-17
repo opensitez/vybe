@@ -68,3 +68,38 @@ fn semantic_completion_retains_maximum_rule_id() {
     );
     assert!(events.0.is_empty());
 }
+
+#[derive(Debug)]
+struct SilentMaximumRule;
+impl Program for SilentMaximumRule {
+    fn rule_id(&self, name: &str) -> Option<usize> {
+        MaximumRule.rule_id(name)
+    }
+    fn rule(&self, id: usize) -> RuleSpec<'_> {
+        let mut rule = MaximumRule.rule(id);
+        rule.mode = RuleMode::Silent;
+        rule
+    }
+    fn instruction(&self, id: usize) -> Instruction<'_> {
+        MaximumRule.instruction(id)
+    }
+}
+#[test]
+fn hybrid_completion_retains_maximum_observed_rule_id() {
+    for (source, accepted) in [("a", true), ("b", false)] {
+        let mut events = Events::default();
+        let result = grameo::engine::build_capture_program(
+            &SilentMaximumRule,
+            "entry",
+            source,
+            MatchOptions::default(),
+            &mut events,
+        );
+        assert_eq!(result.is_ok(), accepted);
+        if accepted {
+            assert_eq!(events.0, [(usize::MAX, 0, 0), (usize::MAX, 0, 1)]);
+        } else {
+            assert!(events.0.is_empty());
+        }
+    }
+}

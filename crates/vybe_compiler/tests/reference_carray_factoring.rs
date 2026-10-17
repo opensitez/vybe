@@ -46,6 +46,141 @@ fn indexed(base: Value, index: Value) -> Value {
         (pointers::CARRAY_IDX_KEY, index),
     ])
 }
+
+#[test]
+fn byte_copy_has_one_private_body_and_preserves_backings() {
+    use vybe_runtime::value::ObjectKind;
+    let array = |bytes: &[i32]| {
+        let mut array = Object::new();
+        array.kind = ObjectKind::Array(bytes.iter().copied().map(Value::I32).collect());
+        Value::Object(vybe_runtime::heap::alloc(array))
+    };
+    let mut root = Chunk::new("<script>");
+    root.memory_min_pages = vec![1];
+    root.emit_op_u16(Op::REF_FUNC, 1, 0);
+    root.emit(0, 0);
+    root.emit_op(Op::RETURN, 0);
+    let mut copy = Chunk::new("copy-twice");
+    copy.arity = 3;
+    copy.param_count = 3;
+    copy.local_count = 3;
+    let mut chunks = vec![root, copy];
+    for _ in 0..2 {
+        for slot in 0..3 {
+            chunks[1].emit_op_u16(Op::LOCAL_GET, slot, 0);
+        }
+        pointers::emit_byte_copy(&mut chunks, 1, 0);
+        chunks[1].emit_op(Op::DROP, 0);
+    }
+    chunks[1].emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunks[1].emit_op(Op::RETURN, 0);
+    let caller_bytes = chunks[1].code.len();
+    let body_bytes = pointers::build_byte_copy().code.len();
+    assert!(caller_bytes < body_bytes / 2, "{caller_bytes} vs {body_bytes}");
+    bundle::finalize_with_runtime_helpers(&mut chunks);
+    globals::declare_free_globals(&mut chunks);
+    globals::normalize_global_table(&mut chunks);
+    assert_eq!(chunks.iter().filter(|chunk| chunk.name == "primitive.byte_copy").count(), 1);
+    for chunk in &chunks {
+        assert!(!vybe_runtime::debug::disassemble(chunk).contains("dyneq"), "{}", chunk.name);
+    }
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    let mut vm = runtime();
+    let callable = vm.run(chunks).unwrap();
+    vm.memory.with_buffer_mut(|memory| memory[8..12].copy_from_slice(&[1, 0, 255, 4]));
+    vm.invoke(&callable, &[Value::I32(32), Value::I32(8), Value::I32(4)]).unwrap();
+    vm.memory.with_buffer(|memory| assert_eq!(&memory[32..36], &[1, 0, 255, 4]));
+    let destination = array(&[9, 9, 9, 9, 9]);
+    vm.invoke(&callable, &[indexed(destination.clone(), Value::I32(1)),
+        Value::I32(8), Value::I32(4)]).unwrap();
+    let source = array(&[8, 7, 6, 5]);
+    vm.invoke(&callable, &[Value::I32(40), indexed(source, Value::I32(1)), Value::I32(3)]).unwrap();
+    vm.memory.with_buffer(|memory| assert_eq!(&memory[40..43], &[7, 6, 5]));
+    let overlap = array(&[1, 2, 3, 4, 5]);
+    vm.invoke(&callable, &[indexed(overlap.clone(), Value::I32(1)),
+        indexed(overlap.clone(), Value::I32(0)), Value::I32(4)]).unwrap();
+    let Value::Object(overlap) = overlap else { unreachable!() };
+    let overlap = overlap.lock().unwrap();
+    let ObjectKind::Array(values) = &overlap.kind else { unreachable!() };
+    assert_eq!(values, &[Value::I32(1), Value::I32(1), Value::I32(1), Value::I32(2), Value::I32(3)]);
+    vm.invoke(&callable, &[destination.clone(), array(&[10, 0, 12]), Value::I32(3)]).unwrap();
+    let Value::Object(destination) = destination else { unreachable!() };
+    let destination = destination.lock().unwrap();
+    let ObjectKind::Array(values) = &destination.kind else { unreachable!() };
+    assert_eq!(values, &[Value::I32(10), Value::I32(0), Value::I32(12), Value::I32(255), Value::I32(4)]);
+    println!("byte-copy: shared body {body_bytes} bytes; two-call caller {caller_bytes} bytes");
+}
+
+#[test]
+fn linear_i64_store_keeps_native_bits_and_assignment_result() {
+    for word in [i64::MIN, i64::MAX, -1, 9_007_199_254_740_995] {
+        let mut root = Chunk::new("native-i64-store");
+        root.memory_min_pages = vec![1];
+        root.emit_i32_const(7, 0);
+        root.emit_i64_const(word, 0);
+        let mut chunks = vec![root];
+        pointers::emit_linear_i64_store(&mut chunks, 0, 0);
+        // Rejoin the ordinary value ABI explicitly after inspecting the raw
+        // assignment result. The memory itself must retain all 64 bits.
+        chunks[0].emit_op(Op::I32_WRAP_I64, 0);
+        chunks[0].emit_op(Op::RETURN, 0);
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false,
+                include_name_section: true,
+            });
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes).unwrap();
+        let mut vm = runtime();
+        assert_eq!(vm.run(chunks).unwrap(), Value::I32(word as i32));
+        vm.memory.with_buffer(|memory| {
+            assert_eq!(&memory[7..15], &word.to_le_bytes());
+        });
+    }
+}
+
+#[test]
+fn pointer_output_store_preserves_stack_for_cell_and_container_references() {
+    let mut root = Chunk::new("<pointer-output-store>");
+    root.emit_op_u16(Op::REF_FUNC, 1, 0);
+    root.emit(0, 0);
+    root.emit_op(Op::RETURN, 0);
+    let mut store = Chunk::new("pointer-output-store");
+    store.arity = 2;
+    store.param_count = 2;
+    store.local_count = 2;
+    let mut chunks = vec![root, store];
+    references::emit_store_through_pointer(&mut chunks, 1, 0, 1, 0);
+    chunks[1].emit_op_u16(Op::LOCAL_GET, 1, 0);
+    chunks[1].emit_op(Op::RETURN, 0);
+    bundle::finalize_with_runtime_helpers(&mut chunks);
+    globals::declare_free_globals(&mut chunks);
+    globals::normalize_global_table(&mut chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    let cell = object(&[
+        (pointers::REF_KIND_KEY, Value::String(pointers::CELL_KIND.into())),
+        (pointers::REF_VALUE_KEY, Value::I32(0)),
+    ]);
+    let mut vm = runtime();
+    let callable = vm.run(chunks).unwrap();
+    for pointer in [cell.clone(), indexed(cell.clone(), Value::I32(0))] {
+        assert_eq!(vm.invoke(&callable, &[pointer, Value::I32(71)]).unwrap(), Value::I32(71));
+    }
+    let Value::Object(cell) = cell else { unreachable!() };
+    assert_eq!(cell.lock().unwrap().properties[pointers::REF_VALUE_KEY], Value::I32(71));
+}
 #[test]
 fn one_indexed_read_body_and_unchanged_local_budget() {
     let old = program(true);

@@ -290,8 +290,7 @@ impl Compiler {
     pub(super) fn emit_enum_render(&mut self, expr: &Expression) -> Result<(), String> {
         self.compile_expr(expr)?;
         let value_slot = self.define_local("__enum_render_value");
-        self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_u16(Op::LOCAL_TEE, value_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
         // `ref.test` already yields an i32; `Op::IF` consumes it directly.
@@ -386,8 +385,7 @@ impl Compiler {
 
         self.compile_expr(value_expr)?;
         let value_slot = self.define_local("__enum_tostring_value");
-        self.emit_u16(Op::LOCAL_SET, value_slot);
-        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_u16(Op::LOCAL_TEE, value_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
         // `ref.test` already yields an i32; `Op::IF` consumes it directly.
@@ -536,6 +534,12 @@ impl Compiler {
         Ok(())
     }
 
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_console_string_producers(&mut self, enabled: bool) {
+        self.console_string_producers = enabled;
+        self.console_fixed_numeric = enabled;
+    }
+
     pub(super) fn emit_dotnet_console_arg(&mut self, expr: &Expression) -> Result<(), String> {
         // No enum special-case here any more. There were two — a member
         // expression folded straight to its name STRING, and an enum-typed
@@ -551,7 +555,38 @@ impl Compiler {
         // (builtins.rs, lambdas.rs ×2, calls.rs all test the emit name first).
         // The flag could therefore never be false here — it re-asked a question
         // the resolver had already answered.
+        let emitted_start = self.chunks[self.current].code.len();
         self.compile_expr(expr)?;
+        #[cfg(feature = "primitive-benchmarks")]
+        let string_producers = self.console_string_producers;
+        #[cfg(not(feature = "primitive-benchmarks"))]
+        let string_producers = true;
+        if string_producers {
+            // These expression forms produce actual primitive strings, not a
+            // nullable or user-declared String-shaped value.
+            let direct_string = matches!(&expr.kind,
+                ExprKind::Interpolation(_) | ExprKind::Lit(Literal::Str(_)));
+            let chunk = &self.chunks[self.current];
+            let mut at = emitted_start;
+            let mut last = None;
+            if !direct_string {
+                // Inspect instruction boundaries, never a byte-pattern suffix
+                // that could be part of another instruction's immediate.
+                while at < chunk.code.len() {
+                    let op = Op::from_code_at(&chunk.code, at);
+                    last = Some((at, op));
+                    at += 4 + op.operand_format().size_in(&chunk.code, at + 4);
+                }
+            }
+            let import_string = last.is_some_and(|(at, op)| {
+                if op != Op::CALL || chunk.direct_defined_calls.contains_key(&at) { return false; }
+                let index = u16::from_be_bytes([chunk.code[at + 4], chunk.code[at + 5]]) as usize;
+                chunk.imports.get(index).is_some_and(|import|
+                    (import.module == "wasm:js-string" && import.name == "concat")
+                    || (import.module == "ecma:string" && import.name == "String"))
+            });
+            if direct_string || import_string { return Ok(()); }
+        }
         let value_slot = self.define_local("__dotnet_console_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
 
@@ -589,13 +624,23 @@ impl Compiler {
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
-        self.emit_global_read("__vybe_dotnet_numeric_format");
-        self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit_const(Value::String(Arc::from("F12")));
-        self.emit_const(Value::F64(0.0));
-        self.emit_direct_callable_invoke(3);
-        let parse_float = self.import("ecma:number", "parseFloat");
-        self.emit_host_call(parse_float, 1);
+        #[cfg(feature = "primitive-benchmarks")]
+        let fixed_numeric = self.console_fixed_numeric;
+        #[cfg(not(feature = "primitive-benchmarks"))]
+        let fixed_numeric = true;
+        if fixed_numeric {
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            let line = self.line;
+            self.emit_common("dotnet.console_numeric_value", 1, line);
+        } else {
+            self.emit_global_read("__vybe_dotnet_numeric_format");
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_const(Value::String(Arc::from("F12")));
+            self.emit_const(Value::F64(0.0));
+            self.emit_direct_callable_invoke(3);
+            let parse_float = self.import("ecma:number", "parseFloat");
+            self.emit_host_call(parse_float, 1);
+        }
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.chunk().emit_end(line);
@@ -815,8 +860,7 @@ impl Compiler {
                     };
                     self.emit_enum_member_lookup(&enum_type, value_arg, ignore_case)?;
                     let parsed_slot = self.define_local("__enum_try_parse_value");
-                    self.emit_u16(Op::LOCAL_SET, parsed_slot);
-                    self.emit_u16(Op::LOCAL_GET, parsed_slot);
+                    self.emit_u16(Op::LOCAL_TEE, parsed_slot);
                     self.emit(Op::REF_IS_NULL);
                     let line = self.line;
                     self.chunk().emit_if_value(line);
@@ -962,8 +1006,7 @@ pub fn emit_has_flag(chunk: &mut Chunk, line: u32) {
     let flag = chunk.alloc_scratch(1);
     let value = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, flag, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, value, line);
     chunk.emit_op_u16(Op::LOCAL_GET, flag, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op_u16(Op::LOCAL_GET, flag, line);

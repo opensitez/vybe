@@ -50,6 +50,40 @@ pub fn emit_concat(chunk: &mut Chunk, part_count: usize, line: u32) {
 }
 
 /// Emit a complete string interpolation: convert expression part to string.
+/// Concatenate already evaluated, proven strings using a balanced copy tree.
+/// Unlike the generic path, this may combine right-hand pairs first: callers
+/// must complete all coercion and validation before entering this operation.
+/// Source order is retained, with no observable conversion calls reordered.
+/// For equally sized parts the copying cost is O(N log N), not O(N squared),
+/// and only O(log N) local slots are needed. Two-part calls stay unchanged.
+pub fn emit_concat_proven_strings(chunk: &mut Chunk, part_count: usize, line: u32) {
+    if part_count <= 3 {
+        emit_concat(chunk, part_count, line);
+        return;
+    }
+    fn emit_tree(chunk: &mut Chunk, count: usize, base: u16, concat: u16, line: u32) {
+        if count == 1 {
+            return;
+        }
+        if count == 2 {
+            chunk.emit_call(concat, 2, line);
+            return;
+        }
+        let right = count / 2;
+        emit_tree(chunk, right, base + 1, concat, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, base, line);
+        emit_tree(chunk, count - right, base + 1, concat, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+        chunk.emit_call(concat, 2, line);
+    }
+    let levels = usize::BITS - (part_count - 1).leading_zeros();
+    let slots = u16::try_from(levels - 1).expect("string concat tree is too deep");
+    let base = chunk.alloc_scratch(slots);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    emit_tree(chunk, part_count, base, concat, line);
+}
+
+/// Emit a complete string interpolation: convert expression part to string.
 /// Call this after compiling each expression part (between literal parts).
 /// Stack before: [value]  Stack after: [string]
 pub fn emit_interpolation_part(chunk: &mut Chunk, line: u32) {
@@ -292,8 +326,7 @@ pub fn emit_cstr_truncate(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = chunks[current].alloc_scratch(2);
     let (s, at) = (base, base + 1);
 
-    set(&mut chunks[current], s, line);
-    get(&mut chunks[current], s, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, s);
     chunks[current].emit_string_const("\0", line);
     emit_index_of(&mut chunks[current], line);
     set(&mut chunks[current], at, line);
@@ -301,7 +334,8 @@ pub fn emit_cstr_truncate(chunks: &mut [Chunk], current: usize, line: u32) {
     // No NUL → the whole string is content.
     get(&mut chunks[current], at, line);
     chunks[current].emit_f64_const(0.0, line);
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    // The unchanged ECMA indexOf result is always a Number.
+    chunks[current].emit_op(Op::F64_LT, line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], s, line);
     chunks[current].emit_else(line);
@@ -323,67 +357,68 @@ pub fn emit_cstr_length(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_byte_length(chunks: &mut [Chunk], current: usize, line: u32) {
-    // Length, indices and codePointAt results are already i32. Keep the
-    // counter typed instead of emitting dynamic type dispatch per character.
-    let base = chunks[current].alloc_scratch(5);
-    let (s, i, n, bytes, cp) = (base, base + 1, base + 2, base + 3, base + 4);
-
-    set(&mut chunks[current], s, line);
-    chunks[current].emit_i32_const(0, line);
-    set(&mut chunks[current], i, line);
-    chunks[current].emit_i32_const(0, line);
-    set(&mut chunks[current], bytes, line);
-    get(&mut chunks[current], s, line);
-    emit_length(&mut chunks[current], line);
-    set(&mut chunks[current], n, line);
-
-    let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
-    get(&mut chunks[current], i, line);
-    get(&mut chunks[current], n, line);
-    chunks[current].emit_op(Op::I32_LT_U, line);
-    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
-
-    // cp = s.codePointAt(i) — the WHOLE code point, not a surrogate half.
-    get(&mut chunks[current], s, line);
-    get(&mut chunks[current], i, line);
-    {
-        let idx = chunks[current].add_import("wasm:js-string", "codePointAt");
-        chunks[current].emit_call(idx, 2, line);
-    }
-    set(&mut chunks[current], cp, line);
-
-    // bytes += UTF-8 width of cp
-    for (bound, width) in [(128, 1), (2048, 2), (65536, 3)] {
-        get(&mut chunks[current], cp, line);
-        chunks[current].emit_i32_const(bound, line);
-        chunks[current].emit_op(Op::I32_LT_U, line);
-        chunks[current].emit_if_i32(line);
-        chunks[current].emit_i32_const(width, line);
-        chunks[current].emit_else(line);
-    }
-    chunks[current].emit_i32_const(4, line);
-    for _ in 0..3 {
-        chunks[current].emit_end(line);
-    }
-    get(&mut chunks[current], bytes, line);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    set(&mut chunks[current], bytes, line);
-
-    // i += cp > 0xFFFF ? 2 : 1 — an astral code point spans two UTF-16 units.
-    get(&mut chunks[current], cp, line);
-    chunks[current].emit_i32_const(65535, line);
-    chunks[current].emit_op(Op::I32_GT_U, line);
-    chunks[current].emit_if_i32(line);
-    chunks[current].emit_i32_const(2, line);
-    chunks[current].emit_else(line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_end(line);
-    get(&mut chunks[current], i, line);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    set(&mut chunks[current], i, line);
-
-    crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
-    get(&mut chunks[current], bytes, line);
+    // stringref measures without allocation; its overflow sentinel selects
+    // the wrapping code-point counter used by the existing primitive.
+    let c = &mut chunks[current];
+    let b = c.alloc_scratch(5);
+    let (s, i, n, bytes, cp) = (b, b + 1, b + 2, b + 3, b + 4);
+    c.emit_op_u16(Op::LOCAL_SET, s, line);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_TEE, i, line);
+    c.emit_op_u16(Op::LOCAL_SET, bytes, line);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    let length = c.add_import("wasm:js-string", "length");
+    c.emit_call(length, 1, line);
+    c.emit_op_u16(Op::LOCAL_TEE, n, line);
+    c.emit_if_value(line);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    c.emit_op(Op::STRING_MEASURE_WTF8, line);
+    // A negative-one measurement requests the old wrapping counter.
+    c.emit_op_u16(Op::LOCAL_TEE, cp, line);
+    c.emit_i32_const(-1, line);
+    c.emit_op(Op::NE, line);
+    c.emit_if_value(line);
+    c.emit_op_u16(Op::LOCAL_GET, cp, line);
+    c.emit_else(line);
+    // Carry the wrapping counter in the standard multi-value loop parameter.
+    c.emit_i32_const(0, line);
+    c.emit_block_params(line, 1, 1);
+    c.emit_loop_params(line, 1, 1);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op_u16(Op::LOCAL_GET, n, line);
+    c.emit_op(Op::I32_GE_U, line);
+    c.emit_br_if(1, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    // Three bits count the UTF-8 width thresholds after the leading-zero
+    // shift. OR 1 makes the zero code point use shift 31 rather than 32.
+    c.emit_i32_const(0x0110_8000, line);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    let point = c.add_import("wasm:js-string", "codePointAt");
+    c.emit_call(point, 2, line);
+    c.emit_op_u16(Op::LOCAL_TEE, cp, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_OR, line);
+    c.emit_op(Op::I32_CLZ, line);
+    c.emit_op(Op::I32_SHR_U, line);
+    c.emit_op(Op::I32_POPCNT, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_GET, cp, line);
+    c.emit_i32_const(65536, line);
+    c.emit_op(Op::I32_GE_U, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.emit_end(line);
+    c.emit_end(line);
+    c.emit_else(line);
+    c.emit_i32_const(0, line);
+    c.emit_end(line);
 }
 
 /// The code points of a string, as an array of one-code-point strings.
@@ -403,8 +438,7 @@ pub fn emit_scalar_length(chunks: &mut [Chunk], current: usize, line: u32) {
     // may keep caller-owned objects alive. String/Map/Object arms are unreachable.
     let chunk = &mut chunks[current];
     let array = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, array, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, array, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, array, line);
     let length = chunk.add_import("ecma:array", "length");
     chunk.emit_call(length, 1, line);
 }
@@ -442,16 +476,16 @@ pub fn emit_scalar_index_of(chunks: &mut [Chunk], current: usize, line: u32) {
         let chunk = &mut chunks[current];
         let needle = chunk.alloc_scratch(1);
         chunk.emit_op_u16(Op::LOCAL_SET, needle, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, hay, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, hay, line);
+        chunk.emit_op_u16(Op::LOCAL_TEE, hay, line);
         chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
         emit_index_of(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, at, line);
 
         // Absent stays absent — do not re-count a prefix of length -1.
         chunk.emit_op_u16(Op::LOCAL_GET, at, line);
-        crate::primitives::instructions::core_wasm::i32_const(chunk, line, 0);
-        crate::primitives::ops::emit_dyn_lt(chunk, line);
+        // indexOf/lastIndexOf produce an ECMA Number, never an object.
+        chunk.emit_f64_const(0.0, line);
+        chunk.emit_op(Op::F64_LT, line);
         chunk.emit_if_value(line);
         crate::primitives::instructions::core_wasm::i32_const(chunk, line, -1);
         chunk.emit_else(line);
@@ -474,15 +508,15 @@ pub fn emit_scalar_last_index_of(chunks: &mut [Chunk], current: usize, line: u32
         let chunk = &mut chunks[current];
         let needle = chunk.alloc_scratch(1);
         chunk.emit_op_u16(Op::LOCAL_SET, needle, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, hay, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, hay, line);
+        chunk.emit_op_u16(Op::LOCAL_TEE, hay, line);
         chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
         emit_last_index_of(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, at, line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, at, line);
-        crate::primitives::instructions::core_wasm::i32_const(chunk, line, 0);
-        crate::primitives::ops::emit_dyn_lt(chunk, line);
+        // indexOf/lastIndexOf produce an ECMA Number, never an object.
+        chunk.emit_f64_const(0.0, line);
+        chunk.emit_op(Op::F64_LT, line);
         chunk.emit_if_value(line);
         crate::primitives::instructions::core_wasm::i32_const(chunk, line, -1);
         chunk.emit_else(line);
@@ -685,7 +719,6 @@ pub fn emit_split_limit(
 
         get(&mut chunks[current], tail, line);
         chunks[current].emit_op(Op::ARRAY_LENGTH, line);
-        super::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
         get(&mut chunks[current], full, line);
         get(&mut chunks[current], tail, line);
@@ -703,10 +736,10 @@ pub fn emit_split_limit(
 /// `max(n, 0)`. Stack: `[n]` → `[n]`.
 fn emit_clamp_low_zero(chunks: &mut [Chunk], current: usize, line: u32) {
     let n = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], n, line);
-    get(&mut chunks[current], n, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, n, line);
     chunks[current].emit_f64_const(0.0, line);
-    super::ops::emit_dyn_lt(&mut chunks[current], line);
+    // Every caller passes the result of F64_ADD or F64_SUB.
+    chunks[current].emit_op(Op::F64_LT, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_else(line);
@@ -715,7 +748,7 @@ fn emit_clamp_low_zero(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 fn array_call(chunks: &mut [Chunk], current: usize, name: &str, argc: u8, line: u32) {
-    let idx = chunks[current].add_import("ecma:array", name.to_string());
+    let idx = chunks[current].add_import("ecma:array", name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -788,7 +821,7 @@ pub fn emit_pad(
 }
 
 fn pad_call(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
-    let idx = chunks[current].add_import("ecma:string", name.to_string());
+    let idx = chunks[current].add_import("ecma:string", name);
     chunks[current].emit_call(idx, 3, line);
 }
 
@@ -908,8 +941,8 @@ pub fn emit_glob_to_regex(chunks: &mut [Chunk], current: usize, line: u32) {
     let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], n, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    crate::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     // c = pat[i]
     emit_char_at(chunks, current, pat, i, line);
@@ -1111,7 +1144,12 @@ pub fn emit_group_digits_ascii_numeric(chunks: &mut [Chunk], current: usize, lin
     emit_group_digits_impl(chunks, current, line, true);
 }
 
-fn emit_group_digits_impl(chunks: &mut [Chunk], current: usize, line: u32, ascii_numeric: bool) {
+fn emit_group_digits_impl(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+    ascii_numeric: bool,
+) {
     let base = chunks[current].alloc_scratch(9);
     let (dec_point, sep, s, dot, int_end, digits, frac, out, i) = (
         base,
@@ -1128,29 +1166,22 @@ fn emit_group_digits_impl(chunks: &mut [Chunk], current: usize, line: u32, ascii
     set(&mut chunks[current], sep, line);
     set(&mut chunks[current], s, line);
 
-    // dot = s.indexOf(".");  int_end = dot < 0 ? s.length : dot
+    // One decimal-point decision prepares both independent private results.
     get(&mut chunks[current], s, line);
     chunks[current].emit_string_const(".", line);
     emit_index_of(&mut chunks[current], line);
-    set(&mut chunks[current], dot, line);
-    get(&mut chunks[current], dot, line);
+    crate::primitives::instructions::core_wasm::local_tee(&mut chunks[current], line, dot);
     i32c(&mut chunks[current], 0, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    chunks[current].emit_if_value(line);
+    chunks[current].emit_if(line);
     get(&mut chunks[current], s, line);
     emit_length(&mut chunks[current], line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], dot, line);
-    chunks[current].emit_end(line);
     set(&mut chunks[current], int_end, line);
-
-    // frac = dot < 0 ? "" : dec_point ++ s.slice(dot + 1)
-    get(&mut chunks[current], dot, line);
-    i32c(&mut chunks[current], 0, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("", line);
+    set(&mut chunks[current], frac, line);
     chunks[current].emit_else(line);
+    get(&mut chunks[current], dot, line);
+    set(&mut chunks[current], int_end, line);
     get(&mut chunks[current], dec_point, line);
     get(&mut chunks[current], s, line);
     get(&mut chunks[current], dot, line);
@@ -1159,8 +1190,8 @@ fn emit_group_digits_impl(chunks: &mut [Chunk], current: usize, line: u32, ascii
     i32c(&mut chunks[current], 0x7FFF_FFFF, line);
     emit_substring(&mut chunks[current], line);
     concat(chunks, current, line);
-    chunks[current].emit_end(line);
     set(&mut chunks[current], frac, line);
+    chunks[current].emit_end(line);
 
     // A leading sign is copied out and never grouped.
     let start = chunks[current].alloc_scratch(1);
@@ -1243,32 +1274,34 @@ fn emit_group_digits_impl(chunks: &mut [Chunk], current: usize, line: u32, ascii
         let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
         get(&mut chunks[current], i, line);
         get(&mut chunks[current], n, line);
-        chunks[current].emit_op(Op::I32_LT_S, line);
-        crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        crate::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
         get(&mut chunks[current], out, line);
         get(&mut chunks[current], sep, line);
         concat(chunks, current, line);
-        set(&mut chunks[current], out, line);
-        get(&mut chunks[current], out, line);
+        crate::primitives::instructions::core_wasm::local_tee(
+            &mut chunks[current],
+            line,
+            out,
+        );
         get(&mut chunks[current], digits, line);
         get(&mut chunks[current], i, line);
         get(&mut chunks[current], i, line);
         i32c(&mut chunks[current], 3, line);
         chunks[current].emit_op(Op::I32_ADD, line);
+        // The substring start is already on the operand stack. Reuse its
+        // computed end as the next private cursor before the pure string calls.
+        chunks[current].emit_op_u16(Op::LOCAL_TEE, i, line);
         emit_substring(&mut chunks[current], line);
         concat(chunks, current, line);
         set(&mut chunks[current], out, line);
-        get(&mut chunks[current], i, line);
-        i32c(&mut chunks[current], 3, line);
-        chunks[current].emit_op(Op::I32_ADD, line);
-        set(&mut chunks[current], i, line);
         crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     } else {
         let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
         get(&mut chunks[current], i, line);
         get(&mut chunks[current], n, line);
-        chunks[current].emit_op(Op::I32_LT_S, line);
-        crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        crate::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
 
         get(&mut chunks[current], i, line);
         i32c(&mut chunks[current], 0, line);
@@ -1294,16 +1327,14 @@ fn emit_group_digits_impl(chunks: &mut [Chunk], current: usize, line: u32, ascii
         get(&mut chunks[current], i, line);
         i32c(&mut chunks[current], 1, line);
         chunks[current].emit_op(Op::I32_ADD, line);
+        // The substring start is already on the operand stack. Reuse its
+        // computed end as the next private cursor before the pure string calls.
+        chunks[current].emit_op_u16(Op::LOCAL_TEE, i, line);
         emit_substring(&mut chunks[current], line);
         concat(chunks, current, line);
         set(&mut chunks[current], out, line);
 
-        get(&mut chunks[current], i, line);
-        i32c(&mut chunks[current], 1, line);
-        chunks[current].emit_op(Op::I32_ADD, line);
-        set(&mut chunks[current], i, line);
         crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
-
     }
 
     get(&mut chunks[current], out, line);
@@ -1439,13 +1470,21 @@ pub fn emit_trim_chars(
     emit_length(&mut chunks[current], line);
     set(&mut chunks[current], end, line);
 
+    // Dynamic sets previously paid for two loop entries even on empty strings.
+    // Skip both scans at zero length, but retain the original substring call.
+    let skip_empty_scans = ascii_defaults.is_none() && (opts.left || opts.right);
+    if skip_empty_scans {
+        get(&mut chunks[current], end, line);
+        chunks[current].emit_if(line);
+    }
+
     if opts.left {
         // while start < end && chars contains s[start] { start += 1 }
         let st = crate::primitives::loops::emit_loop_start(chunks, current, line);
         get(&mut chunks[current], start, line);
         get(&mut chunks[current], end, line);
-        chunks[current].emit_op(Op::I32_LT_S, line);
-        crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        crate::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
         emit_char_in_set(chunks, current, chars, s, start, 0, ascii_defaults, line);
         chunks[current].emit_br_if(st.break_depth(0) as u32, line);
         get(&mut chunks[current], start, line);
@@ -1460,8 +1499,8 @@ pub fn emit_trim_chars(
         let st = crate::primitives::loops::emit_loop_start(chunks, current, line);
         get(&mut chunks[current], end, line);
         get(&mut chunks[current], start, line);
-        chunks[current].emit_op(Op::I32_GT_S, line);
-        crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+        chunks[current].emit_op(Op::I32_LE_S, line);
+        crate::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
         emit_char_in_set(chunks, current, chars, s, end, -1, ascii_defaults, line);
         chunks[current].emit_br_if(st.break_depth(0) as u32, line);
         get(&mut chunks[current], end, line);
@@ -1471,6 +1510,9 @@ pub fn emit_trim_chars(
         crate::primitives::loops::emit_loop_end(chunks, current, st, line);
     }
 
+    if skip_empty_scans {
+        chunks[current].emit_end(line);
+    }
     get(&mut chunks[current], s, line);
     get(&mut chunks[current], start, line);
     get(&mut chunks[current], end, line);
@@ -1507,7 +1549,8 @@ fn emit_char_in_set(
     let index_of = chunk.add_import("ecma:string", "indexOf");
     chunk.emit_call(index_of, 2, line);
     i32c(chunk, 0, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    // indexOf returns a Number (including -1); no user operand remains here.
+    chunk.emit_op(Op::F64_LT, line);
 }
 
 // A static ASCII set cannot contain a surrogate or the replacement character.
@@ -1702,13 +1745,23 @@ fn class_table(class: CharClass) -> &'static str {
     }
 }
 
-/// Membership test. Stack: `[cp: i32]` → `[i32 0/1]` — binary search for
+/// Membership test of the caller-owned private i32 code-point slot.
+/// Stack: `[]` → `[i32 0/1]` — binary search for
 /// the first boundary `> cp`; inside a range iff that index is odd.
 // The receiver is a string and codePointAt produces an i32. ASCII ranges
 // avoid searching the Unicode boundary string while preserving its fallback.
-fn emit_class_test(chunks: &mut [Chunk], current: usize, class: CharClass, line: u32) {
-    let cp = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], cp, line);
+struct ClassTestState { cp: u16, unicode: Option<(u16, u16, u16, u16)> }
+fn init_class_test(chunks: &mut [Chunk], current: usize, class: CharClass, cp: u16, line: u32) -> ClassTestState {
+    let unicode = if matches!(class, CharClass::Digit) { None } else {
+        let base = chunks[current].alloc_scratch(4);
+        chunks[current].emit_i32_const(-1, line);
+        set(&mut chunks[current], base, line);
+        Some((base, base + 1, base + 2, base + 3))
+    };
+    ClassTestState { cp, unicode }
+}
+fn emit_class_test(chunks: &mut [Chunk], current: usize, class: CharClass, state: &ClassTestState, line: u32) {
+    let cp = state.cp;
     if matches!(class, CharClass::Digit) {
         emit_ascii_class(&mut chunks[current], cp, class, line);
         return;
@@ -1719,16 +1772,34 @@ fn emit_class_test(chunks: &mut [Chunk], current: usize, class: CharClass, line:
     chunks[current].emit_if_i32(line);
     emit_ascii_class(&mut chunks[current], cp, class, line);
     chunks[current].emit_else(line);
-    get(&mut chunks[current], cp, line);
-    emit_unicode_class_test(chunks, current, class, line);
+    emit_unicode_class_test(chunks, current, class, state, line);
     chunks[current].emit_end(line);
 }
 
 fn emit_ascii_class(chunk: &mut Chunk, cp: u16, class: CharClass, line: u32) {
+    // Only ASCII reaches this helper for Alpha/Alnum. Bit 5 folds A-Z
+    // onto a-z; the unsigned subtraction rejects every other ASCII code.
+    if matches!(class, CharClass::Alpha | CharClass::Alnum) {
+        get(chunk, cp, line);
+        i32c(chunk, 32, line);
+        chunk.emit_op(Op::I32_OR, line);
+        i32c(chunk, 97, line);
+        chunk.emit_op(Op::I32_SUB, line);
+        i32c(chunk, 25, line);
+        chunk.emit_op(Op::I32_LE_U, line);
+        if matches!(class, CharClass::Alnum) {
+            get(chunk, cp, line);
+            i32c(chunk, 48, line);
+            chunk.emit_op(Op::I32_SUB, line);
+            i32c(chunk, 9, line);
+            chunk.emit_op(Op::I32_LE_U, line);
+            chunk.emit_op(Op::I32_OR, line);
+        }
+        return;
+    }
     let ranges: &[(i32, i32)] = match class {
         CharClass::Digit => &[(48, 57)],
-        CharClass::Alpha => &[(65, 90), (97, 122)],
-        CharClass::Alnum => &[(48, 57), (65, 90), (97, 122)],
+        CharClass::Alpha | CharClass::Alnum => unreachable!("handled above"),
         CharClass::Space => &[(9, 13), (32, 32)],
         CharClass::Upper => &[(65, 90)],
         CharClass::Lower => &[(97, 122)],
@@ -1745,14 +1816,17 @@ fn emit_ascii_class(chunk: &mut Chunk, cp: u16, class: CharClass, line: u32) {
     }
 }
 
-fn emit_unicode_class_test(chunks: &mut [Chunk], current: usize, class: CharClass, line: u32) {
+fn emit_unicode_class_test(chunks: &mut [Chunk], current: usize, class: CharClass, state: &ClassTestState, line: u32) {
     let table = class_table(class);
     let n_bounds = (table.chars().count() / 2) as i32;
-    let base = chunks[current].alloc_scratch(4);
-    let (cp, lo, hi, mid) = (base, base + 1, base + 2, base + 3);
+    let cp = state.cp;
+    let (last, lo, hi, mid) = state.unicode.expect("Unicode class state");
     {
         let c = &mut chunks[current];
-        c.emit_op_u16(Op::LOCAL_SET, cp, line);
+        get(c, cp, line);
+        get(c, last, line);
+        c.emit_op(Op::I32_NE, line);
+        c.emit_if(line);
         c.emit_i32_const(0, line);
         c.emit_op_u16(Op::LOCAL_SET, lo, line);
         c.emit_i32_const(n_bounds, line);
@@ -1763,9 +1837,9 @@ fn emit_unicode_class_test(chunks: &mut [Chunk], current: usize, class: CharClas
         let c = &mut chunks[current];
         c.emit_op_u16(Op::LOCAL_GET, lo, line);
         c.emit_op_u16(Op::LOCAL_GET, hi, line);
-        c.emit_op(Op::I32_LT_S, line);
+        c.emit_op(Op::I32_GE_S, line);
     }
-    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+    crate::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
     {
         let c = &mut chunks[current];
         let cca = c.add_import("wasm:js-string", "charCodeAt");
@@ -1808,6 +1882,9 @@ fn emit_unicode_class_test(chunks: &mut [Chunk], current: usize, class: CharClas
     crate::primitives::loops::emit_loop_end(chunks, current, state, line);
     {
         let c = &mut chunks[current];
+        get(c, cp, line);
+        set(c, last, line);
+        c.emit_end(line);
         c.emit_op_u16(Op::LOCAL_GET, lo, line);
         c.emit_i32_const(1, line);
         c.emit_op(Op::I32_AND, line);
@@ -1826,12 +1903,12 @@ fn emit_all_in_class(chunks: &mut [Chunk], current: usize, class: CharClass, lin
         c.emit_op_u16(Op::LOCAL_SET, i, line);
         c.emit_op_u16(Op::LOCAL_GET, s, line);
         emit_length(c, line);
-        c.emit_op_u16(Op::LOCAL_SET, n, line);
-        c.emit_op_u16(Op::LOCAL_GET, n, line);
+        c.emit_op_u16(Op::LOCAL_TEE, n, line);
         c.emit_i32_const(0, line);
         c.emit_op(Op::I32_GT_S, line);
         c.emit_op_u16(Op::LOCAL_SET, ok, line);
     }
+    let class_state = init_class_test(chunks, current, class, cp, line);
     let state = crate::primitives::loops::emit_loop_start(chunks, current, line);
     {
         let c = &mut chunks[current];
@@ -1849,9 +1926,8 @@ fn emit_all_in_class(chunks: &mut [Chunk], current: usize, class: CharClass, lin
         c.emit_op_u16(Op::LOCAL_GET, i, line);
         c.emit_call(cpa, 2, line);
         c.emit_op_u16(Op::LOCAL_SET, cp, line);
-        c.emit_op_u16(Op::LOCAL_GET, cp, line);
     }
-    emit_class_test(chunks, current, class, line);
+    emit_class_test(chunks, current, class, &class_state, line);
     {
         let c = &mut chunks[current];
         c.emit_op_u16(Op::LOCAL_SET, ok, line);
@@ -1881,8 +1957,8 @@ fn emit_cased_class(chunks: &mut [Chunk], current: usize, want_upper: bool, line
     } else {
         (CharClass::Lower, CharClass::Upper)
     };
-    let base = chunks[current].alloc_scratch(6);
-    let (s, i, n, bad, has, cp) = (base, base + 1, base + 2, base + 3, base + 4, base + 5);
+    let base = chunks[current].alloc_scratch(5);
+    let (s, i, n, has, cp) = (base, base + 1, base + 2, base + 3, base + 4);
     {
         let c = &mut chunks[current];
         c.emit_op_u16(Op::LOCAL_SET, s, line);
@@ -1892,21 +1968,20 @@ fn emit_cased_class(chunks: &mut [Chunk], current: usize, want_upper: bool, line
         emit_length(c, line);
         c.emit_op_u16(Op::LOCAL_SET, n, line);
         c.emit_i32_const(0, line);
-        c.emit_op_u16(Op::LOCAL_SET, bad, line);
-        c.emit_i32_const(0, line);
         c.emit_op_u16(Op::LOCAL_SET, has, line);
     }
+    // Both searches read the same immutable code point. Their last/lo/hi/mid
+    // state stays separate, so cached Unicode searches cannot alias.
+    let opposite_state = init_class_test(chunks, current, opposite, cp, line);
+    let same_state = init_class_test(chunks, current, same, cp, line);
     let state = crate::primitives::loops::emit_loop_start(chunks, current, line);
     {
         let c = &mut chunks[current];
         c.emit_op_u16(Op::LOCAL_GET, i, line);
         c.emit_op_u16(Op::LOCAL_GET, n, line);
-        c.emit_op(Op::I32_LT_S, line);
-        c.emit_op_u16(Op::LOCAL_GET, bad, line);
-        c.emit_op(Op::I32_EQZ, line);
-        c.emit_op(Op::I32_AND, line);
+        c.emit_op(Op::I32_GE_S, line);
     }
-    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+    crate::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
     {
         let c = &mut chunks[current];
         let cpa = c.add_import("wasm:js-string", "codePointAt");
@@ -1914,20 +1989,27 @@ fn emit_cased_class(chunks: &mut [Chunk], current: usize, want_upper: bool, line
         c.emit_op_u16(Op::LOCAL_GET, i, line);
         c.emit_call(cpa, 2, line);
         c.emit_op_u16(Op::LOCAL_SET, cp, line);
-        c.emit_op_u16(Op::LOCAL_GET, cp, line);
     }
-    emit_class_test(chunks, current, opposite, line);
+    emit_class_test(chunks, current, opposite, &opposite_state, line);
     {
         let c = &mut chunks[current];
-        c.emit_op_u16(Op::LOCAL_SET, bad, line);
-        c.emit_op_u16(Op::LOCAL_GET, has, line);
-        c.emit_op_u16(Op::LOCAL_GET, cp, line);
-    }
-    emit_class_test(chunks, current, same, line);
-    {
-        let c = &mut chunks[current];
-        c.emit_op(Op::I32_OR, line);
+        // An opposite-case character decides the result immediately.
+        c.emit_if(line);
+        c.emit_i32_const(0, line);
         c.emit_op_u16(Op::LOCAL_SET, has, line);
+        c.emit_br(state.break_depth(1) as u32, line);
+        c.emit_end(line);
+        // Once a matching cased character was found, only the opposite
+        // predicate matters. Standard string/table reads have no effects.
+        c.emit_op_u16(Op::LOCAL_GET, has, line);
+        c.emit_op(Op::I32_EQZ, line);
+        c.emit_if(line);
+    }
+    emit_class_test(chunks, current, same, &same_state, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_op_u16(Op::LOCAL_SET, has, line);
+        c.emit_end(line);
         c.emit_op_u16(Op::LOCAL_GET, i, line);
         c.emit_i32_const(1, line);
         c.emit_op(Op::I32_ADD, line);
@@ -1940,10 +2022,7 @@ fn emit_cased_class(chunks: &mut [Chunk], current: usize, want_upper: bool, line
     crate::primitives::loops::emit_loop_end(chunks, current, state, line);
     {
         let c = &mut chunks[current];
-        c.emit_op_u16(Op::LOCAL_GET, bad, line);
-        c.emit_op(Op::I32_EQZ, line);
         c.emit_op_u16(Op::LOCAL_GET, has, line);
-        c.emit_op(Op::I32_AND, line);
         crate::primitives::ops::emit_i32_to_bool(c, line);
     }
 }
@@ -1985,14 +2064,12 @@ pub fn emit_is_lower(chunks: &mut [Chunk], current: usize, line: u32) {
 
 // ── toString(value) → string ────────────────────────────────
 // "" + value triggers dyn_add string coercion in the VM
-pub fn build_to_string(imports: &mut Chunk) -> Chunk {
+pub fn build_to_string(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_tostring");
     c.arity = 1;
     c.local_count = 1;
     let val = 0u16;
-    c.emit_string_const("", 0);
-    c.emit_op_u16(Op::LOCAL_GET, val, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_add_string_operand_from_local(&mut c, val, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2058,7 +2135,7 @@ pub fn build_string_is_null_or_whitespace(_imports: &mut Chunk) -> Chunk {
 }
 
 // ── str_insert(str, index, value) → string ────────────────
-pub fn build_str_insert(imports: &mut Chunk) -> Chunk {
+pub fn build_str_insert(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_str_insert");
     c.arity = 3;
     c.local_count = 3;
@@ -2074,8 +2151,9 @@ pub fn build_str_insert(imports: &mut Chunk) -> Chunk {
     }
 
     // prefix + value (keeps current coercion behavior for non-string values)
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_add_string_operand_from_local(&mut c, value, 0);
+    let concat = c.add_import("wasm:js-string", "concat");
+    c.emit_call(concat, 2, 0);
 
     // + suffix = str[index:]
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -2153,7 +2231,7 @@ pub fn build_str_remove_range(imports: &mut Chunk) -> Chunk {
 // `emit_*` forms splice inline. A language prefix in a name records which
 // frontend first needed a linkable chunk, not a language-specific meaning.
 
-pub fn build_pascal_str_insert(imports: &mut Chunk) -> Chunk {
+pub fn build_pascal_str_insert(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pascal_str_insert");
     c.arity = 3;
     c.local_count = 3;
@@ -2169,8 +2247,9 @@ pub fn build_pascal_str_insert(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::I32_SUB, 0);
     emit_str_substring(&mut c, 0);
 
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    crate::primitives::ops::emit_add_string_operand_from_local(&mut c, value, 0);
+    let concat = c.add_import("wasm:js-string", "concat");
+    c.emit_call(concat, 2, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, target, 0);
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
@@ -2178,7 +2257,7 @@ pub fn build_pascal_str_insert(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::I32_SUB, 0);
     crate::primitives::expressions::emit_const_index(&mut c, max, 0);
     emit_str_substring(&mut c, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
+    c.emit_call(concat, 2, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2207,414 +2286,8 @@ pub fn build_pascal_str_remove_range(imports: &mut Chunk) -> Chunk {
     crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
     crate::primitives::expressions::emit_const_index(&mut c, max, 0);
     emit_str_substring(&mut c, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-// ── vb_format(value, picture) → string — VB `Format` minimal subset ─
-//
-// Handles the digit-pattern cases that real VB code most commonly
-// uses; falls back to `String(value)` otherwise.
-//
-//   ""              → `String(value)`
-//   "0"             → `String(parseInt(value))`     (integer)
-//   "0.NN"          → `Number(value).toFixed(N)`    (fixed N decimals)
-//   "$<picture>"    → `"$" + format(value, <picture>)`
-//
-// Thousand separators (`#,##0`) and date pictures (`yyyy/MM/dd`) are
-// follow-up work — see `format_picture_adapter` for the call shape.
-pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_vb_format");
-    c.arity = 2;
-    c.local_count = 12; // value(0), picture(1), prefix(2), dot_pos(3), decimals(4), fmt_lower(5), val_str(6), work(7), idx_a(8), idx_b(9), idx_c(10), percent(11)
-    let value = 0u16;
-    let picture = 1u16;
-    let prefix = 2u16;
-    let dot_pos = 3u16;
-    let decimals = 4u16;
-    let fmt_lower = 5u16;
-    let val_str = 6u16;
-    let work = 7u16;
-    let idx_a = 8u16;
-    let idx_b = 9u16;
-    let idx_c = 10u16;
-    let percent = 11u16;
-
-    let to_str = c.add_import("ecma:string", "String");
-    let to_lower = c.add_import("ecma:string", "toLowerCase");
-    let pad_start = c.add_import("ecma:string", "padStart");
-    let to_fixed = c.add_import("ecma:number", "toFixed");
-    let parse_int = c.add_import("ecma:number", "parseInt");
-
-    // prefix = ""
-    let empty = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("")));
-    let short_date = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        "short date",
-    )));
-    let short_time = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        "short time",
-    )));
-    let percent_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("%")));
-    let zero_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("0")));
-    let space_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(" ")));
-    let slash_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("/")));
-    let colon_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(":")));
-    crate::primitives::expressions::emit_const_index(&mut c, empty, 0);
-    c.emit_op_u16(Op::LOCAL_SET, prefix, 0);
-    c.emit_bool_const(false, 0);
-    c.emit_op_u16(Op::LOCAL_SET, percent, 0);
-
-    // If picture is null/empty, return String(value).
-    let no_picture_block = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    c.emit_op(Op::REF_IS_NULL, 0);
-    let picture_null = c.add_constant(vybe_runtime::Value::I32(0));
-    let _ = picture_null; // not used; kept for future readability
-    let null_or_empty = c.emit_block(0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    // null path → return String(value)
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_call(to_str, 1, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(null_or_empty);
-
-    // Check empty string ("" length = 0)
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    emit_str_length(&mut c, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_call(to_str, 1, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(no_picture_block);
-
-    // fmt_lower = picture.Trim().ToLowerCase(); val_str = String(value)
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    {
-        let idx = c.add_import("ecma:string", "trim");
-        c.emit_call(idx, 1, 0);
-    }
-    c.emit_call(to_lower, 1, 0);
-    c.emit_op_u16(Op::LOCAL_SET, fmt_lower, 0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_call(to_str, 1, 0);
-    c.emit_op_u16(Op::LOCAL_SET, val_str, 0);
-
-    // Short Date → first segment before space, else whole value string.
-    let not_short_date = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, fmt_lower, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, short_date, 0);
-    emit_str_equals(&mut c, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, space_str, 0);
-    {
-        let idx = c.add_import("ecma:string", "indexOf");
-        c.emit_call(idx, 2, 0);
-    }
-    c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
-    let no_date_space = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(no_date_space);
-    c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    emit_str_substring(&mut c, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(not_short_date);
-
-    // Short Time → trim optional date prefix, drop seconds, keep AM/PM.
-    let not_short_time = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, fmt_lower, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, short_time, 0);
-    emit_str_equals(&mut c, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
-    c.emit_call(to_str, 1, 0);
-    c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, space_str, 0);
-    {
-        let idx = c.add_import("ecma:string", "indexOf");
-        c.emit_call(idx, 2, 0);
-    }
-    c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
-    let no_prefix = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    emit_str_substring(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, idx_b, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, slash_str, 0);
-    {
-        let idx = c.add_import("ecma:string", "indexOf");
-        c.emit_call(idx, 2, 0);
-    }
-    c.emit_op_u16(Op::LOCAL_SET, idx_c, 0);
-    let keep_work = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_c, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    emit_str_length(&mut c, 0);
-    emit_str_substring(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_end(0);
-    c.patch_block(keep_work);
-    c.emit_end(0);
-    c.patch_block(no_prefix);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, space_str, 0);
-    {
-        let idx = c.add_import("ecma:string", "lastIndexOf");
-        c.emit_call(idx, 2, 0);
-    }
-    c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    emit_str_substring(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, idx_b, 0);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    emit_str_length(&mut c, 0);
-    emit_str_substring(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, idx_c, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, colon_str, 0);
-    {
-        let idx = c.add_import("ecma:string", "lastIndexOf");
-        c.emit_call(idx, 2, 0);
-    }
-    c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, colon_str, 0);
-    {
-        let idx = c.add_import("ecma:string", "indexOf");
-        c.emit_call(idx, 2, 0);
-    }
-    c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    let already_short_time = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    c.emit_op(Op::F64_EQ, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, space_str, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_c, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(already_short_time);
-    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    emit_str_substring(&mut c, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, space_str, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx_c, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(not_short_time);
-
-    // If picture starts with '$', strip it and stash as prefix.
-    let dollar_block = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    emit_str_char_code_at(&mut c, 0);
-    let dollar_code = c.add_constant(vybe_runtime::Value::I32(b'$' as i32));
-    crate::primitives::expressions::emit_const_index(&mut c, dollar_code, 0);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    // prefix = "$"
-    let dollar_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("$")));
-    crate::primitives::expressions::emit_const_index(&mut c, dollar_str, 0);
-    c.emit_op_u16(Op::LOCAL_SET, prefix, 0);
-    // picture = picture.substring(1)
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    emit_str_length(&mut c, 0);
-    emit_str_substring(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, picture, 0);
-    c.emit_end(0);
-    c.patch_block(dollar_block);
-
-    // If picture ends with '%', strip it and mark percentage mode.
-    let percent_block = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    emit_str_length(&mut c, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    emit_str_length(&mut c, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    emit_str_char_code_at(&mut c, 0);
-    let percent_code = c.add_constant(vybe_runtime::Value::I32(b'%' as i32));
-    crate::primitives::expressions::emit_const_index(&mut c, percent_code, 0);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    c.emit_bool_const(true, 0);
-    c.emit_op_u16(Op::LOCAL_SET, percent, 0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    emit_str_length(&mut c, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    emit_str_substring(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, picture, 0);
-    c.emit_end(0);
-    c.patch_block(percent_block);
-
-    // dot_pos = picture.indexOf(".")
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    let dot_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(".")));
-    crate::primitives::expressions::emit_const_index(&mut c, dot_str, 0);
-    {
-        let idx = c.add_import("ecma:string", "indexOf");
-        c.emit_call(idx, 2, 0);
-    }
-    c.emit_op_u16(Op::LOCAL_SET, dot_pos, 0);
-
-    // If no dot: return prefix + String(parseInt(value))
-    let no_decimals_block = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, dot_pos, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    // No dot — integer rendering, optionally zero-padded / percentage.
-    let no_pct_int = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, percent, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
-    c.emit_if(0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    let hundred = c.add_constant(vybe_runtime::Value::F64(100.0));
-    crate::primitives::expressions::emit_const_index(&mut c, hundred, 0);
-    c.emit_op(Op::F64_MUL, 0);
-    c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_else(0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_end(0);
-    c.emit_end(0);
-    c.patch_block(no_pct_int);
-
-    c.emit_op_u16(Op::LOCAL_GET, prefix, 0);
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    c.emit_call(parse_int, 1, 0);
-    c.emit_call(to_str, 1, 0);
-    let zero_pad_block = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    emit_str_length(&mut c, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    emit_str_char_code_at(&mut c, 0);
-    let zero_code = c.add_constant(vybe_runtime::Value::I32(b'0' as i32));
-    crate::primitives::expressions::emit_const_index(&mut c, zero_code, 0);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_EQZ, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    emit_str_length(&mut c, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, zero_str, 0);
-    c.emit_call(pad_start, 3, 0);
-    c.emit_end(0);
-    c.patch_block(zero_pad_block);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    let no_pct_suffix_int = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, percent, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, percent_str, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_end(0);
-    c.patch_block(no_pct_suffix_int);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(no_decimals_block);
-
-    // decimals = picture.length - dot_pos - 1
-    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
-    emit_str_length(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_GET, dot_pos, 0);
-    c.emit_op(Op::I32_SUB, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, decimals, 0);
-
-    // return prefix + Number(value).toFixed(decimals), with optional percentage suffix
-    c.emit_op_u16(Op::LOCAL_GET, prefix, 0);
-    let no_pct_dec = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, percent, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
-    c.emit_if(0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    let hundred_dec = c.add_constant(vybe_runtime::Value::F64(100.0));
-    crate::primitives::expressions::emit_const_index(&mut c, hundred_dec, 0);
-    c.emit_op(Op::F64_MUL, 0);
-    c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_else(0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_op_u16(Op::LOCAL_SET, work, 0);
-    c.emit_end(0);
-    c.emit_end(0);
-    c.patch_block(no_pct_dec);
-
-    c.emit_op_u16(Op::LOCAL_GET, work, 0);
-    c.emit_op_u16(Op::LOCAL_GET, decimals, 0);
-    c.emit_call(to_fixed, 2, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    let no_pct_suffix_dec = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, percent, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, percent_str, 0);
-    crate::primitives::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_end(0);
-    c.patch_block(no_pct_suffix_dec);
+    let concat = c.add_import("wasm:js-string", "concat");
+    c.emit_call(concat, 2, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2652,7 +2325,6 @@ pub fn build_format_map(_imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
 
     let open_brace = c.add_constant(vybe_runtime::Value::I32(b'{' as i32));
-    let close_brace = c.add_constant(vybe_runtime::Value::I32(b'}' as i32));
 
     let outer_block = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -2661,8 +2333,7 @@ pub fn build_format_map(_imports: &mut Chunk) -> Chunk {
     // if i >= len: break
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    c.emit_op(Op::I32_LT_S, 0);
-    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
+    c.emit_op(Op::I32_GE_S, 0);
     c.emit_br_if(1, 0);
 
     // ch = wasm:js-string.charCodeAt(s, i)
@@ -2678,38 +2349,10 @@ pub fn build_format_map(_imports: &mut Chunk) -> Chunk {
     let open_block = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, ch_slot, 0);
     crate::primitives::expressions::emit_const_index(&mut c, open_brace, 0);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_op(Op::I32_NE, 0);
     c.emit_br_if(0, 0);
 
-    // Find closing '}': end = i+1; while end < len && s[end] != '}': end++
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, end, 0);
-
-    let scan_block = c.emit_block(0);
-    let (scan_loop, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, end, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    c.emit_op(Op::I32_LT_S, 0);
-    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
-    c.emit_br_if(1, 0);
-    c.emit_op_u16(Op::LOCAL_GET, s, 0);
-    c.emit_op_u16(Op::LOCAL_GET, end, 0);
-    emit_str_char_code_at(&mut c, 0);
-    crate::primitives::expressions::emit_const_index(&mut c, close_brace, 0);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_br_if(1, 0);
-    c.emit_op_u16(Op::LOCAL_GET, end, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, end, 0);
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(scan_loop);
-    c.emit_end(0);
-    c.patch_block(scan_block);
+    emit_format_map_closing_brace(&mut c, s, i, len, end);
 
     // key = s.substring(i+1, end); out += String(d[key]); i = end + 1
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
@@ -2761,6 +2404,25 @@ pub fn build_format_map(_imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
     c.emit_op(Op::RETURN, 0);
     c
+}
+
+/// Search an immutable string with the existing UTF-16 indexOf adapter.
+/// An unmatched opening brace keeps the original end-of-string key behavior.
+fn emit_format_map_closing_brace(c: &mut Chunk, s: u16, i: u16, len: u16, end: u16) {
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_string_const("}", 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_i32_const(1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    let find = c.add_import("ecma:string", "indexOf");
+    c.emit_call(find, 3, 0);
+    c.emit_op_u16(Op::LOCAL_TEE, end, 0);
+    c.emit_f64_const(0.0, 0);
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op_u16(Op::LOCAL_SET, end, 0);
+    c.emit_end(0);
 }
 
 /// Proven literal templates whose existing scanner visits many placeholders.
@@ -2817,14 +2479,12 @@ pub fn emit_format_map_large_into(c: &mut Chunk, receiver: u16, mapping: u16) {
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
     emit_str_length(c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op_u16(Op::LOCAL_TEE, len, 0);
     c.emit_i32_const(128, 0);
     c.emit_op(Op::I32_GE_S, 0);
     c.emit_op_u16(Op::LOCAL_SET, mode, 0);
 
     let open_brace = c.add_constant(vybe_runtime::Value::I32(b'{' as i32));
-    let close_brace = c.add_constant(vybe_runtime::Value::I32(b'}' as i32));
 
     let outer_block = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
@@ -2833,8 +2493,7 @@ pub fn emit_format_map_large_into(c: &mut Chunk, receiver: u16, mapping: u16) {
     // if i >= len: break
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    c.emit_op(Op::I32_LT_S, 0);
-    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
+    c.emit_op(Op::I32_GE_S, 0);
     c.emit_br_if(1, 0);
 
     // ch = wasm:js-string.charCodeAt(s, i)
@@ -2850,38 +2509,10 @@ pub fn emit_format_map_large_into(c: &mut Chunk, receiver: u16, mapping: u16) {
     let open_block = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, ch_slot, 0);
     crate::primitives::expressions::emit_const_index(c, open_brace, 0);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_op(Op::I32_NE, 0);
     c.emit_br_if(0, 0);
 
-    // Find closing '}': end = i+1; while end < len && s[end] != '}': end++
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::instructions::core_wasm::i32_const(c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, end, 0);
-
-    let scan_block = c.emit_block(0);
-    let (scan_loop, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, end, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    c.emit_op(Op::I32_LT_S, 0);
-    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
-    c.emit_br_if(1, 0);
-    c.emit_op_u16(Op::LOCAL_GET, s, 0);
-    c.emit_op_u16(Op::LOCAL_GET, end, 0);
-    emit_str_char_code_at(c, 0);
-    crate::primitives::expressions::emit_const_index(c, close_brace, 0);
-    c.emit_op(Op::I32_EQ, 0);
-    c.emit_br_if(1, 0);
-    c.emit_op_u16(Op::LOCAL_GET, end, 0);
-    crate::primitives::instructions::core_wasm::i32_const(c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, end, 0);
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(scan_loop);
-    c.emit_end(0);
-    c.patch_block(scan_block);
+    emit_format_map_closing_brace(c, s, i, len, end);
 
     // key = s.substring(i+1, end); out += String(d[key]); i = end + 1
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
@@ -3030,13 +2661,13 @@ pub(crate) fn emit_str_substring(chunk: &mut Chunk, line: u32) {
 }
 
 /// Stack: `[str, index] -> [i32]`.
-pub(crate) fn emit_str_char_code_at(chunk: &mut Chunk, line: u32) {
+pub fn emit_str_char_code_at(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "charCodeAt");
     chunk.emit_call(idx, 2, line);
 }
 
 /// Stack: `[a, b] -> [bool]`.
-pub(crate) fn emit_str_equals(chunk: &mut Chunk, line: u32) {
+pub fn emit_str_equals(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "equals");
     chunk.emit_call(idx, 2, line);
 }
@@ -3047,8 +2678,7 @@ pub(crate) fn emit_str_equals(chunk: &mut Chunk, line: u32) {
 pub(crate) fn emit_equals_if_string(chunk: &mut Chunk, negate: bool, line: u32) {
     let slots = chunk.alloc_scratch(2);
     chunk.emit_op_u16(Op::LOCAL_SET, slots + 1, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, slots, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, slots, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, slots, line);
     let test = chunk.add_import("wasm:js-string", "test");
     chunk.emit_call(test, 1, line);
     chunk.emit_if_i32(line);

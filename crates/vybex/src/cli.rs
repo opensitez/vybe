@@ -167,16 +167,16 @@ fn print_ast_outline(module: &Module) {
 
 fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
     let filtered = filter_chunks(chunks, filter);
-    let total_instructions: usize = filtered.iter().map(|chunk| chunk.code.len()).sum();
+    let total_ir_bytes: usize = filtered.iter().map(|chunk| chunk.code.len()).sum();
     eprintln!(
-        "[vybex] Chunk summary: total={}, selected={}, instructions={}",
+        "[vybex] Chunk summary: total={}, selected={}, ir_bytes={}",
         chunks.len(),
         filtered.len(),
-        total_instructions,
+        total_ir_bytes,
     );
     for chunk in filtered.iter().take(20) {
         eprintln!(
-            "  → chunk '{}' (arity={}, instructions={})",
+            "  → chunk '{}' (arity={}, ir_bytes={})",
             chunk.name,
             chunk.arity,
             chunk.code.len()
@@ -205,8 +205,17 @@ pub fn register_plugins(
     vybe_runtime::init_all_registered(vm, caps);
 }
 
+fn write_cli_timing(path: Option<&str>, label: &str, elapsed: std::time::Duration) {
+    let Some(path) = path else { return; };
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{label} {elapsed:?}");
+    }
+}
+
 pub fn run() {
     let mut cli_report = crate::debug_repl::CliReport::new();
+    let cli_timing_path = std::env::var("VYBE_BUNDLE_DEBUG_TIMINGS").ok();
     let args: Vec<String> = std::env::args().collect();
     let mut dump = false;
     let mut dump_ast = false;
@@ -380,7 +389,7 @@ pub fn run() {
             }
             "--" => break,
             "--version" | "-V" => {
-                println!("vybex {}", env!("CARGO_PKG_VERSION"));
+                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
                 return;
             }
             "--list-languages" => {
@@ -579,6 +588,7 @@ pub fn run() {
                 path,
                 dump,
                 trace,
+                debug,
                 chunk_filter.as_deref(),
                 capture.as_deref(),
                 capture_control.as_deref(),
@@ -609,7 +619,10 @@ pub fn run() {
             None => vybe_compiler::bundle::EntryPoint::Function(spec.clone()),
         };
     }
-    let cli_compile_cache = std::sync::Arc::new(crate::server::compile_cache::CompileCache::new());
+    let cli_compile_cache = std::sync::Arc::new(if !debug && dap_port.is_none() {
+        // --serve and --watch return above; debugger/DAP may reset the VM.
+        crate::server::compile_cache::CompileCache::for_request()
+    } else { crate::server::compile_cache::CompileCache::new() });
 
     eprintln!(
         "[vybex] Project '{}', sources={}, entry={:?}",
@@ -678,6 +691,7 @@ pub fn run() {
     // finishes, so a bundle shows one section per unit.
     vybe_compiler::primitives::set_dump_classes(dump_classes);
     eprintln!("[vybex] Preparing and compiling module...");
+    write_cli_timing(cli_timing_path.as_deref(), "cli_before_entry_compile", cli_report.started.elapsed());
     let entry_compile_started = std::time::Instant::now();
     let mut compiled = {
         let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
@@ -712,6 +726,7 @@ pub fn run() {
         }
     };
     let entry_compile_elapsed = entry_compile_started.elapsed();
+    write_cli_timing(cli_timing_path.as_deref(), "cli_entry_compile", entry_compile_elapsed);
     if let Some(report) = vm.debug_report() {
         report.lock().unwrap().milestone("entry compilation complete");
     }
@@ -745,13 +760,21 @@ pub fn run() {
 
     // ── --emit-wasm: write .wasm binary and exit ────────────────────────────
     if emit_wasm {
-        let wasm_bytes = vybe_platform_wasm::write_wasm_with_options(
+        let wasm_bytes = match vybe_platform_wasm::write_artifact(
             &compiled.chunks,
+            compiled.component_source,
+            compiled.component_binary.as_deref(),
             vybe_platform_wasm::writer::WasmWriteOptions {
                 include_vybe_metadata: emit_vybe_metadata,
                 include_name_section: emit_vybe_metadata,
             },
-        );
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("Wasm emission error: {error}");
+                std::process::exit(1);
+            }
+        };
         let out_path = source_path.with_extension("wasm");
         std::fs::write(&out_path, &wasm_bytes).unwrap();
         eprintln!("Wrote {} bytes to {}", wasm_bytes.len(), out_path.display());
@@ -897,13 +920,34 @@ pub fn run() {
             }
         }
 
-        let run_result = runtime_compiler.run_compiled(compiled.clone());
+        // The service takes ownership. Both in-process restart paths compile
+        // a new entry before continuing this loop, so retaining a second copy
+        // of all chunks and linking metadata is unnecessary.
+        write_cli_timing(cli_timing_path.as_deref(), "cli_to_vm_start", cli_report.started.elapsed());
+        let request_started = std::time::Instant::now();
+        let run_result = runtime_compiler.run_compiled(compiled);
+        write_cli_timing(cli_timing_path.as_deref(), "cli_vm_request", request_started.elapsed());
+        // Cleanup releases pending include work and compiler-owned snapshots.
+        // Account for it separately; it occurs after the VM request clock.
+        // The ordinary path does not read an extra clock when timings are off.
+        let service_drop_started = cli_timing_path.as_deref().filter(|path| !path.is_empty())
+            .map(|_| std::time::Instant::now());
         drop(runtime_compiler);
+        if let Some(started) = service_drop_started {
+            write_cli_timing(cli_timing_path.as_deref(), "cli_compiler_service_drop", started.elapsed());
+        }
         if let Some(report) = vm.debug_report() {
             report.lock().unwrap().milestone("VM execution complete");
             use std::io::Write;
             let _ = std::io::stdout().flush();
             report.lock().unwrap().milestone("stdout flush complete");
+        }
+        // Explicit diagnostics only: do not attach the debugger or populate
+        // execution caches merely to account for their retained capacities.
+        if std::env::var_os("VYBE_VM_CACHE_CENSUS").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            eprint!("{}", vm.execution_cache_census());
         }
         match run_result {
             Ok(v) => {
@@ -990,7 +1034,7 @@ pub fn run() {
                 use std::os::unix::process::CommandExt;
                 eprintln!("\n↻ restarting…");
                 let args: Vec<String> = std::env::args().skip(1).collect();
-                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("vybex"));
+                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from(env!("CARGO_PKG_NAME")));
                 let _ = std::process::Command::new(exe).args(&args).exec();
                 std::process::exit(0);
             }
@@ -1099,6 +1143,7 @@ fn run_wasm(
     path: &Path,
     dump: bool,
     trace: bool,
+    debug: bool,
     chunk_filter: Option<&str>,
     capture: Option<&str>,
     capture_control: Option<&str>,
@@ -1131,6 +1176,15 @@ fn run_wasm(
     let mut vm = VM::new();
     register_plugins(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
 
+    if let Err(error) = bind_wasm_host_globals(&mut vm, &chunks) {
+        eprintln!("WASM link error: {error}");
+        std::process::exit(1);
+    }
+
+    if debug {
+        crate::debug_repl::attach(&mut vm);
+    }
+
     if trace {
         vm.set_trace(true);
         vm.set_trace_chunk_filter(chunk_filter.map(|s| s.to_string()));
@@ -1144,8 +1198,15 @@ fn run_wasm(
 
     match vm.run(chunks) {
         Ok(_) => {}
+        Err(e) if e.message.contains("__debug_quit__") => {
+            eprintln!("\nDebugger quit");
+            return;
+        }
         Err(e) => {
             eprintln!("Runtime error: {e}");
+            if let Some(history) = vm.debug_recent_instructions() {
+                eprintln!("  debugger recent instructions:\n{history}");
+            }
             std::process::exit(1);
         }
     }
@@ -1174,6 +1235,26 @@ fn run_wasm(
     }
 }
 
+fn bind_wasm_host_globals(vm: &mut VM, chunks: &[Chunk]) -> Result<(), String> {
+    let mut supplied = std::collections::HashSet::new();
+    for import in chunks.iter().flat_map(|chunk| &chunk.global_imports) {
+        if import.module != vybe_runtime::chunk::HOST_GLOBALS_MODULE
+            || !supplied.insert(import.name.as_str())
+        {
+            continue;
+        }
+        let key = vybe_runtime::chunk::imported_global_key(&import.module, &import.name);
+        if vm.global(&key).is_some() {
+            continue;
+        }
+        let value = vm.global(&import.name).cloned().ok_or_else(|| {
+            format!("Unresolved global import: {:?} {:?}", import.module, import.name)
+        })?;
+        vm.set_global(&key, value);
+    }
+    Ok(())
+}
+
 fn filter_chunks<'a>(chunks: &'a [Chunk], chunk_filter: Option<&str>) -> Vec<&'a Chunk> {
     match chunk_filter {
         Some(filter) => {
@@ -1188,14 +1269,15 @@ fn filter_chunks<'a>(chunks: &'a [Chunk], chunk_filter: Option<&str>) -> Vec<&'a
 }
 
 fn print_usage() {
+    let runner = env!("CARGO_PKG_NAME");
     let exts = vybe_compiler::projects::supported_extensions();
     let ext_list: Vec<String> = exts.iter().map(|e| format!(".{e}")).collect();
-    eprintln!("vybex — Universal compiler");
+    eprintln!("{runner} — Universal compiler");
     eprintln!();
-    eprintln!("Usage: vybex [flags] <file...>   (several files link together)");
-    eprintln!("       vybex [flags] <file> -- [program args...]");
-    eprintln!("       vybex --eval CODE --lang NAME [--virtual-path PATH]");
-    eprintln!("       vybex --serve [--bind BIND] [BIND] [ROOT]");
+    eprintln!("Usage: {runner} [flags] <file...>   (several files link together)");
+    eprintln!("       {runner} [flags] <file> -- [program args...]");
+    eprintln!("       {runner} --eval CODE --lang NAME [--virtual-path PATH]");
+    eprintln!("       {runner} --serve [--bind BIND] [BIND] [ROOT]");
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  -d, --dump        Disassemble bytecode (no run)");
@@ -1207,7 +1289,7 @@ fn print_usage() {
     eprintln!("  -w, --emit-wasm   Compile to .wasm binary");
     eprintln!("      --emit-vybe-metadata  Include Vybe roundtrip debug metadata in emitted wasm");
     eprintln!("      --eval CODE   Compile source from a string");
-    eprintln!("      --lang NAME   Language for --eval (js, php, python, vb, ...)");
+    eprintln!("      --lang NAME   Language for --eval (see --list-languages)");
     eprintln!("      --virtual-path PATH  Source path used for relative imports in --eval");
     eprintln!(
         "  -s, --sandbox     Restricted mode (safe capabilities only)
@@ -1232,8 +1314,8 @@ fn print_usage() {
     eprintln!("      --cold        With --serve: fresh VM per request instead of the warm pool");
     eprintln!("      --no-cache    With --serve: recompile on every request");
     eprintln!("      --list-languages  List registered language frontends and their extensions");
-    eprintln!("      --             Stop parsing vybex flags; remaining words are guest argv");
-    eprintln!("  -V, --version     Print the vybex version and exit");
+    eprintln!("      --             Stop parsing {runner} flags; remaining words are guest argv");
+    eprintln!("  -V, --version     Print the {runner} version and exit");
     eprintln!("  -h, --help        Show this help");
     eprintln!();
     eprintln!("Supported: {}", ext_list.join(", "));
@@ -1261,7 +1343,7 @@ fn print_languages() {
         }
     }
 
-    println!("vybex — {} registered language frontends:", by_lang.len());
+    println!("{} — {} registered language frontends:", env!("CARGO_PKG_NAME"), by_lang.len());
     println!();
     let width = by_lang.keys().map(|n| n.len()).max().unwrap_or(0);
     for (name, exts) in &by_lang {

@@ -202,9 +202,9 @@ mod tests {
         // PHP `urlencode` differs from `encodeURIComponent` (space → +
         // vs %20) — handled per-language via the profile binding.
         assert!(resolve_common_import("urlencode").is_none());
-        assert_eq!(
-            host(resolve_common_import("encodeuricomponent")),
-            Some(("ecma:string", "encodeURIComponent"))
-        );
+        assert!(matches!(
+            resolve_common_import("encodeuricomponent"),
+            Some(CommonImport::HostGlobal("ecma:string", "encodeURIComponent"))
+        ));
     }
 }

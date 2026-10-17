@@ -13,6 +13,26 @@
   const dueTimers = [];
   const frames = new Map();
   const dueFrames = [];
+  const pendingEvents = [];
+  let eventSending = false;
+  let eventScheduled = false;
+  function scheduleEvents() {
+    if (!connected || eventSending || eventScheduled || !pendingEvents.length) return;
+    eventScheduled = true;
+    queueMicrotask(() => {
+      eventScheduled = false;
+      if (!connected || eventSending || !pendingEvents.length) return;
+      eventSending = true;
+      const batch = pendingEvents.splice(0, 128);
+      fetch('event', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(batch),
+      }).catch(() => {}).finally(() => {
+        eventSending = false;
+        scheduleEvents();
+      });
+    });
+  }
   const pointer = { client_x: 0, client_y: 0, buttons: 0,
     ctrl_key: false, shift_key: false, alt_key: false, meta_key: false };
 
@@ -60,16 +80,14 @@
           shift_key: Boolean(event.shiftKey), alt_key: Boolean(event.altKey),
           meta_key: Boolean(event.metaKey), repeat: Boolean(event.repeat)
         };
-        fetch('event', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
+        pendingEvents.push({
             document: documentIds.get(doc), node: idOf(target), kind, fields,
             path: event.bubbles
               ? event.composedPath().filter(n => n === doc || n.nodeType === 1)
                   .map(n => n === doc ? 0 : idOf(n))
               : [idOf(target)]
-          })
-        }).catch(() => {});
+          });
+        scheduleEvents();
       }, true);
     }
   };
@@ -79,6 +97,7 @@
     for (const entry of timers.values()) clearTimeout(entry.handle);
     for (const handle of frames.values()) cancelAnimationFrame(handle);
     timers.clear(); frames.clear(); dueTimers.length = 0; dueFrames.length = 0;
+    pendingEvents.length = 0;
     console.warn('Vybe browser bridge disconnected; reload after restarting the app.');
   };
 
@@ -286,7 +305,28 @@
           await new Promise(resolve => setTimeout(resolve, 20));
           continue;
         }
-        const commands = await response.json();
+        let commands;
+        if (response.headers.get('content-type') === 'application/octet-stream') {
+          const buffer = await response.arrayBuffer();
+          if (buffer.byteLength < 4) throw new Error('truncated binary command header');
+          const length = new DataView(buffer).getUint32(0, true);
+          const start = 4 + length;
+          if (start > buffer.byteLength) throw new Error('truncated binary commands');
+          commands = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, length)));
+          for (const command of commands) {
+            if (!command.binary_range) continue;
+            const [offset, size] = command.binary_range;
+            if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) ||
+                offset < 0 || size < 0 || offset + size > buffer.byteLength - start)
+              throw new Error('invalid binary pixel range');
+            const payload = command.args.payload;
+            const image = payload.PutImageData || payload.PutImageDataDirty || payload.DrawImageRgba;
+            if (!image) throw new Error('binary pixels require an image operation');
+            image.pixels = new Uint8ClampedArray(buffer, start + offset, size);
+          }
+        } else {
+          commands = await response.json();
+        }
         const replies = [];
         for (const command of commands) {
           let resultValue = 'None', error;

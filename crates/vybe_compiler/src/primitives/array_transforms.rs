@@ -226,8 +226,9 @@ fn shared_state_slots(name: &str) -> u16 {
     else { 11 }
 }
 
-// Include scratch emitted by the nested shaped-mask and dynamic-add helpers.
-// Exact catalog membership is checked before these operation budgets apply.
+
+
+#[cfg(test)]
 fn shared_inline_local_budget(name: &str) -> u16 {
     shared_helper_arity(name).expect("registered array transform");
     if name.starts_with("__stdlib_array_reshape_") { 22 }
@@ -267,17 +268,17 @@ pub(crate) fn build_shared_helper(name: &str) -> Chunk {
     chunks.remove(0)
 }
 
-/// Append the exact selected body against fresh caller-local state. Input
-/// slots contain already evaluated arguments and remain intact after copying.
-/// The public call path does not use this seam until private linking is enabled.
-pub(crate) fn emit_inline_shared_helper(chunk: &mut Chunk, name: &str, input_base: u16, line: u32) {
+
+
+/// Test seam exercising shared bodies against caller-local state.
+#[cfg(test)]
+fn emit_inline_shared_helper(chunk: &mut Chunk, name: &str, input_base: u16, line: u32) {
     let argc = shared_helper_arity(name).expect("registered array transform");
     let input_end = input_base.checked_add(argc as u16)
         .expect("array transform input slots exceed the local index range");
     assert!(input_end <= chunk.local_count, "array transform input slots are not allocated");
     chunk.local_count.checked_add(shared_inline_local_budget(name))
         .expect("array transform inline body exceeds the local slot budget");
-    // All input and nested-state limits are checked before changing the chunk.
     let base = chunk.alloc_scratch(shared_state_slots(name));
     for arg in 0..argc as u16 {
         chunk.emit_op_u16(Op::LOCAL_GET, input_base + arg, line);
@@ -386,8 +387,8 @@ fn emit_flat_result_shaped_like_mask(
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], mask_slot, line);
     emit_array_len(chunks, current, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], mask_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -546,8 +547,8 @@ fn emit_reshape_body(
     let state = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], rank_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], weights_slot, line);
     lget(&mut chunks[current], total_slot, line);
@@ -586,8 +587,8 @@ fn emit_reshape_body(
         let state = loops::emit_loop_start(chunks, current, line);
         lget(&mut chunks[current], i_slot, line);
         lget(&mut chunks[current], total_slot, line);
-        chunks[current].emit_op(Op::I32_LT_S, line);
-        loops::emit_loop_cond_from_i32(chunks, current, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        loops::emit_loop_break_if_from_i32(chunks, current, line);
 
         lget(&mut chunks[current], flat_slot, line);
         lget(&mut chunks[current], pad_slot, line);
@@ -631,8 +632,8 @@ fn emit_reshape_body(
             let outer = loops::emit_loop_start(chunks, current, line);
             lget(&mut chunks[current], k_slot, line);
             lget(&mut chunks[current], total_slot, line);
-            chunks[current].emit_op(Op::I32_LT_S, line);
-            loops::emit_loop_cond_from_i32(chunks, current, line);
+            chunks[current].emit_op(Op::I32_GE_S, line);
+            loops::emit_loop_break_if_from_i32(chunks, current, line);
 
             i32_const(&mut chunks[current], line, 0);
             lset(&mut chunks[current], linear_slot, line);
@@ -642,8 +643,8 @@ fn emit_reshape_body(
             let inner = loops::emit_loop_start(chunks, current, line);
             lget(&mut chunks[current], i_slot, line);
             lget(&mut chunks[current], rank_slot, line);
-            chunks[current].emit_op(Op::I32_LT_S, line);
-            loops::emit_loop_cond_from_i32(chunks, current, line);
+            chunks[current].emit_op(Op::I32_GE_S, line);
+            loops::emit_loop_break_if_from_i32(chunks, current, line);
 
             emit_shape_extent(chunks, current, shape_slot, i_slot, line);
             lset(&mut chunks[current], extent_slot, line);
@@ -714,8 +715,8 @@ fn emit_reshape_body(
     lget(&mut chunks[current], rank_slot, line);
     i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_SUB, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], rank_slot, line);
     i32_const(&mut chunks[current], line, 1);
@@ -735,8 +736,8 @@ fn emit_reshape_body(
     lget(&mut chunks[current], pos_slot, line);
     lget(&mut chunks[current], nest_slot, line);
     emit_array_len(chunks, current, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], grouped_slot, line);
     lget(&mut chunks[current], nest_slot, line);
@@ -826,8 +827,8 @@ fn emit_pack_mask_body(
     let state = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], limit_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], mask_flat_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -955,8 +956,8 @@ fn emit_merge_mask_body(
     let state = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], limit_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], result_slot, line);
     lget(&mut chunks[current], mask_flat_slot, line);
@@ -1110,8 +1111,8 @@ fn emit_unpack_mask_body(
     let state = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], limit_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], mask_flat_slot, line);
     lget(&mut chunks[current], i_slot, line);

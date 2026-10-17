@@ -1,0 +1,9 @@
+scalar = @{ ANY }
+ascii = @{ ASCII_ALPHA+ }
+not_x = @{ !"x" }
+negative = @{ !ANY }
+quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
+comment = @{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+prefix = @{ "$" ~ ASCII_ALPHA+ ~ "[" }
+variable = @{ "$" ~ ASCII_ALPHA+ }
+entry = { SOI ~ ((&prefix ~ prefix ~ ASCII_DIGIT ~ "]") | variable) ~ EOI }

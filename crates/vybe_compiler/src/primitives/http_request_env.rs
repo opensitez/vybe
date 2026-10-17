@@ -118,9 +118,8 @@ fn emit_split_on_question_mark(chunks: &mut [Chunk], current: usize, part: u8, l
     let out = chunks[current].alloc_scratch(1);
 
     // A null path-with-query behaves as "".
-    chunks[current].emit_op_u16(Op::LOCAL_SET, src, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, src, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_if(line);
     chunks[current].emit_string_const("", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, src, line);
@@ -184,7 +183,7 @@ pub fn emit_header(chunks: &mut [Chunk], current: usize, name: &str, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, list, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, list, line);
@@ -222,7 +221,7 @@ fn set_global(chunk: &mut Chunk, name: &str, line: u32) {
 /// stringifies those as `[object Object]` inside URLs.
 fn emit_has_request(chunks: &mut [Chunk], current: usize, line: u32) {
     push_global(&mut chunks[current], REQUEST_GLOBAL, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
 }
 
@@ -250,7 +249,7 @@ pub fn emit_environ(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Return the cached map if this request already built it.
     push_global(&mut chunks[current], ENVIRON_CACHE_GLOBAL, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     push_global(&mut chunks[current], ENVIRON_CACHE_GLOBAL, line);
@@ -260,7 +259,7 @@ pub fn emit_environ(chunks: &mut [Chunk], current: usize, line: u32) {
     // Start from the transport's deployment metadata, then layer the message
     // on top so a value derived from the request always wins.
     push_global(&mut chunks[current], SERVER_ENV_GLOBAL, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_if(line);
     super::collections::emit_map_new(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, map, line);
@@ -307,8 +306,7 @@ pub fn emit_environ(chunks: &mut [Chunk], current: usize, line: u32) {
     // otherwise — Symfony's `Request::isSecure()` tests exactly that.
     let scheme = chunks[current].alloc_scratch(1);
     emit_scheme(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, scheme, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, scheme, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, scheme, line);
     chunks[current].emit_string_const("https", line);
     super::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
@@ -354,7 +352,7 @@ pub fn emit_bytes_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // A non-array (or absent) value decodes to "".
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
@@ -413,7 +411,7 @@ fn emit_http_header_keys(chunks: &mut [Chunk], current: usize, map: u16, line: u
     chunks[current].emit_op_u16(Op::LOCAL_SET, entries, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, entries, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
@@ -492,7 +490,7 @@ pub fn emit_body(chunks: &mut [Chunk], current: usize, line: u32) {
     let stream = chunks[current].alloc_scratch(1);
 
     push_global(&mut chunks[current], BODY_CACHE_GLOBAL, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     push_global(&mut chunks[current], BODY_CACHE_GLOBAL, line);
@@ -503,7 +501,7 @@ pub fn emit_body(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
 
     push_request_handle(&mut chunks[current], line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
@@ -527,6 +525,9 @@ pub fn emit_body(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, body, line);
     let is_array = chunks[current].add_import("ecma:array", "isArray");
     chunks[current].emit_call(is_array, 1, line);
+    // Actual ECMA provider returns a boxed Boolean; IF consumes raw i32.
+    let cast_bool = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast_bool, 1, line);
     chunks[current].emit_if(line);
 
     // Element 0 of the tuple is the `stream<u8>` — an i32 readable handle,
@@ -538,7 +539,7 @@ pub fn emit_body(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, stream, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, stream, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
@@ -600,15 +601,14 @@ pub fn emit_memoised(
     let out = chunks[current].alloc_scratch(1);
 
     push_global(&mut chunks[current], cache_global, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     push_global(&mut chunks[current], cache_global, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     chunks[current].emit_else(line);
     build(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, out, line);
     set_global(&mut chunks[current], cache_global, line);
     chunks[current].emit_end(line);
 
@@ -656,7 +656,7 @@ fn emit_merge_into(chunks: &mut [Chunk], current: usize, target: u16, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_SET, source, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::delegates::emit_stack_is_nullish(chunks, current, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 

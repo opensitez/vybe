@@ -230,8 +230,7 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
     chunks[idx].emit_op_u16(Op::LOCAL_GET, key, LINE);
     let get_fn = chunks[idx].add_import("ecma:object", "get");
     chunks[idx].emit_call(get_fn, 2, LINE);
-    chunks[idx].emit_op_u16(Op::LOCAL_SET, copied, LINE);
-    chunks[idx].emit_op_u16(Op::LOCAL_GET, copied, LINE);
+    chunks[idx].emit_op_u16(Op::LOCAL_TEE, copied, LINE);
     recipes::is_object(&mut chunks[idx], LINE);
     chunks[idx].emit_if(LINE);
     // Keep the recursive invocation on a clean stack; its result is stored

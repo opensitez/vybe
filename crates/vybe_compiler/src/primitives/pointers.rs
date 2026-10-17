@@ -25,6 +25,8 @@ pub const CARRAY_IDX_KEY: &str = "__idx";
 pub const CARRAY_KIND: &str = "carray";
 /// ABI byte coordinate, independent of the managed property's lookup key.
 pub const REFERENCE_BYTE_OFFSET_KEY: &str = "__byte_offset";
+pub const REFERENCE_BYTE_ROOT_KEY: &str = "__byte_root";
+pub const REFERENCE_BYTE_FIELDS_KEY: &str = "__byte_fields";
 /// A word in SHARED linear memory — the storage the WASM atomics
 /// (`i32.atomic.*`) act on. The third reference shape, and the first whose
 /// base is an ADDRESS rather than an object graph: `(base, key)` unification
@@ -215,10 +217,39 @@ pub fn hybrid_offset(ptr: Expression, byte_offset: Expression) -> Expression {
     if is_zero(&byte_offset) {
         return ptr;
     }
-    e(ExprKind::Ternary {
+    let linear = linear_addr_offset(ptr.clone(), byte_offset.clone());
+    let managed = e(ExprKind::Ternary {
         cond: Box::new(is_carray_ptr_kind(ptr.clone())),
         then: Box::new(carray_advance(ptr.clone(), byte_offset.clone())),
-        else_: Box::new(linear_addr_offset(ptr, byte_offset)),
+        else_: Box::new(linear_addr_offset(ptr.clone(), byte_offset.clone())),
+    });
+    let fields = member(ptr.clone(), REFERENCE_BYTE_FIELDS_KEY);
+    let coordinate = binary(BinOp::Add, member(ptr.clone(), REFERENCE_BYTE_OFFSET_KEY), byte_offset);
+    let stored_root = member(ptr.clone(), REFERENCE_BYTE_ROOT_KEY);
+    let root = e(ExprKind::Ternary {
+        cond: Box::new(e(ExprKind::IsType { expr: Box::new(stored_root.clone()), type_name: "object".into() })),
+        then: Box::new(stored_root), else_: Box::new(ptr.clone()),
+    });
+    let relative = binary(BinOp::Sub, coordinate.clone(), member(root.clone(), REFERENCE_BYTE_OFFSET_KEY));
+    let field = e(ExprKind::Index {
+        object: Box::new(fields.clone()), index: Box::new(relative), null_safe: false,
+    });
+    let projection = e(ExprKind::Object(vec![
+        obj_prop(REF_KIND_KEY, Expression::string(CARRAY_KIND)),
+        obj_prop(CARRAY_BASE_KEY, e(ExprKind::RefLoad(Box::new(root.clone())))),
+        obj_prop(CARRAY_IDX_KEY, field),
+        obj_prop(REFERENCE_BYTE_ROOT_KEY, root),
+        obj_prop(REFERENCE_BYTE_FIELDS_KEY, fields.clone()),
+        obj_prop(REFERENCE_BYTE_OFFSET_KEY, coordinate),
+    ]));
+    let record_or_managed = e(ExprKind::Ternary {
+        cond: Box::new(e(ExprKind::IsType { expr: Box::new(fields), type_name: "object".into() })),
+        then: Box::new(projection), else_: Box::new(managed),
+    });
+    e(ExprKind::Ternary {
+        cond: Box::new(e(ExprKind::IsType { expr: Box::new(ptr.clone()), type_name: "number".into() })),
+        then: Box::new(linear),
+        else_: Box::new(record_or_managed),
     })
 }
 
@@ -227,13 +258,16 @@ pub fn hybrid_retreat(ptr: Expression, byte_count: Expression) -> Expression {
 }
 
 fn emit_value_preserving_store(chunk: &mut Chunk, op: Op, line: u32) {
+    emit_value_preserving_store_with_lane(chunk, op, false, line);
+}
+
+fn emit_value_preserving_store_with_lane(chunk: &mut Chunk, op: Op, value_is_word: bool, line: u32) {
     let value = chunk.alloc_scratch(1);
     let addr = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, value, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, addr, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, addr, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, addr, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
-    if matches!(op, Op::I32_STORE | Op::I32_STORE8 | Op::I32_STORE16) {
+    if !value_is_word && matches!(op, Op::I32_STORE | Op::I32_STORE8 | Op::I32_STORE16) {
         // Number-backed operands can contain the unsigned half of an i32.
         // Preserve those bits without saturating, and retain the source value
         // below for the assignment expression's result.
@@ -268,20 +302,86 @@ pub fn emit_linear_i64_load(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I64_LOAD, line);
 }
 
+/// Read a declared word through the region's value ABI, not a raw i64 edge.
+pub fn emit_linear_i64_value_load(chunks: &mut [Chunk], current: usize, signed: bool,
+    transport: vybe_ast::WideIntegerTransport, line: u32) {
+    emit_linear_i64_load(chunks, current, line);
+    emit_i64_value(chunks, current, signed, transport, line);
+}
+
+fn emit_i64_value(chunks: &mut [Chunk], current: usize, signed: bool,
+    transport: vybe_ast::WideIntegerTransport, line: u32) {
+    if transport == vybe_ast::WideIntegerTransport::Exact {
+        super::exact_integer::emit_box_i64(chunks, current, signed, line);
+    } else {
+        chunks[current].emit_op(if signed { Op::F64_CONVERT_I64_S } else { Op::F64_CONVERT_I64_U }, line);
+    }
+}
+
+/// Convert only the value operand; preserve the address and assignment result.
+pub fn emit_linear_i64_value_store(chunks: &mut [Chunk], current: usize, signed: bool,
+    transport: vybe_ast::WideIntegerTransport, line: u32) {
+    if transport == vybe_ast::WideIntegerTransport::Exact {
+        super::exact_integer::emit_normalize_value(chunks, current, signed, line);
+        super::exact_integer::emit_unbox_i64(chunks, current, line);
+    } else if signed {
+        chunks[current].emit_op(Op::I64_TRUNC_F64_S, line);
+    } else {
+        // Negative integral inputs still carry valid unsigned word bits.
+        // Keep both arms void with an explicitly native i64 temporary.
+        let chunk = &mut chunks[current];
+        let value = chunk.alloc_scratch(1);
+        let word = super::bits::raw_i64_scratch(chunk);
+        crate::primitives::instructions::core_wasm::local_tee(chunk, line, value);
+        chunk.emit_f64_const(0.0, line);
+        chunk.emit_op(Op::F64_LT, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_op(Op::I64_TRUNC_F64_S, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, word, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_op(Op::I64_TRUNC_F64_U, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, word, line);
+        chunk.emit_end(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, word, line);
+    }
+    emit_linear_i64_store(chunks, current, line);
+    emit_i64_value(chunks, current, signed, transport, line);
+}
+
 pub fn emit_linear_i32_store(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_value_preserving_store(&mut chunks[current], Op::I32_STORE, line);
+}
+
+pub(super) fn emit_linear_word_store(chunk: &mut Chunk, op: Op, line: u32) {
+    emit_value_preserving_store_with_lane(chunk, op, true, line);
 }
 
 pub fn emit_linear_i32_store8(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_value_preserving_store(&mut chunks[current], Op::I32_STORE8, line);
 }
 
+/// Store a proven unsigned byte, preserving the operand as the assignment result.
+/// The caller must establish the 0..=255 range before selecting this primitive.
+pub fn emit_linear_byte_store(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_value_preserving_store_with_lane(&mut chunks[current], Op::I32_STORE8, true, line);
+}
+
 pub fn emit_linear_i32_store16(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_value_preserving_store(&mut chunks[current], Op::I32_STORE16, line);
 }
 
+/// Stack `[address, native i64]` -> the same native i64 assignment value.
 pub fn emit_linear_i64_store(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_value_preserving_store(&mut chunks[current], Op::I64_STORE, line);
+    let chunk = &mut chunks[current];
+    let addr = chunk.alloc_scratch(1);
+    let value = super::bits::raw_i64_scratch(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, addr, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op(Op::I64_STORE, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
 }
 
 pub fn emit_linear_memory_size(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -317,7 +417,28 @@ pub fn emit_linear_memory_fill(chunks: &mut [Chunk], current: usize, line: u32) 
 /// Linear/linear and array/array copies stay bulk operations. Only crossing
 /// between the disjoint linear and managed heaps needs a transfer loop.
 pub fn emit_byte_copy(chunks: &mut [Chunk], current: usize, line: u32) {
-    use crate::primitives::{class_slots, collections, instructions::host, memory, ops};
+    crate::primitives::bundle::emit_private_helper_call(
+        &mut chunks[current], "primitive.byte_copy", 3, line,
+    );
+}
+
+pub fn build_byte_copy() -> Chunk {
+    let mut chunk = Chunk::new("primitive.byte_copy");
+    chunk.arity = 3;
+    chunk.param_count = 3;
+    chunk.local_count = 3;
+    for slot in 0..3 {
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, 0);
+    }
+    let mut chunks = vec![chunk];
+    emit_byte_copy_body(&mut chunks, 0, 0);
+    chunks[0].emit_op(Op::RETURN, 0);
+    crate::primitives::bundle::mark_private_helper_body(&mut chunks[0]);
+    chunks.pop().unwrap()
+}
+
+pub(crate) fn emit_byte_copy_body(chunks: &mut [Chunk], current: usize, line: u32) {
+    use crate::primitives::{class_slots, collections, instructions::host, memory};
 
     fn get(c: &mut Chunk, slot: u16, line: u32) {
         c.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -345,8 +466,7 @@ pub fn emit_byte_copy(chunks: &mut [Chunk], current: usize, line: u32) {
         set(c, offset, line);
         get(c, base, line);
         host::emit(c, "wasm:js-number", "test", 1, line);
-        set(c, linear, line);
-        get(c, linear, line);
+        crate::primitives::instructions::core_wasm::local_tee(c, line, linear);
         c.emit_op(Op::I32_EQZ, line);
         let managed = c.emit_if(line);
         let kind = c.alloc_scratch(1);

@@ -6,7 +6,6 @@
 //! genuinely shared.
 
 use crate::primitives::class_slots;
-use std::sync::Arc;
 
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -66,8 +65,7 @@ pub fn emit_hash_code(chunk: &mut Chunk, line: u32) {
     let length = chunk.add_import("wasm:js-string", "length");
     let char_code_at = chunk.add_import("wasm:js-string", "charCodeAt");
 
-    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, value, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     chunk.emit_i32_const(0, line);
@@ -86,8 +84,7 @@ pub fn emit_hash_code(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, index, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text, line);
     chunk.emit_call(length, 1, line);
-    chunk.emit_op(Op::I32_LT_S, line);
-    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_GE_S, line);
     chunk.emit_br_if(1, line);
 
     chunk.emit_i32_const(31, line);
@@ -133,8 +130,7 @@ pub fn emit_hash_array(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, index, line);
     chunk.emit_op_u16(Op::LOCAL_GET, items, line);
     chunk.emit_call(length, 1, line);
-    chunk.emit_op(Op::I32_LT_S, line);
-    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_GE_S, line);
     chunk.emit_br_if(1, line);
 
     chunk.emit_i32_const(31, line);

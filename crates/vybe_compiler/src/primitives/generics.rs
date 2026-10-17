@@ -128,7 +128,24 @@ pub fn canonical_generic_key(
     }
 }
 
+// Exact fast path only: each nonempty ASCII segment is already normalized
+// by TypePath::from_dotted. Every syntax-bearing/whitespace case falls through.
+fn normalized_ascii_type_name(text: &str) -> bool {
+    let mut segment_start=true;
+    for byte in text.bytes() {
+        if byte==b'.' {
+            if segment_start {return false;}
+            segment_start=true;
+        } else if byte.is_ascii_alphanumeric() || byte==b'_' {
+            segment_start=false;
+        } else {return false;}
+    }
+    !segment_start
+}
+
 pub fn erased_type_name(type_name: &str) -> String {
+    let trimmed=type_name.trim();
+    if normalized_ascii_type_name(trimmed) {return trimmed.to_owned();}
     parse_type_ref_hint(type_name)
         .map(|ty| display_type_ref(&erase_type(&ty)))
         .unwrap_or_else(|| strip_generic_application_text(type_name).trim().to_string())
@@ -582,6 +599,12 @@ fn parse_type_ref_inner(text: &str) -> Option<TypeRef> {
         return None;
     }
 
+    if normalized_ascii_type_name(trimmed) {
+        return Some(TypeRef {kind:TypeRefKind::Named {
+            path:TypePath::from_dotted(trimmed),args:Vec::new(),
+        }});
+    }
+
     if let Some(array_type) = parse_pascal_array_type(trimmed) {
         return Some(array_type);
     }
@@ -1003,4 +1026,22 @@ mod tests {
             "ArrayList"
         );
     }
+    #[test]
+    fn normalized_ascii_names_keep_exact_path_and_erasure_semantics() {
+        for name in ["WP_Query","WP.HTTP.Transport","int","array","ARRAY","0.9","_"] {
+            assert!(normalized_ascii_type_name(name));
+            assert_eq!(erased_type_name(name),name);
+            assert_eq!(parse_type_ref_hint(name),Some(TypeRef::named(name)));
+        }
+        for (name,expected) in [(" Foo.Bar ","Foo.Bar"),("Foo . Bar","Foo.Bar"),
+            (".Foo.","Foo"),("Foo..Bar","Foo.Bar"),("...",""),
+            ("\u{2003}Foo.Bar\u{2003}","Foo.Bar")] {
+            assert_eq!(erased_type_name(name),expected);
+        }
+        for name in [""," ",".Foo","Foo.","Foo..Bar","Foo . Bar","Foo?",
+            "Foo[]","Foo<Bar>","Foo(Of Bar)","Foo[Bar]","array of int","é.Name"] {
+            assert!(!normalized_ascii_type_name(name));
+        }
+    }
+
 }

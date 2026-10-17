@@ -6,18 +6,10 @@
 //! reaching here. Read `types.rs` and `canonical.rs` for the data
 //! contract; `classnormalization.md` for the full architecture.
 //!
-//! # Phase status (Phase 2b.1 — consolidated shim)
-//!
-//! After Phase 3 landed all 8 languages on the `normalize_class` path,
-//! this file collapsed to two thin functions: `emit_class_from_ast`
-//! (dispatches to the per-language normalizer) and `emit_class` (hands
-//! the `NormalClass` to `Compiler::compile_class`). The
-//! `NormalClass → ClassMember` reconstruction that the legacy
-//! orchestration still consumes now lives inside `compile_class`
-//! itself — see `reconstruct_members_for_compile` in
-//! `primitives/classes.rs`. Phase 2b.2 eliminates that reconstruction
-//! by porting each pass of `compile_class` to read `NormalClass`
-//! fields directly.
+//! Class compilation consumes `NormalClass` fields directly. This adapter
+//! still constructs the owned normalized declaration from borrowed source AST
+//! members, so moving normalization to an owned frontend reduction can remove
+//! body and parameter copies at that boundary.
 
 use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use crate::primitives::Compiler;
@@ -100,8 +92,17 @@ pub fn normalize_class_from_ast(
     modifiers: &ClassModifiers,
     semantics: vybe_ast::ValueSemantics,
 ) -> Result<NormalClass, String> {
+    normalize_class_from_ast_with_override(compiler, span, cname, parents, interfaces, members, modifiers, semantics, None)
+}
+
+pub(crate) fn normalize_class_from_ast_with_override(
+    compiler: &Compiler, span: Span, cname: &str, parents: &[String], interfaces: &[String],
+    members: &[ClassMember], modifiers: &ClassModifiers, semantics: vybe_ast::ValueSemantics,
+    supplied: Option<NormalClass>,
+) -> Result<NormalClass, String> {
     validate_byte_layout(cname, members, &semantics)?;
-    let mut nc = if compiler.profile.uses_normalize_class {
+    let mut nc = if let Some(supplied) = supplied { supplied }
+    else if compiler.profile.uses_normalize_class {
         normalize_for_profile(
             compiler.profile.name.as_str(),
             span.clone(),
@@ -125,6 +126,12 @@ pub fn normalize_class_from_ast(
     // could take `parents.last()` and nothing would catch it). The caller
     // already holds the answers, so it states them once.
     //
+    nc.declared_kind = modifiers.kind;
+    nc.library_identity = match &modifiers.linkage {
+        vybe_ast::ClassLinkage::Definition => None,
+        vybe_ast::ClassLinkage::Library { identity }
+        | vybe_ast::ClassLinkage::LibraryReference { identity } => Some(identity.clone()),
+    };
     nc.span = span;
     nc.name = cname.to_string();
     let resolved_parents = resolve_declared_bases(compiler, parents);
@@ -164,6 +171,11 @@ pub fn emit_class_from_ast(
     modifiers: &ClassModifiers,
     semantics: vybe_ast::ValueSemantics,
 ) -> Result<(), String> {
+    // Its full declaration already participated in the common declaration
+    // passes. The provider's existing runtime definition supplies the code.
+    if matches!(modifiers.linkage, vybe_ast::ClassLinkage::LibraryReference { .. }) {
+        return Ok(());
+    }
     validate_byte_layout(cname, members, &semantics)?;
     // Reuse the class normalized during the DECLARATION pass when it is
     // available. That copy has had its augmentations folded in (traits /
@@ -172,45 +184,55 @@ pub fn emit_class_from_ast(
     // members. It is also the point of having one class model: normalize once,
     // use everywhere. See flexclassplan.md §3a, §4c.
     let canon = compiler.canon(cname);
-    let mut nc = match compiler.normalized_classes.get(&canon) {
+    // Normalization and augmentation finish before emission. Keep a shared
+    // registry view so method bodies can be compiled without copying them.
+    let declarations = compiler.normalized_classes.clone();
+    let resolved_bases = resolve_declared_bases(compiler, parents);
+    let mut nc = match declarations.get(&canon) {
         Some(stored) => {
-            let mut nc = stored.clone();
-            // These two are supplied by the caller at definition time; the
-            // declaration pass has no way to know them.
-            // `is_value_type` is STORAGE, its original meaning: does assignment copy.
-            // Equality is a separate axis and reads `nc.semantics.equality`.
-            nc.is_value_type = semantics.storage == vybe_ast::ValueStorage::Value;
-            nc.semantics = semantics;
-            // Same resolution as the normalize path below — this arm reuses a
-            // class normalized during the declaration pass and would otherwise
-            // overwrite its resolved bases with the raw source spelling.
-            nc.bases = resolve_declared_bases(compiler, parents);
-            nc
+            // Variant declarations may contain expressions and have no value
+            // equality contract. Keep their existing owned update path.
+            let unchanged = stored.is_value_type == (semantics.storage == vybe_ast::ValueStorage::Value)
+                && stored.semantics.storage == semantics.storage
+                && stored.semantics.equality == semantics.equality
+                && stored.semantics.layout == semantics.layout
+                && stored.semantics.byte_layout == semantics.byte_layout
+                && stored.semantics.variant.is_none() && semantics.variant.is_none()
+                && stored.bases == resolved_bases
+                && stored.declared_kind == modifiers.kind;
+            if unchanged {
+                std::borrow::Cow::Borrowed(stored)
+            } else {
+                let mut owned = stored.clone();
+                owned.is_value_type = semantics.storage == vybe_ast::ValueStorage::Value;
+                owned.semantics = semantics;
+                owned.bases = resolved_bases;
+                owned.declared_kind = modifiers.kind;
+                std::borrow::Cow::Owned(owned)
+            }
         }
-        None => normalize_class_from_ast(
+        None => std::borrow::Cow::Owned(normalize_class_from_ast(
             compiler, span, cname, parents, interfaces, members, modifiers, semantics,
-        )?,
+        )?),
     };
-    // Set centrally, like `bases`: every path lands here — the stored
-    // declaration-pass copy and each per-language normalizer alike — so no
-    // language has to remember to carry it.
-    nc.declared_kind = modifiers.kind;
-    // Link classes for `NextInOrder` augmentations come first: this class's
-    // parent IS the last of them, and a class cannot wire a prototype chain
-    // through a parent that has not been defined yet. They are emitted here,
-    // off the using class's declaration, because there is no `ClassDecl` of
-    // their own to reach them by — the declaration pass synthesized them
-    // (flexclassplan.md §4c-R).
-    for link_name in nc.synthesized_bases.clone() {
-        let link_key = compiler.canon(&link_name);
-        let Some(link) = compiler.normalized_classes.get(&link_key).cloned() else {
+    #[cfg(test)]
+    if super::super::COPY_MODULE_BODY_BASELINE.with(|copy| copy.get()) {
+        nc.to_mut();
+    }
+    // Set centrally for fallback normalizers too. Matching declarations keep
+    // the shared view; an actual metadata change obtains a private copy.
+    if nc.declared_kind != modifiers.kind { nc.to_mut().declared_kind = modifiers.kind; }
+    // Synthesized augmentation bases must be emitted before the using class.
+    for link_name in &nc.synthesized_bases {
+        let link_key = compiler.canon(link_name);
+        let Some(link) = declarations.get(&link_key) else {
             return Err(format!(
                 "internal: synthesized base `{link_name}` of class `{cname}` is missing"
             ));
         };
-        emit_class(compiler, link)?;
+        compiler.compile_class(link)?;
     }
-    emit_class(compiler, nc)
+    compiler.compile_class(&nc)
 }
 
 fn normalize_from_ast_legacy(

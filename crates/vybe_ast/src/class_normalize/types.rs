@@ -57,6 +57,8 @@ impl Default for PlatformFieldGui {
 /// per-language class idiom after the walker has flattened it.
 #[derive(Debug, Clone)]
 pub struct NormalClass {
+    /// Stable identity of a frontend-generated library definition, if any.
+    pub library_identity: Option<String>,
     pub span: Span,
     pub name: String,
 
@@ -518,6 +520,7 @@ impl NormalClass {
 impl Default for NormalClass {
     fn default() -> Self {
         NormalClass {
+            library_identity: None,
             span: Span::default(),
             // A real class always names itself; this is a placeholder that
             // every construction path overwrites.
@@ -775,6 +778,9 @@ pub enum BaseCall {
 
 #[derive(Debug, Clone)]
 pub struct NormalProperty {
+    /// Optional checked write to declared storage, bypassing source hooks.
+    /// This is a declaration in the same class model, not a runtime key map.
+    pub raw_setter: Option<NormalMethod>,
     pub span: Span,
     pub canonical_name: String,
     pub source_name: String,

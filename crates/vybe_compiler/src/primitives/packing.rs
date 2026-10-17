@@ -66,6 +66,30 @@ pub fn emit_pack_byte_from_f64_slot(
     emit_i32_byte_to_string(&mut chunks[current], from_char_code, line);
 }
 
+/// Pack a caller-owned numeric local already proven in `[0, 2^32)`.
+/// The caller must establish the range through actual evaluation/normalization,
+/// not a declared type or a slot name. Truncation then masking retains the same
+/// byte as the generic f64 packer, without repeating its modulo reduction.
+///
+/// Stack: `[] -> [one_char_string]`. Coercion belongs to the caller.
+pub fn emit_pack_byte_from_bounded_f64_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    value_slot: u16,
+    line: u32,
+) {
+    let from_char_code = chunks[current].add_import("ecma:string", "fromCharCode");
+    // Keep the original temporary's exact F64 producer/store boundary:
+    // the allocated slot may overwrite a prior Object root at runtime.
+    let integer = chunks[current].alloc_scratch(1);
+    local_get(&mut chunks[current], value_slot, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+    local_set(&mut chunks[current], integer, line);
+    local_get(&mut chunks[current], integer, line);
+    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+    emit_i32_byte_to_string(&mut chunks[current], from_char_code, line);
+}
+
 /// Pack the low 16 bits of a proven f64 local after unsigned i32 truncation.
 /// Language adapters own wrapping/coercion before this checked numeric entry point.
 ///
@@ -108,7 +132,7 @@ fn emit_pack_unsigned_string(
     local_get(&mut chunks[current], value_slot, line);
     chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
     local_set(&mut chunks[current], bits, line);
-    let from_char_code = chunks[current].add_import("wasm:js-string", "fromCharCode");
+    let from_char_code = chunks[current].add_import("ecma:string", "fromCharCode");
     for index in 0..bytes {
         let byte_index = match endian {
             Endian::Little => index,
@@ -119,11 +143,12 @@ fn emit_pack_unsigned_string(
             chunks[current].emit_i32_const((byte_index * 8) as i32, line);
             chunks[current].emit_op(Op::I32_SHR_U, line);
         }
-        emit_i32_byte_to_string(&mut chunks[current], from_char_code, line);
-        if index != 0 {
-            crate::primitives::strings::emit_str_concat(&mut chunks[current], line);
-        }
+        chunks[current].emit_i32_const(255, line);
+        chunks[current].emit_op(Op::I32_AND, line);
     }
+    // All arguments are proven byte-valued integers; standard variadic
+    // String.fromCharCode constructs the same ordered string in one call.
+    chunks[current].emit_call(from_char_code, bytes as u8, line);
 }
 
 /// Read one byte from a string local at a zero-based numeric index.

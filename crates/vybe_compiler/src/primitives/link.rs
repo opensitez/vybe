@@ -7,6 +7,35 @@ use super::*;
 use crate::primitives::namespaces::UserGlobalKind;
 use vybe_ast::class_normalize::{PlatformBaseSpec, PlatformFieldGui};
 
+#[cfg(test)]
+#[path = "function_registration_tests.rs"]
+mod function_registration_tests;
+
+
+// Compiler scans reuse canonical operand metadata without an out-of-line
+// runtime lookup for every instruction. Populate from the opcode declarations
+// once; never duplicate opcode or variable-operand rules here.
+pub(super) fn compiler_operand_formats() -> &'static [vybe_runtime::opcode::OperandFormat] {
+    static FORMATS: std::sync::OnceLock<Box<[vybe_runtime::opcode::OperandFormat]>> = std::sync::OnceLock::new();
+    FORMATS.get_or_init(|| {
+        std::iter::once(0).chain(0xF0..=0xFF)
+            .flat_map(|group| (0..512).map(move |sub| Op::new(group, sub).operand_format()))
+            .collect::<Vec<_>>().into_boxed_slice()
+    })
+}
+
+#[inline]
+pub(super) fn compiler_operand_format(op: Op, formats: &[vybe_runtime::opcode::OperandFormat]) -> vybe_runtime::opcode::OperandFormat {
+    let group = op.group();
+    let sub = op.sub();
+    let slot = if group == 0 { 0 }
+        else if (0xF0..=0xFF).contains(&group) { group as usize - 0xF0 + 1 }
+        else { return op.operand_format(); };
+    // Extensions beyond the cached range keep using the canonical metadata.
+    if sub >= 512 { return op.operand_format(); }
+    formats[slot * 512 + sub as usize]
+}
+
 fn mounted_ambient_tree_root(tree_mounts: &HashMap<String, String>, path: &str) -> Option<String> {
     let trimmed = path.trim();
     let mut segments = trimmed
@@ -96,26 +125,48 @@ impl Compiler {
         HostImportMetadata { named, wildcard }
     }
 
-    pub(super) fn normalize_import_table(chunks: &mut [Chunk]) {
+    #[cfg(test)]
+    fn normalize_import_table(chunks: &mut [Chunk]) {
+        let _ = Self::normalize_import_table_and_collect_globals(chunks);
+    }
+
+    pub(super) fn normalize_import_table_and_collect_globals(chunks: &mut [Chunk]) -> Option<super::globals::GlobalOperands> {
         if chunks.is_empty() {
-            return;
+            return None;
         }
 
-        let original_script_imports = chunks[0].imports.clone();
-        let mut unified: Vec<BytecodeImport> = Vec::new();
-        let mut unified_index: HashMap<(&str, &str), u16> = HashMap::new();
+        if chunks.iter().skip(1).all(|chunk| chunk.imports.is_empty()) {
+            let imports = &chunks[0].imports;
+            if imports.len() <= 1 {
+                return None;
+            }
+            let mut seen = std::collections::HashSet::with_capacity(imports.len());
+            if imports
+                .iter()
+                .all(|imp| seen.insert((imp.module.as_str(), imp.name.as_str())))
+            {
+                return None;
+            }
+        }
+
+        let mut unified_count = 0usize;
+        // Compiler-owned source names have the same interning policy as
+        // Chunk's emission tables. Ordering comes from the input traversal,
+        // never hash iteration. Borrow keys and hash each row only once.
+        let mut unified_index: HashMap<(&str, &str), u16, vybe_runtime::chunk::FxBuildHasher> =
+            HashMap::default();
         let mut remaps: Vec<Vec<u16>> = Vec::with_capacity(chunks.len());
 
         for chunk in chunks.iter() {
             let mut remap = Vec::with_capacity(chunk.imports.len());
             for imp in &chunk.imports {
                 let key = (imp.module.as_str(), imp.name.as_str());
-                let idx = match unified_index.get(&key).copied() {
-                    Some(idx) => idx,
-                    None => {
-                        let idx = unified.len() as u16;
-                        unified.push(imp.clone());
-                        unified_index.insert(key, idx);
+                let idx = match unified_index.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let idx = unified_count as u16;
+                        unified_count += 1;
+                        entry.insert(idx);
                         idx
                     }
                 };
@@ -124,20 +175,35 @@ impl Compiler {
             remaps.push(remap);
         }
 
+        // One scan records globals while remapping calls. The records keep
+        // write flags so global discovery needs no second opcode decode.
         // Release the keys borrowed from chunks before rewriting their code.
         drop(unified_index);
 
         let script_remap = remaps.first().map(Vec::as_slice).unwrap_or_default();
+        let script_remap_is_identity = script_remap
+            .iter()
+            .enumerate()
+            .all(|(old, &new)| old == usize::from(new));
+        // This is invocation policy, not instruction state. Includes compile
+        // many chunks with script-table fallback calls; querying the process
+        // environment for every such CALL needlessly repeats the same lookup.
+        let debug_imports = std::env::var("VYBE_DEBUG_IMPORTS").is_ok();
 
+        let formats = compiler_operand_formats();
+        let mut operands=Vec::with_capacity(chunks.len());
         for (chunk_idx, chunk) in chunks.iter_mut().enumerate() {
             let local_remap = &remaps[chunk_idx];
-            if local_remap
-                .iter()
-                .enumerate()
-                .all(|(old, &new)| old == usize::from(new))
-            {
-                continue;
-            }
+            let remap_identity = script_remap_is_identity
+                && local_remap
+                    .iter()
+                    .enumerate()
+                    .all(|(old, &new)| old == usize::from(new))
+            ;
+            let mut globals=Vec::new();
+            // Direct-call offsets are ordered; consume them alongside this
+            // instruction scan instead of searching the tree for every CALL.
+            let mut direct_calls = chunk.direct_defined_calls.keys().copied().peekable();
             let code = &mut chunk.code;
             let mut ip = 0usize;
             while ip + 3 < code.len() {
@@ -149,8 +215,17 @@ impl Compiler {
                 let op = Op::new(group, sub);
 
                 let operand_start = ip + 4;
-                let operand_len = op.operand_format().size_in(code, operand_start);
-                if op == Op::CALL && operand_start + 1 < code.len() {
+                let operand_len = compiler_operand_format(op, formats).size_in(code, operand_start);
+                if (op==Op::GLOBAL_GET || op==Op::GLOBAL_SET) && operand_start+3<code.len() {
+                    let index=u32::from_be_bytes(code[operand_start..operand_start+4].try_into().unwrap());
+                    globals.push((operand_start,index,op==Op::GLOBAL_SET));
+                }
+                if !remap_identity && op == Op::CALL && {
+                    // Public metadata may also contain skipped payload offsets
+                    // or non-CALL keys. They must not stall the cursor.
+                    while direct_calls.peek().is_some_and(|offset| *offset < ip) { direct_calls.next(); }
+                    direct_calls.peek().copied() != Some(ip)
+                } && operand_start + 1 < code.len() {
                     let old_idx =
                         u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
                     let remapped = local_remap
@@ -158,7 +233,7 @@ impl Compiler {
                         .copied()
                         .or_else(|| script_remap.get(old_idx as usize).copied());
                     if local_remap.get(old_idx as usize).is_none()
-                        && std::env::var("VYBE_DEBUG_IMPORTS").is_ok()
+                        && debug_imports
                     {
                         eprintln!(
                             "[import-remap] chunk {} ip {}: CALL_IMPORT idx {} out of local table (len {}) — script fallback → {:?}",
@@ -178,15 +253,20 @@ impl Compiler {
 
                 ip = operand_start + operand_len;
             }
+            operands.push(globals);
         }
 
-        if unified.is_empty() && !original_script_imports.is_empty() {
-            unified = original_script_imports;
+        let mut unified = Vec::with_capacity(unified_count);
+        for (chunk_idx, chunk) in chunks.iter_mut().enumerate() {
+            for (import_idx, import) in std::mem::take(&mut chunk.imports).into_iter().enumerate() {
+                if remaps[chunk_idx][import_idx] as usize == unified.len() {
+                    unified.push(import);
+                }
+            }
         }
-        chunks[0].imports = unified;
-        for chunk in chunks.iter_mut().skip(1) {
-            chunk.imports.clear();
-        }
+        debug_assert_eq!(unified.len(), unified_count);
+        chunks[0].imports = unified.into();
+        Some(operands)
     }
 
     /// Record every module-level VARIABLE name, for `primitives/globals.rs`.
@@ -344,7 +424,7 @@ impl Compiler {
         for segment in prefix {
             let entry = current
                 .entry((*segment).to_string())
-                .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
+                .or_insert_with(|| {self.user_namespace_lookup_cache.borrow_mut().invalidate();NamespaceNode::Namespace(Subtree::new())});
             current = match entry {
                 NamespaceNode::Namespace(children) => children,
                 NamespaceNode::Type { statics, .. } => statics,
@@ -354,7 +434,7 @@ impl Compiler {
         }
         current
             .entry((*last).to_string())
-            .or_insert_with(|| NamespaceNode::Alias(target.to_string()));
+            .or_insert_with(|| {self.user_namespace_lookup_cache.borrow_mut().invalidate();NamespaceNode::Alias(target.to_string())});
     }
 
     fn declare_user_namespace_member(&mut self, identity: &str, kind: UserGlobalKind) {
@@ -380,7 +460,7 @@ impl Compiler {
             // this was rebuilt from an unordered set.
             let entry = current
                 .entry((*segment).to_string())
-                .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
+                .or_insert_with(|| {self.user_namespace_lookup_cache.borrow_mut().invalidate();NamespaceNode::Namespace(Subtree::new())});
             current = match entry {
                 NamespaceNode::Namespace(children) => children,
                 NamespaceNode::Type { statics, .. } => statics,
@@ -397,10 +477,12 @@ impl Compiler {
         // the declaration without discarding what is nested under it.
         match current.entry((*last).to_string()) {
             std::collections::btree_map::Entry::Vacant(slot) => {
+                self.user_namespace_lookup_cache.borrow_mut().invalidate();
                 slot.insert(leaf);
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
                 if let NamespaceNode::Namespace(children) = slot.get_mut() {
+                    self.user_namespace_lookup_cache.borrow_mut().invalidate();
                     let children = std::mem::take(children);
                     slot.insert(NamespaceNode::UserGlobal {
                         identity: identity.to_string(),
@@ -551,8 +633,7 @@ impl Compiler {
                         // augmenting type (trait / mixin / promoted field)
                         // could not be looked up by name at all.
                         if let Ok(nc) =
-                            crate::primitives::class_normalize::emit::normalize_class_from_ast(
-                                self,
+                            self.normalize_class_declaration(
                                 stmt.span.clone(),
                                 &member,
                                 parents,
@@ -743,6 +824,33 @@ impl Compiler {
     }
 
     pub(super) fn predeclare_function_names(&mut self, body: &[Statement]) {
+        let mut preparation = super::function_preparation::FunctionRegistrationPreparation::default();
+        preparation.consume(body);
+        self.register_function_declarations(preparation.finish());
+    }
+
+    pub(super) fn register_function_declarations(&mut self,
+        declarations: impl IntoIterator<Item = super::function_preparation::FunctionDeclaration>,
+    ) {
+        for declaration in declarations {
+            let cname = self.canon(&declaration.name);
+            self.defined_globals.insert(cname.clone());
+            self.declare_function_identity(&cname);
+            if declaration.is_generator && self.profile.buffered_iterator_methods {
+                self.generator_functions.insert(cname.clone());
+            }
+            self.function_param_modes.entry(cname.clone()).or_insert(declaration.param_modes);
+            self.function_param_types.entry(cname.clone()).or_insert(declaration.param_types);
+            self.function_min_arity.entry(cname.clone()).or_insert(declaration.min_arity);
+            self.function_signatures.entry(cname.clone()).or_default().push(declaration.signature);
+            if let Some(return_type) = declaration.return_type {
+                self.function_return_types.entry(cname).or_insert(return_type);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn predeclare_function_names_whole_module_oracle(&mut self, body: &[Statement]) {
         for stmt in body {
             let StmtKind::FunctionDecl {
                 name,
@@ -1436,6 +1544,12 @@ impl Compiler {
     ///
     /// Runs before any bytecode is emitted.
     pub(super) fn link(&mut self, module: &crate::ast::Module) {
+        self.link_with_body(module, &module.body);
+    }
+    pub(super) fn link_with_body(&mut self, module: &crate::ast::Module, source_body: &[Statement]) {
+        if module.imports.iter().any(|i| !matches!(i.kind,crate::ast::ImportKind::Simple{..}|crate::ast::ImportKind::Wildcard{..})) {
+            if let Some(c)=&self.compile_certificate {c.lock().unwrap().reject();}
+        }
         // Phase A.1: ambient profile defaults.
         let defaults = &self.profile.esm_defaults;
         for d in defaults {
@@ -1465,6 +1579,7 @@ impl Compiler {
                     // binds through the SAME adapter-module path below
                     // (Phase A.2 walks `module_exports`), reconciling the
                     // source-level name with the canonical host export.
+                    if self.compile_certificate.is_some() {self.local_module_export_overlays.insert((m.clone(),name.clone()));}
                     self.module_exports
                         .entry(m.clone())
                         .or_default()
@@ -1476,6 +1591,7 @@ impl Compiler {
                     // alias the namespace is bound under.
                     if let Some(host_module) = self.host_namespace_aliases.get(&self.canon(m)) {
                         let host_module = host_module.clone();
+                        if self.compile_certificate.is_some() {self.local_module_export_overlays.insert((host_module.clone(),name.clone()));}
                         self.module_exports
                             .entry(host_module)
                             .or_default()
@@ -1654,7 +1770,7 @@ impl Compiler {
         // Redundant name check removed: the loop below only fires on a
         // `__go_named_type(...)` call, which only the Go walker emits.
         {
-            for stmt in &module.body {
+            for stmt in source_body {
                 let StmtKind::Expr(expr) = &stmt.kind else {
                     continue;
                 };
@@ -1781,5 +1897,293 @@ impl Compiler {
             }
         }
         namespaces
+    }
+}
+
+#[cfg(test)]
+mod import_table_tests {
+    use super::*;
+
+    #[test]
+    fn cached_operand_formats_keep_canonical_extensions_and_unknowns() {
+        let formats = compiler_operand_formats();
+        for group in [0, 1, 239, 240, 241, 242, 243, 244, 245, 246,
+            247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 65535] {
+            for sub in 0..1024 {
+                let op = Op::new(group, sub);
+                assert_eq!(compiler_operand_format(op, formats), op.operand_format());
+            }
+        }
+    }
+
+    #[test]
+    fn frontend_lookup_options_preserve_php_chunks_metadata_and_standard_wasm() {
+        vybe_language_php::register();
+        let profile = std::sync::Arc::new(
+            crate::profile::parse_profile(vybe_language_php::profile_source()).unwrap());
+        let cases = [
+            "<?php return 2 + 3;",
+            "<?php namespace N; class A {static function f(){return 4;}} return A::f();",
+            "<?php function f($x=3){return $x+1;} return f();",
+            "<?php class A {public $x=2;function f(){return $this->x;}} return (new A())->f();",
+        ];
+        for source in cases {
+            let module = vybe_language_php::parse(source).unwrap();
+            let compile = |enabled| Compiler::with_shared_profile(profile.clone())
+                .with_optimizations(vybe_runtime::registry::CompilerOptimizations {
+                    symbol_membership_index: enabled,
+                    user_namespace_cache: enabled,
+                    ..Default::default()
+                })
+                .compile_with_imports(&module).unwrap();
+            let control = compile(false);
+            let optimized = compile(true);
+            assert_eq!(control.chunks.len(), optimized.chunks.len());
+            for (left, right) in control.chunks.iter().zip(&optimized.chunks) {
+                assert_eq!(left.name, right.name);
+                assert_eq!(left.code, right.code, "{}", left.name);
+                assert_eq!(
+                    format!("{:?}", (&left.constants, &left.imports, &left.global_imports, &left.globals, &left.types, &left.canon_section, &left.canon_functypes, &left.canon_valtypes, &left.component_funcs, &left.component_func_links, &left.local_names, &left.lines)),
+                    format!("{:?}", (&right.constants, &right.imports, &right.global_imports, &right.globals, &right.types, &right.canon_section, &right.canon_functypes, &right.canon_valtypes, &right.component_funcs, &right.component_func_links, &right.local_names, &right.lines)),
+                    "metadata {}", left.name);
+            }
+            assert_eq!(vybe_platform_wasm::write_wasm(&control.chunks),
+                vybe_platform_wasm::write_wasm(&optimized.chunks));
+        }
+    }
+
+    #[test]
+    fn optimized_user_lookup_invalidates_misses_aliases_and_namespace_promotions() {
+        for enabled in [false, true] {
+            let profile = crate::profile::parse_profile("[compiler]\n").unwrap();
+            let mut compiler = Compiler::with_profile(profile).with_optimizations(
+                vybe_runtime::registry::CompilerOptimizations {
+                    symbol_membership_index: enabled,
+                    user_namespace_cache: enabled,
+                    ..Default::default()
+                });
+            assert_eq!(compiler.resolve_user_namespace_type("Demo"), None);
+            assert_eq!(compiler.resolve_user_namespace_type("Demo.Child"), None);
+            compiler.declare_class_identity("Demo.Child");
+            assert_eq!(compiler.resolve_user_namespace_type("Demo.Child").as_deref(), Some("Demo.Child"));
+            assert_eq!(compiler.resolve_user_namespace_type("Demo"), None);
+            compiler.declare_class_identity("Demo");
+            assert_eq!(compiler.resolve_user_namespace_type("Demo").as_deref(), Some("Demo"));
+            assert_eq!(compiler.resolve_user_namespace_type("Demo.Child").as_deref(), Some("Demo.Child"));
+            assert_eq!(compiler.resolve_user_namespace_function("Demo.Child"), None);
+            assert_eq!(compiler.resolve_user_namespace_type("Alias"), None);
+            compiler.declare_user_namespace_alias("Alias", "Demo.Child");
+            assert_eq!(compiler.resolve_user_namespace_type("Alias").as_deref(), Some("Demo.Child"));
+            compiler.declare_user_namespace_alias("Alias", "Missing");
+            assert_eq!(compiler.resolve_user_namespace_type("Alias").as_deref(), Some("Demo.Child"));
+        }
+    }
+
+    #[test]
+    fn import_remapping_preserves_direct_calls_and_skips_non_call_metadata() {
+        let mut entry = Chunk::new("entry");
+        entry.add_import("example:api", "first");
+        let mut body = Chunk::new("body");
+        let second = body.add_import("example:api", "second");
+        body.add_import("example:api", "first");
+        let direct = body.code.len();
+        body.emit_call(second, 0, 1);
+        let imported = body.code.len();
+        body.emit_call(second, 0, 1);
+        let global = body.code.len();
+        body.emit_op_u32(Op::GLOBAL_GET, 17, 1);
+        let following = body.code.len();
+        body.emit_call(second, 0, 1);
+        let edge = vybe_runtime::chunk::DirectDefinedCall {
+            target: 0, source: true, params: String::new(), results: String::new(),
+        };
+        body.direct_defined_calls.insert(direct, edge.clone());
+        body.direct_defined_calls.insert(direct + 1, edge.clone());
+        body.direct_defined_calls.insert(global, edge);
+        let metadata = body.direct_defined_calls.clone();
+        let mut chunks = vec![entry, body];
+        let globals = Compiler::normalize_import_table_and_collect_globals(&mut chunks).unwrap();
+        let operand = |offset| u16::from_be_bytes(chunks[1].code[offset + 4..offset + 6].try_into().unwrap());
+        assert_eq!(operand(direct), second);
+        assert_eq!(operand(imported), 1);
+        assert_eq!(operand(following), 1);
+        assert_eq!(chunks[1].direct_defined_calls, metadata);
+        assert_eq!(globals[1], vec![(global + 4, 17, false)]);
+    }
+
+    #[test]
+    fn normalize_import_table_keeps_script_and_unifies_body_imports() {
+        let mut script = Chunk::new("<script>");
+        script.add_import("example:api", "first");
+        let mut body = Chunk::new("body");
+        body.add_import("example:api", "first");
+        body.add_import("example:api", "second");
+
+        let mut chunks = vec![script, body];
+        Compiler::normalize_import_table(&mut chunks);
+
+        assert_eq!(chunks[0].imports.len(), 2);
+        assert_eq!(chunks[0].imports[0].name, "first");
+        assert_eq!(chunks[0].imports[1].name, "second");
+        assert!(chunks[1].imports.is_empty());
+    }
+
+    #[test]
+    fn normalize_import_table_preserves_unique_single_chunk() {
+        let mut script = Chunk::new("<script>");
+        script.add_import("example:api", "first");
+        script.add_import("example:api", "second");
+        let mut chunks = vec![script];
+        let original = chunks[0].imports.clone();
+        let first_module_ptr = chunks[0].imports[0].module.as_ptr();
+        let first_name_ptr = chunks[0].imports[0].name.as_ptr();
+
+        Compiler::normalize_import_table(&mut chunks);
+
+        assert_eq!(chunks[0].imports, original);
+        assert_eq!(chunks[0].imports[0].module.as_ptr(), first_module_ptr);
+        assert_eq!(chunks[0].imports[0].name.as_ptr(), first_name_ptr);
+    }
+
+    #[test]
+    fn normalize_import_table_preserves_script_only_imports_with_body_calls() {
+        let mut script = Chunk::new("<script>");
+        script.add_import("example:api", "first");
+        script.add_import("example:api", "second");
+        let first_module_ptr = script.imports[0].module.as_ptr();
+        let second_name_ptr = script.imports[1].name.as_ptr();
+        let mut body = Chunk::new("body");
+        body.emit_call(1, 0, 0);
+        let original_code = body.code.clone();
+
+        let mut chunks = vec![script, body];
+        Compiler::normalize_import_table(&mut chunks);
+
+        assert_eq!(chunks[0].imports.len(), 2);
+        assert_eq!(chunks[0].imports[0].module.as_ptr(), first_module_ptr);
+        assert_eq!(chunks[0].imports[1].name.as_ptr(), second_name_ptr);
+        assert_eq!(chunks[1].code, original_code);
+    }
+
+    #[test]
+    fn normalize_import_table_remaps_body_calls_to_duplicate_script_imports() {
+        let mut script = Chunk::new("<script>");
+        script.add_import("example:api", "first");
+        let duplicate = script.imports[0].clone();
+        script.imports.push(duplicate);
+        let mut body = Chunk::new("body");
+        body.emit_call(1, 0, 0);
+
+        let mut chunks = vec![script, body];
+        Compiler::normalize_import_table(&mut chunks);
+
+        assert_eq!(chunks[0].imports.len(), 1);
+        assert_eq!(
+            u16::from_be_bytes([chunks[1].code[4], chunks[1].code[5]]),
+            0
+        );
+    }
+
+    #[test]
+    fn normalize_import_table_remaps_script_fallback_past_body_imports() {
+        let mut script = Chunk::new("<script>");
+        script.add_import("example:api", "first");
+        let duplicate = script.imports[0].clone();
+        script.imports.push(duplicate);
+        let mut body = Chunk::new("body");
+        body.add_import("example:api", "first");
+        body.emit_call(1, 0, 0);
+
+        let mut chunks = vec![script, body];
+        Compiler::normalize_import_table(&mut chunks);
+
+        assert_eq!(chunks[0].imports.len(), 1);
+        assert_eq!(
+            u16::from_be_bytes([chunks[1].code[4], chunks[1].code[5]]),
+            0
+        );
+    }
+
+    #[test]
+    fn normalize_import_table_still_deduplicates_single_chunk() {
+        let mut script = Chunk::new("<script>");
+        let first = script.add_import("example:api", "first");
+        let duplicate = script.imports[first as usize].clone();
+        script.imports.push(duplicate);
+        let mut chunks = vec![script];
+
+        Compiler::normalize_import_table(&mut chunks);
+
+        assert_eq!(chunks[0].imports.len(), 1);
+    }
+
+    #[test]
+    fn normalize_import_table_moves_first_occurrences_across_chunks() {
+        let mut script = Chunk::new("<script>");
+        script.add_import("example:api", "first");
+        let mut body = Chunk::new("body");
+        body.add_import("example:api", "first");
+        body.add_import("example:api", "second");
+        let first_module_ptr = script.imports[0].module.as_ptr();
+        let first_name_ptr = script.imports[0].name.as_ptr();
+        let second_module_ptr = body.imports[1].module.as_ptr();
+        let second_name_ptr = body.imports[1].name.as_ptr();
+
+        let mut chunks = vec![script, body];
+        Compiler::normalize_import_table(&mut chunks);
+
+        assert_eq!(chunks[0].imports.len(), 2);
+        assert_eq!(chunks[0].imports[0].module.as_ptr(), first_module_ptr);
+        assert_eq!(chunks[0].imports[0].name.as_ptr(), first_name_ptr);
+        assert_eq!(chunks[0].imports[1].module.as_ptr(), second_module_ptr);
+        assert_eq!(chunks[0].imports[1].name.as_ptr(), second_name_ptr);
+        assert!(chunks[1].imports.is_empty());
+    }
+
+    #[test]
+    fn normalize_import_table_remaps_calls_after_moving_imports() {
+        let mut script = Chunk::new("<script>");
+        script.add_import("example:api", "first");
+        let mut body = Chunk::new("body");
+        let second = body.add_import("example:api", "second");
+        let first = body.add_import("example:api", "first");
+        body.emit_call(second, 0, 0);
+        body.emit_call(first, 0, 0);
+
+        let mut chunks = vec![script, body];
+        Compiler::normalize_import_table(&mut chunks);
+
+        assert_eq!(chunks[0].imports.len(), 2);
+        assert_eq!(chunks[0].imports[0].name, "first");
+        assert_eq!(chunks[0].imports[1].name, "second");
+        assert_eq!(
+            u16::from_be_bytes([chunks[1].code[4], chunks[1].code[5]]),
+            1
+        );
+        assert_eq!(
+            u16::from_be_bytes([chunks[1].code[11], chunks[1].code[12]]),
+            0
+        );
+    }
+
+    #[test]
+    fn shared_finalization_records_preserve_fallback_calls_and_invalid_globals() {
+        let mut entry = Chunk::new("entry");
+        entry.add_import("example:api", "first");
+        let duplicate = entry.imports[0].clone();
+        entry.imports.push(duplicate);
+        entry.constants.push(vybe_runtime::Value::Null);
+        entry.emit_op_u32(Op::GLOBAL_GET, 0, 1);
+        let invalid = entry.code.clone();
+        let mut body = Chunk::new("body");
+        body.emit_call(1, 0, 1);
+        super::super::globals::emit_read(&mut body, "free_name", 1);
+        let mut chunks = vec![entry, body];
+        let records = Compiler::normalize_import_table_and_collect_globals(&mut chunks).unwrap();
+        super::super::globals::finalize_global_table_with_operands(&mut chunks, &records);
+        assert_eq!(chunks[0].code, invalid);
+        assert_eq!(u16::from_be_bytes(chunks[1].code[4..6].try_into().unwrap()), 0);
+        assert_eq!(chunks[0].global_imports[0].name, "free_name");
+        assert!(std::sync::Arc::ptr_eq(&chunks[0].globals, &chunks[1].globals));
     }
 }

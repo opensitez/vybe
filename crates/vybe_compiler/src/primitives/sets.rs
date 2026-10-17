@@ -66,17 +66,11 @@ pub fn emit_literal(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_add_changed(chunks: &mut [Chunk], current: usize, line: u32) {
     let set_slot = chunks[current].alloc_scratch(1);
     let value_slot = chunks[current].alloc_scratch(1);
-    let existed_slot = chunks[current].alloc_scratch(1);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, set_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     emit_has(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, existed_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, existed_slot, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
@@ -136,8 +130,7 @@ fn call_host(chunks: &mut [Chunk], current: usize, module: &str, name: &str, arg
 /// Stack: `[value] -> [key]`.
 fn emit_snapshot_render(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, value, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
@@ -203,9 +196,11 @@ fn emit_snapshot_keys_map(
     chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
     chunks[current].emit_string_const(SNAPSHOT_KEYS_KEY, line);
     call_host(chunks, current, "ecma:object", "get", 2, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, out_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    call_host(chunks, current, "wasm:js-undefined", "test", 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     call_host(chunks, current, "ecma:map", "new", 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
@@ -300,8 +295,7 @@ pub fn emit_delete_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_clear_snapshot(chunks: &mut [Chunk], current: usize, line: u32) {
     let set_slot = chunks[current].alloc_scratch(1);
     let keys = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, set_slot, line);
     call(chunks, current, "clear", 1, line);
     chunks[current].emit_op(Op::DROP, line);
     emit_snapshot_keys_map(chunks, current, set_slot, keys, line);
@@ -350,7 +344,8 @@ pub fn emit_resync_snapshot_keys(chunks: &mut [Chunk], current: usize, line: u32
     let (loop_id, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    // Private counter and emit_len results are numeric; element reads/rendering stay dynamic.
+    chunks[current].emit_op(Op::F64_LT, line);
     chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
@@ -386,6 +381,9 @@ pub fn emit_from_iterable_snapshot(chunks: &mut [Chunk], current: usize, line: u
     let out = chunks[current].alloc_scratch(1);
     let index = chunks[current].alloc_scratch(1);
     let len = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, values, line);
     emit_new(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
@@ -394,19 +392,46 @@ pub fn emit_from_iterable_snapshot(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
     crate::primitives::collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+    // The new set and its sidecar are private until this constructor returns.
+    // Keep empty sets without a sidecar, but attach it once for nonempty input.
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if(line);
+    emit_snapshot_keys_map(chunks, current, out, keys, line);
+    chunks[current].emit_end(line);
     let block = chunks[current].emit_block(line);
     let (loop_id, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    // Keep the source read and rendering in their original order: rendering
+    // can run user code and mutate subsequent source elements.
     chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     crate::primitives::collections::emit_get(chunks, current, line);
-    emit_add_snapshot(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, value, line);
+    emit_snapshot_render(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_host(chunks, current, "ecma:map", "has", 2, line);
+    call_host(chunks, current, "wasm:js-boolean", "cast", 1, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    // The constructor discards Add's changed Boolean, so emit only mutations.
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call(chunks, current, "add", 2, line);
     chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call_host(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::F64_ADD, line);
@@ -436,8 +461,7 @@ pub fn emit_add_mode(chunks: &mut [Chunk], current: usize, semantics: SetSemanti
                 let value = chunks[current].alloc_scratch(1);
                 let set_slot = chunks[current].alloc_scratch(1);
                 chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
-                chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
-                chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+                chunks[current].emit_op_u16(Op::LOCAL_TEE, set_slot, line);
                 chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
                 emit_add_snapshot(chunks, current, line);
                 chunks[current].emit_op(Op::DROP, line);
@@ -516,8 +540,7 @@ pub fn emit_delete_mode(chunks: &mut [Chunk], current: usize, semantics: SetSema
                 let value = chunks[current].alloc_scratch(1);
                 let set_slot = chunks[current].alloc_scratch(1);
                 chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
-                chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
-                chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+                chunks[current].emit_op_u16(Op::LOCAL_TEE, set_slot, line);
                 chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
                 emit_delete_snapshot(chunks, current, line);
                 chunks[current].emit_op(Op::DROP, line);
@@ -540,8 +563,7 @@ pub fn emit_delete_mode(chunks: &mut [Chunk], current: usize, semantics: SetSema
             let set_slot = chunks[current].alloc_scratch(1);
             let value_slot = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-            chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, set_slot, line);
+            chunks[current].emit_op_u16(Op::LOCAL_TEE, set_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
             emit_delete(chunks, current, line);
             chunks[current].emit_op(Op::DROP, line);

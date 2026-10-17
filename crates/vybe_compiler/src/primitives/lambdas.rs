@@ -5,6 +5,21 @@
 use super::*;
 use crate::primitives::class_slots;
 
+#[derive(Clone, Copy)]
+enum LambdaBodyRef<'a> {
+    Expr(&'a Expression),
+    Block(&'a [Statement]),
+}
+
+impl<'a> From<&'a LambdaBody> for LambdaBodyRef<'a> {
+    fn from(body: &'a LambdaBody) -> Self {
+        match body {
+            LambdaBody::Expr(expr) => Self::Expr(expr),
+            LambdaBody::Block(stmts) => Self::Block(stmts),
+        }
+    }
+}
+
 impl Compiler {
     pub(super) fn split_explicit_capture(capture: &str) -> (bool, &str) {
         if let Some(name) = capture.strip_prefix('&') {
@@ -36,6 +51,15 @@ impl Compiler {
         // arrive spelled exactly as that scope defined them — sigil and all.
         // Nothing to normalize here: the walker is the only thing that knows
         // its own spelling, and it already applied it.
+        for capture in captures {
+            let (by_ref, name) = Self::split_explicit_capture(capture);
+            if by_ref {
+                // Establish shared storage before the environment captures
+                // it, not when a later call first takes the binding's address.
+                self.compile_ident_reference(name);
+                self.emit(Op::DROP);
+            }
+        }
         if captures
             .iter()
             .any(|capture| !Self::split_explicit_capture(capture).0)
@@ -112,12 +136,12 @@ impl Compiler {
 
         // Collect upvalues AFTER body compilation — the body may have referenced
         // outer-scope variables, registering them as factory upvalues.
-        let uvs = self.scopes.last().unwrap().upvalues.clone();
+        let upvalue_count = self.scopes.last().unwrap().upvalues.len();
         let inner_scope_idx = self.scopes.len() - 1;
-        let uv_names: Vec<Option<String>> = (0..uvs.len())
+        let uv_names: Vec<Option<String>> = (0..upvalue_count)
             .map(|i| self.captured_name_for_upvalue(inner_scope_idx, i as u8))
             .collect();
-        self.scopes.pop();
+        let uvs = self.scopes.pop().unwrap().upvalues;
         self.current = saved;
         self.exit_closure_frame(frame_books);
 
@@ -175,11 +199,38 @@ impl Compiler {
         is_generator: bool,
         is_arrow: bool,
     ) -> Result<(), String> {
+        self.compile_lambda_body(params, body.into(), is_async, is_generator, is_arrow)
+    }
+
+    pub(super) fn compile_lambda_block_with_flags(
+        &mut self,
+        params: &[Param],
+        body: &[Statement],
+        is_async: bool,
+        is_generator: bool,
+        is_arrow: bool,
+    ) -> Result<(), String> {
+        self.compile_lambda_body(params, LambdaBodyRef::Block(body), is_async, is_generator, is_arrow)?;
+        if let Some(emit) = vybe_runtime::registry::hooks(&self.profile.name).function_literal {
+            let line = self.line;
+            emit(self.chunk(), line);
+        }
+        Ok(())
+    }
+
+    fn compile_lambda_body(
+        &mut self,
+        params: &[Param],
+        body: LambdaBodyRef<'_>,
+        is_async: bool,
+        is_generator: bool,
+        is_arrow: bool,
+    ) -> Result<(), String> {
         // Walker-lowered generator/async-generator expressions arrive as
         // Lambdas holding the `__gen_fn` contract — they are NOT arrows.
         let is_arrow = is_arrow
             && match body {
-                LambdaBody::Block(stmts) => Self::wrapped_generator_kind(stmts).is_none(),
+                LambdaBodyRef::Block(stmts) => Self::wrapped_generator_kind(stmts).is_none(),
                 _ => true,
             };
         let has_rest = params.last().map_or(false, |p| p.is_rest);
@@ -287,7 +338,7 @@ impl Compiler {
         // a prologue, so they only inherit.
         let saved_strict = self.in_strict;
         match body {
-            LambdaBody::Block(stmts) => {
+            LambdaBodyRef::Block(stmts) => {
                 if Self::stmts_have_use_strict_directive(stmts) {
                     self.in_strict = true;
                 }
@@ -296,7 +347,7 @@ impl Compiler {
                     &mut self.current_closure_captured_locals,
                 );
             }
-            LambdaBody::Expr(expr) => {
+            LambdaBodyRef::Expr(expr) => {
                 crate::primitives::collect_closure_captured_in_expr(
                     expr,
                     &mut self.current_closure_captured_locals,
@@ -307,6 +358,9 @@ impl Compiler {
         // that it occupies slot 0. Parameters follow it.
         for p in params {
             self.define_source_local_typed(&p.name, p.type_hint.clone());
+        }
+        self.bind_late_bound_arguments(params);
+        for p in params {
             if let Some(ref default) = p.default {
                 let slot = self.scope().resolve(&p.name).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);
@@ -352,10 +406,10 @@ impl Compiler {
         // `capture_receiver_for_inner_closures`.
         if self.scopes.len() > 1 {
             let closures_use_this = match body {
-                LambdaBody::Block(stmts) => {
+                LambdaBodyRef::Block(stmts) => {
                     crate::primitives::closures_in_body_reference_this(stmts)
                 }
-                LambdaBody::Expr(expr) => crate::primitives::expr_has_closure_with_this(expr),
+                LambdaBodyRef::Expr(expr) => crate::primitives::expr_has_closure_with_this(expr),
             };
             self.capture_receiver_for_inner_closures(closures_use_this, declares_own_receiver);
         }
@@ -382,7 +436,7 @@ impl Compiler {
                 self.shared_env_names = captured_names.clone();
                 let mut local_decls: HashSet<String> =
                     params.iter().map(|p| p.name.clone()).collect();
-                if let LambdaBody::Block(stmts) = body {
+                if let LambdaBodyRef::Block(stmts) = body {
                     crate::primitives::collect_declared_names(stmts, &mut local_decls);
                 }
                 for (idx, cap_name) in captured_names.iter().enumerate() {
@@ -412,6 +466,20 @@ impl Compiler {
                                 line,
                             );
                         }
+                    } else if !local_decls.contains(cap_name)
+                        && self.resolve_upvalue(self.scopes.len() - 1, cap_name).is_some()
+                    {
+                        // A capture factory supplies ordinary locals rather
+                        // than a shared environment. Forward that incoming
+                        // binding into the environment used by nested closures.
+                        let incoming_env = self.closure_env_slot();
+                        let incoming_index = self.closure_env_index(cap_name);
+                        crate::primitives::closures::emit_env_get(
+                            self.chunk(), incoming_env, incoming_index, line,
+                        );
+                        crate::primitives::closures::emit_env_set(
+                            self.chunk(), env_slot, idx as u16, line,
+                        );
                     }
                 }
             }
@@ -452,7 +520,7 @@ impl Compiler {
         }
 
         match body {
-            LambdaBody::Expr(expr) => {
+            LambdaBodyRef::Expr(expr) => {
                 self.compile_expr(expr)?;
                 if self.current_chunk_is_js_async() {
                     let resolve_idx = self.import("ecma:promise", "resolve");
@@ -462,7 +530,7 @@ impl Compiler {
                     self.emit(Op::RETURN);
                 }
             }
-            LambdaBody::Block(stmts) => {
+            LambdaBodyRef::Block(stmts) => {
                 for s in stmts {
                     self.compile_stmt(s)?;
                 }
@@ -490,7 +558,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, rs);
             self.emit(Op::RETURN);
             self.current_result_slot = saved_rs;
-        } else if matches!(body, LambdaBody::Block(_)) {
+        } else if matches!(body, LambdaBodyRef::Block(_)) {
             if self.has_undefined_value() {
                 inst!(self, core_wasm::undefined);
                 self.emit(Op::RETURN);
@@ -508,18 +576,20 @@ impl Compiler {
 
         let ns = self.scope().next_slot;
         self.chunks[ci].finalize_local_count(ns);
-        let local_names = self.scope().defined_names.clone();
-        crate::primitives::bundle::finalize_source_local_names(&mut self.chunks[ci], &local_names);
-        let uvs = self.scopes.last().unwrap().upvalues.clone();
+        let local_names = std::mem::take(&mut self.scopes.last_mut().unwrap().defined_names);
+        crate::primitives::bundle::finalize_source_local_names_owned(&mut self.chunks[ci], local_names);
+        let upvalue_count = self.scopes.last().unwrap().upvalues.len();
+        // Storage capture_count reserves an env lane even for zero-upvalue
+        // lambdas; this fact is the actual REF_FUNC environment contract.
+        self.chunks[ci].direct_entry_has_captures = Some(upvalue_count != 0);
         // Resolve upvalue names BEFORE popping the inner scope
         let inner_scope_idx = self.scopes.len() - 1;
-        let uv_names: Vec<Option<String>> = (0..uvs.len())
+        let uv_names: Vec<Option<String>> = (0..upvalue_count)
             .map(|i| self.captured_name_for_upvalue(inner_scope_idx, i as u8))
             .collect();
-        self.scopes.pop();
+        let uvs = self.scopes.pop().unwrap().upvalues;
         self.current = saved;
         self.exit_closure_frame(frame_books);
-        let parent_locals = self.scope().locals.clone();
         let line = self.line;
         if uvs.is_empty() {
             common::functions::emit_ref_func(&mut self.chunks[self.current], ci, 0, line);
@@ -541,15 +611,21 @@ impl Compiler {
             for (i, uv) in uvs.iter().enumerate() {
                 if let Some(name) = uv_names[i].clone() {
                     let slot = if uv.is_local {
-                        let by_value = parent_locals
-                            .iter()
-                            .find(|l| l.slot == uv.index)
-                            .map(|l| {
-                                self.capture_by_value_vars
-                                    .iter()
-                                    .any(|n| *n == self.canon(&l.name))
-                            })
-                            .unwrap_or(false);
+                        // Capture emission only appends locals; existing slots
+                        // remain stable. Borrow the matching binding before
+                        // emitting instead of copying every parent local (and
+                        // its name/type) for each lambda, including uncaptured
+                        // and shared-environment lambdas.
+                        let by_value = !self.capture_by_value_vars.is_empty()
+                            && self.scope().locals
+                                .iter()
+                                .find(|l| l.slot == uv.index)
+                                .map(|l| {
+                                    self.capture_by_value_vars
+                                        .iter()
+                                        .any(|n| *n == self.canon(&l.name))
+                                })
+                                .unwrap_or(false);
                         if by_value {
                             let orig_slot = uv.index;
                             self.emit_u16(Op::LOCAL_GET, orig_slot);
@@ -607,7 +683,7 @@ impl Compiler {
                 // into a plain wrapper holding `__gen_fn` (obj-literal
                 // `*m(){}` methods and generator expressions).
                 let (eff_async, eff_generator) = match body {
-                    LambdaBody::Block(stmts) => {
+                    LambdaBodyRef::Block(stmts) => {
                         Self::wrapped_generator_kind(stmts).unwrap_or((is_async, is_generator))
                     }
                     _ => (is_async, is_generator),

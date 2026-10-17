@@ -1,6 +1,10 @@
 //! Deterministic, build-time generation of static parser programs.
 //! Generated programs require only grameo at runtime, not this crate.
 use std::fmt::Write;
+mod ast;
+mod nullable;
+mod native_tokens;
+mod choice_heads;
 pub use grameo::modules::{Import, Module, ModuleDiagnostic};
 use grameo::{
     CompiledGrammar, Diagnostic,
@@ -12,6 +16,22 @@ pub struct GenerationOptions {
     /// Experimental failure dispatch; whole AST performance is not yet a
     /// consistent improvement, so ordinary generated parsers leave it off.
     pub literal_choice_failures: bool,
+}
+
+/// Public entry points needed by an embedding. Standalone generation retains
+/// the complete API; private integrations can omit methods they never call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParserApi {
+    pub recognize: bool,
+    pub build_ast: bool,
+    pub build_captures: bool,
+}
+impl ParserApi {
+    pub const CAPTURE_ONLY: Self = Self { recognize: false, build_ast: false, build_captures: false };
+    pub const HYBRID_CAPTURES: Self = Self { build_captures: true, ..Self::CAPTURE_ONLY };
+}
+impl Default for ParserApi {
+    fn default() -> Self { Self { recognize: true, build_ast: true, build_captures: true } }
 }
 
 pub fn generate_modules(modules: &[Module<'_>]) -> Result<String, Vec<ModuleDiagnostic>> {
@@ -41,6 +61,21 @@ pub fn generate(source: &str) -> Result<String, Vec<Diagnostic>> {
     generate_with_options(source, GenerationOptions::default())
 }
 
+/// Explicitly enable AST annotations and emit their construction entry points.
+pub fn generate_with_ast_bindings(source: &str) -> Result<String, Vec<Diagnostic>> {
+    emit(&grameo::compile_with_ast_bindings(source)?)
+}
+
+/// Generate bindings only after checking the target's declared constructor types.
+pub fn generate_with_ast_schema(source: &str, schema: &[grameo::ast::ConstructorSchema<'_>]) -> Result<String, Vec<Diagnostic>> {
+    let grammar = grameo::compile_with_ast_bindings(source)?;
+    emit_with_ast_schema(&grammar, schema, ParserApi::default())
+}
+
+pub fn generate_with_api(source: &str, api: ParserApi) -> Result<String, Vec<Diagnostic>> {
+    emit_with_api(&grameo::compile(source)?, api)
+}
+
 pub fn generate_with_options(
     source: &str,
     options: GenerationOptions,
@@ -51,6 +86,30 @@ pub fn generate_with_options(
 }
 
 pub fn emit(grammar: &CompiledGrammar) -> Result<String, Vec<Diagnostic>> {
+    emit_with_api(grammar, ParserApi::default())
+}
+
+pub fn emit_with_api(grammar: &CompiledGrammar, api: ParserApi) -> Result<String, Vec<Diagnostic>> {
+    emit_impl(grammar, api, None, false)
+}
+
+pub fn emit_with_ast_schema(grammar: &CompiledGrammar, schema: &[grameo::ast::ConstructorSchema<'_>], api: ParserApi) -> Result<String, Vec<Diagnostic>> {
+    grammar.validate_ast_schema(schema)?;
+    emit_impl(grammar, api, Some(schema), false)
+}
+
+/// Explicitly specialize hybrid ordered choices and rule-call heads. Normal emission
+/// and ordinary PEG capture parsing retain their existing dispatch.
+pub fn emit_with_native_hybrid_choices(
+    grammar: &CompiledGrammar,
+    api: ParserApi,
+) -> Result<String, Vec<Diagnostic>> {
+    emit_impl(grammar, api, None, true)
+}
+
+fn emit_impl(grammar: &CompiledGrammar, api: ParserApi, schema: Option<&[grameo::ast::ConstructorSchema<'_>]>, native_choices: bool) -> Result<String, Vec<Diagnostic>> {
+    let native_heads = native_choices || grammar.optimization_selection().native_rule_heads;
+    let native_choices = native_choices || grammar.optimization_selection().native_choices;
     if !grammar.analysis().errors.is_empty() {
         return Err(grammar.analysis().errors.clone());
     }
@@ -92,15 +151,11 @@ pub fn emit(grammar: &CompiledGrammar) -> Result<String, Vec<Diagnostic>> {
     if synthetic_eoi {
         out.push_str("        Self::EOI => \"EOI\",\n");
     }
-    out.push_str("    }}\n    pub fn from_capture(rule: ::grameo::CaptureRule) -> Option<Self> { match rule {\n");
-    for (id, rule) in grammar.syntax().rules.iter().enumerate() {
-        writeln!(
-            out,
-            "        ::grameo::CaptureRule::User({id}) => Some(Self::r#{}),",
-            rule.name
-        )
-        .unwrap();
+    out.push_str("    }}\n    #[inline(always)]\n    pub fn from_capture(rule: ::grameo::CaptureRule) -> Option<Self> {\n        const RULES: &[Rule] = &[\n");
+    for rule in &grammar.syntax().rules {
+        writeln!(out, "            Rule::r#{},", rule.name).unwrap();
     }
+    out.push_str("        ];\n        match rule {\n        ::grameo::CaptureRule::User(id) if id < RULES.len() => Some(RULES[id]),\n");
     out.push_str("        ::grameo::CaptureRule::EndOfInput => Some(Self::EOI),\n");
     out.push_str("        _ => None,\n    }}\n}\n#[derive(Debug, Clone, Copy, Default)]\npub struct Parser;\nimpl ::grameo::program::Program for Parser {\n    fn rule_id(&self, name: &str) -> Option<usize> { match name {\n");
     let mut entries: Vec<_> = grammar.entries().collect();
@@ -110,7 +165,63 @@ pub fn emit(grammar: &CompiledGrammar) -> Result<String, Vec<Diagnostic>> {
     }
     out.push_str("        _ => None,\n    }}\n");
     out.push_str("    fn fast_ascii_repetitions(&self) -> bool { true }\n");
+    native_tokens::emit(&mut out, grammar);
+    let delimited: Vec<_> = (0..grammar.syntax().rules.len())
+        .filter_map(|rule| grameo::quoted::certify_delimited(grammar, rule).map(|fragment| (rule, fragment)))
+        .collect();
+    if !delimited.is_empty() {
+        out.push_str("    #[inline(always)]\n    fn delimited_fragment(&self, rule:usize)->Option<::grameo::quoted::DelimitedFragment<'_>>{ match rule {\n");
+        for (rule, fragment) in delimited {
+            writeln!(out, "        {rule} => Some(::grameo::quoted::DelimitedFragment {{ open: {:?}, close: {:?} }}),", fragment.open, fragment.close).unwrap();
+        }
+        out.push_str("        _ => None,\n    }}\n");
+    }
+    let quoted: Vec<_> = (0..grammar.syntax().rules.len())
+        .filter_map(|rule| grameo::quoted::certify(grammar, rule).map(|fragment| (rule, fragment)))
+        .collect();
+    if !quoted.is_empty() {
+        out.push_str("    #[inline(always)]\n    fn quoted_fragment(&self, rule:usize)->Option<::grameo::quoted::Fragment>{ match rule {\n");
+        for (rule, fragment) in quoted {
+            writeln!(out, "        {rule} => Some(::grameo::quoted::Fragment {{ delimiter: {}, escapes: {:?}, any_escape: {}, doubled_delimiter: {}, forbidden_newline: {}, newline_crlf_only: {} }}),",
+                fragment.delimiter, fragment.escapes, fragment.any_escape, fragment.doubled_delimiter, fragment.forbidden_newline, fragment.newline_crlf_only).unwrap();
+        }
+        out.push_str("        _ => None,\n    }}\n");
+    }
+    out.push_str("    fn whitespace_run_class(&self, scope:usize)->Option<::grameo::lexical::ByteClass>{ match scope {\n");
+    let mut classes = vec![None; grammar.syntax().expressions.len()];
+    for id in 0..classes.len() {
+        let mut class = grameo::lexical::ByteClass([0, 0]);
+        let mut insert = |byte: u8| { class.0[usize::from(byte / 64)] |= 1u64 << (byte % 64); };
+        classes[id] = match grammar.instruction(id) {
+            Instruction::Literal { text, insensitive } if text.len() == 1 && text.is_ascii() => {
+                let byte = text.as_bytes()[0]; insert(byte);
+                if insensitive { insert(byte.to_ascii_lowercase()); insert(byte.to_ascii_uppercase()); }
+                Some(class)
+            },
+            Instruction::Range { start, end } if start.is_ascii() && end.is_ascii() => {
+                for byte in start as u8..=end as u8 { insert(byte); } Some(class)
+            },
+            Instruction::Group(child) => classes[child],
+            Instruction::Choice { left, right } => match (classes[left], classes[right]) {
+                (Some(a), Some(b)) => Some(grameo::lexical::ByteClass([a.0[0] | b.0[0], a.0[1] | b.0[1]])),
+                _ => None,
+            },
+            _ => None,
+        };
+    }
+    for (scope, spec) in grammar.scopes().iter().enumerate() {
+        if let Some(rule) = spec.whitespace && grammar.rule(rule).mode == grameo::RuleMode::Silent {
+            let (body, _) = fragment_unwrap(grammar, grammar.rule(rule).expression);
+            if let Instruction::Repeat { expression, min: 1, max: None } = grammar.instruction(body)
+                && let Some(class) = classes[expression] {
+                writeln!(out, "        {scope}=>Some(::grameo::lexical::ByteClass({:?})),", class.0).unwrap();
+            }
+        }
+    }
+    out.push_str("        _=>None,\n    }}\n");
+
     let mut fragment_analysis = FragmentAnalysis::new(grammar);
+    fragment_analysis.ascii_xid = grammar.optimization_selection().ascii_xid;
     let fragments = (0..grammar.syntax().rules.len())
         .map(|rule| fragment_spec(grammar, rule, &mut fragment_analysis))
         .collect::<Vec<_>>();
@@ -126,11 +237,20 @@ pub fn emit(grammar: &CompiledGrammar) -> Result<String, Vec<Diagnostic>> {
         out.push_str("    fn atomic_fragments(&self)->Option<()> { Some(()) }\n");
         out.push_str("    #[inline]\n    fn atomic_fragment(&self, rule: usize)->Option<&::grameo::program::AtomicFragment<'_>> { match rule {\n");
         for (rule, &used) in general_fragment_rules.iter().enumerate() {
-            if used {
+            if used && fragment_analysis.partial_rules.get(rule)!=Some(&true) {
                 writeln!(out, "        {rule} => Some(&FRAGMENT_RULE_{rule}),").unwrap();
             }
         }
         out.push_str("        _ => None,\n    }}\n");
+        if general_fragment_rules.iter().enumerate().any(|(rule,&used)| used && fragment_analysis.partial_rules.get(rule)==Some(&true)) {
+            out.push_str("    #[inline]\n    fn partial_atomic_fragment(&self, rule: usize)->Option<&::grameo::program::AtomicFragment<'_>> { match rule {\n");
+            for (rule,&used) in general_fragment_rules.iter().enumerate() {
+                if used && fragment_analysis.partial_rules.get(rule)==Some(&true) {
+                    writeln!(out, "        {rule} => Some(&FRAGMENT_RULE_{rule}),").unwrap();
+                }
+            }
+            out.push_str("        _ => None,\n    }}\n");
+        }
     }
 
     let mut choices = grammar.literal_choices().peekable();
@@ -155,6 +275,15 @@ pub fn emit(grammar: &CompiledGrammar) -> Result<String, Vec<Diagnostic>> {
             writeln!(out, " {{ None }} else {{ Some({}) }} }},", choice.steps).unwrap();
         }
         out.push_str("        _ => None,\n    }}\n");
+    }
+    if native_choices || native_heads {
+        out.push_str("    #[inline]\n    fn native_hybrid_choices(&self) -> bool { true }\n");
+    }
+    if native_choices {
+        emit_native_choices(&mut out, grammar);
+    }
+    if native_heads {
+        emit_native_rule_heads(&mut out, grammar);
     }
     out.push_str("    #[inline]\n    fn borrowed_failure_prefixes(&self) -> bool { true }\n");
     out.push_str("    fn trivia_failure_prefix_ref(&self, rule: usize) -> Option<&::grameo::lexical::FailurePrefix> { const PREFIXES: &[::grameo::lexical::FailurePrefix] = &[\n");
@@ -276,6 +405,40 @@ pub fn emit(grammar: &CompiledGrammar) -> Result<String, Vec<Diagnostic>> {
         out.push_str("            _ => &[],\n        }),\n");
     }
     out.push_str("        _ => None,\n    }}\n");
+    nullable::emit(&mut out, grammar);
+    if grammar.native_token_compilation() && !out.contains("fn match_observers_are_noop") {out.push_str("    fn match_observers_are_noop(&self)->bool{true}\n");}
+    emit_source_units(&mut out, grammar);
+    let empty_heads:Vec<_>=(0..grammar.syntax().rules.len()).filter_map(|r|grammar.empty_success_head(r).map(|h|(r,*h))).collect();
+    if !empty_heads.is_empty(){
+        if !out.contains("fn match_observers_are_noop"){out.push_str("    fn match_observers_are_noop(&self)->bool{true}\n");}
+        out.push_str("    #[inline(always)]\n    fn empty_success_candidate(&self,rule:usize)->bool{matches!(rule,");
+        out.push_str(&empty_heads.iter().map(|(r,_)|r.to_string()).collect::<Vec<_>>().join("|"));out.push_str(")}\n");
+        out.push_str("    fn empty_success_metadata_is_current(&self)->bool{true}\n");
+        out.push_str("    fn empty_success_head(&self,rule:usize)->Option<&::grameo::program::EmptySuccessHead>{match rule{\n");
+        for (r,h) in empty_heads{writeln!(out,"        {r}=>Some(&::grameo::program::EmptySuccessHead{{expression:{},scope:{},first:{:?}}}),",h.expression,h.scope,h.first).unwrap();}
+        out.push_str("        _=>None,\n    }}\n");
+    }
+
+    let empty_suffixes:Vec<_>=(0..grammar.syntax().expressions.len()).filter_map(|id|grammar.empty_suffix_head(id).map(|h|(id,*h))).collect();
+    if !empty_suffixes.is_empty(){
+        if !out.contains("fn match_observers_are_noop"){out.push_str("    fn match_observers_are_noop(&self)->bool{true}\n");}
+        out.push_str("    #[inline(always)]\n    fn empty_suffix_candidate(&self,id:usize)->bool{matches!(id,");
+        out.push_str(&empty_suffixes.iter().map(|(id,_)|id.to_string()).collect::<Vec<_>>().join("|"));out.push_str(")}\n");
+        out.push_str("    fn empty_suffix_metadata_is_current(&self)->bool{true}\n");
+        out.push_str("    fn empty_suffix_head(&self,id:usize)->Option<&::grameo::program::EmptySuffixHead>{match id{\n");
+        for (id,h)in empty_suffixes{writeln!(out,"        {id}=>Some(&::grameo::program::EmptySuffixHead{{owner:{},owner_body:{},repetition:{},child:{},scope:{},first:{:?},calls:{:?},calls_len:{},depth:{}}}),",h.owner,h.owner_body,h.repetition,h.child,h.scope,h.first,h.calls,h.calls_len,h.depth).unwrap();}
+        out.push_str("        _=>None,\n    }}\n");
+    }
+    let owned:Vec<_>=(0..grammar.syntax().rules.len()).filter_map(|r|grammar.owned_capture_boundary(r).map(|c|(r,c))).collect();
+    if !owned.is_empty(){
+        if !out.contains("fn match_observers_are_noop"){out.push_str("    fn match_observers_are_noop(&self)->bool{true}\n");}
+        out.push_str("    fn owned_capture_boundary_metadata_is_current(&self)->bool{true}\n");
+        out.push_str("    fn owned_capture_boundary(&self,rule:usize)->Option<::grameo::program::OwnedCaptureBoundary<'_>>{match rule {\n");
+        for (rule,c) in owned {writeln!(out,"        {rule}=>Some(::grameo::program::OwnedCaptureBoundary{{expression:{},scope:{},capture_rules:&{:?}}}),",c.expression,c.scope,c.capture_rules).unwrap();}
+        out.push_str("        _=>None,\n    }}\n");
+    }
+
+    if !grammar.choice_head_rules().is_empty(){choice_heads::emit(&mut out,grammar);}
     out.push_str("    fn failure_terminals(&self, rule: usize) -> &[usize] { match rule {\n");
     for id in 0..grammar.syntax().rules.len() {
         let terminals = grammar.failure_terminals(id);
@@ -284,6 +447,70 @@ pub fn emit(grammar: &CompiledGrammar) -> Result<String, Vec<Diagnostic>> {
         }
     }
     out.push_str("        _ => &[],\n    }}\n");
+    if (0..grammar.syntax().expressions.len()).any(|id| grammar.shared_prefix_choice(id).is_some()) {
+        if !out.contains("    fn match_observers_are_noop(") { out.push_str("    fn match_observers_are_noop(&self) -> bool { true }\n"); }
+        out.push_str("    fn shared_prefix_choice(&self, id: usize) -> Option<::grameo::program::SharedPrefixChoice> { match id {\n");
+        for id in 0..grammar.syntax().expressions.len() {
+            if let Some(s) = grammar.shared_prefix_choice(id) {
+                writeln!(out,"        {id} => Some(::grameo::program::SharedPrefixChoice {{ target:{}, target_expression:{}, branch_expression:{}, branch_sequence:{}, left_choice:{}, wrapper_call:{}, right:{}, scope:{}, prefix_rule:{}, suffix_rule:{:?}, prior:{}, wrapper:{}, prefix:{}, suffix:{} }}),",s.target,s.target_expression,s.branch_expression,s.branch_sequence,s.left_choice,s.wrapper_call,s.right,s.scope,s.prefix_rule,s.suffix_rule,s.prior,s.wrapper,s.prefix,s.suffix).unwrap();
+            }
+        }
+        out.push_str("        _ => None,\n    }}\n");
+    }
+    if (0..grammar.syntax().expressions.len()).any(|id| grammar.shared_wrapper_prefix(id).is_some()) {
+        if !out.contains("    fn match_observers_are_noop(") { out.push_str("    fn match_observers_are_noop(&self) -> bool { true }\n"); }
+        out.push_str("    fn shared_wrapper_prefix_metadata_is_current(&self)->bool{true}\n");
+        out.push_str("    fn shared_wrapper_prefix(&self,id:usize)->Option<::grameo::program::SharedWrapperPrefix>{match id {\n");
+        for id in 0..grammar.syntax().expressions.len() {
+            if let Some(s)=grammar.shared_wrapper_prefix(id) {
+                writeln!(out,"        {id} => Some(::grameo::program::SharedWrapperPrefix {{choice:{},branch:{},fallback_rule:{},prefix:{},suffix:{},fallback:{}}}),",s.choice,s.branch,s.fallback_rule,s.prefix,s.suffix,s.fallback).unwrap();
+            }
+        }
+        out.push_str("        _=>None,\n    }}\n");
+    }
+    if (0..grammar.syntax().expressions.len()).any(|id|grammar.shared_group_prefix(id).is_some()) {
+        if !out.contains("fn match_observers_are_noop") { out.push_str("    fn match_observers_are_noop(&self)->bool{true}\n"); }
+        out.push_str("    fn shared_group_prefix(&self,id:usize)->Option<::grameo::program::SharedGroupPrefix>{match id {\n");
+        for id in 0..grammar.syntax().expressions.len(){if let Some(s)=grammar.shared_group_prefix(id){
+            writeln!(out,"        {id} => Some(::grameo::program::SharedGroupPrefix {{ target:{}, target_expression:{}, choice:{}, left:{}, right:{}, left_inner:{}, open:{}, branch_call:{}, close:{}, right_inner:{}, fallback_open:{}, optional:{}, fallback_close:{}, branch:{}, branch_expression:{}, fallback_rule:{}, fallback_expression:{}, prefix_rule:{}, prefix:{}, branch_tail:{}, fallback_inner:{}, fallback_prefix:{}, commas:{}, trailing:{} }}),",s.target,s.target_expression,s.choice,s.left,s.right,s.left_inner,s.open,s.branch_call,s.close,s.right_inner,s.fallback_open,s.optional,s.fallback_close,s.branch,s.branch_expression,s.fallback_rule,s.fallback_expression,s.prefix_rule,s.prefix,s.branch_tail,s.fallback_inner,s.fallback_prefix,s.commas,s.trailing).unwrap();
+        }}
+        out.push_str("        _=>None,\n    }}\n");
+    }
+    if (0..grammar.syntax().expressions.len()).any(|id|grammar.shared_inner_prefix(id).is_some()) {
+        if !out.contains("fn match_observers_are_noop") { out.push_str("    fn match_observers_are_noop(&self)->bool{true}\n"); }
+        out.push_str("    fn shared_inner_prefix(&self,id:usize)->Option<::grameo::program::SharedInnerPrefix>{match id {\n");
+        for id in 0..grammar.syntax().expressions.len(){if let Some(s)=grammar.shared_inner_prefix(id){
+            writeln!(out,"        {id} => Some(::grameo::program::SharedInnerPrefix {{ target:{}, target_expression:{}, choice:{}, left:{}, right:{}, prefix_rule:{}, prefix:{}, first:{}, second:{}, third:{}, kind:{} }}),",s.target,s.target_expression,s.choice,s.left,s.right,s.prefix_rule,s.prefix,s.first,s.second,s.third,s.kind).unwrap();
+        }}
+        out.push_str("        _=>None,\n    }}\n");
+    }
+    let operator_rhs:Vec<_>=(0..grammar.syntax().rules.len()).flat_map(|target|grammar.source_pratt(target).into_iter().flat_map(move |spec|spec.operators.iter().filter_map(move |op|grammar.source_pratt_operator_rhs_atom(target,op.rule).map(|atom|(target,op.rule,atom))))).collect();
+    if !operator_rhs.is_empty() {
+        out.push_str("    fn source_pratt_operator_rhs_atom(&self, target: usize, operator: usize) -> Option<usize> { match (target, operator) {\n");
+        for (target,operator,atom) in operator_rhs {writeln!(out,"        ({target}, {operator}) => Some({atom}),").unwrap();}
+        out.push_str("        _ => None,\n    }}\n");
+    }
+    if (0..grammar.syntax().rules.len()).any(|id| grammar.source_pratt_rhs_operator(id).is_some()) {
+        out.push_str("    fn source_pratt_rhs_operator(&self, rule: usize) -> Option<usize> { match rule {\n");
+        for id in 0..grammar.syntax().rules.len() { if let Some(operator)=grammar.source_pratt_rhs_operator(id) {writeln!(out,"        {id} => Some({operator}),").unwrap();} }
+        out.push_str("        _ => None,\n    }}\n");
+    }
+    if (0..grammar.syntax().rules.len()).any(|id| grammar.source_pratt_rhs_atom(id).is_some()) {
+        out.push_str("    fn source_pratt_rhs_atom(&self, rule: usize) -> Option<usize> { match rule {\n");
+        for id in 0..grammar.syntax().rules.len() {
+            if let Some(rhs) = grammar.source_pratt_rhs_atom(id) {
+                writeln!(out, "        {id} => Some({rhs}),").unwrap();
+            }
+        }
+        out.push_str("        _ => None,\n    }}\n");
+    }
+    if (0..grammar.syntax().rules.len()).any(|id|grammar.source_pratt_operator_trivia(id).is_some()) {
+        out.push_str("    fn source_pratt_operator_trivia(&self, rule: usize) -> Option<usize> { match rule {\n");
+        for id in 0..grammar.syntax().rules.len() {
+            if let Some(trivia)=grammar.source_pratt_operator_trivia(id) {writeln!(out,"        {id} => Some({trivia}),").unwrap();}
+        }
+        out.push_str("        _ => None,\n    }}\n");
+    }
     if (0..grammar.syntax().rules.len()).any(|id| grammar.source_pratt(id).is_some()) {
         out.push_str("    fn source_pratt(&self, rule: usize) -> Option<::grameo::program::SourcePratt<'_>> { match rule {\n");
         for id in 0..grammar.syntax().rules.len() {
@@ -394,12 +621,27 @@ pub fn emit(grammar: &CompiledGrammar) -> Result<String, Vec<Diagnostic>> {
     out.push_str("    ]\n};\n");
     if has_fragments {
         for (rule, spec) in fragments.iter().enumerate() {
-            if let Some(spec) = spec {
+            if let Some(spec) = spec && general_fragment_rules[rule] {
                 writeln!(out, "static FRAGMENT_RULE_{rule}: ::grameo::program::AtomicFragment<'static> = {spec};").unwrap();
             }
         }
     }
-    out.push_str("impl Parser {\n    pub fn parse<'g, 'i>(&'g self, rule: Rule, input: &'i str) -> Result<::grameo::ParseTree<'g, 'i>, ::grameo::ParseError> {\n        ::grameo::engine::parse_program(self, rule.name(), input, ::grameo::MatchOptions::default())\n    }\n    pub fn recognize(&self, rule: Rule, input: &str) -> Result<::grameo::Recognition, ::grameo::ParseError> {\n        ::grameo::engine::recognize_program(self, rule.name(), input, ::grameo::MatchOptions::default())\n    }\n}\n");
+    out.push_str("impl Parser {\n    pub fn parse<'g, 'i>(&'g self, rule: Rule, input: &'i str) -> Result<::grameo::ParseTree<'g, 'i>, ::grameo::ParseError> {\n        ::grameo::engine::parse_program(self, rule.name(), input, ::grameo::MatchOptions::default())\n    }\n}\n");
+    if api.recognize {
+        out.push_str("impl Parser {\n    pub fn recognize(&self, rule: Rule, input: &str) -> Result<::grameo::Recognition, ::grameo::ParseError> {\n        ::grameo::engine::recognize_program(self, rule.name(), input, ::grameo::MatchOptions::default())\n    }\n}\n");
+    }
+    if api.build_ast {
+        out.push_str("impl Parser {\n    pub fn build_ast<B: ::grameo::builder::Builder>(&self, rule: Rule, input: &str, builder: &mut B) -> Result<usize, ::grameo::ParseError> {\n        ::grameo::engine::build_ast_program(self, rule.name(), input, ::grameo::MatchOptions::default(), builder)\n    }\n}\n");
+    }
+    if api.build_ast || api.build_captures {
+        ast::emit(grammar, &mut out, api.build_ast, schema)?;
+    }
+    let semantic_capture_program = if stack_free { "build_stackfree_compact_capture_program" } else { "build_compact_capture_program" };
+    if api.build_captures {
+        writeln!(out, "impl Parser {{\n    pub fn build_captures<'g, 'i, B: ::grameo::builder::Builder>(&'g self, rule: Rule, input: &'i str, builder: &mut B) -> Result<::grameo::ParseTree<'g, 'i>, ::grameo::ParseError> {{\n        ::grameo::engine::{semantic_capture_program}(self, rule.name(), input, ::grameo::MatchOptions::default(), builder)\n    }}\n}}\n").unwrap();
+        let semantic_capture_program_at = if stack_free { "build_stackfree_compact_capture_program_at" } else { "build_compact_capture_program_at" };
+        writeln!(out, "impl Parser {{\n    pub fn build_captures_at<'g, 'i, B: ::grameo::builder::Builder>(&'g self, rule: Rule, input: &'i str, start_offset: usize, builder: &mut B) -> Result<::grameo::ParseTree<'g, 'i>, ::grameo::ParseError> {{\n        ::grameo::engine::{semantic_capture_program_at}(self, rule.name(), input, start_offset, ::grameo::MatchOptions::default(), builder)\n    }}\n}}\n").unwrap();
+    }
     out.push_str("impl ::grameo::compat::RuleIdentity for Rule {\n    fn from_capture(capture: ::grameo::CaptureRule) -> Option<Self> { Self::from_capture(capture) }\n}\nimpl Parser {\n    pub fn parse_pairs<'i>(&self, rule: Rule, input: &'i str) -> Result<::grameo::compat::Pairs<'i, Rule>, ::grameo::ParseError> {\n        self.parse(rule, input).map(|tree| tree.into_typed_pairs())\n    }\n}\n");
     Ok(out)
 }
@@ -489,6 +731,8 @@ fn fragment_class(
                 Builtin::AsciiNonzeroDigit => |b| (b'1'..=b'9').contains(&b),
                 Builtin::AsciiBinDigit => |b| matches!(b, b'0' | b'1'),
                 Builtin::AsciiOctDigit => |b| (b'0'..=b'7').contains(&b),
+                Builtin::XidStart if g.optimization_selection().ascii_xid => |b| b.is_ascii_alphabetic(),
+                Builtin::XidContinue if g.optimization_selection().ascii_xid => |b| b.is_ascii_alphanumeric() || b == b'_',
                 _ => return None,
             };
             (
@@ -562,10 +806,12 @@ enum FragmentMemo {
 }
 struct FragmentAnalysis {
     bytes: Vec<FragmentMemo>,
+    ascii_xid: bool,
+    partial_rules: Vec<bool>,
 }
 impl FragmentAnalysis {
     fn new(_g: &CompiledGrammar) -> Self {
-        Self { bytes: Vec::new() }
+        Self { bytes: Vec::new(), ascii_xid: false, partial_rules: Vec::new() }
     }
     fn eof(&self, g: &CompiledGrammar, id: usize) -> Option<(bool, usize, Vec<String>)> {
         fragment_class(g, id, None)
@@ -612,7 +858,7 @@ impl FragmentAnalysis {
                     | grameo::Builtin::AsciiNonzeroDigit
                     | grameo::Builtin::AsciiBinDigit
                     | grameo::Builtin::AsciiOctDigit
-            ),
+            ) || self.ascii_xid && matches!(b, grameo::Builtin::XidStart | grameo::Builtin::XidContinue),
             Instruction::Literal {
                 text,
                 insensitive: false,
@@ -683,6 +929,8 @@ impl FragmentAnalysis {
                         Builtin::AsciiNonzeroDigit => Some(|b| (b'1'..=b'9').contains(&b)),
                         Builtin::AsciiBinDigit => Some(|b| matches!(b, b'0' | b'1')),
                         Builtin::AsciiOctDigit => Some(|b| (b'0'..=b'7').contains(&b)),
+                        Builtin::XidStart if self.ascii_xid => Some(|b| b.is_ascii_alphabetic()),
+                        Builtin::XidContinue if self.ascii_xid => Some(|b| b.is_ascii_alphanumeric() || b == b'_'),
                         _ => None,
                     };
                     if let Some(accepts) = accepts {
@@ -690,6 +938,7 @@ impl FragmentAnalysis {
                         certificate.cost.fill(1);
                         for byte in 0u8..=255 {
                             certificate.matched[usize::from(byte)] = accepts(byte);
+                            if matches!(b,Builtin::XidStart|Builtin::XidContinue) && byte>=128 { certificate.valid[usize::from(byte)]=false; }
                         }
                     }
                 }
@@ -979,21 +1228,29 @@ fn fragment_spec(
     let (_, head_failure_steps, head_expected) = analysis.eof(g, segments[0])?;
     let first_certificate = analysis.certificate(g, segments[0])?;
     let tail_certificate = analysis.certificate(g, expression)?;
+    let mut partial = false;
     let mut first = Vec::new();
     let mut tail = Vec::new();
     for byte in 0..=255 {
-        let (matched, cost, _) = first_certificate.probe(byte)?;
+        let (matched, cost, _) = match first_certificate.probe(byte) { Some(v)=>v, None if analysis.ascii_xid && byte>=128=>{partial=true;first.push(u16::MAX);tail.push(u16::MAX);continue;}, None=>return None };
         first.push(if matched {
             u16::try_from(cost).ok()?
         } else {
             0
         });
-        let (matched, cost, _) = tail_certificate.probe(byte)?;
+        let (matched, cost, _) = match tail_certificate.probe(byte) { Some(v)=>v, None if analysis.ascii_xid && byte>=128=>{partial=true;tail.push(u16::MAX);continue;}, None=>return None };
         tail.push(if matched {
             u16::try_from(cost).ok()?
         } else {
             0
         });
+    }
+    if partial {
+        // Only explicitly partial tables reserve the sentinel. Ordinary tables
+        // retain every previously valid u16 cost, including u16::MAX.
+        if first[..128].contains(&u16::MAX) || tail[..128].contains(&u16::MAX) { return None; }
+        analysis.partial_rules.resize(g.syntax().rules.len(),false);
+        analysis.partial_rules[rule]=true;
     }
     let head_failure_safe = guard_alternatives.iter().all(|(text, insensitive, _)| {
         let byte = text.as_bytes()[0];
@@ -1181,4 +1438,170 @@ mod fragment_byte_tests {
             }
         }
     }
+}
+
+#[derive(Clone)]
+struct NativeChoiceProof {
+    bytes: [u64; 4],
+    steps: usize,
+    depth: usize,
+    diagnostic_complete: bool,
+    events: Vec<(usize, Option<usize>)>,
+    calls: usize,
+    contains_literal: bool,
+}
+fn native_choice_proof(
+    grammar: &CompiledGrammar,
+    id: usize,
+    nesting: usize,
+) -> Option<NativeChoiceProof> {
+    if nesting >= 32 {
+        return None;
+    }
+    match grammar.instruction(id) {
+        Instruction::Literal { text, insensitive } => {
+            let byte = *text.as_bytes().first()?;
+            // ASCII prefixes are sufficient certificates even for UTF-8 input.
+            // Empty/non-ASCII literals retain the ordinary matching path.
+            if !byte.is_ascii() { return None; }
+            let mut bytes = [0u64; 4];
+            for candidate in [byte, if insensitive {byte.to_ascii_uppercase()} else {byte}, if insensitive {byte.to_ascii_lowercase()} else {byte}] {
+                bytes[usize::from(candidate/64)] |= 1u64 << (candidate%64);
+            }
+            Some(NativeChoiceProof { bytes, steps: 1, depth: 0,
+                diagnostic_complete: false, events: vec![(id,None)], calls: 0, contains_literal: true })
+        }
+        Instruction::Call(rule) => {
+            let prefix = grammar.trivia_failure_prefix(rule)?;
+            Some(NativeChoiceProof {
+                bytes: prefix.bytes,
+                steps: prefix.steps.checked_add(3)?,
+                depth: prefix.depth.checked_add(1)?,
+                diagnostic_complete: !grammar.failure_terminals(rule).is_empty(),
+                events: vec![(id, Some(rule))],
+                calls: 1,
+                contains_literal: false,
+            })
+        }
+        Instruction::Group(child) => {
+            let mut proof = native_choice_proof(grammar, child, nesting + 1)?;
+            if proof.contains_literal && grammar.terminal_choice(id).is_some() {return None;}
+            proof.steps = proof.steps.checked_add(1)?;
+            proof.events.insert(0, (id, None));
+            Some(proof)
+        }
+        Instruction::Sequence { left, .. } => {
+            // A certified failure in the left child never evaluates the right.
+            // Preserve Eval, Sequence continuation and FinishExpr logical work.
+            let mut proof = native_choice_proof(grammar, left, nesting + 1)?;
+            proof.steps = proof.steps.checked_add(3)?;
+            proof.events.insert(0, (id, None));
+            Some(proof)
+        }
+        Instruction::Choice { left, right } => {
+            let mut left = native_choice_proof(grammar, left, nesting + 1)?;
+            let right = native_choice_proof(grammar, right, nesting + 1)?;
+            if (left.contains_literal || right.contains_literal) && grammar.terminal_choice(id).is_some() {return None;}
+            left.contains_literal |= right.contains_literal;
+            if left.calls + right.calls > 32 {
+                return None;
+            }
+            for index in 0..4 {
+                left.bytes[index] |= right.bytes[index];
+            }
+            left.steps = left.steps.checked_add(right.steps)?.checked_add(2)?;
+            left.depth = left.depth.max(right.depth);
+            left.diagnostic_complete &= right.diagnostic_complete;
+            left.calls += right.calls;
+            left.events.insert(0, (id, None));
+            left.events.extend(right.events);
+            Some(left)
+        }
+        _ => None,
+    }
+}
+fn emit_source_units(out: &mut String, grammar: &CompiledGrammar) {
+    if grammar.code_space() == grameo::source_units::CodeSpace::Request {
+        out.push_str("    fn code_space(&self) -> ::grameo::source_units::CodeSpace { ::grameo::source_units::CodeSpace::Request }\n");
+    }
+    let bindings: Vec<_> = grammar.source_unit_bindings().collect();
+    // Preserve byte-identical default generated output when no hook is bound.
+    if bindings.is_empty() { return; }
+    out.push_str("    fn source_unit_binding(&self, rule:usize, selector:Option<usize>) -> Option<::grameo::source_units::Binding<'_>> {\n        use ::grameo::source_units::*;\n        match (rule, selector) {\n");
+    for b in bindings {
+        write!(out, "            ({}, {:?}) => Some(Binding {{rule:{},target:{},selector:{:?},loader:{:?},policy:Policy {{phase:Phase::{:?},repetition:Repetition::{:?},missing:Missing::{:?},scope:Scope::{:?}",
+            b.rule, b.selector, b.rule, b.target, b.selector, b.loader,
+            b.policy.phase, b.policy.repetition, b.policy.missing, b.policy.scope).unwrap();
+        out.push_str("}}),\n");
+    }
+    out.push_str("            _ => None\n        }\n    }\n");
+}
+
+fn emit_native_choices(out: &mut String, grammar: &CompiledGrammar) {
+
+    writeln!(out, "    #[inline]\n    fn native_hybrid_choice_prefix(&self, id: usize) -> Option<&::grameo::program::NativeChoicePrefix<'_>> {{ const PREFIXES: [Option<&::grameo::program::NativeChoicePrefix<'static>>; {}] = [", grammar.syntax().expressions.len()).unwrap();
+    for id in 0..grammar.syntax().expressions.len() {
+        let proof = match grammar.instruction(id) {
+            Instruction::Choice { left, .. } => native_choice_proof(grammar, left, 0),
+            _ => None,
+        };
+        let Some(proof) = proof else {
+            out.push_str("        None,\n");
+            continue;
+        };
+        write!(out, "        Some(&::grameo::program::NativeChoicePrefix {{ bytes: {:?}, steps: {}, depth: {}, diagnostic_complete: {}, events: &[", proof.bytes, proof.steps, proof.depth, proof.diagnostic_complete).unwrap();
+        for (expression, rule) in proof.events {
+            if let Some(rule) = rule {
+                write!(out, "::grameo::program::NativeChoiceEvent::Call {{ expression: {expression}, rule: {rule} }},").unwrap();
+            } else {
+                write!(
+                    out,
+                    "::grameo::program::NativeChoiceEvent::Expression({expression}),"
+                )
+                .unwrap();
+            }
+        }
+        out.push_str("] }),\n");
+    }
+    out.push_str("    ]; PREFIXES[id] }\n");
+}
+
+fn emit_native_rule_heads(out: &mut String, grammar: &CompiledGrammar) {
+    writeln!(out, "    #[inline]\n    fn native_hybrid_rule_head(&self, rule: usize) -> Option<&::grameo::program::NativeRuleHead<'_>> {{ const HEADS: [Option<&::grameo::program::NativeRuleHead<'static>>; {}] = [",grammar.syntax().rules.len()).unwrap();
+    for rule in 0..grammar.syntax().rules.len() {
+        let mut id = grammar.rule(rule).expression;
+        let mut sequences = Vec::new();
+        while let Instruction::Sequence { left, right } = grammar.instruction(id) {
+            sequences.push((id, right));
+            id = left;
+        }
+        if sequences.len() <= 32
+            && let Instruction::Call(callee) = grammar.instruction(id)
+        {
+            writeln!(out,"Some(&::grameo::program::NativeRuleHead {{ sequences: &{:?}, call_expression: {}, callee: {} }}),",sequences,id,callee).unwrap();
+        } else {
+            out.push_str("None,\n");
+        }
+    }
+    out.push_str("    ]; HEADS[rule] }\n");
+}
+
+#[cfg(test)]mod native_literal_certification_tests {
+ use super::*;
+ fn proof(source:&str)->Option<NativeChoiceProof>{let grammar=grameo::compile(source).unwrap();native_choice_proof(&grammar,grammar.rule(0).expression,0)}
+ #[test]fn ascii_literal_miss_certificate_keeps_case_and_logical_work(){
+  let p=proof("entry = { ^\"Aλ\" }").unwrap();assert_eq!((p.steps,p.depth,p.calls,p.diagnostic_complete),(1,0,0,false));
+  for byte in [b'A',b'a']{assert_ne!(p.bytes[usize::from(byte/64)]&(1u64<<(byte%64)),0);}
+  assert_eq!(p.bytes[usize::from(b'b'/64)]&(1u64<<(b'b'%64)),0);
+ }
+ #[test]fn empty_and_unicode_first_literals_keep_fallback(){for source in["entry = { \"\" }","entry = { \"λ\" }"]{assert!(proof(source).is_none());}}
+ #[test]fn terminal_shortcuts_keep_their_own_event_order(){assert!(proof("entry = { \"a\" | \"b\" | \"c\" | \"d\" | \"e\" | \"f\" | \"g\" | \"h\" }").is_none());}
+ #[test]fn literal_prefixes_aggregate_across_nonterminal_choices(){let p=proof("entry = { (\"(\" ~ target) | target }\ntarget = { \"a\" }").unwrap();assert!(p.contains_literal);assert_eq!(p.calls,1);assert!(p.steps>4);}
+ #[test]fn failed_left_literal_skips_only_certified_sequence_work(){let p=proof("entry = { \"(\" ~ target }\ntarget = { \"a\" }").unwrap();assert_eq!((p.steps,p.depth,p.calls),(4,0,0));assert_eq!(p.events.len(),2);assert!(p.contains_literal);}
+}
+
+#[cfg(test)]mod ascii_xid_fragment_tests {
+ use super::*;
+ #[test]fn unicode_lanes_require_whole_rule_fallback(){let g=grameo::compile("word = @{ XID_START ~ XID_CONTINUE* }").unwrap();let mut a=FragmentAnalysis::new(&g);assert!(fragment_spec(&g,0,&mut a).is_none());let mut a=FragmentAnalysis::new(&g);a.ascii_xid=true;let root=g.rule(0).expression;let Instruction::Sequence{left,right}=g.instruction(root)else{panic!()};assert!(a.certificate(&g,left).unwrap().probe(b'a').unwrap().0);assert!(!a.certificate(&g,left).unwrap().probe(b'_').unwrap().0);assert!(a.certificate(&g,left).unwrap().probe(0xc3).is_none());let Instruction::Repeat{expression,..}=g.instruction(right)else{panic!()};assert!(a.certificate(&g,expression).unwrap().probe(b'_').unwrap().0);assert!(a.certificate(&g,expression).unwrap().probe(0xce).is_none());}
+ #[test]fn default_emission_keeps_unicode_identifiers_interpreted(){let g=grameo::compile("root = { word }\nword = @{ (XID_START | \"_\") ~ XID_CONTINUE* }").unwrap();let normal=emit_with_api(&g,ParserApi::HYBRID_CAPTURES).unwrap();let opted=grameo::compile_with_options("// @grameo optimize ascii_xid\nroot = { word }\nword = @{ (XID_START | \"_\") ~ XID_CONTINUE* }",grameo::CompileOptions{optimizations:true,..Default::default()}).unwrap();let native=emit_with_api(&opted,ParserApi::HYBRID_CAPTURES).unwrap();assert!(!normal.contains("FRAGMENT_RULE_1"));assert!(native.contains("FRAGMENT_RULE_1"));}
 }

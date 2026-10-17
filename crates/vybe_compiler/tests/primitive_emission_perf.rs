@@ -906,7 +906,11 @@ fn typed_equality_loop_matches_dynamic_result() {
     }
 }
 
-fn similarity_program(emitter: fn(&mut [Chunk], usize, u8, u32), args: &[&str]) -> Vec<Chunk> {
+fn emit_levenshtein_vec(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    string_similarity::emit_levenshtein(chunks, current, argc, line);
+}
+
+fn similarity_program(emitter: fn(&mut Vec<Chunk>, usize, u8, u32), args: &[&str]) -> Vec<Chunk> {
     let mut chunks = vec![Chunk::new("<similarity>")];
     for value in args {
         chunks[0].emit_string_const(value, 0);
@@ -927,7 +931,7 @@ fn string_similarity_known_types_keep_distance_and_phonetic_results() {
         ("same", "same", 0),
         ("abcd", "dcba", 4),
     ] {
-        let chunks = similarity_program(string_similarity::emit_levenshtein, &[a, b]);
+        let chunks = similarity_program(emit_levenshtein_vec, &[a, b]);
         assert_eq!(vm(Value::Null).run(chunks).unwrap().as_i32(), expected);
     }
     for (input, expected) in [
@@ -966,7 +970,7 @@ fn similarity_emission_benchmark() {
     for (name, emitter, args) in [
         (
             "levenshtein",
-            string_similarity::emit_levenshtein as fn(&mut [Chunk], usize, u8, u32),
+            emit_levenshtein_vec as fn(&mut Vec<Chunk>, usize, u8, u32),
             vec!["abcdefghijklmnopqrstuvwx", "xwvutsrqponmlkjihgfedcba"],
         ),
         ("soundex", string_similarity::emit_soundex, vec!["Pfister"]),
@@ -996,7 +1000,7 @@ fn optimized_wasm_fixtures() -> [(&'static str, Vec<Chunk>); 13] {
     [
         (
             "levenshtein",
-            similarity_program(string_similarity::emit_levenshtein, &["kitten", "sitting"]),
+            similarity_program(emit_levenshtein_vec, &["kitten", "sitting"]),
         ),
         (
             "soundex",

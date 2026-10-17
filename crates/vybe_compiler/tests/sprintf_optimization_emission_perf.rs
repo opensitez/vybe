@@ -3,6 +3,9 @@ use vybe_runtime::{Chunk, Op, VM, Value};
 #[path = "fixtures/sprintf_optimization_arguments.rs"]
 mod baseline;
 fn program(old: bool, count: u8, repeats: usize) -> Vec<Chunk> {
+    program_with_identity(old, count, repeats, false)
+}
+fn program_with_identity(old: bool, count: u8, repeats: usize, identity: bool) -> Vec<Chunk> {
     let mut chunks = vec![Chunk::new("<sprintf-arguments>")];
     for repeat in 0..repeats {
         globals::emit_read(&mut chunks[0], "fmt", 0);
@@ -19,6 +22,20 @@ fn program(old: bool, count: u8, repeats: usize) -> Vec<Chunk> {
         }
     }
     chunks[0].emit_op(Op::RETURN, 0);
+    // Replace before linking: formatter string imports must not remain in
+    // the normalized module namespace after its body is removed.
+    if identity {
+        // Test the call ABI directly, independently of formatter coercions.
+        let helper = chunks
+            .iter_mut()
+            .find(|c| c.name == "__fmt_sprintf")
+            .unwrap();
+        *helper = Chunk::new("__fmt_sprintf");
+        helper.arity = 2;
+        helper.local_count = 2;
+        helper.emit_op_u16(Op::LOCAL_GET, 1, 0);
+        helper.emit_op(Op::RETURN, 0);
+    }
     bundle::finalize_with_runtime_helpers(&mut chunks);
     globals::declare_free_globals(&mut chunks);
     globals::normalize_global_table(&mut chunks);
@@ -94,17 +111,7 @@ fn packing_retains_array_argument_identity() {
     ));
     let args = vec![Value::I32(1), object.clone(), Value::String("end".into())];
     for old in [true, false] {
-        let mut chunks = program(old, 3, 1);
-        // Test the call ABI directly, independently of formatter coercions.
-        let helper = chunks
-            .iter_mut()
-            .find(|c| c.name == "__fmt_sprintf")
-            .unwrap();
-        *helper = Chunk::new("__fmt_sprintf");
-        helper.arity = 2;
-        helper.local_count = 2;
-        helper.emit_op_u16(Op::LOCAL_GET, 1, 0);
-        helper.emit_op(Op::RETURN, 0);
+        let chunks = program_with_identity(old, 3, 1, true);
         let result = execute(&chunks, "%s%s%s", &args);
         let Value::Object(array) = result else {
             panic!("expected packed arguments")

@@ -325,6 +325,36 @@ fn eq_null_and_undefined_are_equal() {
 }
 
 #[test]
+fn eq_undefined_and_null_are_equal_in_both_orders() {
+    for null_on_left in [false, true] {
+        let r = run(|c| {
+            if null_on_left {
+                push(c, Value::Null);
+                push(c, Value::Undefined);
+            } else {
+                push(c, Value::Undefined);
+                push(c, Value::Null);
+            }
+            ops::emit_dyn_eq(c, 0);
+        });
+        assert_eq!(r.as_i32(), 1);
+
+        let r = run(|c| {
+            if null_on_left {
+                push(c, Value::Null);
+                push(c, Value::Undefined);
+            } else {
+                push(c, Value::Undefined);
+                push(c, Value::Null);
+            }
+            let mut imports = Chunk::new("imports");
+            ops::emit_dyn_eq_into(&mut imports, c, 0);
+        });
+        assert_eq!(r.as_i32(), 1);
+    }
+}
+
+#[test]
 fn eq_same_bigints() {
     let r = run(|c| {
         push(c, Value::bigint_i64(42));

@@ -299,7 +299,7 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
         }
         // `GetItem` IS bound above, so the blanket arm must not claim it —
         // the same contradiction `(Int, Mod)` had once Python bound it.
-        (T::Bytes, S::GetItem) => return None,
+        (T::Bytes, S::GetItem | S::SetItem) => return None,
         (T::Bytes, _) => {
             "`Literal::Bytes` now exists (unifiedstringplan.md §3c) and \
              `GetItem` is bound above; the remaining bytes slots are unmeasured, \
@@ -307,7 +307,7 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
         }
         // `(Int, Mod)` is bound by Python (floored `%`), so `Int` can no longer
         // claim a blanket reason — only the slots nobody has measured.
-        (T::Int, S::Mod) => return None,
+        (T::Int, S::Mod | S::IDiv) => return None,
         (
             T::Int | T::Double,
             S::Add | S::Sub | S::Mul | S::Div | S::Eq | S::Ne | S::Lt | S::Le | S::Gt | S::Ge,
