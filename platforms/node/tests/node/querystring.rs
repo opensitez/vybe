@@ -176,7 +176,8 @@ fn stringify_simple_object() {
 fn stringify_array_value_produces_repeated_key() {
     let mut obj = Object::new();
     let arr = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object {
-        kind: ObjectKind::Array(vec![s("x"), s("y")]),
+        descriptor: None,
+            kind: ObjectKind::Array(vec![s("x"), s("y")]),
         properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),

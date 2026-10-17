@@ -582,6 +582,7 @@ fn read_sync_returns_bytes_read_count() {
     // Build a 10-byte buffer (Array of zeroed I32s)
     let buf = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
         vybe_runtime::value::Object {
+            descriptor: None,
             kind: ObjectKind::Array(vec![Value::I32(0); 10]),
             properties: Default::default(),
             type_id: 0,
@@ -1092,6 +1093,7 @@ fn write_sync_with_buffer_writes_bytes() {
     let fd = call_fs("openSync", vec![s(file.to_str().unwrap()), s("w")]);
     let buf = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
         vybe_runtime::value::Object {
+            descriptor: None,
             kind: ObjectKind::Array(vec![Value::I32(0x41), Value::I32(0x42)]), // "AB"
             properties: Default::default(),
             type_id: 0,

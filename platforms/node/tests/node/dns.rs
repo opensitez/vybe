@@ -117,7 +117,8 @@ fn get_servers_entries_are_strings() {
 #[test]
 fn set_servers_accepts_array_without_panic() {
     let servers = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object {
-        kind: ObjectKind::Array(vec![s("8.8.8.8"), s("1.1.1.1")]),
+        descriptor: None,
+            kind: ObjectKind::Array(vec![s("8.8.8.8"), s("1.1.1.1")]),
         properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),
@@ -129,7 +130,8 @@ fn set_servers_accepts_array_without_panic() {
 #[test]
 fn set_servers_then_get_servers_reflects_change() {
     let new_servers = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object {
-        kind: ObjectKind::Array(vec![s("9.9.9.9")]),
+        descriptor: None,
+            kind: ObjectKind::Array(vec![s("9.9.9.9")]),
         properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),
@@ -189,7 +191,8 @@ fn resolver_get_servers_returns_array() {
 fn resolver_set_servers_accepts_array() {
     let resolver = call_dns("Resolver", vec![]);
     let servers = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object {
-        kind: ObjectKind::Array(vec![s("8.8.8.8")]),
+        descriptor: None,
+            kind: ObjectKind::Array(vec![s("8.8.8.8")]),
         properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),

@@ -78,7 +78,8 @@ fn s(text: &str) -> Value {
 fn bytes_buf(bytes: &[u8]) -> Value {
     let elems = bytes.iter().map(|&b| Value::I32(b as i32)).collect();
     Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object {
-        kind: ObjectKind::Array(elems),
+        descriptor: None,
+            kind: ObjectKind::Array(elems),
         properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),

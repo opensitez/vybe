@@ -21,20 +21,32 @@ fn bytes_to_buf(bytes: Vec<u8>) -> Value {
 }
 
 fn hex_decode(s: &str) -> Vec<u8> {
-    let s = s.trim();
-    let mut bytes = Vec::new();
-    let mut i = 0;
-    while i + 1 < s.len() {
-        if let Ok(b) = u8::from_str_radix(&s[i..i + 2], 16) {
-            bytes.push(b);
+    fn digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
         }
-        i += 2;
+    }
+    let mut bytes = Vec::with_capacity(s.len() / 2);
+    for pair in s.as_bytes().chunks_exact(2) {
+        let (Some(hi), Some(lo)) = (digit(pair[0]), digit(pair[1])) else {
+            break;
+        };
+        bytes.push((hi << 4) | lo);
     }
     bytes
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(DIGITS[(byte >> 4) as usize] as char);
+        out.push(DIGITS[(byte & 15) as usize] as char);
+    }
+    out
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -164,7 +176,7 @@ fn decode_with_encoding(s: &str, enc: &str) -> Vec<u8> {
     match enc.to_lowercase().as_str() {
         "hex" => hex_decode(s),
         "base64" | "base64url" => base64_decode(s),
-        "latin1" | "binary" | "ascii" => s.chars().map(|c| c as u8).collect(),
+        "latin1" | "binary" | "ascii" => s.encode_utf16().map(|unit| unit as u8).collect(),
         "utf16le" | "ucs2" => {
             let chars: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
             chars

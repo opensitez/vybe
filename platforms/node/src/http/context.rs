@@ -241,6 +241,12 @@ pub fn take_context() -> Option<Arc<RequestContext>> {
     REQUEST_CONTEXT.with(|slot| slot.borrow_mut().take())
 }
 
+/// Retain the current request for an asynchronous host consumer. Capturing it
+/// at submission prevents later callbacks from writing to a different tenant.
+pub fn current_context() -> Option<Arc<RequestContext>> {
+    REQUEST_CONTEXT.with(|slot| slot.borrow().clone())
+}
+
 /// Run `f` with a shared reference to the current request context.
 /// Returns `None` when called in CLI mode (no server running).
 pub fn with_context<R>(f: impl FnOnce(&RequestContext) -> R) -> Option<R> {

@@ -99,7 +99,8 @@ fn prop(v: &Value, key: &str) -> Value {
 
 fn arr(elems: Vec<Value>) -> Value {
     Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        kind: ObjectKind::Array(elems),
+        descriptor: None,
+            kind: ObjectKind::Array(elems),
         properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),
