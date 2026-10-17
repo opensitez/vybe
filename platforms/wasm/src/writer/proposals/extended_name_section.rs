@@ -45,18 +45,17 @@
 //! module. It's the only entry point the writer pipeline needs.
 
 use crate::encoding::*;
-use crate::writer::sections::rt_globals;
+use crate::writer::sections::{HostImport, rt_globals};
 use crate::writer::types::WasmTypeContext;
 use vybe_runtime::Chunk;
 use vybe_runtime::Op;
-use vybe_runtime::chunk::Import;
 
 /// Produce the payload of the `"name"` custom section for the given
 /// chunks + declared imports/globals. The caller wraps this in a
 /// `SECTION_CUSTOM` with name `"name"`.
 pub fn encode_name_section_payload(
     chunks: &[Chunk],
-    host_imports: &[Import],
+    host_imports: &[HostImport],
     rt_imports: &[(&str, &str)],
     type_ctx: &WasmTypeContext,
 ) -> Vec<u8> {
@@ -81,7 +80,10 @@ pub fn encode_name_section_payload(
         // Host imports
         for imp in host_imports {
             write_leb128_u32(&mut sub, idx);
-            write_name(&mut sub, &format!("{}.{}", imp.module, imp.name));
+            write_name(
+                &mut sub,
+                &format!("{}.{}", imp.import.module, imp.import.name),
+            );
             idx += 1;
         }
         // Runtime / builtin imports
@@ -184,37 +186,6 @@ pub fn encode_name_section_payload(
         }
     }
 
-    // Subsection 10: field names — per struct-type indirect map of
-    // field index → field name. Makes `struct.get N` readable in
-    // DevTools as e.g. `Button.x` instead of `struct_7.field_0`.
-    {
-        // Build (struct_type_idx, fields) pairs sorted by type index.
-        let mut entries: Vec<(u32, Vec<String>)> = type_ctx
-            .struct_fields
-            .iter()
-            .filter_map(|(name_lc, fields)| {
-                type_ctx
-                    .struct_type_indices
-                    .get(name_lc)
-                    .map(|idx| (*idx, fields.clone()))
-            })
-            .collect();
-        entries.sort_by_key(|(i, _)| *i);
-        if !entries.is_empty() {
-            let mut sub = Vec::new();
-            write_leb128_u32(&mut sub, entries.len() as u32);
-            for (type_idx, fields) in entries {
-                write_leb128_u32(&mut sub, type_idx);
-                write_leb128_u32(&mut sub, fields.len() as u32);
-                for (fi, name) in fields.iter().enumerate() {
-                    write_leb128_u32(&mut sub, fi as u32);
-                    write_name(&mut sub, name);
-                }
-            }
-            write_subsection(&mut out, 10, &sub);
-        }
-    }
-
     // Subsection 5: table names — we have a single funcref table for
     // call_indirect dispatch.
     {
@@ -265,6 +236,35 @@ pub fn encode_name_section_payload(
         let mut sub = Vec::new();
         write_leb128_u32(&mut sub, 0); // zero entries
         write_subsection(&mut out, 9, &sub);
+    }
+
+    // Subsection 10 follows 5–9: standard name subsections are ordered by id.
+    // Per-struct field names make `struct.get N` readable in developer tools.
+    {
+        let mut entries: Vec<(u32, Vec<String>)> = type_ctx
+            .struct_fields
+            .iter()
+            .filter_map(|(name_lc, fields)| {
+                type_ctx
+                    .struct_type_indices
+                    .get(name_lc)
+                    .map(|idx| (*idx, fields.clone()))
+            })
+            .collect();
+        entries.sort_by_key(|(i, _)| *i);
+        if !entries.is_empty() {
+            let mut sub = Vec::new();
+            write_leb128_u32(&mut sub, entries.len() as u32);
+            for (type_idx, fields) in entries {
+                write_leb128_u32(&mut sub, type_idx);
+                write_leb128_u32(&mut sub, fields.len() as u32);
+                for (fi, name) in fields.iter().enumerate() {
+                    write_leb128_u32(&mut sub, fi as u32);
+                    write_name(&mut sub, name);
+                }
+            }
+            write_subsection(&mut out, 10, &sub);
+        }
     }
 
     // Subsection 11: tag names. Tags are for the exception-handling
@@ -318,4 +318,50 @@ fn collect_label_names(chunk: &Chunk) -> Vec<String> {
         ip += op.operand_format().size_in(code, ip);
     }
     names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_name_reader_accepts_field_names_after_lower_subsections() {
+        for with_fields in [false, true] {
+            let chunks = [Chunk::new("named-module")];
+            let (_, mut context) = crate::writer::types::build_type_context(&chunks, &[], 0, &[]);
+            if with_fields {
+                context.struct_type_indices.insert("cell".into(), 0);
+                context.struct_fields.insert("cell".into(), vec!["value".into()]);
+            }
+            let payload = encode_name_section_payload(&chunks, &[], &[], &context);
+            let reader = wasmparser::NameSectionReader::new(wasmparser::BinaryReader::new(&payload, 0));
+            let mut saw_fields = false;
+            let mut saw_table = false;
+            let mut saw_data = false;
+            for subsection in reader {
+                match subsection.expect("standard name subsections must be ordered") {
+                    wasmparser::Name::Table(_) => {
+                        assert!(!saw_fields);
+                        saw_table = true;
+                    }
+                    wasmparser::Name::Data(_) => {
+                        assert!(!saw_fields);
+                        saw_data = true;
+                    }
+                    wasmparser::Name::Field(fields) => {
+                        assert!(saw_table && saw_data);
+                        let field_map = fields.into_iter().next().unwrap().unwrap();
+                        assert_eq!(field_map.index, 0);
+                        let field = field_map.names.into_iter().next().unwrap().unwrap();
+                        assert_eq!(field.index, 0);
+                        assert_eq!(field.name, "value");
+                        saw_fields = true;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(saw_table && saw_data);
+            assert_eq!(saw_fields, with_fields);
+        }
+    }
 }

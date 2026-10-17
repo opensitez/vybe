@@ -41,8 +41,8 @@
 //! ignored when the consumer doesn't know the name).
 
 use crate::encoding::*;
+use crate::writer::sections::HostImport;
 use vybe_runtime::Chunk;
-use vybe_runtime::chunk::Import;
 
 pub const SECTION_NAME: &str = "vybe.jspi";
 
@@ -51,7 +51,7 @@ pub const SECTION_NAME: &str = "vybe.jspi";
 /// emitting the section entirely.
 pub fn encode_payload(
     chunks: &[Chunk],
-    host_imports: &[Import],
+    host_imports: &[HostImport],
     rt_imports_len: usize,
 ) -> Option<Vec<u8>> {
     let host_imports_len = host_imports.len();
@@ -69,7 +69,7 @@ pub fn encode_payload(
     let suspending: Vec<u32> = host_imports
         .iter()
         .enumerate()
-        .filter(|(_, import)| is_suspending_import(&import.module, &import.name))
+        .filter(|(_, import)| is_suspending_import(&import.import.module, &import.import.name))
         .map(|(i, _)| i as u32)
         .collect();
 

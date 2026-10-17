@@ -90,42 +90,23 @@ pub const IMPORTS: &[&str] = &[
 pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
     match name {
         // ── Constructors ────────────────────────────────────────────
-        "new" => {
-            write_leb128_u32(out, 0);
-            write_leb128_u32(out, 1);
-            out.push(TYPE_EXTERNREF);
-        }
+        // `new Array(...)` is variadic, including its distinct one-number
+        // length form. The observed call arity is the Wasm import signature.
+        "new" => return false,
         "newWithLength" => {
             write_leb128_u32(out, 1);
             out.push(TYPE_I32);
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
         }
-        "of" => {
-            // `of(...values)` — the handler reads variadic args from a
-            // caller-supplied count + array of externrefs.
-            // Signature: (count: i32, args_array: externref) -> externref
-            write_leb128_u32(out, 2);
-            out.push(TYPE_I32);
-            out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1);
-            out.push(TYPE_EXTERNREF);
-        }
-        "from" | "fromAsync" => {
-            // `from(iterable)` / `fromAsync(asyncIterable)` — adapters in the
-            // tree call these as ordinary host functions. Mapper-bearing forms
-            // lower through dedicated helpers instead of the packed variadic
-            // `Array.of` convention above.
-            write_leb128_u32(out, 1);
-            out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1);
-            out.push(TYPE_EXTERNREF);
-        }
+        // `of` is positional-varargs; `from`/`fromAsync` accept an optional
+        // mapper. None uses a packed count+array convention in the host.
+        "of" | "from" | "fromAsync" => return false,
         "isArray" => {
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
             write_leb128_u32(out, 1);
-            out.push(TYPE_I32);
+            out.push(TYPE_EXTERNREF);
         }
 
         // ── Property access ─────────────────────────────────────────
@@ -182,14 +163,9 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
         }
 
         // ── Mutating prototype methods ──────────────────────────────
-        "push" => {
-            // (arr, value) -> new_length
-            write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF);
-            out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1);
-            out.push(TYPE_I32);
-        }
+        // `push` is variadic. Its per-call fixed Wasm signatures are declared
+        // by the host-import collector, not by this fixed-signature table.
+        "push" => return false,
         "pop" | "shift" => {
             // (arr) -> popped_value (undefined if empty)
             write_leb128_u32(out, 1);
@@ -197,24 +173,11 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
         }
-        "unshift" => {
-            // (arr, value) -> new_length
-            write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF);
-            out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1);
-            out.push(TYPE_I32);
-        }
-        "splice" => {
-            // (arr, start, deleteCount, items_array) -> deleted_array
-            write_leb128_u32(out, 4);
-            out.push(TYPE_EXTERNREF);
-            out.push(TYPE_I32);
-            out.push(TYPE_I32);
-            out.push(TYPE_EXTERNREF);
-            write_leb128_u32(out, 1);
-            out.push(TYPE_EXTERNREF);
-        }
+        // `unshift` accepts any number of inserted items, including none.
+        "unshift" => return false,
+        // `splice` is variadic; `deleteCount` and inserted items may be
+        // omitted. The host-import writer emits its observed fixed arities.
+        "splice" => return false,
         "reverse" | "toReversed" => {
             // reverse: in-place, returns self; toReversed: new array
             write_leb128_u32(out, 1);
@@ -412,4 +375,26 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
         _ => return false,
     }
     true
+}
+
+pub(crate) fn write_splice_signature(out: &mut Vec<u8>, arity: u8) {
+    write_leb128_u32(out, arity as u32);
+    for position in 0..arity {
+        out.push(if position == 1 || position == 2 {
+            TYPE_I32
+        } else {
+            TYPE_EXTERNREF
+        });
+    }
+    write_leb128_u32(out, 1);
+    out.push(TYPE_EXTERNREF);
+}
+
+pub(crate) fn write_unshift_signature(out: &mut Vec<u8>, arity: u8) {
+    write_leb128_u32(out, arity as u32);
+    for _ in 0..arity {
+        out.push(TYPE_EXTERNREF);
+    }
+    write_leb128_u32(out, 1);
+    out.push(TYPE_I32);
 }

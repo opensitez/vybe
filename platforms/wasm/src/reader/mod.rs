@@ -1,38 +1,43 @@
 //! WASM binary reader — decodes .wasm files into Chunk arrays.
 
+pub mod component_binary;
+mod native_globals;
+mod native_segments;
+mod native_types;
+pub(crate) mod native_validation;
+mod section_types;
+mod typed_core;
+#[cfg(test)]
+mod native_declarations;
+#[cfg(test)]
+mod native_indirect;
+#[cfg(test)]
+mod native_abi;
+#[cfg(test)]
+mod native_segment_tests;
+
 use crate::encoding::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use vybe_runtime::chunk::{
-    ActiveDataSegment, ActiveElementSegment, Import, ReceiverAbi, StackSwitchHandler,
-};
+use vybe_runtime::chunk::{Import, ReceiverAbi, StackSwitchHandler};
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op};
 
-#[derive(Clone, Debug)]
-struct AbiEntry {
-    name: String,
-    arity: u8,
-    local_count: u16,
-    takes_receiver: bool,
-    module_receiver_abi: ReceiverAbi,
-}
-
 #[derive(Default)]
-struct StandardSections {
-    type_section: Vec<u8>,
-    import_section: Vec<u8>,
-    func_section: Vec<u8>,
-    table_section: Vec<u8>,
-    memory_section: Vec<u8>,
-    global_section: Vec<u8>,
-    export_section: Vec<u8>,
-    start_section: Vec<u8>,
-    elem_section: Vec<u8>,
-    code_section: Vec<u8>,
-    data_section: Vec<u8>,
-    data_count_section: Vec<u8>,
-    tag_section: Vec<u8>,
+struct StandardSections<'a> {
+    type_section: &'a [u8],
+    import_section: &'a [u8],
+    func_section: &'a [u8],
+    table_section: &'a [u8],
+    memory_section: &'a [u8],
+    global_section: &'a [u8],
+    export_section: &'a [u8],
+    start_section: &'a [u8],
+    elem_section: &'a [u8],
+    code_section: &'a [u8],
+    data_section: &'a [u8],
+    data_count_section: &'a [u8],
+    tag_section: &'a [u8],
 }
 
 /// Which spec PHASE rejected a module.
@@ -88,6 +93,12 @@ impl From<&str> for WasmError {
     }
 }
 
+impl From<crate::binary_cursor::DecodeError> for WasmError {
+    fn from(error: crate::binary_cursor::DecodeError) -> Self {
+        Self::from(error.to_string())
+    }
+}
+
 impl std::fmt::Display for WasmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
@@ -121,9 +132,8 @@ fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
         return Err("unknown binary version".into());
     }
     let mut pos = 8;
-    let mut custom_data: Option<Vec<u8>> = None;
-    let mut abi_data: Option<Vec<u8>> = None;
-    let mut name_data: Option<Vec<u8>> = None;
+    let mut custom_data: Option<&[u8]> = None;
+    let mut name_data: Option<&[u8]> = None;
     let mut sections = StandardSections::default();
     let mut seen_sections = HashSet::new();
     let mut last_known_section = 0u8;
@@ -142,7 +152,7 @@ fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
         if section_end > data.len() {
             return Err("Invalid WASM: truncated section payload".into());
         }
-        let section_data = data[pos..section_end].to_vec();
+        let section_data = &data[pos..section_end];
 
         // `section ::= id:byte size:u32 …`, and the ids are a CLOSED set:
         // 0 custom, 1..=12 the core sections, 13 tag. Anything else is
@@ -176,8 +186,6 @@ fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
                 let (nlen, nr) = read_leb128_u32(&section_data);
                 if nlen == 4 && section_data.get(nr..nr + 4) == Some(b"vybe") {
                     custom_data = Some(section_data);
-                } else if nlen == 8 && section_data.get(nr..nr + 8) == Some(b"vybe.abi") {
-                    abi_data = Some(section_data);
                 } else if nlen == 4 && section_data.get(nr..nr + 4) == Some(b"name") {
                     name_data = Some(section_data);
                 }
@@ -200,8 +208,21 @@ fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
         pos = section_end;
     }
 
-    // If we have a vybe custom section, use that for round-trip (our format)
-    if let Some(ref cd) = custom_data {
+    if let Err(error) = native_validation::validate(data) {
+        // Preserve existing binary-format diagnostics for lazily read sections.
+        // This compatibility diagnostic pass never runs on valid modules.
+        if error.phase == Phase::Invalid {
+            if let Err(diagnostic) = validate_standard_sections(&sections) {
+                if diagnostic.phase == Phase::Malformed {
+                    return Err(diagnostic);
+                }
+            }
+        }
+        return Err(error);
+    }
+
+    // Custom metadata does not waive validation of the standard module.
+    if let Some(cd) = custom_data {
         return decode_vybe_section(cd);
     }
 
@@ -216,11 +237,11 @@ fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
     // MALFORMED for a module that is fine, and the assertion passes for the
     // wrong reason. That inverts the very check it is used for.
     //
-    // The func section still has to agree with the code section — a declared
-    // function with no body is genuinely malformed — and that is
-    // `validate_standard_sections`' job, which runs either way.
-    validate_standard_sections(&sections)?;
-    let mut chunks = decode_standard_wasm(
+    // Function/code counts and complete typing were validated above, including
+    // modules with no code section. No second validation pass is needed here.
+    // Native signatures and local indices are authoritative. Source ABI hints
+    // (including vybe.abi) are opaque custom data, not native layout overrides.
+    decode_standard_wasm(
         &sections.type_section,
         &sections.import_section,
         &sections.func_section,
@@ -228,16 +249,13 @@ fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
         &sections.memory_section,
         &sections.global_section,
         &sections.export_section,
+        &sections.start_section,
         &sections.elem_section,
         &sections.code_section,
         &sections.data_section,
         &sections.tag_section,
         name_data.as_deref(),
-    )?;
-    if let Some(ref data) = abi_data {
-        apply_abi_section(data, &mut chunks)?;
-    }
-    Ok(chunks)
+    )
 }
 
 /// Rejection message for the legacy (pre-3.0) exception-handling proposal.
@@ -276,7 +294,7 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), WasmErr
     // type section, so anything it would silently accept has to be rejected
     // here.
     validate_type_section(&sections.type_section)?;
-    let types = parse_type_section(&sections.type_section);
+    let (types, struct_fields) = parse_type_section_with_struct_fields(&sections.type_section);
     let func_type_indices = parse_function_section(&sections.func_section);
     let imports = parse_import_details(&sections.import_section)?;
     for import in &imports {
@@ -311,6 +329,12 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), WasmErr
     let import_table_count = imports.iter().filter(|import| import.kind == 1).count();
     let import_memory_count = imports.iter().filter(|import| import.kind == 2).count();
     let import_global_count = imports.iter().filter(|import| import.kind == 3).count();
+    let mut memory_is_64: Vec<bool> = imports
+        .iter()
+        .filter(|import| import.kind == 2)
+        .map(|import| import.memory_is_64)
+        .collect();
+    memory_is_64.extend(parse_memory_is_64(&sections.memory_section));
 
     let table_count = import_table_count + section_count_or_zero(&sections.table_section)? as usize;
     let memory_count =
@@ -358,13 +382,15 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), WasmErr
         &sections.code_section,
         &func_type_indices,
         &types,
+        &struct_fields,
         &func_sigs,
         global_count,
         &global_mutability,
         section_count_or_zero(&sections.data_section)? as usize,
         section_count_or_zero(&sections.elem_section)? as usize,
         !sections.data_count_section.is_empty(),
-        section_uses_memory64(&sections.memory_section),
+        memory_is_64.iter().any(|&is_64| is_64),
+        &memory_is_64,
         section_uses_table64(&sections.table_section),
     )
 }
@@ -372,6 +398,7 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), WasmErr
 struct ImportDetail {
     kind: u8,
     type_index: u32,
+    memory_is_64: bool,
 }
 
 /// Custom Descriptors adds `externtype ::= ... | 0x20 x:typeidx => func exact x`
@@ -528,6 +555,7 @@ fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, WasmError> {
         }
         let kind = normalize_import_kind(raw_kind);
         pos += 1;
+        let memory_is_64 = kind == 2 && data.get(pos).is_some_and(|flags| flags & 0x04 != 0);
         let type_index = if kind == 0 {
             // A `typeidx` is a `u32`, and its ENCODING must be in range —
             // `\x80\x80\x80\x80\x80\x00` decodes to 0 with a byte too many.
@@ -546,25 +574,16 @@ fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, WasmError> {
             skip_import_descriptor(data, &mut pos, kind);
             0
         };
-        imports.push(ImportDetail { kind, type_index });
+        imports.push(ImportDetail {
+            kind,
+            type_index,
+            memory_is_64,
+        });
     }
     if pos != data.len() {
         return Err("section size mismatch".into());
     }
     Ok(imports)
-}
-
-/// The VM's internal bytecode carries bulk-memory/table indices as fixed
-/// u16 BE (the VM's uniform index width). A spec module may use any u32
-/// index; rather than silently truncating during translation — which
-/// mis-decodes a VALID module — reject anything wider loudly.
-fn check_u16_immediate_ceiling(idx: u32, what: &str) -> Result<(), String> {
-    if idx > u16::MAX as u32 {
-        return Err(format!(
-            "Unsupported: {what} {idx} exceeds the VM's u16 immediate width (max 65535)"
-        ));
-    }
-    Ok(())
 }
 
 fn section_count(data: &[u8]) -> Result<u32, WasmError> {
@@ -1007,162 +1026,12 @@ fn validate_data_sections(
     Ok(())
 }
 
-fn parse_data_segments(data: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<ActiveDataSegment>), WasmError> {
-    if data.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let mut pos = 0;
-    let (count, read) = read_leb128_u32(&data[pos..]);
-    pos += read;
-    let mut segments = Vec::with_capacity(count as usize);
-    let mut active = Vec::new();
-    for data_index in 0..count {
-        let (flags, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        let mut active_init = None;
-        match flags {
-            0 => {
-                let offset = read_i32_const_expr_as_u64(data, &mut pos)?;
-                active_init = Some((0, offset));
-            }
-            1 => {}
-            2 => {
-                let (memidx, read) = read_leb128_u32(&data[pos..]);
-                pos += read;
-                let offset = read_i32_const_expr_as_u64(data, &mut pos)?;
-                active_init = Some((memidx, offset));
-            }
-            _ => return Err("Invalid WASM: unsupported data segment mode".into()),
-        }
-        let (len, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        let end = pos
-            .checked_add(len as usize)
-            .ok_or_else(|| "Invalid WASM: data segment size overflow".to_string())?;
-        if end > data.len() {
-            return Err("Invalid WASM: truncated data segment".into());
-        }
-        segments.push(data[pos..end].to_vec());
-        if let Some((memory_index, offset)) = active_init {
-            active.push(ActiveDataSegment {
-                memory_index,
-                offset,
-                data_index,
-            });
-        }
-        pos = end;
-    }
-    Ok((segments, active))
-}
-
-fn parse_element_segments(
-    data: &[u8],
-    import_func_count: usize,
-) -> Result<(Vec<Vec<Value>>, Vec<ActiveElementSegment>), WasmError> {
-    if data.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let mut pos = 0;
-    let (count, read) = read_leb128_u32(&data[pos..]);
-    pos += read;
-    let mut segments = Vec::with_capacity(count as usize);
-    let mut active = Vec::new();
-    for elem_index in 0..count {
-        let (flags, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        let mut active_init = None;
-        let expr_items = match flags {
-            0 => {
-                let offset = read_i32_const_expr_as_u64(data, &mut pos)?;
-                active_init = Some((0, offset));
-                false
-            }
-            1 => {
-                pos += 1; // elemkind
-                false
-            }
-            2 => {
-                let (tableidx, read) = read_leb128_u32(&data[pos..]);
-                pos += read;
-                let offset = read_i32_const_expr_as_u64(data, &mut pos)?;
-                active_init = Some((tableidx, offset));
-                pos += 1; // elemkind
-                false
-            }
-            3 => {
-                pos += 1; // elemkind
-                false
-            }
-            4 => {
-                let offset = read_i32_const_expr_as_u64(data, &mut pos)?;
-                active_init = Some((0, offset));
-                true
-            }
-            5 => {
-                // NOT a single LEB: `(ref ht)` (0x64) and `(ref null ht)`
-                // (0x63) carry a heaptype immediate, so `(ref func)` is the
-                // two bytes `64 70`. Skipping one left the heaptype to be read
-                // as the vector length.
-                read_value_type(data, &mut pos)
-                    .ok_or("Invalid WASM: truncated element segment reftype")?;
-                true
-            }
-            6 => {
-                let (tableidx, read) = read_leb128_u32(&data[pos..]);
-                pos += read;
-                let offset = read_i32_const_expr_as_u64(data, &mut pos)?;
-                active_init = Some((tableidx, offset));
-                read_value_type(data, &mut pos)
-                    .ok_or("Invalid WASM: truncated element segment reftype")?;
-                true
-            }
-            7 => {
-                read_value_type(data, &mut pos)
-                    .ok_or("Invalid WASM: truncated element segment reftype")?;
-                true
-            }
-            _ => return Err("Invalid WASM: unsupported element segment mode".into()),
-        };
-        let (len, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        let mut segment = Vec::with_capacity(len as usize);
-        for _ in 0..len {
-            if expr_items {
-                segment.push(read_ref_const_expr(data, &mut pos, import_func_count)?);
-            } else {
-                let (func_idx, read) = read_leb128_u32(&data[pos..]);
-                pos += read;
-                segment.push(wasm_funcidx_to_element_value(func_idx, import_func_count));
-            }
-        }
-        if let Some((table_index, offset)) = active_init {
-            active.push(ActiveElementSegment {
-                table_index,
-                offset,
-                elem_index,
-            });
-        }
-        segments.push(segment);
-    }
-    Ok((segments, active))
-}
-
-fn wasm_funcidx_to_element_value(func_idx: u32, import_func_count: usize) -> Value {
-    if (func_idx as usize) < import_func_count {
-        // The VM element payload uses I32(n) for a defined-function ordinal.
-        // Imported funcrefs have no chunk ordinal in that representation; keep
-        // them null instead of silently shifting every following local target.
-        Value::Null
-    } else {
-        Value::I32(func_idx.saturating_sub(import_func_count as u32) as i32)
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn validate_code_bodies(
     code_sec: &[u8],
     func_type_indices: &[u32],
     types: &[(Vec<u8>, Vec<u8>)],
+    struct_fields: &[Option<u32>],
     func_sigs: &[(usize, usize)],
     global_count: usize,
     global_mutability: &[bool],
@@ -1170,6 +1039,7 @@ fn validate_code_bodies(
     elem_count: usize,
     has_data_count_section: bool,
     uses_memory64: bool,
+    memory_is_64: &[bool],
     uses_table64: bool,
 ) -> Result<(), WasmError> {
     // A module with NO code section is well-formed — every section is
@@ -1215,7 +1085,7 @@ fn validate_code_bodies(
             if pos >= body_end {
                 return Err("Invalid WASM: malformed local declaration".into());
             }
-            pos += 1; // valtype
+            read_local_value_type(&code_sec[..body_end - 1], &mut pos)?;
             local_count += n as usize;
         }
 
@@ -1233,6 +1103,7 @@ fn validate_code_bodies(
             total_locals,
             func_sigs,
             types,
+            struct_fields,
             result_arity,
             global_count,
             global_mutability,
@@ -1240,6 +1111,7 @@ fn validate_code_bodies(
             elem_count,
             has_data_count_section,
             uses_memory64,
+            memory_is_64,
             uses_table64,
         )
         .map_err(|err| {
@@ -1430,12 +1302,62 @@ fn decode_blocktype(
     Ok((params.len(), results.len()))
 }
 
+#[cfg(test)]
+fn fixed_operator_arity(operator: &wasmparser::Operator<'_>) -> Option<(usize, usize)> {
+    macro_rules! arity {
+        (arity $inputs:literal -> $outputs:literal) => { Some(($inputs, $outputs)) };
+        (arity custom) => { None };
+    }
+    macro_rules! operators {
+        ($(@$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })?
+            => $visit:ident ($($annotation:tt)*) )*) => {
+            match operator {
+                $(wasmparser::Operator::$op $({ $($arg: _,)* })? => arity!($($annotation)*),)*
+                _ => None,
+            }
+        };
+    }
+    wasmparser::for_each_operator!(operators)
+}
+
+#[cfg(test)]
+mod inhouse_simd_parity_tests {
+    #[test]
+    fn every_simd_opcode_matches_existing_reader_boundaries_and_arity() {
+        let mut accepted = 0;
+        for sub in 0..=0x1ff {
+            let mut bytes = vec![0xfd];
+            crate::encoding::write_leb128_u32(&mut bytes, sub);
+            match sub {
+                0..=11 | 92 | 93 => bytes.extend_from_slice(&[0, 0]),
+                12 | 13 => bytes.extend_from_slice(&[0; 16]),
+                21..=34 => bytes.push(0),
+                84..=91 => bytes.extend_from_slice(&[0, 0, 0]),
+                _ => {},
+            }
+            let mut old = wasmparser::OperatorsReader::new(wasmparser::BinaryReader::new(&bytes, 0));
+            let expected = old.read().ok().and_then(|op| super::fixed_operator_arity(&op));
+            let actual = crate::binary_instructions::simd_arity(sub);
+            assert_eq!(actual, expected, "SIMD {sub:#x}");
+            let mut cursor = crate::binary_cursor::Cursor::new(&bytes[1..]);
+            let decoded = crate::binary_instructions::simd(&mut cursor);
+            assert_eq!(decoded.is_ok(), expected.is_some(), "SIMD {sub:#x}");
+            if actual.is_some() {
+                accepted += 1;
+                assert_eq!(cursor.position() + 1, old.original_position() as usize, "SIMD {sub:#x}");
+            }
+        }
+        assert_eq!(accepted, 256);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn validate_instruction_stream(
     code: &[u8],
     local_count: usize,
     func_sigs: &[(usize, usize)],
     types: &[(Vec<u8>, Vec<u8>)],
+    struct_fields: &[Option<u32>],
     result_arity: usize,
     global_count: usize,
     global_mutability: &[bool],
@@ -1443,6 +1365,7 @@ fn validate_instruction_stream(
     elem_count: usize,
     has_data_count_section: bool,
     uses_memory64: bool,
+    memory_is_64: &[bool],
     _uses_table64: bool,
 ) -> Result<(), WasmError> {
     let mut pos = 0;
@@ -1768,13 +1691,11 @@ fn validate_instruction_stream(
                 }
             }
             0x25 => {
-                let (idx, _) = read_leb128_u32(&code[pos..]);
                 skip_leb128(code, &mut pos);
                 st.pop(1, "table.get")?;
                 st.push(1);
             }
             0x26 => {
-                let (idx, _) = read_leb128_u32(&code[pos..]);
                 skip_leb128(code, &mut pos);
                 st.pop(2, "table.set")?;
             }
@@ -1782,14 +1703,22 @@ fn validate_instruction_stream(
                 // A memarg's OFFSET is a `u64` (memory64) / `u32` LEB. The
                 // encoding must fit: `\ff…\02` sets a bit past 2^64, which is
                 // "integer too large" — `memory64/binary_leb128_64.wast`.
-                if op != 0x3F && op != 0x40 {
-                    // BOTH halves of a memarg are range-checked: the alignment
-                    // is a `u32` and the offset a `u64` (memory64). Only the
-                    // offset was checked, so an overlong ALIGNMENT still
-                    // decoded.
-                    let mut probe = pos;
+                // The optional memory index precedes the offset in the
+                // standard binary encoding. Check each LEB at its own width.
+                let mut probe = pos;
+                leb_u32_fits(code, &mut probe)?;
+                let (flags, _) = read_leb128_u32(&code[pos..]);
+                let memidx = if flags & 0x40 != 0 {
+                    let index_start = probe;
                     leb_u32_fits(code, &mut probe)?;
+                    read_leb128_u32(&code[index_start..]).0
+                } else {
+                    0
+                };
+                if memory_is_64.get(memidx as usize).copied().unwrap_or(false) {
                     leb_u64_fits(code, probe)?;
+                } else {
+                    leb_u32_fits(code, &mut probe)?;
                 }
                 // The memop flags field carries the alignment as a base-2
                 // EXPONENT, with bit 6 reserved for the multi-memory memidx
@@ -1817,12 +1746,12 @@ fn validate_instruction_stream(
                 }
             }
             0x3F => {
-                let (memidx, read) = read_leb128_u32(&code[pos..]);
+                let (_, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 st.push(1); // memory.size
             }
             0x40 => {
-                let (memidx, read) = read_leb128_u32(&code[pos..]);
+                let (_, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 st.pop(1, "memory.grow")?;
                 st.push(1);
@@ -1961,17 +1890,29 @@ fn validate_instruction_stream(
                 let (sub, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 match sub {
-                    // struct.new/default and array.new/default each carry one
-                    // typeidx. This validator tracks arity, not precise GC
-                    // field types, so struct.new's field pops are intentionally
-                    // conservative; malformed stack shapes still fail when
-                    // real consumers pop too much.
+                    // struct.new consumes one operand per declared field.
                     0x00 => {
-                        skip_leb128(code, &mut pos);
+                        let (type_idx, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        let fields = struct_fields
+                            .get(type_idx as usize)
+                            .and_then(|count| *count)
+                            .ok_or_else(|| WasmError::invalid("struct.new type index is not a struct"))?;
+                        st.pop(fields as usize, "struct.new")?;
                         st.push(1);
                     }
                     0x01 => {
-                        skip_leb128(code, &mut pos);
+                        let (type_idx, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        if struct_fields
+                            .get(type_idx as usize)
+                            .and_then(|count| *count)
+                            .is_none()
+                        {
+                            return Err(WasmError::invalid(
+                                "struct.new_default type index is not a struct",
+                            ));
+                        }
                         st.push(1);
                     }
                     0x06 => {
@@ -2074,7 +2015,14 @@ fn validate_instruction_stream(
                     // Custom Descriptors: struct.new_desc, struct.new_default_desc
                     // and ref.get_desc each take a typeidx.
                     0x20 => {
-                        skip_leb128(code, &mut pos);
+                        let (type_idx, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        let fields = struct_fields
+                            .get(type_idx as usize)
+                            .and_then(|count| *count)
+                            .ok_or_else(|| WasmError::invalid("struct.new_desc type index is not a struct"))?;
+                        // Field operands followed by the exact descriptor.
+                        st.pop(fields as usize + 1, "struct.new_desc")?;
                         st.push(1);
                     }
                     0x21..=0x22 => {
@@ -2085,6 +2033,8 @@ fn validate_instruction_stream(
                     // ref.cast_desc_eq, in its non-null and nullable forms.
                     0x23..=0x24 => {
                         skip_heaptype_immediate(code, &mut pos);
+                        st.pop(2, "ref.cast_desc_eq")?;
+                        st.push(1);
                     }
                     // br_on_cast_desc_eq / _fail — same shape as br_on_cast.
                     0x25..=0x26 => {
@@ -2092,6 +2042,9 @@ fn validate_instruction_stream(
                         skip_leb128(code, &mut pos); // labelidx
                         skip_heaptype_immediate(code, &mut pos);
                         skip_heaptype_immediate(code, &mut pos);
+                        // Like br_on_cast, the reference remains on the
+                        // fallthrough stack; its descriptor operand does not.
+                        st.pop(1, "br_on_cast_desc_eq descriptor")?;
                     }
                     0x80 | 0x81 | 0x8B | 0x8C => {
                         skip_leb128(code, &mut pos); // memidx
@@ -2194,7 +2147,7 @@ fn validate_instruction_stream(
                         if data_idx as usize >= data_count {
                             return Err("Invalid WASM: memory.init data index out of range".into());
                         }
-                        let (memidx, read) = read_leb128_u32(&code[pos..]);
+                        let (_, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
                         st.pop(3, "memory.init")?;
                     }
@@ -2211,14 +2164,14 @@ fn validate_instruction_stream(
                         }
                     }
                     0x0A => {
-                        let (dst_mem, read) = read_leb128_u32(&code[pos..]);
+                        let (_, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        let (src_mem, read) = read_leb128_u32(&code[pos..]);
+                        let (_, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
                         st.pop(3, "memory.copy")?;
                     }
                     0x0B => {
-                        let (memidx, read) = read_leb128_u32(&code[pos..]);
+                        let (_, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
                         st.pop(3, "memory.fill")?;
                     }
@@ -2242,25 +2195,25 @@ fn validate_instruction_stream(
                         }
                     }
                     0x0E => {
-                        let (dst_table, read) = read_leb128_u32(&code[pos..]);
+                        let (_, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        let (src_table, read) = read_leb128_u32(&code[pos..]);
+                        let (_, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
                         st.pop(3, "table.copy")?;
                     }
                     0x0F => {
-                        let (table_idx, read) = read_leb128_u32(&code[pos..]);
+                        let (_, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
                         st.pop(2, "table.grow")?;
                         st.push(1);
                     }
                     0x10 => {
-                        let (table_idx, read) = read_leb128_u32(&code[pos..]);
+                        let (_, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
                         st.push(1); // table.size
                     }
                     0x11 => {
-                        let (table_idx, read) = read_leb128_u32(&code[pos..]);
+                        let (_, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
                         st.pop(3, "table.fill")?;
                     }
@@ -2275,35 +2228,17 @@ fn validate_instruction_stream(
                 }
             }
             0xFD => {
-                let (sub, read) = read_leb128_u32(&code[pos..]);
-                pos += read;
-                match sub {
-                    0x00..=0x0B | 0x54..=0x5D => {
-                        skip_memarg_for_memory_width(code, &mut pos, uses_memory64);
-                        if sub == 0x0B || (0x58..=0x5B).contains(&sub) {
-                            st.pop(2, "simd memory store")?;
-                        } else {
-                            st.pop(1, "simd memory load")?;
-                            st.push(1);
-                        }
-                        if (0x54..=0x5B).contains(&sub) {
-                            pos = pos.saturating_add(1).min(code.len());
-                        }
-                    }
-                    0x0C => {
-                        pos = pos.saturating_add(16).min(code.len());
-                        st.push(1);
-                    }
-                    0x0D => {
-                        pos = pos.saturating_add(16).min(code.len());
-                        st.pop(2, "i8x16.shuffle")?;
-                        st.push(1);
-                    }
-                    0x15..=0x22 => {
-                        pos = pos.saturating_add(1).min(code.len());
-                    }
-                    _ => {}
-                }
+                // SIMD has fixed arities, including lane loads and relaxed
+                // ternary operations. Decode their immediates and stack effect
+                // from the same standard operator definitions as validation.
+                let mut reader = crate::binary_cursor::Cursor::new(&code[op_offset + 1..]);
+                let sub = crate::binary_instructions::simd(&mut reader)
+                    .map_err(|error| WasmError::from(error.to_string()))?;
+                let (inputs, outputs) = crate::binary_instructions::simd_arity(sub)
+                    .ok_or_else(|| WasmError::invalid("SIMD operator has no fixed arity"))?;
+                st.pop(inputs, "SIMD operator")?;
+                st.push(outputs);
+                pos = op_offset + 1 + reader.position();
             }
             0xFE => {
                 let (sub, read) = read_leb128_u32(&code[pos..]);
@@ -2412,6 +2347,7 @@ fn decode_standard_wasm(
     memory_sec: &[u8],
     global_sec: &[u8],
     export_sec: &[u8],
+    start_sec: &[u8],
     elem_sec: &[u8],
     code_sec: &[u8],
     data_sec: &[u8],
@@ -2420,6 +2356,7 @@ fn decode_standard_wasm(
 ) -> Result<Vec<Chunk>, WasmError> {
     // Parse type section to get function signatures
     let types = parse_type_section(type_sec);
+    let native_types = native_types::read_type_entries(type_sec)?;
     let func_type_indices = parse_function_section(func_sec);
     // Exception tags: each references a function type whose params are the
     // tag's payload; the arity lets `throw`/`catch` bind the right count.
@@ -2463,6 +2400,14 @@ fn decode_standard_wasm(
         func_results.push(results);
     }
 
+    let direct_func_types: Vec<Option<(String,String)>> = import_details.iter()
+        .filter(|d|d.kind==0).map(|d|d.type_index)
+        .chain(func_type_indices.iter().copied()).map(|idx| {
+            let (p,r)=types.get(idx as usize)?;
+            let p=p.iter().map(|&t|standard_valtype_name(t)).collect::<Option<Vec<_>>>()?;
+            let r=r.iter().map(|&t|standard_valtype_name(t)).collect::<Option<Vec<_>>>()?;
+            Some((p.join(","),r.join(",")))
+        }).collect();
     // Parse exports to find function names
     let exports = parse_export_section(export_sec);
     let func_names = name_sec
@@ -2470,26 +2415,23 @@ fn decode_standard_wasm(
         .unwrap_or_default();
     let mut memory_min_pages = parse_imported_memory_min_pages(import_sec);
     memory_min_pages.extend(parse_memory_section(memory_sec));
-    // Per-memory 64-bit index type, aligned with memory_min_pages (imported
-    // memories first — treated as 32-bit — then declared section memories).
+    // Per-memory 64-bit index type, aligned with memory_min_pages (imports first).
     let declared_is_64 = parse_memory_is_64(memory_sec);
-    let imported_mem_count = memory_min_pages.len().saturating_sub(declared_is_64.len());
-    let mut memory_is_64 = vec![false; imported_mem_count];
+    let mut memory_is_64: Vec<bool> = import_details
+        .iter()
+        .filter(|import| import.kind == 2)
+        .map(|import| import.memory_is_64)
+        .collect();
     memory_is_64.extend(declared_is_64);
     let mut memory_max_pages = parse_imported_memory_max_pages(import_sec);
     memory_max_pages.extend(parse_memory_max_section(memory_sec));
-    let mut table_min_sizes = parse_imported_table_min_sizes(import_sec);
-    table_min_sizes.extend(parse_table_section(table_sec));
-    let declared_table_is_64 = parse_table_is_64(table_sec);
-    let imported_table_count = table_min_sizes
-        .len()
-        .saturating_sub(declared_table_is_64.len());
-    let mut table_is_64 = vec![false; imported_table_count];
-    table_is_64.extend(declared_table_is_64);
-    let (data_segments, active_data_segments) = parse_data_segments(data_sec)?;
-    let (elem_segments, active_elem_segments) =
-        parse_element_segments(elem_sec, import_func_count)?;
-    let uses_memory64 = section_uses_memory64(memory_sec);
+    let table_types = read_table_types(import_sec, table_sec)?;
+    let table_min_sizes = table_types.iter().map(|t| t.initial).collect::<Vec<_>>();
+    let table_max_sizes = table_types.iter().map(|t| t.maximum).collect::<Vec<_>>();
+    let table_is_shared = table_types.iter().map(|t| t.shared).collect::<Vec<_>>();
+    let table_is_64 = table_types.iter().map(|t| t.table64).collect::<Vec<_>>();
+    let table_element_types = table_types.iter().map(|t| t.element_type).collect::<Vec<_>>();
+    let uses_memory64 = memory_is_64.iter().any(|&is_64| is_64);
     let uses_table64 = section_uses_table64(table_sec);
     let global_imports: Vec<Import> = imports
         .iter()
@@ -2499,8 +2441,9 @@ fn decode_standard_wasm(
             name: name.clone(),
         })
         .collect();
-    let (total_global_count, _) = parse_global_mutability(global_sec, global_imports.len())
-        .unwrap_or((global_imports.len(), Vec::new()));
+    // The validation pass already checked every expression and mutability.
+    // Only the declared count is needed before retaining the initializers.
+    let total_global_count = global_imports.len() + section_count_or_zero(global_sec)? as usize;
     let mut global_names: Vec<String> = global_imports
         .iter()
         .map(|import| vybe_runtime::chunk::imported_global_key(&import.module, &import.name))
@@ -2509,6 +2452,17 @@ fn decode_standard_wasm(
         global_names.push(format!("__wasm_global_{idx}"));
     }
     let global_names = Arc::new(global_names);
+    let (data_segments, mut segments) = native_segments::read(
+        data_sec, elem_sec, &global_names, import_func_count, &native_types,
+    )?;
+    segments.function_import_types = import_details.iter()
+        .filter(|import| import.kind == 0).map(|import| import.type_index).collect();
+    segments.global_types = native_globals::read_imported_global_types(import_sec)?;
+    let global_inits = native_globals::read_global_inits(
+        global_sec, &global_names, import_func_count, &native_types, &mut segments.global_types,
+    )?;
+    let global_name_snapshot: Arc<vybe_runtime::segmented_global_names::SegmentedGlobalNames> =
+        Arc::new(global_names.as_ref().clone().into());
 
     // Parse code section
     let mut cpos = 0;
@@ -2520,6 +2474,7 @@ fn decode_standard_wasm(
     // Create a script chunk that calls exported functions
     let mut script = Chunk::new("<script>");
     script.local_count = 0;
+    script.func_sig = Some((String::new(), String::new()));
 
     for i in 0..func_count as usize {
         let (body_size, read) = read_leb128_u32(&code_sec[cpos..]);
@@ -2534,7 +2489,7 @@ fn decode_standard_wasm(
         for _ in 0..local_groups {
             let (count, read) = read_leb128_u32(&code_sec[cpos..]);
             cpos += read;
-            cpos += 1; // type byte
+            read_local_value_type(&code_sec[..body_end - 1], &mut cpos)?;
             // ⛔ A DECODER MUST REJECT MALFORMED INPUT, NEVER PANIC ON IT.
             //
             // This was `local_count += count`, and `binary.wast` feeds exactly
@@ -2564,14 +2519,14 @@ fn decode_standard_wasm(
 
         // Get arity + result arity from the function's type signature.
         let type_idx = func_type_indices.get(i).copied().unwrap_or(func_idx as u32) as usize;
-        let (arity, result_arity) = types
-            .get(type_idx)
+        let signature = types.get(type_idx);
+        let (arity, result_arity) = signature
             .map(|(params, results)| (params.len() as u8, results.len() as u8))
             .unwrap_or((0, 0));
 
         // Translate WASM opcodes to our Chunk format
         let wasm_code = &code_sec[cpos..body_end.saturating_sub(1)]; // -1 for trailing 'end'
-        let mut chunk = translate_wasm_to_chunk(
+        let (mut chunk, ends_in_terminal) = translate_wasm_to_chunk(
             wasm_code,
             &name,
             arity,
@@ -2580,26 +2535,36 @@ fn decode_standard_wasm(
             &func_arities,
             &func_results,
             uses_memory64,
+            &memory_is_64,
             uses_table64,
             &types,
             &tag_arities,
-        );
+            &direct_func_types,
+        )?;
         chunk.result_arity = result_arity;
+        chunk.native_func_type = func_type_indices.get(i)
+            .and_then(|index| native_types.get(*index as usize))
+            .and_then(|entry| entry.native_identity.clone());
+        chunk.func_sig = signature.and_then(|(params, results)| {
+            let params = params
+                .iter()
+                .map(|&ty| standard_valtype_name(ty))
+                .collect::<Option<Vec<_>>>()?;
+            let results = results
+                .iter()
+                .map(|&ty| standard_valtype_name(ty))
+                .collect::<Option<Vec<_>>>()?;
+            Some((params.join(","), results.join(",")))
+        });
         // Imported functions have no receiver, so their WASM param count is
         // the arity (used by call_indirect's runtime type check).
         chunk.param_count = arity;
-        chunk.memory_min_pages = memory_min_pages.clone();
-        chunk.memory_max_pages = memory_max_pages.clone();
-        chunk.memory_is_64 = memory_is_64.clone();
-        chunk.table_min_sizes = table_min_sizes.clone();
-        chunk.table_is_64 = table_is_64.clone();
-        chunk.data_segments = data_segments.clone();
-        chunk.elem_segments = elem_segments.clone();
-        chunk.active_data_segments = active_data_segments.clone();
-        chunk.active_elem_segments = active_elem_segments.clone();
-        chunk.global_imports = global_imports.clone();
-        chunk.globals = global_names.clone();
-        chunk.emit_op(Op::RETURN, 0);
+        // Memory/table declarations belong to the module script, not its functions.
+        chunk.global_imports = global_imports.clone().into();
+        chunk.globals = global_name_snapshot.clone();
+        if !ends_in_terminal {
+            chunk.emit_op(Op::RETURN, 0);
+        }
         chunks.push(chunk);
 
         cpos = body_end;
@@ -2620,13 +2585,39 @@ fn decode_standard_wasm(
     script.memory_max_pages = memory_max_pages;
     script.memory_is_64 = memory_is_64;
     script.table_min_sizes = table_min_sizes;
+    script.table_max_sizes = table_max_sizes;
+    script.table_element_types = table_element_types;
+    script.table_is_shared = table_is_shared;
     script.table_is_64 = table_is_64;
     script.data_segments = data_segments;
-    script.elem_segments = elem_segments;
-    script.active_data_segments = active_data_segments;
-    script.active_elem_segments = active_elem_segments;
-    script.global_imports = global_imports;
-    script.globals = global_names;
+    script.native_segments = Some(Arc::new(segments));
+    script.global_imports = global_imports.into();
+    script.native_global_import_count = Some(script.global_imports.len() as u32);
+    script.global_inits = global_inits;
+    script.globals = global_name_snapshot;
+    script.types = native_types;
+
+    if !start_sec.is_empty() {
+        // Section validation established the start's [] -> [] signature.
+        let index = read_leb128_u32(start_sec).0 as usize;
+        if index < import_func_count {
+            let import = u16::try_from(index)
+                .map_err(|_| WasmError::invalid("start import index exceeds runtime capacity"))?;
+            script.emit_call(import, 0, 0);
+            script.emit_op(Op::DROP, 0);
+        } else {
+            let target = u32::try_from(1 + index - import_func_count)
+                .map_err(|_| WasmError::invalid("start function index exceeds runtime capacity"))?;
+            let at = script.code.len();
+            script.emit_call(0, 0, 0);
+            script.direct_defined_calls.insert(at, vybe_runtime::chunk::DirectDefinedCall {
+                target,
+                source: false,
+                params: String::new(),
+                results: String::new(),
+            });
+        }
+    }
 
     if let Some((_, start_func_idx)) = exports.iter().find(|(name, _)| name == "_start") {
         if *start_func_idx >= import_func_count {
@@ -2648,6 +2639,7 @@ fn decode_standard_wasm(
 
     // Insert script as chunk 0
     chunks.insert(0, script);
+    record_direct_declared_reference_calls(&mut chunks);
 
     Ok(chunks)
 }
@@ -2689,6 +2681,50 @@ fn emitted_br_depth(label_stack: &[LabelInfo], n: u32) -> u32 {
     label_stack[k - n..k].iter().map(|i| i.emitted_span).sum()
 }
 
+#[derive(Default)]
+struct DecoderScratch {
+    lanes: Vec<DecoderScratchLane>,
+    staged: Vec<u16>,
+}
+
+struct DecoderScratchLane {
+    ty: Option<u8>,
+    slots: Vec<u16>,
+    used: usize,
+}
+
+impl DecoderScratch {
+    fn stage(
+        &mut self,
+        chunk: &mut Chunk,
+        types: impl IntoIterator<Item = u8>,
+    ) -> Result<&[u16], WasmError> {
+        self.staged.clear();
+        for lane in &mut self.lanes { lane.used = 0; }
+        for ty in types {
+            let typed = (!matches!(ty, 0x7f | 0x7d | 0x7c | 0x6f)
+                && standard_valtype_name(ty).is_some()).then_some(ty);
+            let lane = match self.lanes.iter().position(|lane| lane.ty == typed) {
+                Some(index) => &mut self.lanes[index],
+                None => {
+                    self.lanes.push(DecoderScratchLane { ty: typed, slots: Vec::new(), used: 0 });
+                    self.lanes.last_mut().unwrap()
+                }
+            };
+            if lane.used == lane.slots.len() {
+                chunk.local_count.checked_add(1)
+                    .ok_or_else(|| WasmError::invalid("decoder temporary local limit exceeded"))?;
+                let slot = chunk.alloc_scratch(1);
+                if let Some(ty) = typed { mark_native_declared_scratch(chunk, slot, ty); }
+                lane.slots.push(slot);
+            }
+            self.staged.push(lane.slots[lane.used]);
+            lane.used += 1;
+        }
+        Ok(&self.staged)
+    }
+}
+
 /// Translate WASM opcodes to our internal Chunk format.
 /// Builds a proper constant pool and adjusts local indices.
 fn translate_wasm_to_chunk(
@@ -2700,13 +2736,19 @@ fn translate_wasm_to_chunk(
     func_arities: &[u8],
     func_results: &[u8],
     uses_memory64: bool,
+    memory_is_64: &[bool],
     _uses_table64: bool,
     types: &[(Vec<u8>, Vec<u8>)],
     tag_arities: &[u8],
-) -> Chunk {
+    direct_func_types: &[Option<(String,String)>],
+) -> Result<(Chunk, bool), WasmError> {
     let mut chunk = Chunk::new(name);
     chunk.arity = arity;
-    chunk.local_count = arity as u16 + wasm_local_count as u16;
+    chunk.local_count = u16::try_from(u32::from(arity).checked_add(wasm_local_count)
+        .ok_or_else(|| WasmError::invalid("decoder local count overflow"))?)
+        .map_err(|_| WasmError::invalid("decoder local count exceeds supported range"))?;
+    chunk.memory_is_64 = memory_is_64.to_vec();
+    let mut scratch = DecoderScratch::default();
 
     // Register the module's function imports on THIS chunk so a decoded
     // `call funcidx` resolves chunk-scoped, the same contract the compiler's
@@ -2731,10 +2773,12 @@ fn translate_wasm_to_chunk(
 
     let mut pos = 0;
     let mut label_stack: Vec<LabelInfo> = Vec::new();
+    let mut last_wasm_op = None;
 
     while pos < wasm.len() {
         let byte = wasm[pos];
         pos += 1;
+        last_wasm_op = Some(byte);
 
         match byte {
             // Spec §5.4.1: 0x00 is `unreachable` — it MUST trap. Mapping it to
@@ -2994,26 +3038,31 @@ fn translate_wasm_to_chunk(
                         chunk.emit_op(Op::DROP, 0);
                     }
                 } else {
+                    if let Some((params,returns))=direct_func_types.get(idx as usize).and_then(Clone::clone) {
+                    let target=1+idx-import_count;
+
+                    let at=chunk.code.len();chunk.emit_call(0,argc,0);
+                    chunk.direct_defined_calls.insert(at,vybe_runtime::chunk::DirectDefinedCall {
+                        target,source:false,params,results:returns,
+                    });
+                    } else {
                     // Local function: funcref model (REF_FUNC + CALL_REF).
                     // Function chunks start at index 1 (script is chunk 0).
                     // The spec stack has the args already pushed, but
                     // call_value expects the callee BELOW them — stage the
                     // args in scratch locals, push the funcref, restore.
                     let chunk_idx = 1 + (idx - import_count) as u16;
-                    let base = if argc > 0 {
-                        chunk.alloc_scratch(argc as u16)
-                    } else {
-                        0
-                    };
-                    for i in (0..argc as u16).rev() {
-                        chunk.emit_op_u16(Op::LOCAL_SET, base + i, 0);
+                    let slots = scratch.stage(&mut chunk, std::iter::repeat_n(0x6f, argc as usize))?;
+                    for &slot in slots.iter().rev() {
+                        chunk.emit_op_u16(Op::LOCAL_SET, slot, 0);
                     }
                     chunk.emit_op_u16(Op::REF_FUNC, chunk_idx, 0);
                     chunk.emit(0, 0); // 0 upvalues
-                    for i in 0..argc as u16 {
-                        chunk.emit_op_u16(Op::LOCAL_GET, base + i, 0);
+                    for &slot in slots {
+                        chunk.emit_op_u16(Op::LOCAL_GET, slot, 0);
                     }
                     chunk.emit_op_u8_u8(Op::CALL_REF, argc, results, 0);
+                    }
                 }
             }
 
@@ -3367,20 +3416,20 @@ fn translate_wasm_to_chunk(
                 let (label, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 let depth = 1 + emitted_br_depth(&label_stack, label);
-                let scratch = chunk.alloc_scratch(1);
-                chunk.emit_op_u16(Op::LOCAL_TEE, scratch, 0);
+                let slot = scratch.stage(&mut chunk, [0x6f])?[0];
+                chunk.emit_op_u16(Op::LOCAL_TEE, slot, 0);
                 chunk.emit_op(Op::REF_IS_NULL, 0);
                 if byte == 0xD6 {
                     chunk.emit_op(Op::I32_EQZ, 0);
                 }
                 chunk.emit_if_params(0, 0, 0);
                 if byte == 0xD6 {
-                    chunk.emit_op_u16(Op::LOCAL_GET, scratch, 0);
+                    chunk.emit_op_u16(Op::LOCAL_GET, slot, 0);
                 }
                 chunk.emit_br(depth, 0);
                 chunk.emit_end(0);
                 if byte == 0xD5 {
-                    chunk.emit_op_u16(Op::LOCAL_GET, scratch, 0);
+                    chunk.emit_op_u16(Op::LOCAL_GET, slot, 0);
                 }
             }
 
@@ -3446,8 +3495,10 @@ fn translate_wasm_to_chunk(
                     .get(type_idx as usize)
                     .map(|(params, results)| (params.len() as u8, results.len() as u8))
                     .unwrap_or((0, 0));
+                let at = chunk.code.len();
                 chunk.emit_op_u8_u8(Op::CALL_INDIRECT, argc, table_idx as u8, 0);
                 chunk.emit(expected_results, 0);
+                record_native_call_signature(&mut chunk, types, type_idx, at);
             }
 
             // return_call_indirect (tail-call proposal) — same immediates
@@ -3461,8 +3512,10 @@ fn translate_wasm_to_chunk(
                     .get(type_idx as usize)
                     .map(|(params, results)| (params.len() as u8, results.len() as u8))
                     .unwrap_or((0, 0));
+                let at = chunk.code.len();
                 chunk.emit_op_u8_u8(Op::RETURN_CALL_INDIRECT, argc, table_idx as u8, 0);
                 chunk.emit(expected_results, 0);
+                record_native_call_signature(&mut chunk, types, type_idx, at);
             }
 
             // return_call funcidx (tail-call proposal).
@@ -3482,24 +3535,29 @@ fn translate_wasm_to_chunk(
                     }
                     chunk.emit_op(Op::RETURN, 0);
                 } else {
+                    if let Some((params,returns))=direct_func_types.get(idx as usize).and_then(Clone::clone) {
+                    let target=1+idx-import_count;
+
+                    let at=chunk.code.len();chunk.emit_op_u8_u8(Op::RETURN_CALL,argc,results,0);
+                    chunk.direct_defined_calls.insert(at,vybe_runtime::chunk::DirectDefinedCall {
+                        target,source:false,params,results:returns,
+                    });
+                    } else {
                     // Local function: funcref model, staged exactly like the
                     // 0x10 arm, but dispatched through RETURN_CALL so the
                     // current frame is reused (spec tail call).
                     let chunk_idx = 1 + (idx - import_count) as u16;
-                    let base = if argc > 0 {
-                        chunk.alloc_scratch(argc as u16)
-                    } else {
-                        0
-                    };
-                    for i in (0..argc as u16).rev() {
-                        chunk.emit_op_u16(Op::LOCAL_SET, base + i, 0);
+                    let slots = scratch.stage(&mut chunk, std::iter::repeat_n(0x6f, argc as usize))?;
+                    for &slot in slots.iter().rev() {
+                        chunk.emit_op_u16(Op::LOCAL_SET, slot, 0);
                     }
                     chunk.emit_op_u16(Op::REF_FUNC, chunk_idx, 0);
                     chunk.emit(0, 0); // 0 upvalues
-                    for i in 0..argc as u16 {
-                        chunk.emit_op_u16(Op::LOCAL_GET, base + i, 0);
+                    for &slot in slots {
+                        chunk.emit_op_u16(Op::LOCAL_GET, slot, 0);
                     }
                     chunk.emit_op_u8_u8(Op::RETURN_CALL, argc, results, 0);
+                    }
                 }
             }
 
@@ -3510,25 +3568,31 @@ fn translate_wasm_to_chunk(
             0x14 | 0x15 => {
                 let (type_idx, read) = read_leb128_u32(&wasm[pos..]);
                 pos += read;
-                let (argc, results) = types
-                    .get(type_idx as usize)
-                    .map(|(params, results)| (params.len() as u8, results.len() as u8))
-                    .unwrap_or((0, 1));
-                let base = chunk.alloc_scratch(argc as u16 + 1);
-                chunk.emit_op_u16(Op::LOCAL_SET, base + argc as u16, 0); // funcref
-                for i in (0..argc as u16).rev() {
-                    chunk.emit_op_u16(Op::LOCAL_SET, base + i, 0);
+                let (params, returns) = types.get(type_idx as usize)
+                    .ok_or_else(|| WasmError::invalid("call_ref type index out of range"))?;
+                let argc = u8::try_from(params.len())
+                    .map_err(|_| WasmError::invalid("call_ref parameter count exceeds supported range"))?;
+                let results = u8::try_from(returns.len())
+                    .map_err(|_| WasmError::invalid("call_ref result count exceeds supported range"))?;
+                // Staging is dead once the call starts; reuse compatible lanes at later sites.
+                let slots = scratch.stage(&mut chunk, params.iter().copied().chain([0x70]))?;
+                let (callee, args) = slots.split_last().unwrap();
+                chunk.emit_op_u16(Op::LOCAL_SET, *callee, 0);
+                for &slot in args.iter().rev() {
+                    chunk.emit_op_u16(Op::LOCAL_SET, slot, 0);
                 }
-                chunk.emit_op_u16(Op::LOCAL_GET, base + argc as u16, 0);
-                for i in 0..argc as u16 {
-                    chunk.emit_op_u16(Op::LOCAL_GET, base + i, 0);
+                chunk.emit_op_u16(Op::LOCAL_GET, *callee, 0);
+                for &slot in args {
+                    chunk.emit_op_u16(Op::LOCAL_GET, slot, 0);
                 }
                 let call_op = if byte == 0x14 {
                     Op::CALL_REF
                 } else {
                     Op::RETURN_CALL_REF
                 };
+                let at = chunk.code.len();
                 chunk.emit_op_u8_u8(call_op, argc, results, 0);
+                record_native_call_signature(&mut chunk, types, type_idx, at);
             }
 
             // 0xFC prefix — nontrapping-float-to-int (0x00–0x07) + bulk-memory/table ops
@@ -3610,7 +3674,7 @@ fn translate_wasm_to_chunk(
             0xFB => {
                 let (sub, read) = read_leb128_u32(&wasm[pos..]);
                 pos += read;
-                emit_gc_prefixed(&mut chunk, sub, wasm, &mut pos);
+                emit_gc_prefixed(&mut chunk, sub, wasm, &mut pos)?;
             }
 
             // Stack-switching proposal.
@@ -3689,53 +3753,62 @@ fn translate_wasm_to_chunk(
         }
     }
 
-    chunk
+    Ok((chunk, matches!(last_wasm_op, Some(0x0F | 0x00 | 0x12))))
 }
 
-fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
+fn native_type_index(index: u32) -> Result<u16, WasmError> {
+    index.checked_add(1).and_then(|index| u16::try_from(index).ok())
+        .ok_or_else(|| WasmError::invalid("native type index exceeds supported range"))
+}
+
+fn native_heaptype(ht: vybe_runtime::opcode::heaptype::HeapType) -> Result<vybe_runtime::opcode::heaptype::HeapType, WasmError> {
+    use vybe_runtime::opcode::heaptype::HeapType;
+    match ht {
+        HeapType::Concrete(index) => index.checked_add(1).map(HeapType::Concrete)
+            .ok_or_else(|| WasmError::invalid("native heap type index overflow")),
+        abstract_type => Ok(abstract_type),
+    }
+}
+
+fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) -> Result<(), WasmError> {
     let Some(op) = u8::try_from(sub)
         .ok()
         .and_then(|s| Op::decode((0xFB) as u16, (s as u16) as u16))
     else {
-        return;
+        return Ok(());
     };
     match op {
         // Spec `struct.new $t` carries only a typeidx; the field count comes
         // from the type. Our bytecode is `(typeidx, count)` where count is
         // used ONLY by the dynamic (typeidx 0) object-literal form, so a
-        // foreign module's typeidx goes in the first slot and the count is 0.
+        // native typeidx is normalized to the VM's one-based table and the
+        // dynamic property-pair count is zero.
         // It used to be written into the COUNT slot, where the VM read it as
         // a key/value pair count and popped that many values off the stack.
         _ if op == Op::STRUCT_NEW => {
             let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
-            chunk.emit_struct_new(type_idx as u16, 0, 0);
+            chunk.emit_struct_new(native_type_index(type_idx)?, 0, 0);
         }
         // `struct.get $t i` / `get_s` / `get_u` / `set $t i` carry TWO
         // immediates (MVP.md §Instructions), not one. Reading a single leb
         // left the fieldidx to be decoded as the next opcode.
         //
-        // The read variants map to the INDEXED form (`o.fields[i]`), which is
-        // where a foreign `struct.new $t` now puts its values. `struct.set`
-        // has no indexed counterpart in this VM yet — it stays name-keyed, so
-        // a foreign struct.set does NOT write indexed storage. Consuming the
-        // right number of bytes is the part that matters here; the semantic
-        // half lands with the indexed-set work.
+        // Retain the declared type and the signed/unsigned read operation;
+        // native fields use indexed storage, never dynamic property names.
         _ if op == Op::STRUCT_GET || op == Op::STRUCT_GET_S || op == Op::STRUCT_GET_U => {
-            skip_leb128(wasm, pos); // typeidx
+            let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
             let (field_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
-            chunk.emit_struct_field_op(Op::STRUCT_GET_U, 1, field_idx, 0);
+            chunk.emit_struct_field_op(op, u32::from(native_type_index(type_idx)?), field_idx, 0);
         }
         _ if op == Op::STRUCT_SET => {
-            skip_leb128(wasm, pos); // typeidx
+            let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
             let (field_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
-            // Indexed form now exists — a foreign `struct.set $t i` writes
-            // the same storage `struct.get $t i` reads. typeidx 1 is a
-            // non-zero marker: the VM only uses it to select the indexed
-            // path, the fieldidx is what addresses the slot.
-            chunk.emit_struct_field_op(Op::STRUCT_SET, 1, field_idx, 0);
+            chunk.emit_struct_field_op(Op::STRUCT_SET, u32::from(native_type_index(type_idx)?), field_idx, 0);
         }
         // `array.len` takes NO immediate — reading one consumed the first
         // byte of the following instruction.
@@ -3754,7 +3827,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             let (idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
             match op.operand_format() {
-                vybe_runtime::opcode::OperandFormat::U16 => chunk.emit_op_u16(op, idx as u16, 0),
+                vybe_runtime::opcode::OperandFormat::U16 => chunk.emit_op_u16(op, native_type_index(idx)?, 0),
                 _ => chunk.emit_op(op, 0),
             }
         }
@@ -3767,7 +3840,8 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             *pos += read;
             let (extra, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
-            chunk.emit_array_new_fixed(type_idx as u16, extra as u16, 0);
+            let extra = u16::try_from(extra).map_err(|_| WasmError::invalid("native array length exceeds supported range"))?;
+            chunk.emit_array_new_fixed(native_type_index(type_idx)?, extra, 0);
         }
         _ if op == Op::ARRAY_NEW_DATA
             || op == Op::ARRAY_NEW_ELEM
@@ -3778,6 +3852,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             *pos += read;
             let (segment_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
+            let type_idx = native_type_index(type_idx)?;
             chunk.emit_op(op, 0);
             chunk.emit((type_idx >> 8) as u8, 0);
             chunk.emit((type_idx & 0xff) as u8, 0);
@@ -3792,12 +3867,24 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
         _ if op == Op::REF_TEST
             || op == Op::REF_TEST_NULL
             || op == Op::REF_CAST
-            || op == Op::REF_CAST_NULL =>
+            || op == Op::REF_CAST_NULL
+            || op == Op::REF_TEST_EXACT
+            || op == Op::REF_TEST_EXACT_NULL
+            || op == Op::REF_CAST_EXACT
+            || op == Op::REF_CAST_EXACT_NULL =>
         {
             // The heaptype survives now. It used to be read and thrown away,
             // replaced with the string `"__wasm_heaptype"` — which made every
             // decoded cast a test against a type that does not exist.
-            let ht = read_heaptype_immediate(wasm, pos);
+            let exact = wasm.get(*pos) == Some(&HEAPTYPE_EXACT);
+            let ht = native_heaptype(read_heaptype_immediate(wasm, pos))?;
+            let op = if exact {
+                if op == Op::REF_TEST { Op::REF_TEST_EXACT }
+                else if op == Op::REF_TEST_NULL { Op::REF_TEST_EXACT_NULL }
+                else if op == Op::REF_CAST { Op::REF_CAST_EXACT }
+                else if op == Op::REF_CAST_NULL { Op::REF_CAST_EXACT_NULL }
+                else { op }
+            } else { op };
             chunk.emit_ref_type_op(op, ht, 0);
         }
         _ if op == Op::BR_ON_CAST
@@ -3848,7 +3935,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
         _ if op == Op::STRUCT_NEW_DEFAULT_DESC || op == Op::REF_GET_DESC => {
             let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
-            chunk.emit_op_u16(op, type_idx as u16, 0);
+            chunk.emit_op_u16(op, native_type_index(type_idx)?, 0);
         }
         // `struct.new_desc` additionally carries a field count in OUR
         // bytecode (the binary format implies it from the declared type, the
@@ -3859,7 +3946,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
         _ if op == Op::STRUCT_NEW_DESC => {
             let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
-            chunk.emit_op_u16_u16(op, type_idx as u16, 0, 0);
+            chunk.emit_op_u16_u16(op, native_type_index(type_idx)?, 0, 0);
         }
         _ if op == Op::REF_CAST_DESC_EQ || op == Op::REF_CAST_DESC_EQ_NULL => {
             skip_heaptype_immediate(wasm, pos);
@@ -3870,6 +3957,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
         _ if emit_stringref_prefixed(chunk, op, wasm, pos) => {}
         _ => chunk.emit_op(op, 0),
     }
+    Ok(())
 }
 
 fn emit_stringref_prefixed(chunk: &mut Chunk, op: Op, wasm: &[u8], pos: &mut usize) -> bool {
@@ -3885,13 +3973,7 @@ fn emit_stringref_prefixed(chunk: &mut Chunk, op: Op, wasm: &[u8], pos: &mut usi
             chunk.emit_op(Op::UNREACHABLE, 0);
             true
         }
-        0x83..=0x8A
-        | 0x90
-        | 0x91
-        | 0x93
-        | 0x98..=0x9C
-        | 0xA0..=0xA4
-        | 0xB0..=0xB7 => {
+        0x83..=0x8A | 0x90 | 0x91 | 0x93 | 0x98..=0x9C | 0xA0..=0xA4 | 0xB0..=0xB7 => {
             chunk.emit_op(op, 0);
             true
         }
@@ -3955,14 +4037,10 @@ fn emit_simd_prefixed(
 }
 
 fn copy_simd_memarg(wasm: &[u8], pos: &mut usize, chunk: &mut Chunk, uses_memory64: bool) {
-    let (align, read) = read_leb128_u32(&wasm[*pos..]);
-    *pos += read;
-    let marker = 0x80 | if uses_memory64 { 0x100 } else { 0 };
-    chunk.emit_leb_u32(align | marker, 0);
-    copy_leb128(wasm, pos, chunk);
-    if align & 0x40 != 0 {
-        copy_leb128(wasm, pos, chunk);
-    }
+    // Standard memargs put memidx before offset; bytecode puts it after.
+    // Reuse the core-memory bridge, including the selected memory's width,
+    // rather than copying the LEBs or using a module-wide memory64 guess.
+    read_emit_memarg_for_memory_width(chunk, wasm, pos, uses_memory64);
 }
 
 fn emit_threads_prefixed(
@@ -4366,13 +4444,20 @@ fn validate_value_type(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
 }
 
 fn parse_type_section(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    parse_type_section_with_struct_fields(data).0
+}
+
+fn parse_type_section_with_struct_fields(
+    data: &[u8],
+) -> (Vec<(Vec<u8>, Vec<u8>)>, Vec<Option<u32>>) {
     if data.is_empty() {
-        return vec![];
+        return (Vec::new(), Vec::new());
     }
     let mut pos = 0;
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
     let mut types = Vec::new();
+    let mut struct_fields = Vec::new();
     for _ in 0..count {
         if pos >= data.len() {
             break;
@@ -4382,21 +4467,26 @@ fn parse_type_section(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
             let (group_len, read) = read_leb128_u32(&data[pos..]);
             pos += read;
             for _ in 0..group_len {
-                if !parse_subtype(data, &mut pos, &mut types) {
-                    return types;
+                if !parse_subtype(data, &mut pos, &mut types, &mut struct_fields) {
+                    return (types, struct_fields);
                 }
             }
-        } else if !parse_subtype(data, &mut pos, &mut types) {
-            return types;
+        } else if !parse_subtype(data, &mut pos, &mut types, &mut struct_fields) {
+            return (types, struct_fields);
         }
     }
-    types
+    (types, struct_fields)
 }
 
 /// One `subtype`: an optional `sub`/`sub final` header, then a composite type.
 /// Returns false if the bytes ran out, so the caller stops rather than looping
 /// on a truncated section.
-fn parse_subtype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8>)>) -> bool {
+fn parse_subtype(
+    data: &[u8],
+    pos: &mut usize,
+    types: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    struct_fields: &mut Vec<Option<u32>>,
+) -> bool {
     let Some(&tag) = data.get(*pos) else {
         return false;
     };
@@ -4424,11 +4514,16 @@ fn parse_subtype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8>
         *pos += 1;
         skip_leb128(data, pos);
     }
-    parse_comptype(data, pos, types)
+    parse_comptype(data, pos, types, struct_fields)
 }
 
 /// One `comptype`: `func`, `struct` or `array`.
-fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8>)>) -> bool {
+fn parse_comptype(
+    data: &[u8],
+    pos: &mut usize,
+    types: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    struct_fields: &mut Vec<Option<u32>>,
+) -> bool {
     let Some(&tag) = data.get(*pos) else {
         return false;
     };
@@ -4454,6 +4549,7 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
                 }
             }
             types.push((params, results));
+            struct_fields.push(None);
             true
         }
         GC_STRUCT => {
@@ -4466,6 +4562,7 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
             }
             // Occupies a type index without being callable.
             types.push((Vec::new(), Vec::new()));
+            struct_fields.push(Some(field_count));
             true
         }
         GC_ARRAY => {
@@ -4473,11 +4570,13 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
                 return false;
             }
             types.push((Vec::new(), Vec::new()));
+            struct_fields.push(None);
             true
         }
         TYPE_CONT => {
             skip_leb128(data, pos);
             types.push((Vec::new(), Vec::new()));
+            struct_fields.push(None);
             true
         }
         // An unknown composite tag means the encoding moved on without us;
@@ -4510,6 +4609,19 @@ fn skip_field_type(data: &[u8], pos: &mut usize) -> bool {
 ///
 /// `(ref ht)` (0x64) and `(ref null ht)` (0x63) carry a heaptype immediate
 /// encoded as `s33`; every other value type is a single byte.
+fn read_local_value_type(data: &[u8], pos: &mut usize) -> Result<(), String> {
+    let remaining = data
+        .get(*pos..)
+        .ok_or_else(|| "Invalid WASM: malformed local declaration".to_string())?;
+    // Unlike the lenient section helper below, this must reject incomplete
+    // and overlong heap-type immediates without consuming the function end.
+    let mut reader = crate::binary_cursor::Cursor::new(remaining);
+    section_types::value_type(&mut reader)
+        .map_err(|err| format!("Invalid WASM: malformed local declaration: {err}"))?;
+    *pos += reader.position();
+    Ok(())
+}
+
 fn read_value_type(data: &[u8], pos: &mut usize) -> Option<u8> {
     let &byte = data.get(*pos)?;
     *pos += 1;
@@ -4518,6 +4630,115 @@ fn read_value_type(data: &[u8], pos: &mut usize) -> Option<u8> {
         skip_heaptype_immediate(data, pos);
     }
     Some(byte)
+}
+
+fn mark_native_declared_scratch(chunk: &mut Chunk, slot: u16, ty: u8) {
+    if matches!(ty, 0x7f | 0x7d | 0x7c | 0x6f) {
+        return;
+    }
+    if let Some(name) = standard_valtype_name(ty) {
+        chunk.local_names.push(vybe_runtime::chunk::LocalName {
+            slot,
+            name: format!("<native-wasm-scratch:{name}>"),
+            origin: vybe_runtime::chunk::LocalOrigin::Compiler,
+        });
+    }
+}
+fn record_direct_declared_reference_calls(chunks: &mut [Chunk]) {
+    let signatures = chunks
+        .iter()
+        .map(|c| c.func_sig.clone())
+        .collect::<Vec<_>>();
+    for chunk in chunks {
+        let mut ip = 0;
+        while ip + 4 <= chunk.code.len() {
+            let op = Op::decode(
+                u16::from_be_bytes([chunk.code[ip], chunk.code[ip + 1]]),
+                u16::from_be_bytes([chunk.code[ip + 2], chunk.code[ip + 3]]),
+            )
+            .expect("decoded opcode");
+            if op == Op::REF_FUNC && chunk.code[ip + 6] == 0 {
+                let target = u16::from_be_bytes([chunk.code[ip + 4], chunk.code[ip + 5]]) as usize;
+                if let Some(Some((params, results))) = signatures.get(target) {
+                    let ps = params
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>();
+                    let at = ip + 7 + ps.len() * 6;
+                    let direct = ps.iter().enumerate().all(|(i, _)| {
+                        chunk.code.get(ip + 7 + i * 6..ip + 11 + i * 6) == Some(&[0, 0, 0, 32][..])
+                    });
+                    if direct
+                        && at + 6 <= chunk.code.len()
+                        && matches!(
+                            Op::decode(
+                                u16::from_be_bytes([chunk.code[at], chunk.code[at + 1]]),
+                                u16::from_be_bytes([chunk.code[at + 2], chunk.code[at + 3]])
+                            ),
+                            Some(Op::CALL_REF | Op::RETURN_CALL)
+                        )
+                    {
+                        chunk
+                            .call_indirect_sigs
+                            .entry(at)
+                            .or_insert(format!("{params}->{results}"));
+                        for (i, ty) in ps.iter().enumerate() {
+                            let get = ip + 7 + i * 6;
+                            let slot =
+                                u16::from_be_bytes([chunk.code[get + 4], chunk.code[get + 5]]);
+                            let raw = match *ty {
+                                "i64" => Some(0x7e),
+                                "funcref" => Some(0x70),
+                                "v128" => Some(0x7b),
+                                _ => None,
+                            };
+                            if let Some(raw) = raw {
+                                mark_native_declared_scratch(chunk, slot, raw);
+                            }
+                        }
+                    }
+                }
+            }
+            ip += 4 + op.operand_format().size_in(&chunk.code, ip + 4);
+        }
+    }
+}
+
+fn record_native_call_signature(
+    chunk: &mut Chunk,
+    types: &[(Vec<u8>, Vec<u8>)],
+    type_index: u32,
+    offset: usize,
+) {
+    let Some((params, results)) = types.get(type_index as usize) else { return; };
+    let spell = |types: &[u8]| types.iter().map(|&ty| standard_valtype_name(ty))
+        .collect::<Option<Vec<_>>>().map(|names| names.join(","));
+    if let (Some(params), Some(results)) = (spell(params), spell(results)) {
+        chunk.call_indirect_sigs.insert(offset, format!("{params}->{results}"));
+    }
+}
+
+fn standard_valtype_name(ty: u8) -> Option<&'static str> {
+    match ty {
+        0x7F => Some("i32"),
+        0x7E => Some("i64"),
+        0x7D => Some("f32"),
+        0x7C => Some("f64"),
+        0x7B => Some("v128"),
+        0x74 => Some("nullexnref"),
+        0x73 => Some("nullfuncref"),
+        0x72 => Some("nullexternref"),
+        0x71 => Some("nullref"),
+        0x70 => Some("funcref"),
+        0x6F => Some("externref"),
+        0x6E => Some("anyref"),
+        0x6D => Some("eqref"),
+        0x6C => Some("i31ref"),
+        0x6B => Some("structref"),
+        0x6A => Some("arrayref"),
+        0x69 => Some("exnref"),
+        _ => None,
+    }
 }
 
 fn parse_memory_section(data: &[u8]) -> Vec<u64> {
@@ -4816,34 +5037,38 @@ fn parse_memory_is_64(data: &[u8]) -> Vec<bool> {
     out
 }
 
-fn section_uses_memory64(data: &[u8]) -> bool {
-    if data.is_empty() {
-        return false;
-    }
-    let mut pos = 0;
-    let (count, read) = read_leb128_u32(&data[pos..]);
-    pos += read;
-    for _ in 0..count {
-        if pos >= data.len() {
-            break;
-        }
-        let flags = data[pos];
-        pos += 1;
-        let is_memory64 = flags & 0x04 != 0;
-        let has_max = flags & 0x01 != 0;
-        if is_memory64 {
-            return true;
-        }
-        skip_leb128(data, &mut pos);
-        if has_max {
-            skip_leb128(data, &mut pos);
-        }
-    }
-    false
-}
-
 /// Per-table index type from the table section: `true` = 64-bit (table64).
 /// Aligns with `parse_table_section`. table64 adds no new opcodes.
+fn read_table_types(imports: &[u8], tables: &[u8]) -> Result<Vec<section_types::TableType>, WasmError> {
+    let mut out=Vec::new();
+    section_types::for_each_import(imports,|_,_,ty|{
+        if let section_types::ImportType::Table(table)=ty {out.push(table.clone());}
+        Ok(())
+    })?;
+    if !tables.is_empty(){
+        let mut cursor=crate::binary_cursor::Cursor::new(tables);
+        let count=section_types::count(&mut cursor,1)?;
+        out.reserve(count);
+        for _ in 0..count {
+            let initialized=cursor.peek()==Some(0x40);
+            if initialized {
+                cursor.byte()?;
+                if cursor.byte()?!=0 {return Err("invalid table initializer prefix".into());}
+            }
+            out.push(section_types::table_type(&mut cursor)?);
+            if initialized {
+                // Preserve declaration parsing independently of initializer typing.
+                // The module validator checks the expression's permitted operators.
+                loop {
+                    if crate::binary_instructions::next(&mut cursor)?.opcode==0x0b {break;}
+                }
+            }
+        }
+        section_types::finish(&cursor)?;
+    }
+    Ok(out)
+}
+
 fn parse_table_is_64(data: &[u8]) -> Vec<bool> {
     if data.is_empty() {
         return vec![];
@@ -5008,6 +5233,8 @@ fn skip_const_expr(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
             0x23 | 0xD2 => leb_u32_fits(data, pos)?,
             0x43 => *pos += 4,
             0x44 => *pos += 8,
+            // Extended constant expressions have no immediates here.
+            0x6A..=0x6C | 0x7C..=0x7E => {}
             0xD0 => skip_heaptype_immediate(data, pos),
             0xFB => {
                 let sub_start = *pos;
@@ -5035,6 +5262,15 @@ fn skip_const_expr(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
                 }
             }
             0xFC => skip_leb128(data, pos),
+            0xFD => {
+                let start = *pos;
+                leb_u32_fits(data, pos)?;
+                let (sub, _) = read_leb128_u32(&data[start..]);
+                if sub != 0x0c {
+                    return Err("unsupported SIMD constant expression".into());
+                }
+                *pos += 16;
+            }
             _ => {
                 return Err(
                     format!("Invalid WASM: unsupported const expr opcode 0x{op:02x}").into(),
@@ -5048,75 +5284,6 @@ fn skip_const_expr(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
     Err("Invalid WASM: unterminated const expression".into())
 }
 
-fn read_i32_const_expr_as_u64(data: &[u8], pos: &mut usize) -> Result<u64, WasmError> {
-    if data.get(*pos).copied() != Some(0x41) {
-        return Err("Invalid WASM: active segment offset must be i32.const".into());
-    }
-    *pos += 1;
-    let (value, read) = read_leb128_i32(&data[*pos..]);
-    *pos += read;
-    if value < 0 {
-        return Err("Invalid WASM: active segment offset must be non-negative".into());
-    }
-    if data.get(*pos).copied() != Some(0x0B) {
-        return Err("Invalid WASM: active segment offset expression missing end".into());
-    }
-    *pos += 1;
-    Ok(value as u64)
-}
-
-fn read_ref_const_expr(
-    data: &[u8],
-    pos: &mut usize,
-    import_func_count: usize,
-) -> Result<Value, WasmError> {
-    if *pos >= data.len() {
-        return Err("Invalid WASM: truncated element expression".into());
-    }
-    let op = data[*pos];
-    *pos += 1;
-    let value = match op {
-        0xD0 => {
-            if *pos >= data.len() {
-                return Err("Invalid WASM: truncated ref.null expression".into());
-            }
-            *pos += 1;
-            Value::Null
-        }
-        0xD2 => {
-            let (func_idx, read) = read_leb128_u32(&data[*pos..]);
-            *pos += read;
-            wasm_funcidx_to_element_value(func_idx, import_func_count)
-        }
-        // `global.get x` is a constant expression too, and an element segment
-        // may initialise a slot from an imported global.
-        0x23 => {
-            let (_global_idx, read) = read_leb128_u32(&data[*pos..]);
-            *pos += read;
-            Value::Null
-        }
-        _ => {
-            return Err(
-                format!("Invalid WASM: unsupported element expression opcode 0x{op:02x}").into(),
-            );
-        }
-    };
-    if data.get(*pos).copied() != Some(0x0B) {
-        return Err("Invalid WASM: element expression missing end".into());
-    }
-    *pos += 1;
-    Ok(value)
-}
-
-fn read_emit_leb_u32(chunk: &mut Chunk, data: &[u8], pos: &mut usize) -> u32 {
-    let (value, read) = read_leb128_u32(&data[*pos..]);
-    for byte in &data[*pos..*pos + read] {
-        chunk.emit(*byte, 0);
-    }
-    *pos += read;
-    value
-}
-
 // (The 0xEE multi-memory selector emitters are deleted: memidx is a fixed
 // u16 immediate on memory.size/grow/fill/copy/init now, declared in their
 // OperandFormat, and rethrow/delegate carry their U32Leb depth directly.)
@@ -5128,9 +5295,16 @@ fn read_emit_memarg(chunk: &mut Chunk, data: &[u8], pos: &mut usize) {
     let (align, read) = read_leb128_u32(&data[*pos..]);
     *pos += read;
     chunk.emit_leb_u32(align | 0x80, 0);
+    let memidx = if align & 0x40 != 0 {
+        let (memidx, read) = read_leb128_u32(&data[*pos..]);
+        *pos += read;
+        Some(memidx)
+    } else {
+        None
+    };
     copy_leb128(data, pos, chunk);
-    if align & 0x40 != 0 {
-        copy_leb128(data, pos, chunk);
+    if let Some(memidx) = memidx {
+        chunk.emit_leb_u32(memidx, 0);
     }
 }
 
@@ -5138,8 +5312,19 @@ fn read_emit_memarg_for_memory_width(
     chunk: &mut Chunk,
     data: &[u8],
     pos: &mut usize,
-    is_memory64: bool,
+    _uses_memory64: bool,
 ) {
+    let (align, read) = read_leb128_u32(&data[*pos..]);
+    let memidx = if align & 0x40 != 0 {
+        read_leb128_u32(&data[*pos + read..]).0
+    } else {
+        0
+    };
+    let is_memory64 = chunk
+        .memory_is_64
+        .get(memidx as usize)
+        .copied()
+        .unwrap_or(false);
     if is_memory64 {
         read_emit_memarg64(chunk, data, pos);
     } else {
@@ -5153,13 +5338,20 @@ fn read_emit_memarg64(chunk: &mut Chunk, data: &[u8], pos: &mut usize) {
     let (align, read) = read_leb128_u32(&data[*pos..]);
     *pos += read;
     chunk.emit_leb_u32(align | 0x80 | 0x100, 0);
+    let memidx = if align & 0x40 != 0 {
+        let (memidx, read) = read_leb128_u32(&data[*pos..]);
+        *pos += read;
+        Some(memidx)
+    } else {
+        None
+    };
     let (_offset, read) = read_leb128_u64_local(&data[*pos..]);
     for byte in &data[*pos..*pos + read] {
         chunk.emit(*byte, 0);
     }
     *pos += read;
-    if align & 0x40 != 0 {
-        let _memidx = read_emit_leb_u32(chunk, data, pos);
+    if let Some(memidx) = memidx {
+        chunk.emit_leb_u32(memidx, 0);
     }
 }
 
@@ -5365,98 +5557,9 @@ fn read_blocktype_counts(data: &[u8], pos: &mut usize, types: &[(Vec<u8>, Vec<u8
     }
 }
 
-fn decode_abi_section(data: &[u8]) -> Result<Vec<AbiEntry>, WasmError> {
-    let mut pos = 0usize;
-    let (name_len, read) = read_leb128_u32(&data[pos..]);
-    pos += read;
-    if data.get(pos..pos + name_len as usize) != Some(b"vybe.abi") {
-        return Err("Invalid vybe.abi section name".into());
-    }
-    pos += name_len as usize;
-    let Some(version) = data.get(pos).copied() else {
-        return Err("Invalid vybe.abi: missing version".into());
-    };
-    pos += 1;
-    if version != 1 {
-        return Err(format!("Unsupported vybe.abi version {version}").into());
-    }
-    let (count, read) = read_leb128_u32(&data[pos..]);
-    pos += read;
-    let mut entries = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let (name_len, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        let name_end = pos
-            .checked_add(name_len as usize)
-            .ok_or_else(|| "Invalid vybe.abi: name overflow".to_string())?;
-        let Some(name_bytes) = data.get(pos..name_end) else {
-            return Err("Invalid vybe.abi: truncated name".into());
-        };
-        let name = std::str::from_utf8(name_bytes)
-            .map_err(|_| WasmError::from("Invalid vybe.abi: non-UTF8 name"))?
-            .to_string();
-        pos = name_end;
-        let Some(arity) = data.get(pos).copied() else {
-            return Err("Invalid vybe.abi: missing arity".into());
-        };
-        pos += 1;
-        let (local_count, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        let Some(takes_receiver_raw) = data.get(pos).copied() else {
-            return Err("Invalid vybe.abi: missing receiver flag".into());
-        };
-        pos += 1;
-        let Some(module_abi_raw) = data.get(pos).copied() else {
-            return Err("Invalid vybe.abi: missing module ABI".into());
-        };
-        pos += 1;
-        entries.push(AbiEntry {
-            name,
-            arity,
-            local_count: local_count.min(u16::MAX as u32) as u16,
-            takes_receiver: takes_receiver_raw != 0,
-            module_receiver_abi: if module_abi_raw == 1 {
-                ReceiverAbi::Parameter
-            } else {
-                ReceiverAbi::Ambient
-            },
-        });
-    }
-    Ok(entries)
-}
-
-fn apply_abi_section(data: &[u8], chunks: &mut [Chunk]) -> Result<(), WasmError> {
-    let entries = decode_abi_section(data)?;
-    if let Some(module_abi) = entries.first().map(|entry| entry.module_receiver_abi) {
-        for chunk in chunks.iter_mut() {
-            chunk.module_receiver_abi = module_abi;
-        }
-    }
-    for (source_idx, entry) in entries.iter().enumerate() {
-        let target_idx = chunks
-            .iter()
-            .position(|chunk| chunk.name == entry.name)
-            .or_else(|| {
-                if source_idx == 0 {
-                    chunks.iter().position(|chunk| chunk.name == "_start")
-                } else {
-                    source_idx.checked_add(1).filter(|&idx| idx < chunks.len())
-                }
-            });
-        let Some(target_idx) = target_idx else {
-            continue;
-        };
-        let chunk = &mut chunks[target_idx];
-        // The standard wasm signature does not encode Vybe's receiver-parameter
-        // convention, but decoded bytecode locals still use that convention. If
-        // we leave the wasm arity in place, call_function truncates the receiver
-        // or the final source argument before the body reads its locals.
-        chunk.arity = entry.arity;
-        chunk.local_count = chunk.local_count.max(entry.local_count);
-        chunk.takes_receiver = entry.takes_receiver;
-        chunk.module_receiver_abi = entry.module_receiver_abi;
-    }
-    Ok(())
+fn read_direct_metadata_u32(data:&[u8], pos:&mut usize)->Result<u32,WasmError> {
+    let start=*pos;leb_u32_fits(data,pos)?;
+    Ok(read_leb128_u32(&data[start..*pos]).0)
 }
 
 fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
@@ -5475,6 +5578,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
 
     let mut module_global_imports = Vec::new();
     let mut module_globals = Arc::new(Vec::new());
+    let mut module_global_snapshot = Arc::new(vybe_runtime::segmented_global_names::SegmentedGlobalNames::default());
     if version >= 7 {
         let (gi_count, read) = read_leb128_u32(&data[pos..]);
         pos += read;
@@ -5507,8 +5611,28 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
             globals.push(global_name);
         }
         module_globals = Arc::new(globals);
+        module_global_snapshot = Arc::new(module_globals.as_ref().clone().into());
     }
 
+    let mut module_tables = Vec::new();
+    if version >= 11 {
+        let malformed = |error: crate::binary_cursor::DecodeError| WasmError::from(format!("{error:?}"));
+        let mut reader = crate::binary_cursor::Cursor::new(data.get(pos..).ok_or("truncated cached table metadata")?);
+        let count = reader.u32().map_err(malformed)?;
+        for _ in 0..count {
+            let heap = vybe_runtime::opcode::heaptype::HeapType::from_sleb(reader.i32().map_err(malformed)?);
+            let reference_flags = reader.byte().map_err(malformed)?;
+            let flags = reader.byte().map_err(malformed)?;
+            if reference_flags & !7 != 0 || flags & !7 != 0 {
+                return Err("invalid cached table flags".into());
+            }
+            let min = reader.u64().map_err(malformed)?;
+            let max = if flags & 1 != 0 { Some(reader.u64().map_err(malformed)?) } else { None };
+            module_tables.push((min, max, flags, (heap, reference_flags & 1 != 0,
+                reference_flags & 2 != 0, reference_flags & 4 != 0)));
+        }
+        pos += reader.position();
+    }
     let mut chunks = Vec::new();
     let mut section_value_ctx = ValueDecodeContext::default();
     for _ in 0..count {
@@ -5533,6 +5657,19 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
             (takes_receiver, abi)
         } else {
             (false, ReceiverAbi::Ambient)
+        };
+        let func_sig = if version >= 9 {
+            let flag = *data
+                .get(pos)
+                .ok_or("Invalid vybe: missing signature flag")?;
+            pos += 1;
+            match flag {
+                0 => None,
+                1 => Some((read_name(data, &mut pos)?, read_name(data, &mut pos)?)),
+                _ => return Err("Invalid vybe: malformed signature flag".into()),
+            }
+        } else {
+            None
         };
 
         // Constants
@@ -5764,24 +5901,58 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
             }
         }
 
+        let mut direct_calls=std::collections::BTreeMap::new();
+        let mut direct_entry_has_captures=None;
+        if version>=10 {
+            let flag=*data.get(pos).ok_or("truncated direct environment fact")?;pos+=1;
+            direct_entry_has_captures=match flag {0=>None,1=>Some(false),2=>Some(true),_=>return Err("invalid direct environment fact".into())};
+            let n=read_direct_metadata_u32(data,&mut pos)?;
+            for _ in 0..n {
+                let at=read_direct_metadata_u32(data,&mut pos)?;
+                let target=read_direct_metadata_u32(data,&mut pos)?;
+                let flag=*data.get(pos).ok_or("truncated direct call source flag")?;pos+=1;
+                if flag>1 {return Err("invalid direct call source flag".into());}
+                let source=flag==1;
+                let mut names=Vec::new();
+                for _ in 0..2 {
+                    let n=read_direct_metadata_u32(data,&mut pos)?;
+                    let end=pos.checked_add(n as usize).ok_or("direct signature overflow")?;
+                    let bytes=data.get(pos..end).ok_or("truncated direct signature")?;
+                    names.push(std::str::from_utf8(bytes).map_err(|_|"invalid direct signature UTF8")?.to_owned());pos=end;
+                }
+                if direct_calls.insert(at as usize,vybe_runtime::chunk::DirectDefinedCall {target,source,params:names.remove(0),results:names.remove(0)}).is_some(){return Err("duplicate direct call offset".into());}
+            }
+        }
         let mut chunk = Chunk::new(&name);
+        chunk.direct_defined_calls=direct_calls;
+        chunk.direct_entry_has_captures=direct_entry_has_captures;
         chunk.arity = arity;
         chunk.local_count = lc as u16;
         chunk.takes_receiver = takes_receiver;
         chunk.module_receiver_abi = module_receiver_abi;
+        chunk.func_sig = func_sig;
         chunk.constants = constants;
-        chunk.imports = imports;
+        chunk.imports = imports.into();
         chunk.code = code;
-        chunk.lines = lines;
+        chunk.lines = lines.into();
         chunk.types = types;
         chunk.tags = tags;
-        chunk.global_imports = global_imports;
+        chunk.global_imports = global_imports.into();
         chunk.globals = if version >= 7 {
-            module_globals.clone()
+            module_global_snapshot.clone()
         } else {
-            Arc::new(globals)
+            Arc::new(globals.into())
         };
         chunks.push(chunk);
+    }
+    if let Some(chunk) = chunks.first_mut() {
+        for (min, max, flags, reference) in module_tables {
+            chunk.table_min_sizes.push(min);
+            chunk.table_max_sizes.push(max);
+            chunk.table_is_shared.push(flags & 2 != 0);
+            chunk.table_is_64.push(flags & 4 != 0);
+            chunk.table_element_types.push(reference);
+        }
     }
     Ok(chunks)
 }
@@ -5800,6 +5971,362 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
 #[cfg(test)]
 mod custom_descriptor_encoding_tests {
     use super::*;
+
+    fn native_start_fixture(trap: bool, entry: bool) -> Vec<u8> {
+        let mut wasm = Vec::from(WASM_MAGIC);
+        wasm.extend_from_slice(&WASM_VERSION);
+        write_section(&mut wasm, SECTION_TYPE, &[1, TYPE_FUNC, 0, 0]);
+        write_section(&mut wasm, SECTION_FUNCTION,
+            if entry { &[2, 0, 0] } else { &[1, 0] });
+        write_section(&mut wasm, 6, &[1, 0x7f, 1, 0x41, 0, 0x0b]);
+        if entry {
+            let mut exports = vec![1];
+            write_name(&mut exports, "_start");
+            exports.extend_from_slice(&[0, 1]);
+            write_section(&mut wasm, SECTION_EXPORT, &exports);
+        }
+        write_section(&mut wasm, 8, &[0]);
+        let start: &[u8] = if trap { &[0, 0, 0x0b] }
+            else { &[0, 0x23, 0, 0x41, 1, 0x6a, 0x24, 0, 0x0b] };
+        let mut code = vec![if entry { 2 } else { 1 }];
+        write_leb128_u32(&mut code, start.len() as u32);
+        code.extend_from_slice(start);
+        if entry {
+            let body = [0, 0x23, 0, 0x41, 1, 0x47, 0x04, 0x40, 0, 0x0b,
+                0x23, 0, 0x41, 10, 0x6a, 0x24, 0, 0x0b];
+            write_leb128_u32(&mut code, body.len() as u32);
+            code.extend_from_slice(&body);
+        }
+        write_section(&mut wasm, SECTION_CODE, &code);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&wasm).expect("standard start fixture validates");
+        wasm
+    }
+
+    #[test]
+    fn native_start_runs_once_per_instance_before_cli_entry() {
+        for linked in [false, true] {
+            let chunks = read_wasm(&native_start_fixture(false, true)).unwrap();
+            let mut vm = vybe_runtime::VM::new();
+            for instance in 0..2 {
+                if linked { vm.run_linked(chunks.clone(), vec![]).unwrap(); }
+                else { vm.run(chunks.clone()).unwrap(); }
+                let base = instance * chunks.len();
+                assert_eq!(vm.global(&format!("__wasm_instance_{base}_global_0")),
+                    Some(&vybe_runtime::Value::I32(11)));
+            }
+        }
+    }
+
+    #[test]
+    fn native_start_traps_without_cli_entry() {
+        let chunks = read_wasm(&native_start_fixture(true, false)).unwrap();
+        assert!(vybe_runtime::VM::new().run(chunks).is_err());
+    }
+
+    #[test]
+    fn native_imported_start_uses_resolved_host_function() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut wasm = Vec::from(WASM_MAGIC);
+        wasm.extend_from_slice(&WASM_VERSION);
+        write_section(&mut wasm, SECTION_TYPE, &[1, TYPE_FUNC, 0, 0]);
+        let mut imports = vec![1];
+        write_name(&mut imports, "test:start");
+        write_name(&mut imports, "initialize");
+        imports.extend_from_slice(&[0, 0]);
+        write_section(&mut wasm, SECTION_IMPORT, &imports);
+        write_section(&mut wasm, 8, &[0]);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&wasm).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut vm = vybe_runtime::VM::new();
+        vm.register_host_fn("test:start", "initialize", Box::new(move |_, _| {
+            observed.fetch_add(1, Ordering::Relaxed);
+            vybe_runtime::Value::Undefined
+        }));
+        let chunks = read_wasm(&wasm).unwrap();
+        vm.run(chunks.clone()).unwrap();
+        vm.run(chunks).unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn native_gc_type_zero_is_not_the_dynamic_object_type() {
+        let mut wasm = Vec::from(WASM_MAGIC);
+        wasm.extend_from_slice(&WASM_VERSION);
+        write_section(&mut wasm, SECTION_TYPE, &[2, 0x5f, 0, 0x60, 0, 0]);
+        write_section(&mut wasm, SECTION_FUNCTION, &[1, 1]);
+        let mut exports = vec![1];
+        write_name(&mut exports, "_start");
+        exports.extend_from_slice(&[0, 0]);
+        write_section(&mut wasm, SECTION_EXPORT, &exports);
+        write_section(&mut wasm, SECTION_CODE, &[1, 9, 0, 0xfb, 0, 0, 0xfb, 0x16, 0, 0x1a, 0x0b]);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&wasm).expect("native GC fixture must validate");
+        let chunks = read_wasm(&wasm).unwrap();
+        assert_eq!(chunks[0].types.len(), 2);
+        assert!(chunks[0].types[0].native_identity.is_some());
+        let mut vm = vybe_runtime::VM::new();
+        vm.run(chunks.clone()).expect("type zero allocation must cast to its declared type");
+        // A preceding module puts a function, not a struct, at type zero.
+        // The next module must not consult that module's table for its cast.
+        let mut preceding = Vec::from(WASM_MAGIC);
+        preceding.extend_from_slice(&WASM_VERSION);
+        write_section(&mut preceding, SECTION_TYPE, &[1, TYPE_FUNC, 0, 0]);
+        write_section(&mut preceding, SECTION_FUNCTION, &[1, 0]);
+        write_section(&mut preceding, SECTION_EXPORT, &exports);
+        write_section(&mut preceding, SECTION_CODE, &[1, 2, 0, 0x0b]);
+        let mut vm = vybe_runtime::VM::new();
+        vm.run(read_wasm(&preceding).unwrap()).unwrap();
+        vm.run(chunks).expect("native casts must remain module-relative after another module");
+    }
+
+    #[test]
+    fn native_gc_declared_subtyping_does_not_relax_reverse_casts() {
+        for (allocation, target, succeeds) in [(1, 0, true), (0, 1, false)] {
+            let mut wasm = Vec::from(WASM_MAGIC);
+            wasm.extend_from_slice(&WASM_VERSION);
+            write_section(&mut wasm, SECTION_TYPE, &[
+                3, GC_SUB, 0, GC_STRUCT, 0,
+                GC_SUB_FINAL, 1, 0, GC_STRUCT, 0,
+                TYPE_FUNC, 0, 0,
+            ]);
+            write_section(&mut wasm, SECTION_FUNCTION, &[1, 2]);
+            let mut exports = vec![1];
+            write_name(&mut exports, "_start");
+            exports.extend_from_slice(&[0, 0]);
+            write_section(&mut wasm, SECTION_EXPORT, &exports);
+            write_section(&mut wasm, SECTION_CODE, &[
+                1, 9, 0, 0xfb, 0, allocation, 0xfb, 0x16, target, 0x1a, 0x0b,
+            ]);
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&wasm).unwrap();
+            let result = vybe_runtime::VM::new().run(read_wasm(&wasm).unwrap());
+            if succeeds { result.expect("subtype must cast to its parent"); }
+            else { assert!(result.unwrap_err().is_trap()); }
+        }
+    }
+
+    #[test]
+    fn native_function_casts_preserve_subtype_and_exact_identity() {
+        for exact in [false, true] {
+            let mut wasm = Vec::from(WASM_MAGIC);
+            wasm.extend_from_slice(&WASM_VERSION);
+            write_section(&mut wasm, SECTION_TYPE, &[
+                3, GC_SUB, 0, TYPE_FUNC, 0, 0,
+                GC_SUB_FINAL, 1, 0, TYPE_FUNC, 0, 0,
+                TYPE_FUNC, 0, 0,
+            ]);
+            write_section(&mut wasm, SECTION_FUNCTION, &[2, 1, 2]);
+            let mut exports = vec![2];
+            write_name(&mut exports, "callee");
+            exports.extend_from_slice(&[0, 0]);
+            write_name(&mut exports, "_start");
+            exports.extend_from_slice(&[0, 1]);
+            write_section(&mut wasm, SECTION_EXPORT, &exports);
+            let mut body = vec![0, 0xd2, 0, 0xfb, 0x16];
+            if exact { body.push(HEAPTYPE_EXACT); }
+            body.extend_from_slice(&[0, 0x1a, 0x0b]);
+            let mut code = vec![2, 2, 0, 0x0b];
+            write_leb128_u32(&mut code, body.len() as u32);
+            code.extend_from_slice(&body);
+            write_section(&mut wasm, SECTION_CODE, &code);
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&wasm).unwrap();
+            let result = vybe_runtime::VM::new().run(read_wasm(&wasm).unwrap());
+            if exact { assert!(result.unwrap_err().is_trap()); }
+            else { result.expect("function subtype must cast to its declared parent"); }
+        }
+    }
+
+    #[test]
+    fn sequential_call_ref_sites_reuse_temporary_locals() {
+        let mut wasm = Vec::from(WASM_MAGIC);
+        wasm.extend_from_slice(&WASM_VERSION);
+        write_section(&mut wasm, SECTION_TYPE, &[2, 0x60, 1, 0x7f, 1, 0x7f, 0x60, 0, 1, 0x7f]);
+        write_section(&mut wasm, SECTION_FUNCTION, &[2, 0, 1]);
+        let mut exports = vec![2];
+        write_name(&mut exports, "id");
+        exports.extend_from_slice(&[0, 0]);
+        write_name(&mut exports, "_start");
+        exports.extend_from_slice(&[0, 1]);
+        write_section(&mut wasm, SECTION_EXPORT, &exports);
+        let mut body = vec![0];
+        for _ in 0..65_536 {
+            body.extend_from_slice(&[
+                0x41, 7, 0xd2, 0, 0x14, 0, 0x41, 7, 0x47,
+                0x04, 0x40, 0x00, 0x0b,
+            ]);
+        }
+        body.extend_from_slice(&[0x41, 1, 0x0b]);
+        let mut code = vec![2, 4, 0, 0x20, 0, 0x0b];
+        write_leb128_u32(&mut code, body.len() as u32);
+        code.extend_from_slice(&body);
+        write_section(&mut wasm, SECTION_CODE, &code);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&wasm).expect("standard Wasm fixture must validate");
+        let chunks = read_wasm(&wasm).expect("call count must not exhaust temporary locals");
+        let start = chunks.iter().find(|chunk| chunk.name == "_start").unwrap();
+        assert_eq!(start.local_count, 2);
+        assert_eq!(start.call_indirect_sigs.len(), 65_536);
+        vybe_runtime::VM::new().run(chunks).expect("every staged call must return seven");
+    }
+
+    #[test]
+    fn decoder_temporaries_reuse_only_compatible_storage_lanes() {
+        let mut chunk = Chunk::new("scratch");
+        let mut scratch = DecoderScratch::default();
+        let first = scratch.stage(&mut chunk, [0x7f, 0x7e, 0x70, 0x7b]).unwrap().to_vec();
+        let second = scratch.stage(&mut chunk, [0x7b, 0x70, 0x7e, 0x6f]).unwrap().to_vec();
+        assert_eq!(second, first.into_iter().rev().collect::<Vec<_>>());
+        assert_eq!(chunk.local_count, 4);
+        let third = scratch.stage(&mut chunk, [0x7e, 0x7e, 0x70]).unwrap().to_vec();
+        assert_ne!(third[0], third[1]);
+        assert_eq!(chunk.local_count, 5);
+    }
+
+    fn module_with_reference_locals(heap_type: &[u8]) -> Vec<u8> {
+        let mut wasm = Vec::from(WASM_MAGIC);
+        wasm.extend_from_slice(&WASM_VERSION);
+        // Concrete heap type 128 requires a multi-byte signed index.
+        let mut types = vec![0x82, 0x01];
+        for _ in 0..130 {
+            types.extend_from_slice(&[0x60, 0, 0]);
+        }
+        write_section(&mut wasm, SECTION_TYPE, &types);
+        write_section(&mut wasm, SECTION_FUNCTION, &[1, 0x81, 1]);
+        let mut body = vec![2, 1, 0x63];
+        body.extend_from_slice(heap_type);
+        body.extend_from_slice(&[2, 0x7f, 0x0b]);
+        let mut code = vec![1, body.len() as u8];
+        code.extend_from_slice(&body);
+        write_section(&mut wasm, SECTION_CODE, &code);
+        wasm
+    }
+
+    #[test]
+    fn typed_reference_locals_preserve_following_local_groups() {
+        for heap_type in [&[0][..], &[0x80, 1][..], &[0x70][..]] {
+            let wasm = module_with_reference_locals(heap_type);
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&wasm)
+                .expect("typed reference local fixture validates");
+            let chunks = read_wasm(&wasm).expect("typed reference locals decode");
+            assert_eq!(chunks[1].local_count, 3);
+        }
+    }
+
+    #[test]
+    fn truncated_reference_local_is_rejected() {
+        let mut wasm = Vec::from(WASM_MAGIC);
+        wasm.extend_from_slice(&WASM_VERSION);
+        write_section(&mut wasm, SECTION_TYPE, &[1, 0x60, 0, 0]);
+        write_section(&mut wasm, SECTION_FUNCTION, &[1, 0]);
+        write_section(&mut wasm, SECTION_CODE, &[1, 4, 1, 1, 0x63, 0x0b]);
+        assert!(read_wasm(&wasm).is_err());
+    }
+
+    #[test]
+    fn local_value_type_rejects_incomplete_and_overlong_payloads() {
+        for bytes in [
+            &[0x63][..],
+            &[0x64, 0x80][..],
+            &[0x63, HEAPTYPE_EXACT][..],
+            &[0x63, 0x80, 0x80, 0x80, 0x80, 0x80, 0][..],
+            &[0x78][..], // Packed storage types are not local value types.
+        ] {
+            let mut pos = 0;
+            assert!(read_local_value_type(bytes, &mut pos).is_err());
+            assert_eq!(pos, 0, "failure must not publish a partial cursor");
+        }
+    }
+
+    #[test]
+    fn module_segments_are_owned_once_and_available_to_function_bodies() {
+        let mut wasm = Vec::from(WASM_MAGIC);
+        wasm.extend_from_slice(&WASM_VERSION);
+        write_section(&mut wasm, SECTION_TYPE, &[2, 0x60, 0, 1, 0x7f, 0x60, 0, 0]);
+        write_section(&mut wasm, SECTION_FUNCTION, &[3, 0, 0, 1]);
+        write_section(&mut wasm, 4, &[1, 0x70, 0, 2]);
+        write_section(&mut wasm, SECTION_MEMORY, &[1, 0, 1]);
+        let mut exports = vec![1];
+        write_name(&mut exports, "_start");
+        exports.extend_from_slice(&[0, 2]);
+        write_section(&mut wasm, SECTION_EXPORT, &exports);
+        write_section(&mut wasm, 9, &[2, 0, 0x41, 0, 0x0b, 1, 0, 1, 0, 1, 1]);
+        write_section(&mut wasm, 12, &[2]);
+        let body = [
+            0, 0x41, 0, 0x2d, 0, 0, 0x41, 0xe1, 0,
+            0x47, 0x04, 0x40, 0x00, 0x0b,
+            0x41, 8, 0x41, 0, 0x41, 3, 0xfc, 8, 1, 0,
+            0xfc, 9, 1,
+            0x41, 8, 0x2d, 0, 0, 0x41, 0xf8, 0, 0x47,
+            0x04, 0x40, 0x00, 0x0b,
+            0x41, 0, 0x11, 0, 0, 0x41, 42, 0x47,
+            0x04, 0x40, 0x00, 0x0b,
+            0x41, 1, 0x41, 0, 0x41, 1, 0xfc, 12, 1, 0,
+            0xfc, 13, 1,
+            0x41, 1, 0x11, 0, 0, 0x41, 43, 0x47,
+            0x04, 0x40, 0x00, 0x0b, 0x0b,
+        ];
+        let mut code = vec![3, 4, 0, 0x41, 42, 0x0b, 4, 0, 0x41, 43, 0x0b];
+        write_leb128_u32(&mut code, body.len() as u32);
+        code.extend_from_slice(&body);
+        write_section(&mut wasm, SECTION_CODE, &code);
+        write_section(&mut wasm, SECTION_DATA,
+            &[2, 0, 0x41, 0, 0x0b, 3, b'a', b'b', b'c', 1, 3, b'x', b'y', b'z']);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&wasm).expect("segment fixture is standard Wasm");
+        let chunks = read_wasm(&wasm).expect("segment fixture decodes");
+        assert_eq!(chunks[0].data_segments.len(), 2);
+        let segments = chunks[0].native_segments.as_ref().expect("native segment declarations");
+        assert_eq!(segments.elements.len(), 2);
+        assert!(matches!(segments.data_modes[0], vybe_runtime::chunk::NativeSegmentMode::Active { index: 0, .. }));
+        assert!(matches!(segments.elements[0].mode, vybe_runtime::chunk::NativeSegmentMode::Active { index: 0, .. }));
+        for function in &chunks[1..] {
+            assert!(function.data_segments.is_empty());
+            assert!(function.elem_segments.is_empty());
+            assert!(function.active_data_segments.is_empty());
+            assert!(function.active_elem_segments.is_empty());
+            assert!(function.native_segments.is_none());
+        }
+        vybe_runtime::VM::new().run(chunks.clone()).expect("functions retain module segment access");
+        let mut reused_vm = vybe_runtime::VM::new();
+        let mut prefix = Chunk::new("prefix");
+        prefix.emit_op(Op::RETURN, 0);
+        reused_vm.run(vec![prefix]).expect("prior module loads");
+        reused_vm.run(chunks).expect("later module retains segment access");
+    }
+
+    #[test]
+    fn borrowed_sections_produce_owned_decoded_data() {
+        let mut wasm = Vec::from(WASM_MAGIC);
+        wasm.extend_from_slice(&WASM_VERSION);
+        write_section(
+            &mut wasm,
+            SECTION_CUSTOM,
+            &[4, b'n', b'o', b't', b'e', 0xff],
+        );
+        write_section(&mut wasm, SECTION_TYPE, &[1, 0x60, 0, 0]);
+        write_section(&mut wasm, SECTION_FUNCTION, &[1, 0]);
+        write_section(&mut wasm, SECTION_MEMORY, &[1, 0, 1]);
+        write_section(&mut wasm, SECTION_CODE, &[1, 2, 0, 0x0b]);
+        write_section(
+            &mut wasm,
+            SECTION_DATA,
+            &[1, 0, 0x41, 0, 0x0b, 3, b'a', b'b', b'c'],
+        );
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&wasm)
+            .expect("standard Wasm fixture validates");
+
+        let chunks = read_wasm(&wasm).expect("module decodes");
+        assert_eq!(chunks[0].data_segments, vec![b"abc".to_vec()]);
+        let last = wasm.last_mut().unwrap();
+        *last = b'z';
+        assert_eq!(chunks[0].data_segments, vec![b"abc".to_vec()]);
+    }
 
     #[test]
     fn exact_heaptype_does_not_shift_later_type_indices() {
@@ -5866,6 +6393,49 @@ mod custom_descriptor_encoding_tests {
     }
 
     #[test]
+    fn gc_struct_new_consumes_declared_fields_without_weakening_block_validation() {
+        fn module_with_fields(pushed: u8) -> Vec<u8> {
+            let mut wasm = Vec::from(WASM_MAGIC);
+            wasm.extend_from_slice(&WASM_VERSION);
+
+            let mut types = vec![2, GC_STRUCT, 6];
+            for _ in 0..6 {
+                types.extend_from_slice(&[0x7f, 0]);
+            }
+            types.extend_from_slice(&[TYPE_FUNC, 0, 0]);
+            write_section(&mut wasm, SECTION_TYPE, &types);
+            write_section(&mut wasm, SECTION_FUNCTION, &[1, 1]);
+
+            let mut body = vec![0, 0x02, 0x40];
+            for value in 1..=pushed {
+                body.extend_from_slice(&[0x41, value]);
+            }
+            body.extend_from_slice(&[0xfb, 0, 0, 0x1a, 0x0b, 0x0b]);
+            let mut code = vec![1, body.len() as u8];
+            code.extend_from_slice(&body);
+            write_section(&mut wasm, SECTION_CODE, &code);
+            wasm
+        }
+
+        let valid = module_with_fields(6);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&valid)
+            .expect("six-field struct.new is standard Wasm");
+        read_wasm(&valid).expect("reader must consume all six field operands");
+
+        let invalid = module_with_fields(5);
+        assert!(
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&invalid)
+                .is_err()
+        );
+        let error = read_wasm_classified(&invalid)
+            .expect_err("missing field operand must be rejected");
+        assert_eq!(error.phase, Phase::Invalid);
+        assert!(error.message.contains("type mismatch"), "{error:?}");
+    }
+
+    #[test]
     fn gc_instructions_consume_exactly_their_spec_immediates() {
         // MVP.md §Instructions. Each entry is (sub-opcode, immediate bytes
         // that MUST be consumed). `struct.get`/`set` take typeidx + fieldidx;
@@ -5904,7 +6474,7 @@ mod custom_descriptor_encoding_tests {
             bytes.push(0xEE);
             let mut chunk = Chunk::new("<test>");
             let mut pos = 0usize;
-            emit_gc_prefixed(&mut chunk, *sub, &bytes, &mut pos);
+            emit_gc_prefixed(&mut chunk, *sub, &bytes, &mut pos).unwrap();
             assert_eq!(
                 pos,
                 immediates.len(),

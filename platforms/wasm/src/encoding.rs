@@ -149,10 +149,10 @@ pub fn write_leb128_i64(out: &mut Vec<u8>, mut value: i64) {
 pub fn encode_memarg_with_memidx(out: &mut Vec<u8>, align: u32, offset: u64, memidx: u32) {
     let encoded_align = if memidx == 0 { align } else { align | 0x40 };
     write_leb128_u32(out, encoded_align);
-    write_leb128_u64(out, offset);
     if memidx != 0 {
         write_leb128_u32(out, memidx);
     }
+    write_leb128_u64(out, offset);
 }
 
 // ── LEB128 decoding ─────────────────────────────────────────────────────
@@ -508,7 +508,10 @@ fn is_serializable_data_object(
             return false;
         };
 
-        let properties_ok = guard.properties.is_empty();
+        // Descriptor-backed runtime objects were not serializable when their
+        // descriptor occupied a property-map entry. Keep rejecting them rather
+        // than silently dropping engine-managed identity from cached constants.
+        let properties_ok = guard.properties.is_empty() && guard.descriptor.is_none();
         let fields_ok = guard
             .fields
             .iter()
@@ -631,7 +634,8 @@ pub fn decode_value_with_context(
             let properties = decode_properties(data, pos, ctx);
             let fields = decode_value_vec(data, pos, ctx);
             let value = Value::Object(Arc::new(Mutex::new(Object {
-                properties,
+                descriptor: None,
+            properties,
                 kind: ObjectKind::Ordinary,
                 type_id: type_id as usize,
                 fields,
@@ -648,7 +652,8 @@ pub fn decode_value_with_context(
             let properties = decode_properties(data, pos, ctx);
             let fields = decode_value_vec(data, pos, ctx);
             let value = Value::Object(Arc::new(Mutex::new(Object {
-                properties,
+                descriptor: None,
+            properties,
                 kind: ObjectKind::Array(elements),
                 type_id: type_id as usize,
                 fields,
@@ -668,7 +673,8 @@ pub fn decode_value_with_context(
                 entries.insert(key, value);
             }
             let value = Value::Object(Arc::new(Mutex::new(Object {
-                properties: indexmap::IndexMap::new(),
+                descriptor: None,
+            properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Map(entries),
                 type_id: 0,
                 fields: Vec::new(),
@@ -686,7 +692,8 @@ pub fn decode_value_with_context(
                 entries.insert(decode_value_with_context(data, pos, ctx));
             }
             let value = Value::Object(Arc::new(Mutex::new(Object {
-                properties: indexmap::IndexMap::new(),
+                descriptor: None,
+            properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Set(entries),
                 type_id: 0,
                 fields: Vec::new(),
@@ -717,10 +724,7 @@ pub fn decode_value_with_context(
         17 => {
             let (id, n) = read_leb128_u32(&data[*pos..]);
             *pos += n;
-            ctx.objects
-                .get(id as usize)
-                .cloned()
-                .unwrap_or(Value::Null)
+            ctx.objects.get(id as usize).cloned().unwrap_or(Value::Null)
         }
         _ => Value::Null,
     }

@@ -11,6 +11,22 @@ pub const DOM_MODULE: &str = "web:dom";
 pub const HTML_MODULE: &str = "web:html";
 pub const CSSOM_MODULE: &str = "web:cssom";
 
+pub fn has_overloaded_signature(module: &str, name: &str) -> bool {
+    module == CANVAS_MODULE && matches!(name, "drawImage" | "putImageData")
+}
+
+pub fn write_overloaded_signature(
+    out: &mut Vec<u8>, module: &str, name: &str, arity: u8,
+) -> bool {
+    if !has_overloaded_signature(module, name) {
+        return false;
+    }
+    // Preserve all supplied arguments; the owning WebIDL binding resolves
+    // the overload (and rejects invalid calls), not the WASM serializer.
+    sig(out, u32::from(arity), None);
+    true
+}
+
 fn sig(out: &mut Vec<u8>, params: u32, result: Option<u8>) {
     write_leb128_u32(out, params);
     for _ in 0..params {
@@ -134,10 +150,14 @@ fn write_dom_signature(out: &mut Vec<u8>, name: &str) -> bool {
         "getAttribute" => (3, Some(TYPE_EXTERNREF)),
         "isConnected" => (2, Some(TYPE_I32)),
         "hasAttribute" | "matches" | "contains" => (3, Some(TYPE_I32)),
-        "closest" | "firstChild" | "lastChild" | "nextSibling" | "previousSibling"
-        | "parentNode" | "childNodes" | "children" | "firstElementChild" | "lastElementChild" => {
-            (1, Some(TYPE_EXTERNREF))
+        // DOM provider traversal consumes its document and node carriers.
+        "firstChild" | "lastChild" | "nextSibling" | "previousSibling" => {
+            (2, Some(TYPE_EXTERNREF))
         }
+        "parentNode" | "childNodes" | "children" | "firstElementChild" | "lastElementChild" => {
+            (2, Some(TYPE_EXTERNREF))
+        }
+        "closest" => (3, Some(TYPE_EXTERNREF)),
         "setTextContent" | "setInnerHtml" => (3, None),
         "removeAttribute" => (3, None),
         "toggleAttribute" => (4, None),
@@ -145,7 +165,7 @@ fn write_dom_signature(out: &mut Vec<u8>, name: &str) -> bool {
         | "classListRemove" | "classListToggle" => (4, None),
         "setAttributeNS" => (4, None),
         "classListContains" => (3, Some(TYPE_I32)),
-        "remove" => (1, None),
+        "remove" => (2, None),
         _ => return false,
     };
     sig(out, params, result);
@@ -155,7 +175,11 @@ fn write_dom_signature(out: &mut Vec<u8>, name: &str) -> bool {
 fn write_html_signature(out: &mut Vec<u8>, name: &str) -> bool {
     let (params, result) = match name {
         "activeDocument" => (0, Some(TYPE_EXTERNREF)),
-        "body" | "title" | "value" | "checked" | "defaultView" => (1, Some(TYPE_EXTERNREF)),
+        "body" | "title" | "defaultView" => (1, Some(TYPE_EXTERNREF)),
+        "checked" => (2, Some(TYPE_EXTERNREF)),
+        // HTML value access uses the provider's explicit document/node form.
+        "value" => (2, Some(TYPE_EXTERNREF)),
+        "setValue" => (3, None),
         "focus" | "showPicker" | "show" | "showModal" | "close" => (1, None),
         "setTitle" => (2, None),
         _ => return false,

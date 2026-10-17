@@ -12,7 +12,10 @@
 //!   pinned in `JS_BUILTIN_CONVENTIONS.md`.
 
 pub mod builtins;
+pub mod callable;
+pub mod component_binary;
 pub mod code;
+pub mod generator_construct;
 pub mod proposals;
 pub mod sections;
 pub mod types;
@@ -74,6 +77,32 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
                 as u32;
         type_ctx.desc_global_base = Some(imported_globals + globals.len() as u32);
     }
+    type_ctx.callables.old_imported_globals = vybe_runtime::chunk::global_index_space(
+        &string_constants,
+        &sections::collect_original_host_globals(chunks),
+        &[],
+    )
+    .len() as u32;
+    type_ctx.callables.added_imported_globals =
+        (host_globals.len() - sections::collect_original_host_globals(chunks).len()) as u32;
+    type_ctx.callables.old_global_len = chunks.first().map_or(0, |c| c.globals.len() as u32);
+    let native_globals =
+        vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &globals);
+    type_ctx.callables.global_map = chunks.first().map_or_else(Vec::new, |root| {
+        root.globals
+            .iter()
+            .map(|n| {
+                native_globals
+                    .iter()
+                    .position(|v| v == n)
+                    .expect("original global remains in native namespace") as u32
+            })
+            .collect()
+    });
+    type_ctx.callables.cache_base =
+        vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &[]).len() as u32
+            + globals.len() as u32
+            + type_ctx.descriptor_global_count();
     let type_ctx = type_ctx;
     write_section(&mut out, SECTION_TYPE, &type_section_data);
 
@@ -95,22 +124,26 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
     write_section(
         &mut out,
         SECTION_FUNCTION,
-        &sections::encode_func_section(chunks, total_imports, type_ctx.func_type_base),
+        &sections::encode_func_section_with_generators(
+            chunks,
+            total_imports,
+            type_ctx.func_type_base,
+            type_ctx
+                .native_resume_function_idx
+                .map(|_| type_ctx.native_resume_type_idx),
+            &type_ctx,
+        ),
     );
 
     // Table section — funcref table for call_indirect
     write_section(
         &mut out,
         4,
-        &sections::encode_table_section(chunks, total_imports),
+        &sections::encode_table_section_with_context(chunks, &type_ctx),
     );
 
     // Memory section
-    let memory_section = if sections::module_uses_memory64(chunks) {
-        sections::encode_memory64_section_with(1, None, false)
-    } else {
-        sections::encode_memory_section()
-    };
+    let memory_section = sections::encode_declared_memory_section(chunks);
     write_section(&mut out, SECTION_MEMORY, &memory_section);
 
     // Tag section (exception-handling + stack-switching proposals).
@@ -158,11 +191,11 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
 
     // Global section — indexed externref globals, then one immutable
     // descriptor singleton per class.
-    if !globals.is_empty() || type_ctx.desc_global_base.is_some() {
+    if !chunks.is_empty() || !globals.is_empty() || type_ctx.desc_global_base.is_some() {
         write_section(
             &mut out,
             SECTION_GLOBAL,
-            &sections::encode_global_section_with_descriptors(&globals, Some(&type_ctx)),
+            &sections::encode_global_section_with_callables(&globals, &type_ctx, chunks),
         );
     }
 
@@ -170,29 +203,33 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
     write_section(
         &mut out,
         SECTION_EXPORT,
-        &sections::encode_export_section(chunks, total_imports),
+        &sections::encode_export_section_with_entry(chunks, total_imports,
+            type_ctx.source_entry.map(|(_, function, _, _)| function)),
     );
 
     // Element section — populate funcref table with chunk functions
     write_section(
         &mut out,
         9,
-        &sections::encode_element_section(chunks, total_imports),
+        &sections::encode_element_section_with_generators(chunks, total_imports, &type_ctx),
     );
 
-    let data_segments = sections::collect_data_segments(chunks);
+    let data_segments = sections::collect_data_segments_borrowed(chunks);
     if !data_segments.is_empty() {
         write_section(
             &mut out,
             SECTION_DATA_COUNT,
-            &sections::encode_data_count_section(&data_segments),
+            &sections::encode_data_count_section(data_segments),
         );
     }
+
+    let native_code =
+        code::encode_code_section(chunks, &host_imports, &rt_imports, &type_ctx, &tag_plan);
 
     // branch_hint custom section — spec §branch-hinting requires this to
     // appear BEFORE the code section (not as a trailing custom section).
     if let Some(bh_payload) =
-        compilation_hints::encode_branch_hint_payload(chunks, host_import_count, rt_imports.len())
+        compilation_hints::encode_native_branch_hint_payload(&native_code, total_imports)
     {
         let mut sec = Vec::new();
         write_name(&mut sec, compilation_hints::BRANCH_HINT_SECTION_NAME);
@@ -201,17 +238,16 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
     }
 
     // Code section
-    write_section(
-        &mut out,
-        SECTION_CODE,
-        &code::encode_code_section(chunks, &host_imports, &rt_imports, &type_ctx, &tag_plan),
-    );
+    write_section(&mut out, SECTION_CODE, &native_code);
+    // The output owns the encoded bytes now. Do not retain a second code-sized
+    // allocation while constructing data and optional trailing metadata.
+    drop(native_code);
 
     if !data_segments.is_empty() {
         write_section(
             &mut out,
             SECTION_DATA,
-            &sections::encode_data_section(&data_segments),
+            &sections::encode_data_section_with_initializers(chunks, data_segments, &type_ctx),
         );
     }
 
@@ -306,7 +342,8 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
     write_name(&mut out, "vybe");
 
     // Version
-    out.push(8); // Version 8: receiver ABI metadata is serialized per chunk.
+    let tables = chunks.first().filter(|chunk| !chunk.table_min_sizes.is_empty());
+    out.push(if tables.is_some() { 11 } else { 10 });
 
     // Number of chunks
     write_leb128_u32(&mut out, chunks.len() as u32);
@@ -337,6 +374,23 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
         write_name(&mut out, name);
     }
 
+    if let Some(chunk) = tables {
+        use vybe_runtime::opcode::heaptype::{HeapType, HT_FUNC};
+        write_leb128_u32(&mut out, chunk.table_min_sizes.len() as u32);
+        for (index, &min) in chunk.table_min_sizes.iter().enumerate() {
+            let (heap, nullable, exact, shared_heap) = chunk.table_element_types.get(index).copied()
+                .unwrap_or((HeapType::Abstract(HT_FUNC), true, false, false));
+            write_leb128_i32(&mut out, heap.to_sleb());
+            out.push(u8::from(nullable) | (u8::from(exact) << 1) | (u8::from(shared_heap) << 2));
+            let max = chunk.table_max_sizes.get(index).copied().flatten();
+            let is_64 = chunk.table_is_64.get(index).copied().unwrap_or(false);
+            let shared = chunk.table_is_shared.get(index).copied().unwrap_or(false);
+            out.push(u8::from(max.is_some()) | (u8::from(shared) << 1) | (u8::from(is_64) << 2));
+            write_leb128_u64(&mut out, min);
+            if let Some(max) = max { write_leb128_u64(&mut out, max); }
+        }
+    }
+
     let mut value_ctx = ValueEncodeContext::default();
     for chunk in chunks {
         // Chunk metadata
@@ -348,6 +402,13 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
             ReceiverAbi::Ambient => 0,
             ReceiverAbi::Parameter => 1,
         });
+        if let Some((params, result)) = &chunk.func_sig {
+            out.push(1);
+            write_name(&mut out, params);
+            write_name(&mut out, result);
+        } else {
+            out.push(0);
+        }
 
         // Constants
         write_leb128_u32(&mut out, chunk.constants.len() as u32);
@@ -436,6 +497,14 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
             write_name(&mut out, &tag.debug_name);
             out.push(tag.arity);
             out.push(if tag.imported { 1 } else { 0 });
+        }
+        out.push(match chunk.direct_entry_has_captures {None=>0,Some(false)=>1,Some(true)=>2});
+        write_leb128_u32(&mut out,chunk.direct_defined_calls.len() as u32);
+        for (&at,edge) in &chunk.direct_defined_calls {
+            write_leb128_u32(&mut out,u32::try_from(at).expect("direct offset u32"));
+            write_leb128_u32(&mut out,edge.target);
+            out.push(u8::from(edge.source));
+            write_name(&mut out,&edge.params);write_name(&mut out,&edge.results);
         }
     }
     out

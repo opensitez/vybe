@@ -14,13 +14,42 @@
 //! the same way.
 
 pub mod disassembler;
+pub(crate) mod binary_cursor;
+pub(crate) mod binary_instructions;
+pub mod binary_sections;
+pub(crate) mod component_format;
 pub mod encoding;
 pub mod reader;
 pub mod writer;
 
 pub use disassembler::{wat_from_binary, write_wat};
 pub use reader::{Phase, WasmError, read_wasm, read_wasm_classified};
+pub use reader::component_binary::read_component_binary;
 pub use writer::{WasmWriteOptions, write_wasm, write_wasm_with_options};
+pub use writer::component_binary::write_component_binary;
+
+/// Emit the declared Wasm layer. A component that is not yet representable
+/// cannot silently become a core module.
+pub fn write_artifact(
+    chunks: &[vybe_runtime::Chunk],
+    component_source: bool,
+    component_binary: Option<&vybe_ast::canon::ComponentBinary>,
+    options: WasmWriteOptions,
+) -> Result<Vec<u8>, String> {
+    if component_source {
+        if options.include_vybe_metadata || options.include_name_section {
+            return Err("component binary emission does not support Vybe metadata yet".into());
+        }
+        let binary = component_binary
+            .ok_or("component binary emission does not support all source definitions yet")?;
+        write_component_binary(binary)
+    } else {
+        if component_binary.is_some() {
+            return Err("component binary metadata is missing its source marker".into());
+        }
+        Ok(write_wasm_with_options(chunks, options))
+    }
+}
 
 /// Register this platform's binary loaders with the VM's module
 /// resolver, so `ModuleResolver` can load `.wasm` files without

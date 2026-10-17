@@ -8,8 +8,8 @@
 //! proposals/custom-descriptors/proposals/custom-descriptors/Overview.md
 
 use crate::encoding::*;
+use crate::writer::sections::HostImport;
 use vybe_runtime::Chunk;
-use vybe_runtime::chunk::Import;
 
 // Custom Descriptors binary encoding
 const CD_DESCRIPTOR: u8 = 0x4D; // (descriptor $x) prefix
@@ -18,7 +18,13 @@ const CD_SUB_FINAL: u8 = 0x4F; // sub final
 
 /// Context for .wasm emission — maps internal types to WASM type indices.
 pub struct WasmTypeContext {
-    /// type_name (lowercased) → WASM type index for the described struct
+    pub internal_callable_table: u32,
+    pub table_operands: Vec<(u8, Option<u8>)>,
+    /// Zero-argument source entry: (target func, adapter func, adapter type, results).
+    pub source_entry: Option<(u32, u32, u32, u8)>,
+    pub callables: super::callable::Plan,
+    pub generators: Vec<super::generator_construct::Entry>,
+    /// Exact diagnostic type name -> WASM index for a described struct.
     pub struct_type_indices: std::collections::HashMap<String, u32>,
     /// The module's own type index space → WASM type index. Slot `n - 1` is
     /// the 1-based immediate a `ref.test` / `struct.new` carries, so a type
@@ -108,6 +114,8 @@ pub struct WasmTypeContext {
     /// writer boxes every f64 it produces — so the argument arrived as an
     /// externref and the module was invalid at every single call site.
     /// Only imports with at least one non-externref param appear here.
+    pub packed_i16_types: std::collections::HashMap<u16, u32>,
+    pub import_ref_params: std::collections::HashMap<(u32, usize), (bool, i64)>,
     pub raw_param_funcs: std::collections::HashMap<u32, Vec<u8>>,
     /// Declared PARAM valtypes for imports. Dynamic VM calls may omit trailing
     /// optional args; wasm imports cannot, so the code writer pads that missing
@@ -142,6 +150,12 @@ pub struct WasmTypeContext {
     /// single-arg single-result fiber function signature. Zero if
     /// the module doesn't use stack switching.
     pub continuation_type_idx: u32,
+    pub continuation_carrier_type_idx: u32,
+    pub continuation_landing_type_idx: u32,
+    pub native_resume_type_idx: u32,
+    pub native_carrier_resume_type_idx: u32,
+    pub native_carrier_resume_function_idx: Option<u32>,
+    pub native_resume_function_idx: Option<u32>,
     /// Continuation tag signature/name → emitted Wasm tag index.
     pub continuation_tag_indices: std::collections::HashMap<(String, String, String), u32>,
     /// Type indices for typed continuation tags, in tag-section order.
@@ -211,7 +225,10 @@ impl WasmTypeContext {
     /// How many per-class descriptor singletons this module declares — one per
     /// class, so one per described/descriptor pair.
     pub fn descriptor_global_count(&self) -> u32 {
-        self.desc_type_indices.len() as u32
+        // Names are diagnostic lookup aliases, not type identities. Distinct
+        // module type rows may carry the same name; their descriptor globals
+        // must still match the structural class-ordinal/vtable plan.
+        self.desc_vtable.len() as u32
     }
 
     /// The global holding class `name`'s descriptor singleton.
@@ -272,14 +289,24 @@ impl WasmTypeContext {
 /// reference spelling this table does not carry — falls back to `externref`,
 /// which is what the whole section used to be, so an unknown type degrades to
 /// today's behaviour rather than emitting a wrong byte.
-fn val_type_byte(spelling: &str) -> u8 {
+pub(super) fn val_type_byte(spelling: &str) -> u8 {
     match spelling.trim() {
         "i32" => 0x7F,
         "i64" => 0x7E,
         "f32" => 0x7D,
         "f64" => 0x7C,
         "v128" => 0x7B,
+        "nullexnref" => 0x74,
+        "nullfuncref" => 0x73,
+        "nullexternref" => 0x72,
+        "nullref" => 0x71,
         "funcref" => 0x70,
+        "anyref" => 0x6E,
+        "eqref" => 0x6D,
+        "i31ref" => 0x6C,
+        "structref" => 0x6B,
+        "arrayref" => 0x6A,
+        "exnref" => 0x69,
         _ => TYPE_EXTERNREF,
     }
 }
@@ -294,11 +321,33 @@ fn val_type_byte(spelling: &str) -> u8 {
 /// ⛔ BOTH import tables must ask this. A builtin is the same function whether
 /// it arrives as a host import or a runtime import; typing one table by arity
 /// and the other by signature makes the SAME callee two different types.
-fn write_proposal_signature(out: &mut Vec<u8>, module: &str, name: &str) -> bool {
-    if module == crate::writer::builtins::canon_builtins::MODULE {
+fn write_proposal_signature(out: &mut Vec<u8>, module: &str, name: &str, chars_type: u32) -> bool {
+    // These exact WIT scalar results lower to core i64. Leave their raw bits
+    // on the stack for standard unsigned conversion, not an externref ABI.
+    if matches!((module, name),
+        ("wasi:random/insecure", "get-insecure-random-u64")
+        | ("wasi:random/random", "get-random-u64")) {
+        write_leb128_u32(out, 0);
+        write_leb128_u32(out, 1);
+        out.push(TYPE_I64);
+        true
+    } else if module == "ecma:function" && name == "apply" {
+        write_leb128_u32(out, 3);
+        out.extend([TYPE_EXTERNREF; 3]);
+        write_leb128_u32(out, 1);
+        out.push(TYPE_EXTERNREF);
+        true
+    } else if module == "wasm:text-encoder" && name == "measureStringAsUTF8" {
+        // js-string-builtins UTF-8 extension: (externref) -> i32.
+        write_leb128_u32(out, 1);
+        out.push(TYPE_EXTERNREF);
+        write_leb128_u32(out, 1);
+        out.push(TYPE_I32);
+        true
+    } else if module == crate::writer::builtins::canon_builtins::MODULE {
         crate::writer::builtins::canon_builtins::write_signature(out, name)
     } else if module == crate::writer::builtins::js_string_builtins::MODULE {
-        crate::writer::builtins::js_string_builtins::write_signature(out, name)
+        crate::writer::builtins::js_string_builtins::write_signature(out, name, chars_type)
     } else if module == crate::writer::builtins::js_array_builtins::MODULE {
         crate::writer::builtins::js_array_builtins::write_signature(out, name)
     } else if module == crate::writer::builtins::js_object_builtins::MODULE {
@@ -338,28 +387,54 @@ fn write_proposal_signature(out: &mut Vec<u8>, module: &str, name: &str) -> bool
     }
 }
 
+pub(crate) fn has_proposal_signature(module: &str, name: &str) -> bool {
+    if crate::writer::builtins::web_builtins::has_overloaded_signature(module, name) {
+        return false;
+    }
+    write_proposal_signature(&mut Vec::new(), module, name, 0)
+}
+
 /// Decode the param valtypes of the functype just appended at `start`
 /// (the byte after the `TYPE_FUNC` tag). Single-byte counts are not assumed.
-fn signature_params(out: &[u8], start: usize) -> Vec<u8> {
-    let mut i = start;
-    let mut count = 0u32;
-    let mut shift = 0u32;
+fn read_native_valtype(out: &[u8], i: &mut usize) -> Option<(u8, Option<(bool, i64)>)> {
+    let tag = *out.get(*i)?;
+    *i += 1;
+    if tag != 0x63 && tag != 0x64 {
+        return Some((tag, None));
+    }
+    let (mut n, mut shift) = (0i64, 0u32);
     loop {
-        let Some(&b) = out.get(i) else {
-            return Vec::new();
-        };
-        i += 1;
-        count |= ((b & 0x7f) as u32) << shift;
-        if b & 0x80 == 0 {
-            break;
-        }
+        let byte = *out.get(*i)?;
+        *i += 1;
+        n |= i64::from(byte & 127) << shift;
         shift += 7;
+        if byte & 128 == 0 {
+            if byte & 64 != 0 {
+                n |= !0i64 << shift;
+            }
+            return Some((tag, Some((tag == 0x63, n))));
+        }
+        if shift >= 35 {
+            return None;
+        }
     }
-    let end = i + count as usize;
-    if end > out.len() {
-        return Vec::new();
+}
+fn signature_parts(out: &[u8], start: usize) -> Option<(Vec<(u8, Option<(bool, i64)>)>, Vec<u8>)> {
+    let mut i = start;
+    let n = read_leb_u32_from(out, &mut i)?;
+    let mut params = Vec::new();
+    for _ in 0..n {
+        params.push(read_native_valtype(out, &mut i)?);
     }
-    out[i..end].to_vec()
+    let n = read_leb_u32_from(out, &mut i)?;
+    let mut results = Vec::new();
+    for _ in 0..n {
+        results.push(read_native_valtype(out, &mut i)?.0);
+    }
+    Some((params, results))
+}
+fn signature_params(out: &[u8], start: usize) -> Vec<u8> {
+    signature_parts(out, start).map_or_else(Vec::new, |(p, _)| p.into_iter().map(|v| v.0).collect())
 }
 
 fn read_leb_u32_from(out: &[u8], i: &mut usize) -> Option<u32> {
@@ -382,22 +457,7 @@ fn read_leb_u32_from(out: &[u8], i: &mut usize) -> Option<u32> {
 /// Decode the result valtypes of the functype just appended at `start`
 /// (the byte after the `TYPE_FUNC` tag).
 fn signature_results(out: &[u8], start: usize) -> Vec<u8> {
-    let mut i = start;
-    let Some(param_count) = read_leb_u32_from(out, &mut i) else {
-        return Vec::new();
-    };
-    i = i.saturating_add(param_count as usize);
-    if i > out.len() {
-        return Vec::new();
-    }
-    let Some(result_count) = read_leb_u32_from(out, &mut i) else {
-        return Vec::new();
-    };
-    let end = i + result_count as usize;
-    if end > out.len() {
-        return Vec::new();
-    }
-    out[i..end].to_vec()
+    signature_parts(out, start).map_or_else(Vec::new, |(_, r)| r)
 }
 
 fn record_result_signature(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8], sig_start: usize) {
@@ -405,7 +465,7 @@ fn record_result_signature(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8],
     ctx.func_result_arity.insert(func_idx, results.len() as u8);
     if results.len() == 1 {
         let vt = results[0];
-        if vt == TYPE_I32 || vt == TYPE_F64 {
+        if vt == TYPE_I32 || vt == TYPE_F32 || vt == TYPE_F64 {
             ctx.raw_result_funcs.insert(func_idx, vt);
         }
     }
@@ -419,6 +479,13 @@ fn record_result_signature(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8],
 /// i32 and silently truncates. `wasm:js-string.fromI64`/`fromU64` are the only
 /// two, and no emitter in the tree calls either.
 fn record_raw_params(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8], sig_start: usize) {
+    if let Some((params, _)) = signature_parts(out, sig_start) {
+        for (index, (_, r)) in params.into_iter().enumerate() {
+            if let Some(r) = r {
+                ctx.import_ref_params.insert((func_idx, index), r);
+            }
+        }
+    }
     let params = signature_params(out, sig_start);
     ctx.import_param_funcs.insert(func_idx, params.clone());
     if params.iter().any(|&t| t == TYPE_I64) {
@@ -431,15 +498,27 @@ fn record_raw_params(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8], sig_s
 
 /// Order binary class pairs without changing the module's declared type IDs.
 /// Recursive field/descriptor links may point forward; superclass links may not.
+pub(crate) fn is_standard_mutable_i16(row: &vybe_runtime::chunk::TypeEntry) -> bool {
+    row.kind == vybe_runtime::chunk::CompositeKind::Array
+        && row.fields == ["i16"]
+        && row.parent_index == 0
+        && row.describes_index == 0
+        && row.methods.is_empty()
+        && row.implements.is_empty()
+        && row.constructor_chunk.is_none()
+        && !row.is_interface
+        && row.field_descriptors.get("i16").is_none_or(|d| d.writable)
+}
 fn ordered_class_rows(rows: &[vybe_runtime::chunk::TypeEntry]) -> Result<Vec<usize>, String> {
     let mut children = vec![Vec::new(); rows.len()];
     let mut indegree = vec![0usize; rows.len()];
     let mut ready = std::collections::BTreeSet::new();
     let mut class_count = 0usize;
     for (i, row) in rows.iter().enumerate() {
+        if is_standard_mutable_i16(row) { continue; }
         if row.describes_index != 0 {
             let described = row.describes_index as usize - 1;
-            if rows.get(described).is_none_or(|r| r.describes_index != 0) {
+            if rows.get(described).is_none_or(|r| r.describes_index != 0 || is_standard_mutable_i16(r)) {
                 return Err(format!(
                     "descriptor type #{} '{}' describes invalid class #{}",
                     i + 1,
@@ -462,7 +541,7 @@ fn ordered_class_rows(rows: &[vybe_runtime::chunk::TypeEntry]) -> Result<Vec<usi
                     row.parent_index
                 ));
             };
-            if parent_row.describes_index != 0 {
+            if parent_row.describes_index != 0 || is_standard_mutable_i16(parent_row) {
                 return Err(format!(
                     "class type #{} '{}' has descriptor parent #{}",
                     i + 1,
@@ -499,7 +578,7 @@ fn ordered_class_rows(rows: &[vybe_runtime::chunk::TypeEntry]) -> Result<Vec<usi
 
 pub fn build_type_context(
     chunks: &[Chunk],
-    host_imports: &[Import],
+    host_imports: &[HostImport],
     import_count: usize,
     rt_imports: &[(&str, &str)],
 ) -> (Vec<u8>, WasmTypeContext) {
@@ -515,6 +594,25 @@ pub fn build_type_context(
             .map(|(i, text)| (text, string_const_base + i as u32))
             .collect();
     let mut ctx = WasmTypeContext {
+        internal_callable_table: chunks.first().map_or(0, |chunk| chunk.table_min_sizes.len() as u32),
+        table_operands: chunks.first().map_or_else(Vec::new, |chunk| {
+            (0..chunk.table_min_sizes.len()).map(|index| {
+                let address = if chunk.table_is_64.get(index).copied().unwrap_or(false) {
+                    TYPE_I64
+                } else { TYPE_I32 };
+                let reference = chunk.table_element_types.get(index).and_then(|entry| {
+                    match entry.0 {
+                        vybe_runtime::opcode::heaptype::HeapType::Abstract(0x70) => Some(0x70),
+                        vybe_runtime::opcode::heaptype::HeapType::Abstract(0x6f) => Some(0x6f),
+                        _ => None,
+                    }
+                });
+                (address, reference)
+            }).collect()
+        }),
+        source_entry: None,
+        callables: super::callable::Plan::default(),
+        generators: Vec::new(),
         struct_type_indices: std::collections::HashMap::new(),
         struct_type_by_module_index: Vec::new(),
         desc_type_indices: std::collections::HashMap::new(),
@@ -530,6 +628,8 @@ pub fn build_type_context(
         func_type_by_signature: std::collections::HashMap::new(),
         raw_result_funcs: std::collections::HashMap::new(),
         func_result_arity: std::collections::HashMap::new(),
+        packed_i16_types: std::collections::HashMap::new(),
+        import_ref_params: std::collections::HashMap::new(),
         raw_param_funcs: std::collections::HashMap::new(),
         import_param_funcs: std::collections::HashMap::new(),
         string_const_global,
@@ -538,6 +638,12 @@ pub fn build_type_context(
         exception_type_idx: 0,
         suspend_tag_type_idx: 0,
         continuation_type_idx: 0,
+        continuation_carrier_type_idx: 0,
+        continuation_landing_type_idx: 0,
+        native_resume_type_idx: 0,
+        native_carrier_resume_type_idx: 0,
+        native_carrier_resume_function_idx: None,
+        native_resume_function_idx: None,
         continuation_tag_indices: std::collections::HashMap::new(),
         continuation_tag_type_indices: Vec::new(),
         uses_stack_switching: false,
@@ -569,10 +675,38 @@ pub fn build_type_context(
     let gc_struct_pairs = type_entries.len() as u32;
     let array_count = 3u32;
     let func_count = (import_count + chunks.len()) as u32;
-    let gc_type_count = gc_struct_pairs * 2 + array_count;
+    let entries = super::generator_construct::entries(chunks);
+    let old_gc_count = gc_struct_pairs * 2 + array_count;
+    let gc_type_count = old_gc_count + 3;
+    ctx.callables.cell = old_gc_count;
+    ctx.callables.captures = old_gc_count + 1;
+    ctx.callables.carrier = old_gc_count + 2;
+    ctx.callables.import_count = import_count as u32;
+    ctx.callables.locals = chunks
+        .iter()
+        .map(|c| {
+            (
+                c as *const Chunk as usize,
+                (
+                    super::code::total_temp_locals(c),
+                    super::callable::captured_slots(c),
+                ),
+            )
+        })
+        .collect();
+    ctx.callables.chunks = chunks
+        .iter()
+        .map(|c| (c.arity, super::callable::source(c)))
+        .collect();
     ctx.gc_type_count = gc_type_count;
     ctx.array_type_idx = gc_struct_pairs * 2;
     ctx.string_array_type_idx = gc_struct_pairs * 2 + 1;
+    for (i, row) in all_rows.iter().enumerate() {
+        if is_standard_mutable_i16(row) {
+            ctx.packed_i16_types.insert(u16::try_from(i + 1).expect("declared packed array index fits u16"), ctx.string_array_type_idx);
+            ctx.struct_type_indices.insert(row.name.clone(), ctx.string_array_type_idx);
+        }
+    }
     ctx.byte_array_type_idx = gc_struct_pairs * 2 + 2;
     ctx.func_type_base = gc_type_count;
 
@@ -582,6 +716,8 @@ pub fn build_type_context(
     // `externref^M -> externref^N` function type, referenced as an s33
     // typeidx blocktype at emission.
     let mut block_result_counts: std::collections::BTreeSet<(u8, u8)> =
+        std::collections::BTreeSet::new();
+    let mut source_call_counts: std::collections::BTreeSet<(u8, u8)> =
         std::collections::BTreeSet::new();
     let mut block_i32_param_counts: std::collections::BTreeSet<u8> =
         std::collections::BTreeSet::new();
@@ -636,6 +772,12 @@ pub fn build_type_context(
                     // carry their functype's true result count.
                     if bip + 5 < code.len() {
                         block_result_counts.insert((code[bip + 4], code[bip + 5]));
+                        if super::callable::source(chunk)
+                            || (op != vybe_runtime::opcode::Op::RETURN_CALL
+                                && super::callable::uses_carrier_call(chunk, bip))
+                        {
+                            source_call_counts.insert((code[bip + 4], code[bip + 5]));
+                        }
                     }
                 }
                 bip += crate::writer::code::opcode_size(op, code, bip);
@@ -644,7 +786,17 @@ pub fn build_type_context(
             }
         }
     }
-    let block_type_count = block_result_counts.len() as u32 + block_i32_param_counts.len() as u32;
+    for c in chunks {
+        if super::callable::source(c) {
+            source_call_counts.insert((c.arity, c.result_arity.max(1)));
+        }
+    }
+    for e in &entries {
+        source_call_counts.insert((e.user_arity, 1));
+    }
+    let block_type_count = block_result_counts.len() as u32
+        + block_i32_param_counts.len() as u32
+        + source_call_counts.len() as u32;
 
     // Pre-scan for stack-switching usage. Any CONT_NEW/SUSPEND/RESUME/
     // SWITCH opcode triggers the emission of:
@@ -678,8 +830,9 @@ pub fn build_type_context(
     ctx.uses_stack_switching = uses_stack_switching;
     let continuation_tags = collect_continuation_tags(chunks);
     let typed_continuation_type_count = continuation_tags.len() as u32;
+    let native_next = chunks.iter().any(crate::writer::code::has_native_next);
     let stack_switching_type_count: u32 = if uses_stack_switching {
-        2 + typed_continuation_type_count
+        4 + 2 * u32::from(native_next) + typed_continuation_type_count
     } else {
         typed_continuation_type_count
     };
@@ -689,8 +842,20 @@ pub fn build_type_context(
     if uses_stack_switching {
         ctx.suspend_tag_type_idx = ss_base;
         ctx.continuation_type_idx = ss_base + 1;
+        ctx.continuation_carrier_type_idx = ss_base + 2;
+        ctx.continuation_landing_type_idx = ss_base + 3;
+        ctx.native_resume_type_idx = ss_base + 4;
+        ctx.native_carrier_resume_type_idx = ss_base + 5;
+        ctx.native_carrier_resume_function_idx = native_next.then_some((import_count + chunks.len() + 1) as u32);
+        ctx.native_resume_function_idx =
+            native_next.then_some((import_count + chunks.len()) as u32);
     }
-    let typed_tag_type_base = ss_base + if uses_stack_switching { 2 } else { 0 };
+    let typed_tag_type_base = ss_base
+        + if uses_stack_switching {
+            4 + 2 * u32::from(native_next)
+        } else {
+            0
+        };
     for (i, tag) in continuation_tags.iter().enumerate() {
         ctx.continuation_tag_indices
             .insert(continuation_tag_key(tag), 2 + i as u32);
@@ -698,6 +863,44 @@ pub fn build_type_context(
             .push(typed_tag_type_base + i as u32);
     }
     ctx.exception_type_idx = ss_base + stack_switching_type_count;
+    let generator_type_base = ctx.exception_type_idx + 1;
+    ctx.generators = entries
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut e)| {
+            e.cont_type = generator_type_base + i as u32;
+            e.constructor_func =
+                (import_count + chunks.len()) as u32 + 2 * u32::from(native_next) + i as u32;
+            e.body_func = (import_count + e.chunk_index) as u32;
+            e.body_type = ctx.func_type_base + (import_count + e.chunk_index) as u32;
+            e
+        })
+        .collect();
+    ctx.callables.targets = (0..chunks.len())
+        .map(|i| {
+            ctx.generators
+                .iter()
+                .find(|e| e.chunk_index == i)
+                .map_or((import_count + i) as u32, |e| e.constructor_func)
+        })
+        .collect();
+    for e in &ctx.generators {
+        ctx.callables.chunks[e.chunk_index].0 = e.user_arity;
+    }
+    let start_chunk = super::sections::start_chunk_index(chunks);
+    if let Some(entry) = chunks.get(start_chunk)
+        && super::callable::source(entry)
+        && entry.arity == 0
+        && !ctx.generators.iter().any(|entry| entry.chunk_index == start_chunk)
+    {
+        ctx.source_entry = Some((
+            (import_count + start_chunk) as u32,
+            (import_count + chunks.len()) as u32
+                + 2 * u32::from(native_next) + ctx.generators.len() as u32,
+            generator_type_base + ctx.generators.len() as u32,
+            entry.result_arity.max(1),
+        ));
+    }
 
     // Populate maps from the binary parent-first order while retaining every
     // original module type ID, including interleaved explicit descriptor rows.
@@ -716,7 +919,9 @@ pub fn build_type_context(
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                if t.describes_index == 0 {
+                if is_standard_mutable_i16(t) {
+                    ctx.string_array_type_idx
+                } else if t.describes_index == 0 {
                     class_ordinal[i].map_or(0, |k| k * 2)
                 } else {
                     // `describes_index` is 1-BASED into the same table.
@@ -783,12 +988,26 @@ pub fn build_type_context(
     // for the suspend/resume tag, one continuation type wrapping it.
     let ss_extra_types = stack_switching_type_count;
     let rec_group_count = if gc_struct_pairs > 0 { 1u32 } else { 0u32 };
+    // A declared indirect signature need not belong to any defined function:
+    // mismatching a populated slot must trap at execution, not fail emission.
+    let defined_signatures: std::collections::BTreeSet<_> = chunks.iter()
+        .filter_map(|chunk| chunk.func_sig.as_ref())
+        .map(|(params, results)| format!("{params}->{results}")).collect();
+    let extra_call_signatures: std::collections::BTreeSet<_> = chunks.iter()
+        .filter(|chunk| !super::callable::source(chunk))
+        .flat_map(|chunk| chunk.call_indirect_sigs.values())
+        .filter(|signature| !defined_signatures.contains(*signature))
+        .cloned().collect();
     let total = rec_group_count
         + array_count
         + func_count
         + block_type_count
         + ss_extra_types
-        + exception_type_count;
+        + exception_type_count
+        + 3
+        + ctx.generators.len() as u32
+        + u32::from(ctx.source_entry.is_some())
+        + extra_call_signatures.len() as u32;
     write_leb128_u32(&mut out, total);
 
     // ── GC struct types: one rec group of (described, descriptor) pairs ──
@@ -933,50 +1152,23 @@ pub fn build_type_context(
     out.push(PACKED_I8);
     out.push(GC_MUT);
 
+    // Standard native-only Cell, Captures and Callable. Original module type IDs retain their existing mapping.
+    out.extend([0x5f, 1, TYPE_EXTERNREF, 1]);
+    out.extend([0x5e, 0x64]);
+    write_leb128_i64(&mut out, ctx.callables.cell as i64);
+    out.push(0);
+    out.extend([0x5f, 6, TYPE_FUNCREF, 0, 0x63]);
+    write_leb128_i64(&mut out, ctx.callables.captures as i64);
+    out.extend([0, TYPE_I32, 0, TYPE_EXTERNREF, 0, TYPE_I32, 0, TYPE_I32, 0]);
+
     // ── Function types ──
     // Host imports use externref ABI types inferred by arity. Proposal
     // builtins own their exact signatures in their module-specific tables
     // below, including typed wasm:js-number and wasm:js-string helpers.
 
-    // Import function types — per-import typed signatures
-    // Host imports from the module-level import table. Each chunk carries a
-    // local import table, so CALL immediates are remapped by (module, name).
+    // Import function types — per-import typed signatures. Untyped host
+    // imports retain the call arity collected for this declaration.
     let host_import_count = host_imports.len();
-    let mut host_arity: Vec<u8> = vec![0; host_import_count];
-    let host_import_map = crate::writer::sections::host_import_index_map(host_imports);
-    for chunk in chunks {
-        let mut ip = 0;
-        while ip < chunk.code.len() {
-            if ip + 3 >= chunk.code.len() {
-                break;
-            }
-            let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
-            let s = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-            if let Some(op) = vybe_runtime::opcode::Op::decode(g, s) {
-                if op == vybe_runtime::opcode::Op::CALL {
-                    let import_idx = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
-                    let argc = chunk.code[ip + 6];
-                    if let Some(import) = chunk.imports.get(import_idx as usize) {
-                        if let Some(&module_idx) =
-                            host_import_map.get(&(import.module.clone(), import.name.clone()))
-                        {
-                            host_arity[module_idx] = host_arity[module_idx].max(argc);
-                        }
-                    } else if (import_idx as usize) < host_import_count {
-                        // Older lowered helper chunks may refer directly to the
-                        // module-level import table without duplicating those
-                        // entries in their own chunk.imports. The code writer
-                        // preserves that index; the signature scanner must see
-                        // the same call or the import is declared as zero-arg.
-                        host_arity[import_idx as usize] = host_arity[import_idx as usize].max(argc);
-                    }
-                }
-                ip += crate::writer::code::opcode_size(op, &chunk.code, ip);
-            } else {
-                ip += 4;
-            }
-        }
-    }
     for i in 0..host_import_count {
         out.push(TYPE_FUNC);
         // ⛔ ARITY IS NOT A SIGNATURE. A proposal builtin reached through the
@@ -987,14 +1179,32 @@ pub fn build_type_context(
         // `if (result i32)` as an externref and V8 refused the module. Ask the
         // owning proposal module for the real signature; the scan is only the
         // fallback for genuinely untyped host functions.
-        let imp = &host_imports[i];
+        let imp = &host_imports[i].import;
         let (module, name) = (imp.module.as_str(), imp.name.as_str());
         let sig_start = out.len();
-        if write_proposal_signature(&mut out, module, name) {
+        if module == crate::writer::builtins::js_array_builtins::MODULE && name == "unshift" {
+            crate::writer::builtins::js_array_builtins::write_unshift_signature(
+                &mut out,
+                host_imports[i].arity.unwrap_or(0),
+            );
+            record_result_signature(&mut ctx, i as u32, &out, sig_start);
+            record_raw_params(&mut ctx, i as u32, &out, sig_start);
+        } else if module == crate::writer::builtins::js_array_builtins::MODULE && name == "splice" {
+            crate::writer::builtins::js_array_builtins::write_splice_signature(
+                &mut out,
+                host_imports[i].arity.unwrap_or(0),
+            );
+            record_result_signature(&mut ctx, i as u32, &out, sig_start);
+            record_raw_params(&mut ctx, i as u32, &out, sig_start);
+        } else if host_imports[i].arity.is_some_and(|arity| {
+            crate::writer::builtins::web_builtins::write_overloaded_signature(
+                &mut out, module, name, arity,
+            )
+        }) || write_proposal_signature(&mut out, module, name, ctx.string_array_type_idx) {
             record_result_signature(&mut ctx, i as u32, &out, sig_start);
             record_raw_params(&mut ctx, i as u32, &out, sig_start);
         } else {
-            let argc = host_arity[i];
+            let argc = host_imports[i].arity.unwrap_or(0);
             write_leb128_u32(&mut out, argc as u32);
             for _ in 0..argc {
                 out.push(TYPE_EXTERNREF);
@@ -1013,7 +1223,7 @@ pub fn build_type_context(
         let func_idx = (host_import_count + rt_i) as u32;
         out.push(TYPE_FUNC);
         let sig_start = out.len();
-        if write_proposal_signature(&mut out, module, name) {
+        if write_proposal_signature(&mut out, module, name, ctx.string_array_type_idx) {
             record_result_signature(&mut ctx, func_idx, &out, sig_start);
             record_raw_params(&mut ctx, func_idx, &out, sig_start);
         } else {
@@ -1076,7 +1286,7 @@ pub fn build_type_context(
             }
             None => {
                 // WASM convention: arity params (slot 0 = first arg, no reserved callee slot).
-                let param_count = chunk.arity as u32;
+                let param_count = chunk.arity as u32 + 1;
                 write_leb128_u32(&mut out, param_count);
                 for _ in 0..param_count {
                     out.push(TYPE_EXTERNREF);
@@ -1140,6 +1350,21 @@ pub fn build_type_context(
         out.push(TYPE_I32);
     }
 
+    for &(argc, results) in &source_call_counts {
+        let tidx = block_type_base + block_type_offset;
+        block_type_offset += 1;
+        ctx.callables.calls.insert((argc, results), tidx);
+        out.push(TYPE_FUNC);
+        write_leb128_u32(&mut out, argc as u32 + 1);
+        for _ in 0..=argc {
+            out.push(TYPE_EXTERNREF);
+        }
+        write_leb128_u32(&mut out, results as u32);
+        for _ in 0..results {
+            out.push(TYPE_EXTERNREF);
+        }
+    }
+
     // Stack-switching: suspend/resume tag func type + continuation type.
     // A suspend yields an externref and resumes with an externref, so the
     // tag's signature is `(func (param externref) (result externref))`.
@@ -1157,6 +1382,40 @@ pub fn build_type_context(
         // type-index immediates. Unsigned LEB interprets indices 64..127 as
         // negative values when the decoder reads the required signed encoding.
         write_leb128_i64(&mut out, ctx.suspend_tag_type_idx as i64);
+        // Native continuation carrier: resumable reference + observable owner.
+        out.push(0x5f); // struct
+        write_leb128_u32(&mut out, 3);
+        out.push(0x63);
+        write_leb128_i64(&mut out, ctx.continuation_type_idx as i64);
+        out.push(1);
+        out.push(TYPE_EXTERNREF);
+        out.push(1);
+        out.push(0x70); // originating raw driver (funcref)
+        out.push(0); // immutable
+        // Suspension landing: tag payload followed by the new continuation.
+        out.push(TYPE_FUNC);
+        write_leb128_u32(&mut out, 0);
+        write_leb128_u32(&mut out, 2);
+        out.push(TYPE_EXTERNREF);
+        out.push(0x63);
+        write_leb128_i64(&mut out, ctx.continuation_type_idx as i64);
+    }
+
+    if native_next {
+        out.push(TYPE_FUNC);
+        write_leb128_u32(&mut out, 2);
+        out.push(TYPE_EXTERNREF);
+        out.push(0x63);
+        write_leb128_i64(&mut out, ctx.continuation_type_idx as i64);
+        write_leb128_u32(&mut out, 2);
+        out.push(TYPE_EXTERNREF);
+        out.push(0x63);
+        write_leb128_i64(&mut out, ctx.continuation_type_idx as i64);
+    }
+
+    if native_next {
+        out.push(TYPE_FUNC);write_leb128_u32(&mut out,2);out.extend([TYPE_EXTERNREF;2]);
+        write_leb128_u32(&mut out,2);out.push(TYPE_EXTERNREF);out.push(0x63);write_leb128_i64(&mut out,ctx.continuation_type_idx as i64);
     }
 
     for tag in &continuation_tags {
@@ -1174,6 +1433,25 @@ pub fn build_type_context(
     out.push(TYPE_EXTERNREF);
     write_leb128_u32(&mut out, 0); // 0 results
 
+    for e in &ctx.generators {
+        out.push(crate::writer::proposals::stack_switching::CONT_TYPE_PREFIX);
+        write_leb128_i64(&mut out, e.body_type as i64);
+    }
+    if ctx.source_entry.is_some() {
+        out.extend_from_slice(&[TYPE_FUNC, 0, 0]);
+    }
+    let extra_base = ctx.exception_type_idx + 1 + ctx.generators.len() as u32
+        + u32::from(ctx.source_entry.is_some());
+    for (offset, signature) in extra_call_signatures.into_iter().enumerate() {
+        let (params, results) = signature.split_once("->").expect("declared call signature");
+        out.push(TYPE_FUNC);
+        for list in [params, results] {
+            let types: Vec<_> = list.split(',').map(str::trim).filter(|ty| !ty.is_empty()).collect();
+            write_leb128_u32(&mut out, types.len() as u32);
+            for ty in types { out.push(val_type_byte(ty)); }
+        }
+        ctx.func_type_by_signature.entry(signature).or_insert(extra_base + offset as u32);
+    }
     (out, ctx)
 }
 
@@ -1189,6 +1467,25 @@ mod superclass_order_tests {
             fields: fields.iter().map(|s| (*s).into()).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn repeated_diagnostic_names_keep_distinct_descriptor_singletons() {
+        let mut root = Chunk::new("repeated-type-names");
+        root.types = vec![class("Repeated", 0, &[]), class("Repeated", 0, &[])];
+        root.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        root.emit_op(Op::RETURN, 0);
+        let chunks = vec![root];
+        let (_, mut ctx) = build_type_context(&chunks, &[], 0, &[]);
+        assert_eq!(ctx.desc_type_indices.len(), 1);
+        assert_eq!(ctx.descriptor_global_count(), 2);
+        ctx.desc_global_base = Some(20);
+        assert_eq!(ctx.desc_global_by_index(1), Some(20));
+        assert_eq!(ctx.desc_global_by_index(2), Some(21));
+        let bytes = crate::write_wasm(&chunks);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes)
+            .unwrap();
     }
     fn chunks() -> Vec<Chunk> {
         let mut root = Chunk::new("ordered-types");
@@ -1257,7 +1554,8 @@ mod superclass_order_tests {
                 let defs: Vec<_> = group.types().collect();
                 assert_eq!(defs.len(), 4);
                 let parent = |t: &wasmparser::SubType| {
-                    t.supertype_idx.map(|index| match index.unpack() {
+                    assert!(t.supertype_idxs.len() <= 1);
+                    t.supertype_idxs.first().map(|index| match index.unpack() {
                         wasmparser::UnpackedIndex::Module(index) => index,
                         other => panic!("unexpected superclass index {other:?}"),
                     })

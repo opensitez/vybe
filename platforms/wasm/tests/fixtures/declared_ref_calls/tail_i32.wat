@@ -1,0 +1,1 @@
+(module (type $t (func (param i32) (result i32))) (func $target (type $t) local.get 0) (func $caller (type $t) local.get 0 ref.func $target return_call_ref $t) (elem declare func $target) (export "caller" (func $caller)))

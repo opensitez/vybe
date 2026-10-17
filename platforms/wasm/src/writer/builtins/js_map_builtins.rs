@@ -30,7 +30,14 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
         }
-        "fromEntries" | "groupBy" => {
+        "fromEntries" => {
+            // Existing callers and the provider take one entries iterable.
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+        }
+        "groupBy" => {
             write_leb128_u32(out, 2);
             out.push(TYPE_EXTERNREF);
             out.push(TYPE_EXTERNREF);

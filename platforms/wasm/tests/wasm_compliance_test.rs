@@ -325,7 +325,7 @@ fn br_if_conditional_branch() {
     //   i32.const 1 ; br_if 0 ; push 99
     // } ; end → nothing on stack from 99
     let result = run_script(|c| {
-        let bp = c.emit_block_typed(0, 1);
+        let bp = c.emit_block(0);
         c.emit_i32_const(1, 0);
         c.emit_br_if(0, 0); // branch because true
         c.emit_f64_const(99.0, 0); // skipped
@@ -1241,8 +1241,8 @@ fn global_set_then_get_returns_same_value() {
     let result = run_script(|c| {
         let name_idx = c.add_constant(Value::String(std::sync::Arc::from("x")));
         c.emit_f64_const(42.0, 0);
-        c.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
-        c.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+        c.emit_op_u32(Op::GLOBAL_SET, name_idx, 0);
+        c.emit_op_u32(Op::GLOBAL_GET, name_idx, 0);
     });
     assert_eq!(result.as_f64(), 42.0);
 }
@@ -1252,10 +1252,10 @@ fn global_overwrite_takes_latest_value() {
     let result = run_script(|c| {
         let name_idx = c.add_constant(Value::String(std::sync::Arc::from("x")));
         c.emit_f64_const(1.0, 0);
-        c.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+        c.emit_op_u32(Op::GLOBAL_SET, name_idx, 0);
         c.emit_f64_const(99.0, 0);
-        c.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
-        c.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+        c.emit_op_u32(Op::GLOBAL_SET, name_idx, 0);
+        c.emit_op_u32(Op::GLOBAL_GET, name_idx, 0);
     });
     assert_eq!(result.as_f64(), 99.0);
 }
@@ -1264,7 +1264,7 @@ fn global_overwrite_takes_latest_value() {
 fn global_get_undefined_returns_undefined() {
     let result = run_script(|c| {
         let name_idx = c.add_constant(Value::String(std::sync::Arc::from("never_set_global_xyz")));
-        c.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+        c.emit_op_u32(Op::GLOBAL_GET, name_idx, 0);
     });
     assert!(matches!(result, Value::Undefined));
 }
@@ -1490,8 +1490,8 @@ fn round_trip_globals_persist() {
     let mut script = Chunk::new("<script>");
     let name_idx = script.add_constant(Value::String(std::sync::Arc::from("gx")));
     script.emit_f64_const(123.0, 0);
-    script.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
-    script.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    script.emit_op_u32(Op::GLOBAL_SET, name_idx, 0);
+    script.emit_op_u32(Op::GLOBAL_GET, name_idx, 0);
     script.emit_op(Op::RETURN, 0);
 
     let chunks = vec![script];
@@ -2622,7 +2622,8 @@ fn ref_eq_matches_identical_objects() {
 
     // Two constants pointing at the same Arc<Object>.
     let obj = Arc::new(Mutex::new(Object {
-        properties: Default::default(),
+        descriptor: None,
+            properties: Default::default(),
         kind: ObjectKind::Ordinary,
         type_id: 0,
         fields: Vec::new(),
@@ -2633,8 +2634,8 @@ fn ref_eq_matches_identical_objects() {
     let mut chunk = Chunk::new("<script>");
     let g1 = chunk.intern_string_constant("__ref_eq_same_a");
     let g2 = chunk.intern_string_constant("__ref_eq_same_b");
-    chunk.emit_op_u16(Op::GLOBAL_GET, g1, 0);
-    chunk.emit_op_u16(Op::GLOBAL_GET, g2, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, g1, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, g2, 0);
     chunk.emit_op(Op::REF_EQ, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -2646,21 +2647,23 @@ fn ref_eq_matches_identical_objects() {
     // Two DIFFERENT objects → ref.eq is false.
     let mut chunk = Chunk::new("<script>");
     let a = Arc::new(Mutex::new(Object {
-        properties: Default::default(),
+        descriptor: None,
+            properties: Default::default(),
         kind: ObjectKind::Ordinary,
         type_id: 0,
         fields: Vec::new(),
     }));
     let b = Arc::new(Mutex::new(Object {
-        properties: Default::default(),
+        descriptor: None,
+            properties: Default::default(),
         kind: ObjectKind::Ordinary,
         type_id: 0,
         fields: Vec::new(),
     }));
     let ga = chunk.intern_string_constant("__ref_eq_diff_a");
     let gb = chunk.intern_string_constant("__ref_eq_diff_b");
-    chunk.emit_op_u16(Op::GLOBAL_GET, ga, 0);
-    chunk.emit_op_u16(Op::GLOBAL_GET, gb, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, ga, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, gb, 0);
     chunk.emit_op(Op::REF_EQ, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();

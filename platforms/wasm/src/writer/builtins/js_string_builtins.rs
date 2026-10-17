@@ -49,7 +49,7 @@ pub const IMPORTS: &[&str] = &[
 /// Emit the WASM function signature for the given import, appending to
 /// `out`. Returns `true` when the name is recognised. The caller has
 /// already pushed the `TYPE_FUNC` tag byte.
-pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
+pub fn write_signature(out: &mut Vec<u8>, name: &str, chars_type: u32) -> bool {
     match name {
         "test" | "length" => {
             write_leb128_u32(out, 1);
@@ -61,14 +61,16 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
             write_leb128_u32(out, 1);
-            out.push(TYPE_EXTERNREF);
+            out.push(0x64);
+            write_leb128_i64(out, -17); // non-null (ref extern) result
         }
         "concat" => {
             write_leb128_u32(out, 2);
             out.push(TYPE_EXTERNREF);
             out.push(TYPE_EXTERNREF);
             write_leb128_u32(out, 1);
-            out.push(TYPE_EXTERNREF);
+            out.push(0x64);
+            write_leb128_i64(out, -17); // non-null (ref extern) result
         }
         "equals" | "compare" => {
             write_leb128_u32(out, 2);
@@ -88,7 +90,12 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             write_leb128_u32(out, 1);
             out.push(TYPE_I32);
             write_leb128_u32(out, 1);
-            out.push(TYPE_EXTERNREF);
+            if name == "fromCharCode" || name == "fromCodePoint" {
+                out.push(0x64);
+                write_leb128_i64(out, -17);
+            } else {
+                out.push(TYPE_EXTERNREF);
+            }
         }
         "fromI64" | "fromU64" => {
             write_leb128_u32(out, 1);
@@ -102,18 +109,30 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
         }
-        "substring" | "fromCharCodeArray" => {
+        "substring" => {
             write_leb128_u32(out, 3);
             out.push(TYPE_EXTERNREF);
             out.push(TYPE_I32);
             out.push(TYPE_I32);
             write_leb128_u32(out, 1);
-            out.push(TYPE_EXTERNREF);
+            out.push(0x64);
+            write_leb128_i64(out, -17); // non-null (ref extern) result
+        }
+        "fromCharCodeArray" => {
+            write_leb128_u32(out, 3);
+            out.push(0x63);
+            write_leb128_i64(out, chars_type as i64);
+            out.push(TYPE_I32);
+            out.push(TYPE_I32);
+            write_leb128_u32(out, 1);
+            out.push(0x64);
+            write_leb128_i64(out, -17); // (ref extern), non-null result
         }
         "intoCharCodeArray" => {
             write_leb128_u32(out, 3);
             out.push(TYPE_EXTERNREF);
-            out.push(TYPE_EXTERNREF);
+            out.push(0x63);
+            write_leb128_i64(out, chars_type as i64);
             out.push(TYPE_I32);
             write_leb128_u32(out, 1);
             out.push(TYPE_I32);

@@ -1,0 +1,1 @@
+(module (type $t (func (param i32 i64 f32 f64 externref) (result externref))) (func $target (type $t) local.get 4) (func $caller (type $t) local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 ref.func $target call_ref $t) (elem declare func $target) (export "caller" (func $caller)))

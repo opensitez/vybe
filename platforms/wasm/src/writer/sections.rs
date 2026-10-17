@@ -3,13 +3,22 @@
 use crate::encoding::*;
 use vybe_runtime::Chunk;
 use vybe_runtime::chunk::Import;
-use vybe_runtime::opcode::{Op, read_leb_u32};
+
+#[derive(Clone)]
+pub struct HostImport {
+    pub import: Import,
+    pub arity: Option<u8>,
+}
 
 /// Collect all runtime imports needed by the chunks.
 /// Returns (module, name) pairs for both vybe:rt and wasm:js-* builtins.
-pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)> {
+pub fn collect_rt_imports(chunks: &[Chunk]) -> Vec<(&'static str, &'static str)> {
     let mut needed: Vec<(&str, &str)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    if chunks.iter().any(|c| c.local_names.iter().any(|n|n.origin==vybe_runtime::chunk::LocalOrigin::Compiler && n.name.starts_with("<native-growable-array:"))) {
+        needed.push(("ecma:array", "newWithLength"));
+        seen.insert(("ecma:array", "newWithLength"));
+    }
 
     // Aggregate function imports from every proposal module. Each
     // proposal owns its slice of imports and types (see the
@@ -50,7 +59,8 @@ pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)
         ("ecma:array", "getValue"),
         ("ecma:array", "setValue"),
         ("ecma:array", "length"),
-        ("ecma:value", "abstractEq"),
+        ("ecma:object", "is"),
+        ("ecma:function", "apply"),
     ] {
         if seen.insert(key) {
             needed.push(key);
@@ -61,8 +71,8 @@ pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)
 
 /// Collect host function imports from every chunk into the single function
 /// index space a standard Wasm module actually has.
-pub fn collect_host_imports(chunks: &[Chunk]) -> Vec<Import> {
-    let mut imports = Vec::new();
+pub fn collect_host_imports(chunks: &[Chunk]) -> Vec<HostImport> {
+    let mut imports: Vec<Import> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for chunk in chunks {
         for import in &chunk.imports {
@@ -72,16 +82,79 @@ pub fn collect_host_imports(chunks: &[Chunk]) -> Vec<Import> {
             }
         }
     }
-    imports
+    let mut arities: std::collections::HashMap<(String, String), std::collections::BTreeSet<u8>> =
+        std::collections::HashMap::new();
+    for chunk in chunks {
+        let mut ip = 0;
+        while ip + 3 < chunk.code.len() {
+            let g = u16::from_be_bytes([chunk.code[ip], chunk.code[ip + 1]]);
+            let s = u16::from_be_bytes([chunk.code[ip + 2], chunk.code[ip + 3]]);
+            if let Some(op) = vybe_runtime::Op::decode(g, s) {
+                if op == vybe_runtime::Op::CALL && ip + 6 < chunk.code.len() {
+                    let idx = u16::from_be_bytes([chunk.code[ip + 4], chunk.code[ip + 5]]);
+                    if let Some(import) = chunk
+                        .imports
+                        .get(idx as usize)
+                        .or_else(|| imports.get(idx as usize))
+                    {
+                        arities
+                            .entry((import.module.clone(), import.name.clone()))
+                            .or_default()
+                            .insert(chunk.code[ip + 6]);
+                    }
+                }
+                ip += crate::writer::code::opcode_size(op, &chunk.code, ip);
+            } else {
+                ip += 4;
+            }
+        }
+    }
+    let mut result = Vec::new();
+    let mut extra = Vec::new();
+    for import in imports {
+        let key = (import.module.clone(), import.name.clone());
+        if crate::writer::types::has_proposal_signature(&import.module, &import.name) {
+            result.push(HostImport {
+                import,
+                arity: None,
+            });
+            continue;
+        }
+        let calls = arities.remove(&key).unwrap_or_default();
+        let primary = calls.iter().next_back().copied().unwrap_or(0);
+        for &arity in &calls {
+            if arity != primary {
+                extra.push(HostImport {
+                    import: import.clone(),
+                    arity: Some(arity),
+                });
+            }
+        }
+        result.push(HostImport {
+            import,
+            arity: Some(primary),
+        });
+    }
+    result.extend(extra);
+    result
 }
 
 pub fn host_import_index_map(
-    host_imports: &[Import],
-) -> std::collections::HashMap<(String, String), usize> {
+    host_imports: &[HostImport],
+) -> std::collections::HashMap<(String, String, Option<u8>), usize> {
     host_imports
         .iter()
         .enumerate()
-        .map(|(i, import)| ((import.module.clone(), import.name.clone()), i))
+        .map(|(i, entry)| {
+            (
+                (
+                    entry.import.module.clone(),
+                    entry.import.name.clone(),
+                    entry.arity,
+                ),
+                i,
+            )
+        })
         .collect()
 }
 
@@ -105,7 +178,7 @@ pub fn rt_globals() -> &'static [(&'static str, &'static str)] {
 
 pub fn encode_import_section(
     chunks: &[Chunk],
-    host_imports: &[Import],
+    host_imports: &[HostImport],
     rt_imports: &[(&str, &str)],
     func_type_base: u32,
     string_constants: &[String],
@@ -121,7 +194,8 @@ pub fn encode_import_section(
     write_leb128_u32(&mut out, total as u32);
 
     // Host imports in module-level function-index order.
-    for (i, import) in host_imports.iter().enumerate() {
+    for (i, entry) in host_imports.iter().enumerate() {
+        let import = &entry.import;
         write_name(&mut out, &import.module);
         write_name(&mut out, &import.name);
         out.push(0x00); // func import
@@ -165,7 +239,11 @@ pub fn encode_import_section(
         write_name(&mut out, name);
         out.push(0x03); // global import
         out.push(TYPE_EXTERNREF);
-        out.push(0x00); // immutable — the module only reads these
+        out.push(u8::from(
+            chunks
+                .iter()
+                .any(|c| c.global_inits.iter().any(|i| i.name == *name)),
+        )); // true initializer write
     }
 
     out
@@ -180,17 +258,80 @@ pub fn encode_func_section(chunks: &[Chunk], import_count: usize, func_type_base
     out
 }
 
+pub(super) fn encode_func_section_with_native_resume(
+    chunks: &[Chunk],
+    import_count: usize,
+    func_type_base: u32,
+    resume_type: Option<u32>,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_leb128_u32(
+        &mut out,
+        chunks.len() as u32 + u32::from(resume_type.is_some()),
+    );
+    for (i, _) in chunks.iter().enumerate() {
+        write_leb128_u32(&mut out, func_type_base + import_count as u32 + i as u32);
+    }
+    if let Some(t) = resume_type {
+        write_leb128_u32(&mut out, t);
+    }
+    out
+}
+
 pub fn encode_memory_section() -> Vec<u8> {
     // Default: single non-shared memory, 1 page min, no max.
     encode_memory_section_with(1, None, false)
+}
+
+/// Serialize the module's declared memories in their core Wasm index order.
+/// The first chunk owns the memory index space, as it does in the VM.
+pub fn encode_declared_memory_section(chunks: &[Chunk]) -> Vec<u8> {
+    let declared = chunks
+        .first()
+        .filter(|chunk| !chunk.memory_min_pages.is_empty() || !chunk.memory_is_64.is_empty());
+    let Some(chunk) = declared else {
+        return encode_memory_section();
+    };
+
+    let count = chunk.memory_min_pages.len().max(chunk.memory_is_64.len());
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, count as u32);
+    for index in 0..count {
+        let memory64 = chunk.memory_is_64.get(index).copied().unwrap_or(false);
+        let min = chunk
+            .memory_min_pages
+            .get(index)
+            .copied()
+            .unwrap_or(u64::from(index == 0));
+        let max = chunk.memory_max_pages.get(index).copied().flatten();
+        out.push(u8::from(max.is_some()) | if memory64 { 0x04 } else { 0 });
+        if memory64 {
+            write_leb128_u64(&mut out, min);
+            if let Some(max) = max {
+                write_leb128_u64(&mut out, max);
+            }
+        } else {
+            write_leb128_u32(
+                &mut out,
+                u32::try_from(min).expect("memory32 minimum exceeds u32"),
+            );
+            if let Some(max) = max {
+                write_leb128_u32(
+                    &mut out,
+                    u32::try_from(max).expect("memory32 maximum exceeds u32"),
+                );
+            }
+        }
+    }
+    out
 }
 
 pub fn module_uses_memory64(chunks: &[Chunk]) -> bool {
     // Memory64-ness is a property of the memory's declared index type
     // (`memory_is_64`), not of any opcode — memory64 adds no new opcodes.
     chunks
-        .iter()
-        .any(|c| c.memory_is_64.iter().any(|&is64| is64))
+        .first()
+        .is_some_and(|chunk| chunk.memory_is_64.iter().any(|&is64| is64))
 }
 
 /// Memory-section encoder with explicit limits and `shared` flag.
@@ -229,7 +370,7 @@ pub fn encode_memory64_section_with(
     out
 }
 
-fn start_chunk_index(chunks: &[Chunk]) -> usize {
+pub(crate) fn start_chunk_index(chunks: &[Chunk]) -> usize {
     chunks
         .iter()
         .position(|chunk| chunk.name == "<script>" && !chunk.code.is_empty())
@@ -242,6 +383,12 @@ fn start_chunk_index(chunks: &[Chunk]) -> usize {
 }
 
 pub fn encode_export_section(chunks: &[Chunk], import_count: usize) -> Vec<u8> {
+    encode_export_section_with_entry(chunks, import_count, None)
+}
+
+pub(crate) fn encode_export_section_with_entry(
+    chunks: &[Chunk], import_count: usize, entry_function: Option<u32>,
+) -> Vec<u8> {
     let mut out = Vec::new();
     write_leb128_u32(&mut out, 2); // export memory + main func
     // Memory
@@ -254,7 +401,7 @@ pub fn encode_export_section(chunks: &[Chunk], import_count: usize) -> Vec<u8> {
     out.push(0x00); // func export
     write_leb128_u32(
         &mut out,
-        import_count as u32 + start_chunk_index(chunks) as u32,
+        entry_function.unwrap_or(import_count as u32 + start_chunk_index(chunks) as u32),
     );
     out
 }
@@ -279,46 +426,29 @@ pub fn collect_string_constants(chunks: &[Chunk]) -> Vec<String> {
     //
     // The names have to be declared as real `chunk.global_imports` by the
     // COMPILER, which is the only side that can keep both numberings in step.
-    collect_global_imports(chunks, vybe_runtime::chunk::STRING_CONSTANTS_MODULE)
-}
-
-/// Every constant a chunk uses as an untyped (typeidx 0) struct key.
-///
-/// Opcodes are four bytes (group, sub — both big-endian u16) followed by the
-/// operands, and `STRUCT_GET`/`STRUCT_SET` carry `(typeidx, name-constant)` as
-/// two LEB128 `u32`s. Decoded here rather than reusing the writer's walker
-/// because this runs before the code section is built.
-fn dynamic_property_names(chunk: &Chunk) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut ip = 0usize;
-    let be = |c: &[u8], i: usize| ((c[i] as u16) << 8) | c[i + 1] as u16;
-    while ip + 3 < chunk.code.len() {
-        let Some(op) = Op::decode(be(&chunk.code, ip), be(&chunk.code, ip + 2)) else {
-            ip += 4;
-            continue;
-        };
-        let operands = ip + 4;
-        if op == Op::STRUCT_GET || op == Op::STRUCT_SET {
-            let mut cursor = operands;
-            let typeidx = read_leb_u32(&chunk.code, &mut cursor);
-            let name_idx = read_leb_u32(&chunk.code, &mut cursor);
-            if typeidx == 0
-                && let Some(value) = chunk.constants.get(name_idx as usize)
-            {
-                names.push(format!("{value}"));
+    let mut names = collect_global_imports(chunks, vybe_runtime::chunk::STRING_CONSTANTS_MODULE);
+    if !super::generator_construct::entries(chunks).is_empty() {
+        for name in ["next", "iterator", "asyncIterator", "__bound_args"] {
+            if !names.iter().any(|n| n == name) {
+                names.push(name.into());
             }
         }
-        ip = operands + op.operand_format().size_in(&chunk.code, operands);
     }
     names
 }
+
 
 /// The module's FREE globals, in declaration order — names it reads but never
 /// writes. They are imports of the embedder, so they belong in the import
 /// section; without this they were emitted as DEFINED globals initialised to
 /// `ref.null extern`, which is a module that declares it owns `globalThis`.
-pub fn collect_host_globals(chunks: &[Chunk]) -> Vec<String> {
+pub fn collect_original_host_globals(chunks: &[Chunk]) -> Vec<String> {
     collect_global_imports(chunks, vybe_runtime::chunk::HOST_GLOBALS_MODULE)
+}
+pub fn collect_host_globals(chunks: &[Chunk]) -> Vec<String> {
+    // Initializers write module-owned storage; they do not grant an import
+    // contract. Explicit imports retain their identity even when initialized.
+    collect_original_host_globals(chunks)
 }
 
 fn collect_global_imports(chunks: &[Chunk], module: &str) -> Vec<String> {
@@ -364,11 +494,26 @@ pub fn collect_globals(
     // tail. Rebuilding it here by walking the bytecode is what this used to do,
     // and it cannot work any more: a `GLOBAL_GET` operand is a globalidx now,
     // not a constant index naming the global.
-    let defined_base =
-        vybe_runtime::chunk::global_index_space(string_constants, host_globals, &[]).len();
+    // Native constructor protocol constants do not belong to the compiler's
+    // original index space. Slice the original defined tail before native imports
+    // are appended, then map all surviving original names into the native space.
+    let original_strings = collect_global_imports(chunks, vybe_runtime::chunk::STRING_CONSTANTS_MODULE);
+    let defined_base = vybe_runtime::chunk::global_index_space(
+        &original_strings,
+        &collect_original_host_globals(chunks),
+        &[],
+    )
+    .len();
     chunks
         .first()
-        .map(|c| c.globals.iter().skip(defined_base).cloned().collect())
+        .map(|c| {
+            c.globals
+                .iter()
+                .skip(defined_base)
+                .filter(|name| !host_globals.contains(name))
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -451,15 +596,9 @@ pub fn encode_global_section_with_descriptors(
             write_leb128_u32(&mut out, desc_type_idx);
             out.push(0x00); // immutable
 
-            // ⛔ The loop bound stays `desc_count`, and the plan is read with
-            // `.get(i)`. `descriptor_global_count()` is the length of a map
-            // keyed on a LOWERCASED name, so two classes whose names fold
-            // together collapse one row and the plan can be longer than the
-            // global count. Indexing the plan by the loop counter and falling
-            // back to `struct.new_default` when it is absent means a fold
-            // collision degrades to the old all-null descriptor instead of
-            // emitting a short operand list — which, since `struct.new` has no
-            // count immediate, would be an INVALID module, not a wrong value.
+            // Count and initialization both use the structural class-ordinal
+            // plan. Diagnostic-name aliases must not collapse descriptor
+            // singletons or shift a later class's global index.
             let vtable = descriptors.and_then(|c| c.desc_vtable.get(i as usize));
             match vtable {
                 Some(methods) => {
@@ -513,6 +652,37 @@ pub fn encode_table_section(chunks: &[Chunk], _import_count: usize) -> Vec<u8> {
     out.push(0x70); // funcref
     out.push(0x00); // no max
     write_leb128_u32(&mut out, table_size);
+    out
+}
+
+pub fn encode_table_section_with_context(
+    chunks: &[Chunk], ctx: &super::types::WasmTypeContext,
+) -> Vec<u8> {
+    use vybe_runtime::opcode::heaptype::HeapType;
+    let mut out = Vec::new();
+    let script = chunks.first();
+    let count = script.map_or(0, |chunk| chunk.table_min_sizes.len());
+    write_leb128_u32(&mut out, count as u32 + 1);
+    if let Some(script) = script {
+        for (index, &min) in script.table_min_sizes.iter().enumerate() {
+            let (heap, nullable, exact, shared) = script.table_element_types.get(index).copied()
+                .unwrap_or((HeapType::Abstract(0x70), true, false, false));
+            encode_segment_reference_type(&mut out, (heap, nullable, exact, shared), ctx);
+            let max = script.table_max_sizes.get(index).copied().flatten();
+            let is_64 = script.table_is_64.get(index).copied().unwrap_or(false);
+            let table_shared = script.table_is_shared.get(index).copied().unwrap_or(false);
+            out.push(u8::from(max.is_some()) | (u8::from(table_shared) << 1) | (u8::from(is_64) << 2));
+            if is_64 {
+                write_leb128_u64(&mut out, min);
+                if let Some(max) = max { write_leb128_u64(&mut out, max); }
+            } else {
+                write_leb128_u32(&mut out, min as u32);
+                if let Some(max) = max { write_leb128_u32(&mut out, max as u32); }
+            }
+        }
+    }
+    out.extend([0x70, 0]);
+    write_leb128_u32(&mut out, chunks.len() as u32);
     out
 }
 
@@ -572,10 +742,14 @@ pub fn encode_element_section(chunks: &[Chunk], import_count: usize) -> Vec<u8> 
 }
 
 pub fn collect_data_segments(chunks: &[Chunk]) -> Vec<Vec<u8>> {
+    collect_data_segments_borrowed(chunks).to_vec()
+}
+
+pub(crate) fn collect_data_segments_borrowed(chunks: &[Chunk]) -> &[Vec<u8>] {
     chunks
         .first()
-        .map(|chunk| chunk.data_segments.clone())
-        .unwrap_or_default()
+        .map(|chunk| chunk.data_segments.as_slice())
+        .unwrap_or(&[])
 }
 
 pub fn encode_data_count_section(data_segments: &[Vec<u8>]) -> Vec<u8> {
@@ -593,6 +767,114 @@ pub fn encode_data_section(data_segments: &[Vec<u8>]) -> Vec<u8> {
         out.extend_from_slice(bytes);
     }
     out
+}
+
+/// Preserve segment indices and instantiation mode. Legacy/source payloads
+/// without active declarations retain their existing passive representation.
+pub(crate) fn encode_data_section_with_initializers(
+    chunks: &[Chunk],
+    data_segments: &[Vec<u8>],
+    ctx: &super::types::WasmTypeContext,
+) -> Vec<u8> {
+    if let Some(module) = chunks.first() {
+        if let Some(segments) = &module.native_segments {
+            use vybe_runtime::chunk::NativeSegmentMode;
+            assert_eq!(segments.data_modes.len(), data_segments.len(), "native data modes must align with payload indices");
+            let mut out = Vec::new();
+            write_leb128_u32(&mut out, data_segments.len() as u32);
+            for (mode, payload) in segments.data_modes.iter().zip(data_segments) {
+                match mode {
+                    NativeSegmentMode::Passive => out.push(1),
+                    NativeSegmentMode::Active { index, offset } => {
+                        if *index == 0 { out.push(0); }
+                        else { out.push(2); write_leb128_u32(&mut out, *index); }
+                        let wide = module.memory_is_64.get(*index as usize).copied().unwrap_or(false);
+                        encode_segment_integer_expr(&mut out, offset, wide, module, ctx);
+                        out.push(0x0b);
+                    }
+                    NativeSegmentMode::Declarative => panic!("data segments cannot be declarative"),
+                }
+                write_leb128_u32(&mut out, payload.len() as u32);
+                out.extend_from_slice(payload);
+            }
+            return out;
+        }
+    }
+    let Some(module) = chunks.first().filter(|chunk| !chunk.active_data_segments.is_empty()) else {
+        return encode_data_section(data_segments);
+    };
+    let mut active = vec![None; data_segments.len()];
+    for initializer in &module.active_data_segments {
+        let entry = active.get_mut(initializer.data_index as usize)
+            .expect("active data segment index must name a retained payload");
+        assert!(entry.is_none(), "data segment has multiple initialization modes");
+        *entry = Some(initializer);
+    }
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, data_segments.len() as u32);
+    for (index, payload) in data_segments.iter().enumerate() {
+        if let Some(initializer) = active[index] {
+            if initializer.memory_index == 0 {
+                out.push(0);
+            } else {
+                out.push(2);
+                write_leb128_u32(&mut out, initializer.memory_index);
+            }
+            if module.memory_is_64.get(initializer.memory_index as usize).copied().unwrap_or(false) {
+                out.push(0x42);
+                write_leb128_i64(&mut out, initializer.offset as i64);
+            } else {
+                assert!(u32::try_from(initializer.offset).is_ok(), "memory32 offset exceeds its address width");
+                out.push(0x41);
+                write_leb128_i32(&mut out, initializer.offset as i32);
+            }
+            out.push(0x0b);
+        } else {
+            out.push(1);
+        }
+        write_leb128_u32(&mut out, payload.len() as u32);
+        out.extend_from_slice(payload);
+    }
+    out
+}
+
+// Offsets have a declared integer type, determined by their memory/table.
+// Preserve integer bits and wrapping arithmetic; never evaluate an imported
+// global during emission or infer the width from its current runtime value.
+fn encode_segment_integer_expr(
+    out: &mut Vec<u8>,
+    expression: &vybe_runtime::chunk::ConstExpr,
+    wide: bool,
+    module: &Chunk,
+    ctx: &super::types::WasmTypeContext,
+) {
+    use vybe_runtime::{Value, chunk::ConstExpr};
+    match expression {
+        ConstExpr::Value(Value::I32(value)) if !wide => {
+            out.push(0x41); write_leb128_i32(out, *value);
+        }
+        ConstExpr::Value(Value::I64(value)) if wide => {
+            out.push(0x42); write_leb128_i64(out, *value);
+        }
+        ConstExpr::GlobalGet(name) => {
+            let old = module.globals.iter().position(|global| global == name)
+                .expect("segment global must name a retained declaration");
+            let index = *ctx.callables.global_map.get(old)
+                .expect("segment global must have a mapped binary index");
+            out.push(0x23); write_leb128_u32(out, index);
+        }
+        ConstExpr::Add(left, right) | ConstExpr::Mul(left, right) => {
+            encode_segment_integer_expr(out, left, wide, module, ctx);
+            encode_segment_integer_expr(out, right, wide, module, ctx);
+            out.push(match (wide, expression) {
+                (false, ConstExpr::Add(..)) => 0x6a,
+                (false, _) => 0x6c,
+                (true, ConstExpr::Add(..)) => 0x7c,
+                (true, _) => 0x7e,
+            });
+        }
+        _ => panic!("segment offset must be a constant expression of its declared integer type"),
+    }
 }
 
 /// Emit a call to an imported function by (module, name) key.
@@ -679,4 +961,185 @@ pub fn emit_symbol_equals(
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
 ) {
     emit_import_call(body, rt_idx, "wasm:js-symbol", "equals");
+}
+
+pub fn encode_global_section_with_callables(
+    globals: &[String],
+    ctx: &super::types::WasmTypeContext,
+    chunks: &[Chunk],
+) -> Vec<u8> {
+    let original = encode_global_section_with_descriptors(globals, Some(ctx));
+    let mut at = 0;
+    let count = vybe_runtime::opcode::read_leb_u32(&original, &mut at);
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, count + chunks.len() as u32 + 1);
+    out.extend_from_slice(&original[at..]);
+    for (i, c) in chunks.iter().enumerate() {
+        out.push(0x64);
+        write_leb128_i64(&mut out, ctx.callables.carrier as i64);
+        out.push(0);
+        super::callable::carrier(
+            &mut out,
+            &ctx.callables,
+            i as u32,
+            |b| super::callable::null(b, ctx.callables.captures as i32),
+            ctx.callables.chunks[i],
+        );
+        out.push(0x0b);
+    }
+    out.extend([TYPE_I32, 1, 0x41, 0, 0x0b]); // once-per-instance link initialization flag
+    out
+}
+
+pub fn encode_func_section_with_generators(
+    chunks: &[Chunk],
+    imports: usize,
+    base: u32,
+    resume: Option<u32>,
+    ctx: &super::types::WasmTypeContext,
+) -> Vec<u8> {
+    let original = encode_func_section_with_native_resume(chunks, imports, base, resume);
+    let mut ip = 0;
+    let count = vybe_runtime::opcode::read_leb_u32(&original, &mut ip);
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, count + ctx.generators.len() as u32
+        + u32::from(ctx.native_carrier_resume_function_idx.is_some())
+        + u32::from(ctx.source_entry.is_some()));
+    out.extend(&original[ip..]);
+    if ctx.native_carrier_resume_function_idx.is_some(){write_leb128_u32(&mut out,ctx.native_carrier_resume_type_idx);}
+    for e in &ctx.generators {
+        write_leb128_u32(&mut out, ctx.callables.calls[&(e.user_arity, 1)]);
+    }
+    if let Some((_, _, type_index, _)) = ctx.source_entry {
+        write_leb128_u32(&mut out, type_index);
+    }
+    out
+}
+pub fn encode_element_section_with_generators(
+    chunks: &[Chunk],
+    _imports: usize,
+    ctx: &super::types::WasmTypeContext,
+) -> Vec<u8> {
+    // Preserve the original element form/table chunk ordinals; map only real function references.
+    let mut out = Vec::new();
+    let native = chunks.first().and_then(|module| module.native_segments.as_ref());
+    let original_count = native.map_or(0, |segments| segments.elements.len());
+    write_leb128_u32(&mut out, original_count as u32 + 1 + u32::from(!ctx.generators.is_empty() || ctx.native_resume_function_idx.is_some()));
+    // Keep original indices: table.init/elem.drop address these segments,
+    // whereas the callable and generator segments are writer-owned suffixes.
+    if let Some(native) = native {
+        let module = &chunks[0];
+        for segment in &native.elements {
+            use vybe_runtime::chunk::NativeSegmentMode;
+            match &segment.mode {
+                NativeSegmentMode::Passive => out.push(5),
+                NativeSegmentMode::Declarative => out.push(7),
+                NativeSegmentMode::Active { index, offset } => {
+                    out.push(6);
+                    write_leb128_u32(&mut out, *index);
+                    let wide = module.table_is_64.get(*index as usize).copied().unwrap_or(false);
+                    encode_segment_integer_expr(&mut out, offset, wide, module, ctx);
+                    out.push(0x0b);
+                }
+            }
+            encode_segment_reference_type(&mut out, segment.reference_type, ctx);
+            write_leb128_u32(&mut out, segment.items.len() as u32);
+            for item in segment.items.iter() {
+                encode_segment_reference_expr(&mut out, item, segment.reference_type, module, ctx);
+                out.push(0x0b);
+            }
+        }
+    }
+    if ctx.internal_callable_table == 0 {
+        write_leb128_u32(&mut out, 0);
+    } else {
+        write_leb128_u32(&mut out, 2);
+        write_leb128_u32(&mut out, ctx.internal_callable_table);
+    }
+    out.extend([0x41, 0, 0x0b]);
+    if ctx.internal_callable_table != 0 { out.push(0); }
+    write_leb128_u32(&mut out, chunks.len() as u32);
+    for target in &ctx.callables.targets {
+        write_leb128_u32(&mut out, *target);
+    }
+    if !ctx.generators.is_empty() || ctx.native_resume_function_idx.is_some() {
+        write_leb128_u32(&mut out, 3);
+        out.push(0);
+        write_leb128_u32(&mut out, ctx.generators.len() as u32 + u32::from(ctx.native_resume_function_idx.is_some()));
+        if let Some(driver)=ctx.native_resume_function_idx{write_leb128_u32(&mut out,driver);}
+        for e in &ctx.generators {
+            write_leb128_u32(&mut out, e.body_func);
+        }
+    }
+    out
+}
+
+fn encode_segment_reference_type(
+    out: &mut Vec<u8>,
+    reference: (vybe_runtime::opcode::heaptype::HeapType, bool, bool, bool),
+    ctx: &super::types::WasmTypeContext,
+) {
+    use vybe_runtime::opcode::heaptype::HeapType;
+    let (heap, nullable, exact, shared) = reference;
+    match heap {
+        HeapType::Abstract(byte) if nullable && !shared => out.push(byte),
+        HeapType::Abstract(byte) => {
+            out.push(if nullable { 0x63 } else { 0x64 });
+            if shared { out.push(0x65); }
+            out.push(byte);
+        }
+        HeapType::Concrete(module_index) => {
+            out.push(if nullable { 0x63 } else { 0x64 });
+            let index = ctx.struct_type_by_index(module_index)
+                .expect("segment reference type must resolve in the module type space");
+            if exact { write_exact_heaptype(out, index); }
+            else { write_leb128_i64(out, index as i64); }
+        }
+    }
+}
+
+fn encode_segment_reference_expr(
+    out: &mut Vec<u8>,
+    expression: &vybe_runtime::chunk::ConstExpr,
+    reference: (vybe_runtime::opcode::heaptype::HeapType, bool, bool, bool),
+    module: &Chunk,
+    ctx: &super::types::WasmTypeContext,
+) {
+    use vybe_runtime::{Value, chunk::ConstExpr, opcode::heaptype::HeapType};
+    match expression {
+        ConstExpr::RefFunc(chunk) => {
+            out.push(0xd2);
+            write_leb128_u32(out, *ctx.callables.targets.get(*chunk)
+                .expect("element function must resolve to a retained chunk"));
+        }
+        ConstExpr::Value(Value::Null) => {
+            out.push(0xd0);
+            match reference.0 {
+                HeapType::Abstract(byte) => {
+                    if reference.3 { out.push(0x65); }
+                    out.push(byte);
+                }
+                HeapType::Concrete(module_index) => {
+                    let index = ctx.struct_type_by_index(module_index)
+                        .expect("element null heap type must resolve");
+                    if reference.2 { write_exact_heaptype(out, index); }
+                    else { write_leb128_i64(out, index as i64); }
+                }
+            }
+        }
+        ConstExpr::GlobalGet(name) => {
+            let old = module.globals.iter().position(|global| global == name)
+                .expect("element global must name a retained declaration");
+            out.push(0x23);
+            write_leb128_u32(out, ctx.callables.global_map[old]);
+        }
+        ConstExpr::RefI31(value) => {
+            encode_segment_integer_expr(out, value, false, module, ctx);
+            out.extend_from_slice(&[0xfb, 0x1c]);
+        }
+        // Imported function identities and GC constructors require their
+        // retained native declaration graph, not Source arity/name inference.
+        // Refuse unsupported lowering rather than silently losing payloads.
+        _ => panic!("native element initializer requires retained native declaration lowering"),
+    }
 }

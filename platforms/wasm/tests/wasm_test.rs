@@ -981,7 +981,7 @@ fn call_ref_preserves_array_argument() {
     let g_array = script.intern_string_constant("__call_ref_arg_array");
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::GLOBAL_GET, g_array, 0);
+    script.emit_op_u32(Op::GLOBAL_GET, g_array, 0);
     script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let mut vm = VM::new();

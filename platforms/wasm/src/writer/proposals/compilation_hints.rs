@@ -118,6 +118,7 @@ pub fn encode_branch_hint_payload(
     chunks: &[Chunk],
     host_imports_len: usize,
     rt_imports_len: usize,
+    type_ctx: &crate::writer::types::WasmTypeContext,
 ) -> Option<Vec<u8>> {
     let func_base = host_imports_len + rt_imports_len;
 
@@ -126,7 +127,7 @@ pub fn encode_branch_hint_payload(
         // Offsets within chunk.code need to be shifted by the size of the
         // locals declaration prefix so they point at the right byte in the
         // serialised WASM function body.
-        let locals_off = code::locals_prefix_size(chunk);
+        let locals_off = code::locals_prefix_size(chunk, type_ctx);
         let hints = scan_branch_hints(chunk, locals_off);
         if !hints.is_empty() {
             per_func.push(((func_base + ci) as u32, hints));
@@ -279,4 +280,85 @@ fn is_leaf_function(chunk: &Chunk) -> bool {
     }
     // Don't mark the entry script as inline-eligible — it isn't called.
     !chunk.name.is_empty() && chunk.name != "<script>"
+}
+
+pub fn encode_native_branch_hint_payload(code: &[u8], imports: usize) -> Option<Vec<u8>> {
+    let mut reader = crate::binary_cursor::Cursor::new(code);
+    let count = reader.u32().expect("generated code count");
+    let mut rows = Vec::new();
+    for index in 0..count {
+        let len = reader.u32().expect("generated body length") as usize;
+        let bytes = reader.bytes(len).expect("complete generated body");
+        let mut ops = crate::binary_cursor::Cursor::new(bytes);
+        let locals = ops.u32().expect("native local declaration count");
+        for _ in 0..locals {
+            ops.u32().expect("native local group length");
+            crate::binary_instructions::value_type(&mut ops).expect("native local type");
+        }
+        let mut stack = Vec::new();
+        let mut hints = Vec::new();
+        while ops.remaining() != 0 {
+            let at = ops.position();
+            match crate::binary_instructions::next(&mut ops).expect("native branch operator").opcode {
+                0x03 => stack.push(1u8),
+                0x1f => stack.push(2),
+                0x02 | 0x04 => {
+                    stack.push(0)
+                }
+                0x0b => {
+                    stack.pop();
+                }
+                0x0d => {
+                    let hint = if stack.contains(&2) {
+                        Some(0)
+                    } else if stack.contains(&1) {
+                        Some(1)
+                    } else {
+                        None
+                    };
+                    if let Some(h) = hint {
+                        hints.push((at as u32, h));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !hints.is_empty() {
+            rows.push((imports as u32 + index, hints));
+        }
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, rows.len() as u32);
+    for (function, hints) in rows {
+        write_leb128_u32(&mut out, function);
+        write_leb128_u32(&mut out, hints.len() as u32);
+        for (offset, hint) in hints {
+            write_leb128_u32(&mut out, offset);
+            write_leb128_u32(&mut out, 1);
+            out.push(hint);
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod native_boundary_tests {
+    use super::encode_native_branch_hint_payload;
+
+    #[test]
+    fn inhouse_decoder_preserves_body_relative_hint_offsets() {
+        // One body: no locals, loop, constant, br_if, loop/end.
+        let code = [1, 9, 0, 0x03, 0x40, 0x41, 1, 0x0d, 0, 0x0b, 0x0b];
+        assert_eq!(encode_native_branch_hint_payload(&code, 2), Some(vec![1, 2, 1, 5, 1, 1]));
+    }
+
+    #[test]
+    fn floating_immediates_do_not_create_phantom_loop_hints() {
+        let code = [1, 13, 0, 0x44, 0x03, 0x40, 0x0d, 0, 0x0b, 0x20, 0x23, 0,
+            0x1a, 0x01, 0x0b];
+        assert_eq!(encode_native_branch_hint_payload(&code, 0), None);
+    }
 }

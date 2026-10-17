@@ -9,15 +9,19 @@
 //! to save TOS while unboxing the second operand.
 
 use crate::encoding::*;
+use crate::writer::sections::HostImport;
 use crate::writer::sections::{
-    JS_GLOBAL_UNDEFINED, emit_box_f64, emit_box_i32, emit_import_call, emit_unbox_bool,
+    JS_GLOBAL_UNDEFINED, emit_box_f64, emit_box_i32, emit_import_call,
     emit_unbox_f64, emit_unbox_i32,
 };
 use crate::writer::types::WasmTypeContext;
-use vybe_runtime::chunk::Import;
 use vybe_runtime::opcode::{OperandFormat, read_leb_u32};
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op};
+
+#[path = "source_i32_regions.rs"]
+mod source_i32_regions;
+use source_i32_regions::SourceI32Regions;
 
 // The `TryRegion` machinery that used to live here is DELETED.
 //
@@ -65,12 +69,853 @@ fn wasm_param_count(chunk: &Chunk) -> u32 {
         })
 }
 
-fn locals_groups(chunk: &Chunk) -> Vec<(u32, u8)> {
+fn boxed_numeric_param_type(
+    chunk: &Chunk,
+    slot: u16,
+    forwarded_types: &[Option<u8>],
+) -> Option<u8> {
+    if forwarded_types
+        .get(slot as usize)
+        .copied()
+        .flatten()
+        .is_some()
+    {
+        return None;
+    }
+    chunk
+        .func_sig
+        .as_ref()?
+        .0
+        .split(',')
+        .filter(|ty| !ty.trim().is_empty())
+        .nth(slot as usize)
+        .and_then(|ty| match ty.trim() {
+            "i32" => Some(TYPE_I32),
+            "f32" => Some(TYPE_F32),
+            "f64" => Some(TYPE_F64),
+            _ => None,
+        })
+}
+
+fn emit_box_f32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    body.push(0xBB); // f64.promote_f32
+    emit_box_f64(body, rt_idx);
+}
+
+fn emit_unbox_f32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_unbox_f64(body, rt_idx);
+    body.push(0xB6); // f32.demote_f64
+}
+
+// A straight-line numeric forwarder can retain the core signature's raw
+// value throughout compiler-introduced local copies. Do not infer through
+// other instructions: those use the boxed value ABI and need an explicit
+// typed boundary rather than a guessed local type.
+fn forwarded_numeric_local_types(chunk: &Chunk) -> Vec<Option<u8>> {
+    let Some((params, result)) = &chunk.func_sig else {
+        return Vec::new();
+    };
+    let numeric_type = |name: &str| match name.trim() {
+        "i32" => Some(TYPE_I32),
+        "i64" => Some(TYPE_I64),
+        "f32" => Some(TYPE_F32),
+        "f64" => Some(TYPE_F64),
+        _ => None,
+    };
+    let Some(result_type) = numeric_type(result) else {
+        return Vec::new();
+    };
+    let mut types = vec![None; chunk.local_count as usize];
+    for (slot, name) in params
+        .split(',')
+        .filter(|name| !name.trim().is_empty())
+        .enumerate()
+    {
+        let Some(entry) = types.get_mut(slot) else {
+            return Vec::new();
+        };
+        *entry = numeric_type(name);
+    }
+    let mut ip = 0;
+    let mut pending_get = None;
+    let mut saw_return = false;
+    while ip < chunk.code.len() {
+        if ip + 4 > chunk.code.len() {
+            return Vec::new();
+        }
+        let Some(op) = Op::decode(
+            u16::from_be_bytes([chunk.code[ip], chunk.code[ip + 1]]),
+            u16::from_be_bytes([chunk.code[ip + 2], chunk.code[ip + 3]]),
+        ) else {
+            return Vec::new();
+        };
+        match op {
+            Op::LOCAL_GET if pending_get.is_none() => {
+                pending_get = Some(read_u16_at(&chunk.code, ip + 4) as usize);
+            }
+            Op::LOCAL_SET => {
+                let Some(source) = pending_get.take() else {
+                    return Vec::new();
+                };
+                let target = read_u16_at(&chunk.code, ip + 4) as usize;
+                let Some(source_type) = types.get(source).copied().flatten() else {
+                    return Vec::new();
+                };
+                let Some(target_type) = types.get_mut(target) else {
+                    return Vec::new();
+                };
+                if target_type.is_some_and(|existing| existing != source_type) {
+                    return Vec::new();
+                }
+                *target_type = Some(source_type);
+            }
+            Op::RETURN => {
+                let Some(source) = pending_get.take() else {
+                    return Vec::new();
+                };
+                if types.get(source).copied().flatten() != Some(result_type) {
+                    return Vec::new();
+                }
+                saw_return = true;
+            }
+            Op::NULL
+                if saw_return
+                    && pending_get.is_none()
+                    && chunk.code.get(ip + 4).copied() == Some(HT_EXTERN)
+                    && next_op(chunk, ip + 5) == Some(Op::RETURN)
+                    && ip + 9 == chunk.code.len() =>
+            {
+                break;
+            }
+            _ => return Vec::new(),
+        }
+        ip += opcode_size(op, &chunk.code, ip);
+    }
+    if saw_return && pending_get.is_none() {
+        types
+    } else {
+        Vec::new()
+    }
+}
+
+// Core scalar signatures are shared by raw-body verification and emission.
+// These are standard Wasm operand/result types, not source-language guesses.
+fn raw_scalar_shape(op: Op) -> Option<(u8, usize, u8)> {
+    if op.group() == 0xFC {
+        return Some(match op.sub() {
+            0 | 1 => (TYPE_F32, 1, TYPE_I32),
+            2 | 3 => (TYPE_F64, 1, TYPE_I32),
+            4 | 5 => (TYPE_F32, 1, TYPE_I64),
+            6 | 7 => (TYPE_F64, 1, TYPE_I64),
+            _ => return None,
+        });
+    }
+    if op.group() != 0 { return None; }
+    Some(match op.sub() {
+        0x45 => (TYPE_I32, 1, TYPE_I32),
+        0x46..=0x4F => (TYPE_I32, 2, TYPE_I32),
+        0x50 => (TYPE_I64, 1, TYPE_I32),
+        0x51..=0x5A => (TYPE_I64, 2, TYPE_I32),
+        0x5B..=0x60 => (TYPE_F32, 2, TYPE_I32),
+        0x61..=0x66 => (TYPE_F64, 2, TYPE_I32),
+        0x67..=0x69 => (TYPE_I32, 1, TYPE_I32),
+        0x6A..=0x78 => (TYPE_I32, 2, TYPE_I32),
+        0x79..=0x7B => (TYPE_I64, 1, TYPE_I64),
+        0x7C..=0x8A => (TYPE_I64, 2, TYPE_I64),
+        0x8B..=0x91 => (TYPE_F32, 1, TYPE_F32),
+        0x92..=0x98 => (TYPE_F32, 2, TYPE_F32),
+        0x99..=0x9F => (TYPE_F64, 1, TYPE_F64),
+        0xA0..=0xA6 => (TYPE_F64, 2, TYPE_F64),
+        0xA7 => (TYPE_I64, 1, TYPE_I32),
+        0xA8 | 0xA9 => (TYPE_F32, 1, TYPE_I32),
+        0xAA | 0xAB => (TYPE_F64, 1, TYPE_I32),
+        0xAC | 0xAD => (TYPE_I32, 1, TYPE_I64),
+        0xAE | 0xAF => (TYPE_F32, 1, TYPE_I64),
+        0xB0 | 0xB1 => (TYPE_F64, 1, TYPE_I64),
+        0xB2 | 0xB3 => (TYPE_I32, 1, TYPE_F32),
+        0xB4 | 0xB5 => (TYPE_I64, 1, TYPE_F32),
+        0xB6 => (TYPE_F64, 1, TYPE_F32),
+        0xB7 | 0xB8 => (TYPE_I32, 1, TYPE_F64),
+        0xB9 | 0xBA => (TYPE_I64, 1, TYPE_F64),
+        0xBB => (TYPE_F32, 1, TYPE_F64),
+        0xBC => (TYPE_F32, 1, TYPE_I32),
+        0xBD => (TYPE_F64, 1, TYPE_I64),
+        0xBE => (TYPE_I32, 1, TYPE_F32),
+        0xBF => (TYPE_I64, 1, TYPE_F64),
+        0xC0 | 0xC1 => (TYPE_I32, 1, TYPE_I32),
+        0xC2..=0xC4 => (TYPE_I64, 1, TYPE_I64),
+        _ => return None,
+    })
+}
+
+struct RawNumericBody {
+    local_types: Vec<Option<u8>>,
+}
+
+#[cfg(test)]
+#[path = "raw_memory_tests.rs"]
+mod raw_memory_tests;
+
+#[cfg(test)]
+#[path = "simd_memory_tests.rs"]
+mod simd_memory_tests;
+
+// Standard SIMD stack types. Memory addressing is handled separately through
+// the shared memarg decoder, not through a special-case byte sequence.
+fn raw_simd_shape(op: Op) -> Option<(&'static [u8], u8)> {
+    if op.group() != 0xfd { return None; }
+    Some(match op.sub() {
+        0x0f..=0x11 => (&[TYPE_I32], 0x7b),
+        0x12 => (&[TYPE_I64], 0x7b),
+        0x13 => (&[TYPE_F32], 0x7b),
+        0x14 => (&[TYPE_F64], 0x7b),
+        0x15 | 0x16 | 0x18 | 0x19 | 0x1b => (&[0x7b], TYPE_I32),
+        0x1d => (&[0x7b], TYPE_I64),
+        0x1f => (&[0x7b], TYPE_F32),
+        0x21 => (&[0x7b], TYPE_F64),
+        0x17 | 0x1a | 0x1c => (&[0x7b, TYPE_I32], 0x7b),
+        0x1e => (&[0x7b, TYPE_I64], 0x7b),
+        0x20 => (&[0x7b, TYPE_F32], 0x7b),
+        0x22 => (&[0x7b, TYPE_F64], 0x7b),
+        0x53 | 0x63 | 0x64 | 0x83 | 0x84 | 0xa3 | 0xa4 | 0xc3 | 0xc4 => (&[0x7b], TYPE_I32),
+        0x6b..=0x6d | 0x8b..=0x8d | 0xab..=0xad | 0xcb..=0xcd => (&[0x7b, TYPE_I32], 0x7b),
+        0x52 => (&[0x7b, 0x7b, 0x7b], 0x7b),
+        0x0d | 0x0e | 0x23..=0x4c | 0x4e..=0x51 | 0x65..=0x66
+        | 0x6e..=0x73 | 0x76..=0x79 | 0x7b | 0x82 | 0x85..=0x86
+        | 0x8e..=0x93 | 0x95..=0x99 | 0x9b..=0x9f
+        | 0xae | 0xb1 | 0xb5..=0xba | 0xbc..=0xbf
+        | 0xce | 0xd1 | 0xd5..=0xdf | 0xe4..=0xeb | 0xf0..=0xf7 => (&[0x7b, 0x7b], 0x7b),
+        0x4d | 0x5e..=0x62 | 0x67..=0x6a | 0x74..=0x75 | 0x7a | 0x7c..=0x81
+        | 0x87..=0x8a | 0x94 | 0xa0..=0xa1 | 0xa7..=0xaa
+        | 0xc0..=0xc1 | 0xc7..=0xca | 0xe0..=0xe1 | 0xe3 | 0xec..=0xed | 0xef | 0xf8..=0xff => (&[0x7b], 0x7b),
+        _ => return None,
+    })
+}
+
+// In a straight-line core numeric body, the declared signature and every
+// producer establish the Wasm types. Retain raw values through local copies
+// and arithmetic, without guessing a type from an f64 constant.
+fn raw_numeric_body(chunk: &Chunk, type_ctx: &WasmTypeContext) -> Option<RawNumericBody> {
+    let (params, result) = chunk.func_sig.as_ref()?;
+    let result_types: Vec<_> = result
+        .split(',')
+        .filter(|ty| !ty.trim().is_empty())
+        .map(|ty| match ty.trim() {
+            "i32" => Some(TYPE_I32),
+            "i64" => Some(TYPE_I64),
+            "f32" => Some(TYPE_F32),
+            "f64" => Some(TYPE_F64),
+            "v128" => Some(0x7b),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let params: Vec<_> = params
+        .split(',')
+        .filter(|ty| !ty.trim().is_empty())
+        .collect();
+    let mut local_types = vec![None; chunk.local_count as usize];
+    for (slot, param) in params.iter().enumerate() {
+        *local_types.get_mut(slot)? = Some(match param.trim() {
+            "i32" => TYPE_I32,
+            "i64" => TYPE_I64,
+            "f32" => TYPE_F32,
+            "f64" => TYPE_F64,
+            "v128" => 0x7b,
+            _ => return None,
+        });
+    }
+    let mut stack: Vec<u8> = Vec::new();
+    let mut saw_return = false;
+    let mut ip = 0;
+    while ip < chunk.code.len() {
+        let op = Op::decode(
+            u16::from_be_bytes([*chunk.code.get(ip)?, *chunk.code.get(ip + 1)?]),
+            u16::from_be_bytes([*chunk.code.get(ip + 2)?, *chunk.code.get(ip + 3)?]),
+        )?;
+        if let Some((input, arity, result)) = raw_scalar_shape(op) {
+            for _ in 0..arity {
+                if stack.pop()? != input { return None; }
+            }
+            stack.push(result);
+            ip += opcode_size(op, &chunk.code, ip);
+            continue;
+        }
+        if let Some((inputs, result)) = raw_simd_shape(op) {
+            for &input in inputs.iter().rev() {
+                if stack.pop()? != input { return None; }
+            }
+            stack.push(result);
+            ip += opcode_size(op, &chunk.code, ip);
+            continue;
+        }
+        match op {
+            Op::LOCAL_GET => {
+                let slot = read_u16_at(&chunk.code, ip + 4) as usize;
+                stack.push(local_types.get(slot).copied().flatten()?);
+            }
+            Op::LOCAL_SET | Op::LOCAL_TEE => {
+                let slot = read_u16_at(&chunk.code, ip + 4) as usize;
+                let value_type = stack.pop()?;
+                let ty = local_types.get_mut(slot)?;
+                if ty.is_some_and(|existing| existing != value_type) {
+                    return None;
+                }
+                *ty = Some(value_type);
+                if op == Op::LOCAL_TEE { stack.push(value_type); }
+            }
+            op if memory_load_shape(op).is_some() =>
+            {
+                let (alignment, result) = memory_load_shape(op)?;
+                let mut operand = ip + 4;
+                let (_, _, memory) = read_optional_memarg(chunk, &mut operand, alignment);
+                let address = if chunk.memory_is_64.get(memory as usize).copied().unwrap_or(false) {
+                    TYPE_I64
+                } else { TYPE_I32 };
+                if stack.pop()? != address { return None; }
+                stack.push(result);
+            }
+            op if memory_store_shape(op).is_some() =>
+            {
+                let (alignment, value) = memory_store_shape(op)?;
+                let mut operand = ip + 4;
+                let (_, _, memory) = read_optional_memarg(chunk, &mut operand, alignment);
+                let address = if chunk.memory_is_64.get(memory as usize).copied().unwrap_or(false) {
+                    TYPE_I64
+                } else { TYPE_I32 };
+                if stack.pop()? != value || stack.pop()? != address { return None; }
+            }
+            Op::MEMORY_SIZE | Op::MEMORY_GROW => {
+                let mut operand = ip + 4;
+                let memory = read_leb_u32(&chunk.code, &mut operand) as usize;
+                let address = if chunk.memory_is_64.get(memory).copied().unwrap_or(false) {
+                    TYPE_I64
+                } else { TYPE_I32 };
+                if op == Op::MEMORY_GROW && stack.pop()? != address { return None; }
+                stack.push(address);
+            }
+            Op::MEMORY_COPY | Op::MEMORY_FILL | Op::MEMORY_INIT | Op::TABLE_COPY | Op::TABLE_INIT => {
+                let (destination, middle, length) = bulk_memory_operand_widths(chunk, op, ip + 4, Some(type_ctx));
+                for wide in [length, middle, destination] {
+                    if stack.pop()? != if wide { TYPE_I64 } else { TYPE_I32 } {
+                        return None;
+                    }
+                }
+            }
+            Op::DATA_DROP | Op::ELEM_DROP | Op::NOP => {}
+            Op::DROP => { stack.pop()?; }
+            Op::SELECT | Op::SELECT_T => {
+                if stack.pop()? != TYPE_I32 { return None; }
+                let right = stack.pop()?;
+                if stack.pop()? != right || !matches!(right, TYPE_I32 | TYPE_I64 | TYPE_F32 | TYPE_F64 | 0x7b) {
+                    return None;
+                }
+                stack.push(right);
+            }
+            Op::CALL_INDIRECT => {
+                let scalar_types = |types: &str| -> Option<Vec<u8>> {
+                    types.split(',').map(str::trim).filter(|ty| !ty.is_empty())
+                        .map(|ty| match ty {
+                            "i32" => Some(TYPE_I32), "i64" => Some(TYPE_I64),
+                            "f32" => Some(TYPE_F32), "f64" => Some(TYPE_F64),
+                            _ => None,
+                        }).collect()
+                };
+                let (params, results) = chunk.call_indirect_sigs.get(&ip)?.split_once("->")?;
+                let params = scalar_types(params)?;
+                let results = scalar_types(results)?;
+                if params.len() != usize::from(*chunk.code.get(ip + 4)?)
+                    || results.len() != usize::from(*chunk.code.get(ip + 6)?) {
+                    return None;
+                }
+                let table = usize::from(*chunk.code.get(ip + 5)?);
+                if stack.pop()? != type_ctx.table_operands.get(table)?.0 { return None; }
+                for param in params.into_iter().rev() {
+                    if stack.pop()? != param { return None; }
+                }
+                stack.extend(results);
+            }
+            op if op.group() == 0xfd && matches!(op.sub(), 0x00..=0x0b | 0x54..=0x5d) => {
+                let mut operand = ip + 4;
+                let (_, _, memory) = read_optional_memarg(chunk, &mut operand, default_simd_align(op));
+                let address = if *chunk.memory_is_64.get(memory as usize)? { TYPE_I64 } else { TYPE_I32 };
+                let store = matches!(op.sub(), 0x0b | 0x58..=0x5b);
+                let lane = matches!(op.sub(), 0x54..=0x5b);
+                if store || lane {
+                    if stack.pop()? != 0x7b { return None; }
+                }
+                if stack.pop()? != address { return None; }
+                if !store { stack.push(0x7b); }
+            }
+            Op::V128_CONST => stack.push(0x7B),
+            Op::I32_CONST => stack.push(TYPE_I32),
+            Op::F32_CONST => stack.push(TYPE_F32),
+            Op::F64_CONST => stack.push(TYPE_F64),
+            Op::TABLE_SIZE | Op::TABLE_GET | Op::TABLE_SET | Op::TABLE_GROW | Op::TABLE_FILL => {
+                let mut operand = ip + 4;
+                let index = read_leb_u32(&chunk.code, &mut operand) as usize;
+                let &(address, reference) = type_ctx.table_operands.get(index)?;
+                match op {
+                    Op::TABLE_SIZE => stack.push(address),
+                    Op::TABLE_GET => {
+                        if stack.pop()? != address { return None; }
+                        stack.push(reference?);
+                    }
+                    Op::TABLE_SET => {
+                        if stack.pop()? != reference? || stack.pop()? != address { return None; }
+                    }
+                    Op::TABLE_GROW => {
+                        if stack.pop()? != address || stack.pop()? != reference? { return None; }
+                        stack.push(address);
+                    }
+                    Op::TABLE_FILL => {
+                        if stack.pop()? != address || stack.pop()? != reference?
+                            || stack.pop()? != address { return None; }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Op::NULL if !saw_return => {
+                let reference = *chunk.code.get(ip + 4)?;
+                if !matches!(reference, 0x70 | 0x6f) { return None; }
+                stack.push(reference);
+            }
+            Op::REF_IS_NULL => {
+                if !matches!(stack.pop()?, 0x70 | 0x6f) { return None; }
+                stack.push(TYPE_I32);
+            }
+            Op::MEMORY_ATOMIC_NOTIFY => {
+                let mut operand = ip + 4;
+                let align = read_leb_u32(&chunk.code, &mut operand);
+                let address_type = if align & 0x80 != 0 { TYPE_I64 } else { TYPE_I32 };
+                if stack.pop()? != TYPE_I32 || stack.pop()? != address_type { return None; }
+                stack.push(TYPE_I32);
+            }
+            Op::I64_CONST => stack.push(TYPE_I64),
+            Op::RETURN => {
+                if stack.as_slice() != result_types.as_slice() {
+                    return None;
+                }
+                stack.clear();
+                saw_return = true;
+            }
+            Op::NULL
+                if saw_return
+                    && stack.is_empty()
+                    && chunk.code.get(ip + 4).copied() == Some(HT_EXTERN)
+                    && next_op(chunk, ip + 5) == Some(Op::RETURN)
+                    && ip + 9 == chunk.code.len() =>
+            {
+                break;
+            }
+            Op::UNREACHABLE
+                if saw_return
+                    && stack.is_empty()
+                    && ip + opcode_size(op, &chunk.code, ip) == chunk.code.len() =>
+            {
+                break;
+            }
+            _ => return None,
+        }
+        ip += opcode_size(op, &chunk.code, ip);
+    }
+    saw_return.then_some(RawNumericBody { local_types })
+}
+
+// Compiler-proven emit_next regions. Decoded ordinary Wasm has no marker and
+// keeps its existing structured labels; VM handler instruction pointers remain
+// untouched in every input Chunk.
+#[derive(Clone, Copy)]
+struct NativeNext {
+    start: usize,
+    resume: usize,
+    handler: usize,
+    end: usize,
+    slot: u16,
+    operands: usize,
+    done_get: usize,
+    completion_get: usize,
+    completion_br: usize,
+}
+pub(crate) fn has_native_next(chunk: &Chunk) -> bool {
+    !native_next_regions(chunk).is_empty() || !native_direct_resumes(chunk).is_empty()
+}
+fn native_growable_arrays(chunk:&Chunk)->std::collections::BTreeSet<usize> {
+    let names:Vec<_>=chunk.local_names.iter().filter(|n|n.origin==vybe_runtime::chunk::LocalOrigin::Compiler && n.name.starts_with("<native-growable-array:")).collect();
+    let mut found=std::collections::BTreeSet::new();
+    if names.is_empty(){return found;}
+    let mut boundaries=std::collections::BTreeSet::new();let mut ip=0;
+    while ip<chunk.code.len(){boundaries.insert(ip);ip+=opcode_size(Op::from_code_at(&chunk.code,ip),&chunk.code,ip);}
+    for n in names {
+        let value=n.name.strip_prefix("<native-growable-array:").unwrap().strip_suffix('>').expect("closed growable marker");
+        let at:usize=value.parse().expect("growable allocation offset");
+        assert!(n.slot<chunk.local_count && boundaries.contains(&at));
+        assert_eq!(Op::from_code_at(&chunk.code,at),Op::ARRAY_NEW_FIXED);
+        assert_eq!(read_u16_at(&chunk.code,at+4),0);assert_eq!(read_u16_at(&chunk.code,at+6),0);
+        assert_eq!(Op::from_code_at(&chunk.code,at+8),Op::LOCAL_SET);
+        assert_eq!(read_u16_at(&chunk.code,at+12),n.slot,"same retained private buffer root");
+        assert!(found.insert(at),"duplicate growable marker");
+    }
+    found
+}
+fn native_direct_resumes(chunk: &Chunk) -> Vec<usize> {
+    // Compiler markers are the only source of native generator regions.
+    // Avoid decoding marker-free bodies; marker validation below is unchanged.
+    if !chunk.local_names.iter().any(|local| {
+        local.origin == vybe_runtime::chunk::LocalOrigin::Compiler
+            && local
+                .name
+                .strip_prefix("<native-generator-resume:")
+                .and_then(|s| s.strip_suffix('>'))
+                .is_some()
+    }) {
+        return Vec::new();
+    }
+
+    let mut boundaries = std::collections::BTreeSet::new();
+    let mut ip = 0;
+    while ip < chunk.code.len() {
+        boundaries.insert(ip);
+        ip += opcode_size(Op::from_code_at(&chunk.code, ip), &chunk.code, ip);
+    }
+    boundaries.insert(ip);
+    let mut found = std::collections::BTreeSet::new();
+    for local in &chunk.local_names {
+        if local.origin != vybe_runtime::chunk::LocalOrigin::Compiler {
+            continue;
+        }
+        let Some(fields) = local
+            .name
+            .strip_prefix("<native-generator-resume:")
+            .and_then(|s| s.strip_suffix('>'))
+        else {
+            continue;
+        };
+        let fields: Vec<usize> = fields
+            .split(':')
+            .map(|x| x.parse().expect("compiler resume offset"))
+            .collect();
+        assert_eq!(fields.len(), 2);
+        let (start, end) = (fields[0], fields[1]);
+        assert!(boundaries.contains(&start) && boundaries.contains(&end));
+        assert_eq!(end, start + 6);
+        assert_eq!(Op::from_code_at(&chunk.code, start), Op::RESUME);
+        assert_eq!(read_u16_at(&chunk.code, start + 4), 0);
+        assert!(
+            chunk
+                .stack_switch_handlers
+                .get(&start)
+                .is_none_or(|h| h.is_empty()),
+            "direct resume has no VM branch handlers"
+        );
+        assert!(found.insert(start), "duplicate direct resume marker");
+    }
+    found.into_iter().collect()
+}
+fn native_next_regions(chunk: &Chunk) -> Vec<NativeNext> {
+    // Compiler markers are the only source of native generator regions.
+    // Avoid decoding marker-free bodies; marker validation below is unchanged.
+    if !chunk.local_names.iter().any(|local| {
+        local.origin == vybe_runtime::chunk::LocalOrigin::Compiler
+            && local
+                .name
+                .strip_prefix("<native-generator-next:")
+                .and_then(|s| s.strip_suffix('>'))
+                .is_some()
+    }) {
+        return Vec::new();
+    }
+
+    let mut instructions = Vec::new();
+    let mut p = 0;
+    while p < chunk.code.len() {
+        let op = Op::from_code_at(&chunk.code, p);
+        instructions.push((p, op));
+        p += opcode_size(op, &chunk.code, p);
+    }
+    chunk
+        .local_names
+        .iter()
+        .filter_map(|local| {
+            if local.origin != vybe_runtime::chunk::LocalOrigin::Compiler {
+                return None;
+            }
+            let s = local
+                .name
+                .strip_prefix("<native-generator-next:")?
+                .strip_suffix('>')?;
+            let fields: Vec<usize> = s
+                .split(':')
+                .map(|x| x.parse().expect("compiler next marker integer"))
+                .collect();
+            assert_eq!(fields.len(), 4, "compiler next marker arity");
+            let (start, resume, handler, end) = (fields[0], fields[1], fields[2], fields[3]);
+            let at = |offset| {
+                instructions
+                    .iter()
+                    .position(|&(p, _)| p == offset)
+                    .expect("next marker instruction boundary")
+            };
+            let a = at(start);
+            let r = at(resume);
+            let h = at(handler);
+            assert!(start < resume && resume < handler && handler < end && end <= chunk.code.len());
+            assert_eq!(instructions[a].1, Op::LOCAL_SET);
+            assert_eq!(read_u16_at(&chunk.code, start + 4), local.slot);
+            assert_eq!(instructions[a + 1].1, Op::BLOCK);
+            assert_eq!(instructions[r].1, Op::RESUME);
+            assert_eq!(instructions[r - 2].1, Op::LOCAL_GET);
+            assert_eq!(
+                read_u16_at(&chunk.code, instructions[r - 2].0 + 4),
+                local.slot
+            );
+            assert_eq!(instructions[r - 1].1, Op::NULL);
+            assert_eq!(chunk.code[instructions[r - 1].0 + 4], HT_EXTERN);
+            assert_eq!(instructions[h - 1].1, Op::BR);
+            assert_eq!(chunk.code[instructions[h - 1].0 + 4], 0);
+            assert_eq!(instructions[h].1, Op::I32_CONST);
+            assert_eq!(chunk.code[handler + 4], 1);
+            assert_eq!(instructions[h + 1].1, Op::END);
+            assert_eq!(instructions[h + 1].0 + 4, end);
+            let handlers = chunk
+                .stack_switch_handlers
+                .get(&resume)
+                .expect("compiler next handler");
+            assert_eq!(handlers.len(), 1);
+            assert_eq!(
+                (
+                    handlers[0].kind,
+                    handlers[0].tag_index,
+                    handlers[0].label_index
+                ),
+                (0, 0, handler as u32)
+            );
+            let done_get = instructions[a + 2..r - 2]
+                .iter()
+                .find(|&&(p, op)| {
+                    op == Op::LOCAL_GET && read_u16_at(&chunk.code, p + 4) == local.slot
+                })
+                .expect("next done owner")
+                .0;
+            let completion_get = instructions[r + 1..h]
+                .iter()
+                .find(|&&(p, op)| {
+                    op == Op::LOCAL_GET && read_u16_at(&chunk.code, p + 4) == local.slot
+                })
+                .expect("next completion owner")
+                .0;
+            Some(NativeNext {
+                start,
+                resume,
+                handler,
+                end,
+                slot: local.slot,
+                operands: instructions[r - 2].0,
+                done_get,
+                completion_get,
+                completion_br: instructions[h - 1].0,
+            })
+        })
+        .collect()
+}
+fn emit_cont_carrier_cast(body: &mut Vec<u8>, ctx: &WasmTypeContext) {
+    emit_internalize(body);
+    emit_ref_cast(body, ctx.continuation_carrier_type_idx);
+}
+fn emit_cont_carrier_field(body: &mut Vec<u8>, ctx: &WasmTypeContext, field: u32) {
+    emit_cont_carrier_cast(body, ctx);
+    body.push(0xfb);
+    write_leb128_u32(body, 2);
+    write_leb128_u32(body, ctx.continuation_carrier_type_idx);
+    write_leb128_u32(body, field);
+}
+
+#[derive(Default)]
+struct NativeDirectArgs {
+    producers: std::collections::BTreeMap<usize, u8>,
+    calls: std::collections::BTreeSet<usize>,
+}
+fn native_direct_args(chunk: &Chunk) -> NativeDirectArgs {
+    let mut facts = NativeDirectArgs::default();
+    let Some((params, _)) = &chunk.func_sig else { return facts; };
+    if chunk.direct_defined_calls.is_empty() { return facts; }
+    let params: Vec<_> = params.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let mut producers: Vec<(usize, &str)> = Vec::new();
+    let mut ip = 0;
+    while let Some(op) = next_op(chunk, ip) {
+        if let Some(edge) = chunk.direct_defined_calls.get(&ip) {
+            let args: Vec<_> = edge.params.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            if !edge.source && producers.len() >= args.len() {
+                let window = &producers[producers.len()-args.len()..];
+                if window.iter().map(|(_, ty)| *ty).eq(args.iter().copied()) {
+                    facts.calls.insert(ip);
+                    facts.producers.extend(window.iter().map(|(at,ty)| (*at,super::types::val_type_byte(ty))));
+                }
+            }
+            producers.clear();
+        } else {
+            let operand = ip + 4;
+            let ty = match op {
+                Op::I32_CONST => Some("i32"),
+                Op::I64_CONST => Some("i64"),
+                Op::F32_CONST => Some("f32"),
+                Op::F64_CONST => Some("f64"),
+                Op::LOCAL_GET if operand+2 <= chunk.code.len() => {
+                    let slot=u16::from_be_bytes([chunk.code[operand],chunk.code[operand+1]]) as usize;
+                    params.get(slot).copied()
+                }
+                Op::NULL => match chunk.code.get(operand) {
+                    Some(0x6f)=>Some("externref"),Some(0x70)=>Some("funcref"),_=>None,
+                },
+                _ => None,
+            };
+            if let Some(ty)=ty {producers.push((ip,ty));} else {producers.clear();}
+        }
+        ip += opcode_size(op,&chunk.code,ip);
+    }
+    facts
+}
+
+// Declared Wasm function calls carry actual funcref, never the Source externref
+// carrier. Give their reordered operands native typed locals; Source calls keep
+// their existing carrier/argument/lifetime path untouched.
+fn declared_ref_calls(chunk: &Chunk) -> Vec<(usize, Vec<u8>)> {
+    let mut rows = Vec::new();
+    for (&at, signature) in &chunk.call_indirect_sigs {
+        if super::callable::source(chunk) { continue; }
+        let Some(op) = Op::decode(
+            u16::from_be_bytes([chunk.code[at], chunk.code[at + 1]]),
+            u16::from_be_bytes([chunk.code[at + 2], chunk.code[at + 3]]),
+        ) else {
+            continue;
+        };
+        if !matches!(op, Op::CALL_REF | Op::RETURN_CALL_REF | Op::CALL_INDIRECT | Op::RETURN_CALL_INDIRECT) {
+            continue;
+        }
+        let (params, results) = signature.split_once("->").expect("declared call signature");
+        let mut params = params
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(super::types::val_type_byte)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            params.len(),
+            usize::from(chunk.code[at + 4]),
+            "declared reference call arity"
+        );
+        if matches!(op, Op::CALL_INDIRECT | Op::RETURN_CALL_INDIRECT) {
+            // Result staging is needed only at a mixed-value boundary. Raw
+            // verified bodies omit these locals entirely in the prefix.
+            params.extend(results.split(',').map(str::trim).filter(|s| !s.is_empty())
+                .map(super::types::val_type_byte));
+        }
+        rows.push((at, params));
+    }
+    for (&at, edge) in &chunk.direct_defined_calls {
+        // Direct typed args/results get actual Wasm locals, not externref slots.
+        let params = edge.params.split(',').chain(edge.results.split(','))
+            .map(str::trim).filter(|s|!s.is_empty()).map(super::types::val_type_byte).collect();
+        rows.push((at,params));
+    }
+    rows.sort_by_key(|(at, _)| *at);
+    rows
+}
+#[derive(Default)]
+struct DeclaredCallPlan {
+    profiles: Vec<(u32, Vec<u8>)>,
+    sites: std::collections::BTreeMap<usize, (usize, usize)>,
+}
+
+impl DeclaredCallPlan {
+    fn new(chunk: &Chunk, type_ctx: &WasmTypeContext, raw: bool) -> Self {
+        let mut plan = Self::default();
+        if raw { return plan; }
+    let (temps, i64temps) = count_temp_locals(chunk);
+    let mut base = wasm_param_count(chunk).max(u32::from(chunk.local_count))
+        + temps
+        + i64temps
+        + u32::from(has_native_next(chunk));
+    if super::callable::source(chunk) {
+        // Typed staging follows the real hidden environment and captured-cell
+        // locals. Those indices are above hidden_virtual and are already
+        // physical indices when callable::remap_locals visits the body.
+        base += 1 + super::callable::captured_slots(chunk).len() as u32;
+    }
+        let mut layouts = std::collections::HashMap::<Vec<u8>, usize>::new();
+        for (offset, mut types) in declared_ref_calls(chunk) {
+            let values = types.len();
+            // Scratch values never survive a call instruction. Reentrant
+            // invocations have their own Wasm frame, so equal layouts can
+            // share locals without aliasing callers, captures or user slots.
+            if !chunk.direct_defined_calls.contains_key(&offset) {
+                let selector = if matches!(next_op(chunk, offset), Some(Op::CALL_INDIRECT | Op::RETURN_CALL_INDIRECT)) {
+                    type_ctx.table_operands.get(chunk.code[offset + 5] as usize)
+                        .map_or(TYPE_I32, |table| table.0)
+                } else { 0x70 };
+                types.push(selector);
+            }
+            let profile = if let Some(&profile) = layouts.get(&types) {
+                profile
+            } else {
+                let profile = plan.profiles.len();
+                layouts.insert(types.clone(), profile);
+                let next = base.checked_add(types.len() as u32).expect("typed local index overflow");
+                plan.profiles.push((base, types));
+                base = next;
+                profile
+            };
+            plan.sites.insert(offset, (profile, values));
+        }
+        plan
+    }
+
+    fn slots(&self, at: usize) -> Option<(u32, &[u8])> {
+        let &(profile, values) = self.sites.get(&at)?;
+        let (base, types) = &self.profiles[profile];
+        Some((*base, &types[..values]))
+    }
+}
+
+fn declared_scratch_type(chunk: &Chunk, slot: u32) -> Option<u8> {
+    let mut found = None;
+    for n in &chunk.local_names {
+        if u32::from(n.slot) == slot && n.origin == vybe_runtime::chunk::LocalOrigin::Compiler {
+            if let Some(t) = n
+                .name
+                .strip_prefix("<native-wasm-scratch:")
+                .and_then(|s| s.strip_suffix(">"))
+            {
+                let ty = super::types::val_type_byte(t);
+                // A compiler-owned vector stays in a standard v128 local,
+                // never in the Source externref ABI or a captured value cell.
+                if super::callable::source(chunk)
+                    && (ty != 0x7B || super::callable::captured_slots(chunk).contains(&(slot as u16)))
+                {
+                    return None;
+                }
+                assert!(found.is_none_or(|old| old == ty));
+                found = Some(ty);
+            }
+        }
+    }
+    found
+}
+
+fn locals_groups(chunk: &Chunk, type_ctx: &WasmTypeContext) -> Vec<(u32, u8)> {
     let wasm_params = wasm_param_count(chunk);
+    let raw_numeric = raw_numeric_body(chunk, type_ctx);
+    let forwarded_types = raw_numeric
+        .as_ref()
+        .map(|body| body.local_types.clone())
+        .unwrap_or_else(|| forwarded_numeric_local_types(chunk));
     let extra_locals = (chunk.local_count as u32).saturating_sub(wasm_params);
-    let temp_count = count_temp_locals(chunk);
+    let (temp_count, i64_temp_count) = if raw_numeric.is_some() {
+        (0, 0)
+    } else {
+        count_temp_locals(chunk)
+    };
     let mut groups: Vec<(u32, u8)> = Vec::new();
-    let mut push = |ty: u8, groups: &mut Vec<(u32, u8)>| match groups.last_mut() {
+    let push = |ty: u8, groups: &mut Vec<(u32, u8)>| match groups.last_mut() {
         Some((n, t)) if *t == ty => *n += 1,
         _ => groups.push((1, ty)),
     };
@@ -78,7 +923,11 @@ fn locals_groups(chunk: &Chunk) -> Vec<(u32, u8)> {
     // and slot k IS local index k (slots below the declared count are params).
     for i in 0..extra_locals {
         let slot = wasm_params + i;
-        let ty = if u16::try_from(slot).is_ok_and(|s| chunk.i64_locals.contains(&s)) {
+        let ty = if let Some(ty) = declared_scratch_type(chunk, slot) {
+            ty
+        } else if let Some(ty) = forwarded_types.get(slot as usize).copied().flatten() {
+            ty
+        } else if u16::try_from(slot).is_ok_and(|s| chunk.i64_locals.contains(&s)) {
             TYPE_I64
         } else {
             TYPE_EXTERNREF
@@ -88,29 +937,62 @@ fn locals_groups(chunk: &Chunk) -> Vec<(u32, u8)> {
     for _ in 0..temp_count {
         push(TYPE_EXTERNREF, &mut groups);
     }
+    for _ in 0..i64_temp_count {
+        push(TYPE_I64, &mut groups);
+    }
     groups
 }
 
 /// Write the locals prefix from [`locals_groups`].
-fn write_locals_prefix(body: &mut Vec<u8>, chunk: &Chunk) {
-    let groups = locals_groups(chunk);
-    write_leb128_u32(body, groups.len() as u32);
+fn write_locals_prefix(body: &mut Vec<u8>, chunk: &Chunk, type_ctx: &WasmTypeContext) {
+    let plan = DeclaredCallPlan::new(chunk, type_ctx, raw_numeric_body(chunk, type_ctx).is_some());
+    write_locals_prefix_with_plan(body, chunk, type_ctx, &plan);
+}
+
+fn write_locals_prefix_with_plan(body: &mut Vec<u8>, chunk: &Chunk, type_ctx: &WasmTypeContext, plan: &DeclaredCallPlan) {
+    let groups = locals_groups(chunk, type_ctx);
+    let typed_count: usize = plan.profiles.iter().map(|(_, types)| types.len()).sum();
+    write_leb128_u32(
+        body,
+        groups.len() as u32
+            + typed_count as u32
+            + u32::from(has_native_next(chunk))
+            + u32::from(
+                super::callable::source(chunk)
+                    && !super::callable::captured_slots(chunk).is_empty(),
+            ),
+    );
     for (count, ty) in groups {
         write_leb128_u32(body, count);
         body.push(ty);
+    }
+    if has_native_next(chunk) {
+        write_leb128_u32(body, 1);
+        body.push(0x63);
+        write_leb128_i64(body, type_ctx.continuation_type_idx as i64);
+    }
+    if super::callable::source(chunk) {
+        let n = super::callable::captured_slots(chunk).len();
+        if n > 0 {
+            write_leb128_u32(body, n as u32);
+            body.push(TYPE_EXTERNREF);
+        }
+    }
+    for (_, types) in &plan.profiles {
+        for &ty in types {
+            write_leb128_u32(body, 1);
+            body.push(ty);
+        }
     }
 }
 
 /// Size in bytes of the locals declaration prefix written at the start of a
 /// function body. The spec says branch hint offsets are relative to this
 /// position, so the hint scanner adds this value to every `chunk.code` offset.
-pub(crate) fn locals_prefix_size(chunk: &Chunk) -> u32 {
-    let groups = locals_groups(chunk);
-    leb128_u32_size(groups.len() as u32)
-        + groups
-            .iter()
-            .map(|&(count, _)| leb128_u32_size(count) + 1)
-            .sum::<u32>()
+pub(crate) fn locals_prefix_size(chunk: &Chunk, type_ctx: &WasmTypeContext) -> u32 {
+    let mut prefix = Vec::new();
+    write_locals_prefix(&mut prefix, chunk, type_ctx);
+    prefix.len() as u32
 }
 
 /// Count how many temp locals a chunk needs for stack manipulation.
@@ -124,8 +1006,44 @@ fn read_u16_at(code: &[u8], at: usize) -> u16 {
     }
 }
 
-fn count_temp_locals(chunk: &Chunk) -> u32 {
-    let mut need = 0u32;
+fn bulk_memory_operand_widths(chunk: &Chunk, op: Op, operands_at: usize, type_ctx: Option<&WasmTypeContext>) -> (bool, bool, bool) {
+    let mut cursor = operands_at;
+    let first = read_leb_u32(&chunk.code, &mut cursor);
+    let (dst, src) = match op {
+        Op::MEMORY_COPY | Op::TABLE_COPY => (first, Some(read_leb_u32(&chunk.code, &mut cursor))),
+        Op::MEMORY_INIT | Op::TABLE_INIT => (read_leb_u32(&chunk.code, &mut cursor), None),
+        _ => (first, None),
+    };
+    let is_64 = |idx: u32| {
+        if matches!(op, Op::TABLE_COPY | Op::TABLE_INIT) {
+            if let Some(ctx) = type_ctx {
+                return ctx.table_operands.get(idx as usize).is_some_and(|table| table.0 == TYPE_I64);
+            }
+        }
+        let widths = if matches!(op, Op::TABLE_COPY | Op::TABLE_INIT) {
+            &chunk.table_is_64
+        } else { &chunk.memory_is_64 };
+        widths
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(false)
+    };
+    let dst_64 = is_64(dst);
+    match op {
+        Op::MEMORY_COPY | Op::TABLE_COPY => {
+            let src_64 = is_64(src.expect("memory.copy source index"));
+            (dst_64, src_64, dst_64 && src_64)
+        }
+        Op::MEMORY_FILL => (dst_64, false, dst_64),
+        Op::MEMORY_INIT | Op::TABLE_INIT => (dst_64, false, false),
+        _ => unreachable!("not a bulk-memory operation"),
+    }
+}
+
+pub(crate) fn count_temp_locals(chunk: &Chunk) -> (u32, u32) {
+    let mut need = if !has_native_next(chunk) { 0 } else { 2 };
+    need = need.max(u32::from(super::callable::source(chunk)));
+    let mut i64_need = 0u32;
     let mut ip = 0;
     while ip < chunk.code.len() {
         if ip + 3 >= chunk.code.len() {
@@ -135,7 +1053,15 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
             ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16,
             ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16,
         ) {
-            if op == Op::CALL_REF || op == Op::RETURN_CALL || op == Op::RETURN_CALL_REF {
+            if op == Op::ARRAY_NEW_FIXED && read_u16_at(&chunk.code, ip + 4) != 0 {
+                // Declared packed arrays normalize all fixed initializer words
+                // in their original order; operand zero retains its old layout.
+                need = need.max(read_u16_at(&chunk.code, ip + 6) as u32);
+            } else if matches!(op, Op::ARRAY_NEW | Op::ARRAY_NEW_DATA | Op::ARRAY_GET_S | Op::ARRAY_GET_U)
+                && read_u16_at(&chunk.code, ip + 4) != 0
+            {
+                need = need.max(1);
+            } else if !chunk.direct_defined_calls.contains_key(&ip) && (op == Op::CALL_REF || op == Op::RETURN_CALL || op == Op::RETURN_CALL_REF) {
                 // Dynamic callee-on-stack calls need argc+1 temps
                 // (save args + the funcref) to reorder into the spec
                 // `call_indirect`/`return_call_indirect` stack shape.
@@ -149,9 +1075,29 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 // stack: the object has to exist before any of them can be
                 // stored, so each pair is unstacked through temps.
                 need = need.max(3);
-            } else if memory_store_shape(op).is_some() || atomic_is_i32_two_operand(op) {
-                // One temp to lift the value off the address underneath it.
+            } else if let Some((_, value_type)) = memory_store_shape(op) {
+                if value_type == TYPE_I64 {
+                    i64_need = i64_need.max(1);
+                } else {
+                    need = need.max(1);
+                }
+            } else if atomic_is_i32_two_operand(op)
+                || op == Op::MEMORY_ATOMIC_NOTIFY
+            {
                 need = need.max(1);
+            } else if matches!(op, Op::MEMORY_COPY | Op::MEMORY_INIT | Op::MEMORY_FILL | Op::TABLE_COPY | Op::TABLE_INIT) {
+                need = need.max(2);
+                let (_, middle_64, length_64) = bulk_memory_operand_widths(chunk, op, ip + 4, None);
+                i64_need = i64_need.max(middle_64 as u32 + length_64 as u32);
+                // The module owns table limits/types. This pre-context scan
+                // must reserve enough staging even when a function carries
+                // no redundant copy of the table declarations.
+                if matches!(op, Op::TABLE_COPY | Op::TABLE_INIT) { i64_need = i64_need.max(2); }
+            } else if op == Op::TABLE_GROW {
+                need = need.max(2);
+            } else if op == Op::MEMORY_ATOMIC_WAIT32 {
+                need = need.max(1);
+                i64_need = i64_need.max(1);
             } else if atomic_is_i32_cmpxchg(op) {
                 // expected + replacement sit above the address.
                 need = need.max(2);
@@ -161,6 +1107,15 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 // static call because the import tables are not built yet
                 // here; two externref locals are cheaper than threading them in.
                 need = need.max(2);
+                let import_idx = read_u16_at(&chunk.code, ip + 4) as usize;
+                if chunk
+                    .imports
+                    .get(import_idx)
+                    .is_some_and(|import| import.module == "ecma:array" && import.name == "splice")
+                {
+                    let argc = chunk.code.get(ip + 6).copied().unwrap_or(0) as u32;
+                    need = need.max(argc.saturating_sub(2));
+                }
             } else if op == Op::ARRAY_COPY {
                 need = need.max(5); // boxed destination, offsets, source, and count
             } else if op == Op::ARRAY_SET {
@@ -186,14 +1141,19 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
             ip += 4;
         }
     }
-    need
+    (need, i64_need)
 }
 
 /// Is this a core WASM op that operates on typed (non-externref) values
 /// and takes two operands from the stack?
 fn is_binary_typed_op(op: Op) -> bool {
+    // f32 binary arithmetic and comparisons
+    op == Op::F32_ADD || op == Op::F32_SUB || op == Op::F32_MUL || op == Op::F32_DIV
+    || op == Op::F32_MIN || op == Op::F32_MAX || op == Op::F32_COPYSIGN
+    || op == Op::F32_LT || op == Op::F32_GT || op == Op::F32_LE || op == Op::F32_GE
+    || op == Op::F32_EQ || op == Op::F32_NE
     // f64 binary arithmetic
-    op == Op::F64_ADD || op == Op::F64_SUB || op == Op::F64_MUL || op == Op::F64_DIV
+    || op == Op::F64_ADD || op == Op::F64_SUB || op == Op::F64_MUL || op == Op::F64_DIV
     || op == Op::F64_MIN || op == Op::F64_MAX || op == Op::F64_COPYSIGN
     // f64 comparisons
     || op == Op::F64_LT || op == Op::F64_GT || op == Op::F64_LE || op == Op::F64_GE
@@ -471,7 +1431,7 @@ fn write_blocktype(body: &mut Vec<u8>, params: u8, results: u8, type_ctx: &WasmT
 
 pub fn encode_code_section(
     chunks: &[Chunk],
-    host_imports: &[Import],
+    host_imports: &[HostImport],
     rt_imports: &[(&str, &str)],
     type_ctx: &WasmTypeContext,
     tag_plan: &crate::writer::proposals::exception_handling::ModuleTagPlan,
@@ -487,13 +1447,33 @@ pub fn encode_code_section(
     }
 
     let mut out = Vec::new();
-    write_leb128_u32(&mut out, chunks.len() as u32);
+    write_leb128_u32(
+        &mut out,
+        chunks.len() as u32
+            + 2 * u32::from(type_ctx.native_resume_function_idx.is_some())
+            + type_ctx.generators.len() as u32
+            + u32::from(type_ctx.source_entry.is_some()),
+    );
 
     for (ci, chunk) in chunks.iter().enumerate() {
         let mut body = Vec::new();
+        let raw_numeric = raw_numeric_body(chunk, type_ctx);
+        let declared_calls = DeclaredCallPlan::new(chunk, type_ctx, raw_numeric.is_some());
+        let i32_regions = SourceI32Regions::new(chunk, &chunks[0], type_ctx, &host_import_map);
+        let native_args = native_direct_args(chunk);
+        let raw_i32_branch_offsets = i32_branch_consumers(chunk);
+        let raw_i32_branches = &raw_i32_branch_offsets;
+        let forwarded_types = raw_numeric
+            .as_ref()
+            .map(|body| body.local_types.clone())
+            .unwrap_or_else(|| forwarded_numeric_local_types(chunk));
 
         // Check how many temp locals we need for stack manipulation
-        let temp_count = count_temp_locals(chunk);
+        let (temp_count, _) = if raw_numeric.is_some() {
+            (0, 0)
+        } else {
+            count_temp_locals(chunk)
+        };
         let has_temp = temp_count > 0;
         // WAST chunks can have a declared signature different from internal arity.
         let wasm_params = wasm_param_count(chunk);
@@ -507,7 +1487,28 @@ pub fn encode_code_section(
 
         // Locals declaration (only declare locals beyond params) — grouped by
         // type, because `i64_locals` makes them heterogeneous.
-        write_locals_prefix(&mut body, chunk);
+        write_locals_prefix_with_plan(&mut body, chunk, type_ctx, &declared_calls);
+        let locals_prefix_len = body.len();
+        if ci == 0 {
+            super::callable::initialize_aliases(
+                &mut body,
+                chunks,
+                &type_ctx.callables,
+                temp_local_idx,
+            );
+        }
+        if let Some(e) = type_ctx.generators.iter().find(|e| e.chunk_index == ci) {
+            // Actual entry control is not necessarily arity-1 after the compiler
+            // reserves its environment. Copy incoming control before captures.
+            super::callable::local(&mut body, 0x20, u32::from(e.user_arity));
+            super::callable::local(&mut body, 0x21, u32::from(e.control_slot));
+        }
+        super::callable::initialize_cells(
+            &mut body,
+            chunk,
+            &type_ctx.callables,
+            total_temp_locals(chunk),
+        );
 
         // Structured control flow: the compiler now emits BLOCK/LOOP/END/BR/BR_IF.
         // The WASM emitter just passes them through — no relooper needed.
@@ -531,6 +1532,11 @@ pub fn encode_code_section(
         let mut pending_externref_on_stack = false;
         let mut drop_carried_after_bytecode_drop: Option<usize> = None;
         let carried_struct_sets = carried_local_tee_struct_sets(chunk);
+        let native_next = native_next_regions(chunk);
+        let native_direct = native_direct_resumes(chunk);
+        let native_growable = native_growable_arrays(chunk);
+        let native_cont_local = temp_local_idx + temp_count + count_temp_locals(chunk).1;
+
         while ip < chunk.code.len() {
             if ip + 3 >= chunk.code.len() {
                 break;
@@ -545,6 +1551,114 @@ pub fn encode_code_section(
                     continue;
                 }
             };
+            if native_growable.contains(&ip) {
+                assert_eq!(op,Op::ARRAY_NEW_FIXED,"growable producer opcode");
+                assert_eq!(read_u16_at(&chunk.code,ip+4),0,"private generic array");
+                assert_eq!(read_u16_at(&chunk.code,ip+6),0,"private empty growable buffer");
+                body.push(0x41); write_leb128_i32(&mut body,0);
+                emit_import_call(&mut body,&rt_idx,"ecma:array","newWithLength");
+                ip+=8;continue;
+            }
+            // The shared compiler appends `ref.null extern; return` as a
+            // fallthrough safety net. A core function with a numeric result
+            // cannot return that ref, even when an earlier return is reached.
+            if op == Op::NULL
+                && chunk.func_sig.as_ref().is_some_and(|(_, result)| {
+                    let mut results = result.split(',').filter(|ty| !ty.trim().is_empty());
+                    results.clone().next().is_some()
+                        && results.all(|ty| matches!(ty.trim(), "i32" | "i64" | "f32" | "f64"))
+                })
+                && chunk.code.get(ip + 4).copied() == Some(HT_EXTERN)
+                && next_op(chunk, ip + 5) == Some(Op::RETURN)
+                && ip + 9 == chunk.code.len()
+            {
+                body.push(0x00); // unreachable
+                break;
+            }
+            // Close the native-only yield landing; retain the transferred
+            // continuation in the same carrier before executing the VM yield arm.
+            if let Some(next) = native_next.iter().find(|n| n.handler == ip) {
+                body.push(0x0b);
+                body.push(0x21);
+                write_leb128_u32(&mut body, native_cont_local);
+                body.push(0x20);
+                write_leb128_u32(&mut body, next.slot as u32);
+                emit_cont_carrier_cast(&mut body, type_ctx);
+                body.push(0x20);
+                write_leb128_u32(&mut body, native_cont_local);
+                body.push(0xfb);
+                write_leb128_u32(&mut body, 5);
+                write_leb128_u32(&mut body, type_ctx.continuation_carrier_type_idx);
+                write_leb128_u32(&mut body, 0);
+            }
+            if native_next.iter().any(|n| n.operands == ip) {
+                body.push(0x02);
+                write_leb128_i64(&mut body, type_ctx.continuation_landing_type_idx as i64);
+            }
+            if let Some(next) = native_next
+                .iter()
+                .find(|n| n.done_get == ip || n.completion_get == ip)
+            {
+                body.push(0x20);
+                write_leb128_u32(&mut body, next.slot as u32);
+                emit_cont_carrier_field(&mut body, type_ctx, 1);
+                ip += 6;
+                continue;
+            }
+            if native_next.iter().any(|n| n.completion_br == ip) {
+                body.push(0x0c);
+                write_leb128_u32(&mut body, 1);
+                ip += opcode_size(op, &chunk.code, ip);
+                continue;
+            }
+            if let Some(_next) = native_next.iter().find(|n| n.resume == ip) {
+                // VM [carrier, value] -> native [value, typed continuation].
+                body.push(0x21);
+                write_leb128_u32(&mut body, temp_local_idx + 1);
+                body.push(0x21);
+                write_leb128_u32(&mut body, temp_local_idx);
+                body.push(0x20);write_leb128_u32(&mut body,temp_local_idx);
+                body.push(0x20);write_leb128_u32(&mut body,temp_local_idx+1);
+                body.push(0x10);write_leb128_u32(&mut body,type_ctx.native_carrier_resume_function_idx.expect("carrier service"));
+                // Yield branches with [payload,new cont]. Completion drops
+                // null cont and executes the original completion side effects.
+                body.push(0x22);
+                write_leb128_u32(&mut body, native_cont_local);
+                body.push(0x20);
+                write_leb128_u32(&mut body, native_cont_local);
+                body.push(0xd1);
+                body.push(0x45);
+                body.push(0x0d);
+                write_leb128_u32(&mut body, 0);
+                body.push(0x1a);
+                ip += 6;
+                continue;
+            }
+            if native_direct.contains(&ip) {
+                // The raw VM resume producer has no branch handlers. Preserve
+                // its one-result contract while replacing the carrier's own
+                // continuation after either suspension or completion.
+                body.push(0x21);
+                write_leb128_u32(&mut body, temp_local_idx + 1);
+                body.push(0x21);
+                write_leb128_u32(&mut body, temp_local_idx);
+                body.push(0x20);write_leb128_u32(&mut body,temp_local_idx);
+                body.push(0x20);write_leb128_u32(&mut body,temp_local_idx+1);
+                body.push(0x10);write_leb128_u32(&mut body,type_ctx.native_carrier_resume_function_idx.expect("carrier service"));
+                body.push(0x21);
+                write_leb128_u32(&mut body, native_cont_local);
+                body.push(0x20);
+                write_leb128_u32(&mut body, temp_local_idx);
+                emit_cont_carrier_cast(&mut body, type_ctx);
+                body.push(0x20);
+                write_leb128_u32(&mut body, native_cont_local);
+                body.push(0xfb);
+                write_leb128_u32(&mut body, 5);
+                write_leb128_u32(&mut body, type_ctx.continuation_carrier_type_idx);
+                write_leb128_u32(&mut body, 0);
+                ip += 6;
+                continue;
+            }
             if pending_externref_spilled_after_end
                 && (op != Op::END || block_result_stack.last().copied().unwrap_or(0) != 0)
             {
@@ -582,8 +1696,7 @@ pub fn encode_code_section(
                     &rt_idx,
                     chunk,
                     ip,
-                    i32_block_stack.last().copied().unwrap_or(false),
-                );
+                    i32_block_stack.last().copied().unwrap_or(false), raw_i32_branches);
                 pending_i32_box_after_end = false;
             }
 
@@ -632,6 +1745,9 @@ pub fn encode_code_section(
                 // opcode(4) + params(1) + results(1) + clause_count(2)
                 //   + N·[kind, tag(2), label(2)]
                 ip += 8 + clause_count * 5;
+                i32_block_stack.push(false);
+                block_result_stack.push(results);
+                else_branch_stack.push(false);
                 continue;
             }
             // The `end` closing a try_table and the success-path `br` that
@@ -738,13 +1854,16 @@ pub fn encode_code_section(
                     chunks,
                     &rt_idx,
                     temp_local_idx,
+                    temp_local_idx + temp_count,
                     has_temp,
                     type_ctx,
                     &host_import_map,
                     tag_plan,
                     in_i32_block,
                     current_block_results,
-                );
+                    &forwarded_types,
+                    raw_numeric.as_ref(),
+                    &native_args, raw_i32_branches, &declared_calls, &i32_regions);
                 if op == Op::DROP && drop_carried_after_bytecode_drop == Some(op_start) {
                     body.push(0x1A);
                     drop_carried_after_bytecode_drop = None;
@@ -760,8 +1879,10 @@ pub fn encode_code_section(
                     &rt_idx,
                     type_ctx,
                     temp_local_idx,
-                    in_i32_block,
-                );
+                    in_i32_block, raw_i32_branches, i32_regions.value_strings.contains(&op_start));
+            } else if raw_numeric.is_some() && raw_scalar_shape(op).is_some() {
+                body.push(op.group() as u8);
+                write_leb128_u32(&mut body, op.sub() as u32);
             } else if op == Op::I32_TRUNC_SAT_F64_S || op == Op::I32_TRUNC_SAT_F64_U {
                 // Saturating conversion has the same boxed value boundary as
                 // ordinary f64-to-i32 truncation. Serializing only the 0xFC
@@ -769,11 +1890,56 @@ pub fn encode_code_section(
                 emit_unbox_f64(&mut body, &rt_idx);
                 body.push(op.group() as u8);
                 write_leb128_u32(&mut body, op.sub() as u32);
-                box_i32_unless_condition(&mut body, &rt_idx, chunk, ip, in_i32_block);
+                box_i32_unless_condition(&mut body, &rt_idx, chunk, ip, in_i32_block, raw_i32_branches);
             } else if op.group() == 0xFC {
                 // 0xFC-prefix ops per the bulk-memory / reference-types spec
                 // need specific trailing immediates that aren't captured by
                 // our `operand_format` in bytecode. Translate each case.
+                let boxed_table_growth = op == Op::TABLE_GROW && raw_numeric.is_none()
+                    && super::callable::source(chunk);
+                if boxed_table_growth {
+                    // Source callables are externref carriers; table 0 stores funcrefs.
+                    super::callable::local(&mut body, 0x21, temp_local_idx);
+                    super::callable::local(&mut body, 0x22, temp_local_idx + 1);
+                    body.push(0xd1); // ref.is_null
+                    body.extend_from_slice(&[0x04, 0x70]); // if (result funcref)
+                    super::callable::null(&mut body, -16);
+                    body.push(0x05);
+                    super::callable::local(&mut body, 0x20, temp_local_idx + 1);
+                    super::callable::internal(&mut body, type_ctx.callables.carrier);
+                    super::callable::field(&mut body, 2, type_ctx.callables.carrier, 0);
+                    body.push(0x0b);
+                    super::callable::local(&mut body, 0x20, temp_local_idx);
+                    emit_unbox_i32(&mut body, &rt_idx);
+                }
+                if raw_numeric.is_none()
+                    && matches!(op, Op::MEMORY_COPY | Op::MEMORY_INIT | Op::MEMORY_FILL | Op::TABLE_COPY | Op::TABLE_INIT) {
+                    let (dst_64, middle_64, length_64) = bulk_memory_operand_widths(chunk, op, ip, Some(type_ctx));
+                    let i64_temp = temp_local_idx + temp_count;
+                    let middle_temp = if middle_64 { i64_temp } else { temp_local_idx };
+                    let length_temp = if length_64 {
+                        i64_temp + middle_64 as u32
+                    } else {
+                        temp_local_idx + 1
+                    };
+                    body.push(0x21); // local.set length
+                    write_leb128_u32(&mut body, length_temp);
+                    body.push(0x21); // local.set source or fill value
+                    write_leb128_u32(&mut body, middle_temp);
+                    if !dst_64 {
+                        emit_unbox_i32(&mut body, &rt_idx);
+                    }
+                    body.push(0x20); // local.get source or fill value
+                    write_leb128_u32(&mut body, middle_temp);
+                    if !middle_64 {
+                        emit_unbox_i32(&mut body, &rt_idx);
+                    }
+                    body.push(0x20); // local.get length
+                    write_leb128_u32(&mut body, length_temp);
+                    if !length_64 {
+                        emit_unbox_i32(&mut body, &rt_idx);
+                    }
+                }
                 body.push(op.group() as u8);
                 write_leb128_u32(&mut body, op.sub() as u32);
                 match op {
@@ -831,8 +1997,26 @@ pub fn encode_code_section(
                         );
                     }
                 }
+                if boxed_table_growth {
+                    box_i32_unless_condition(&mut body, &rt_idx, chunk, ip, in_i32_block, raw_i32_branches);
+                }
             } else if op.group() == 0xFD {
+                if raw_numeric.is_none() && matches!(op, Op::I8X16_SPLAT | Op::I8X16_SHR_U) {
+                    emit_unbox_i32(&mut body, &rt_idx);
+                }
+                // Mixed Value bodies box scalar operands; this standard SIMD
+                // island keeps v128 operands raw. Restrict the address bridge
+                // to the exact proven memory32 memarg.
+                if raw_numeric.is_none() && matches!(op, Op::V128_LOAD | Op::V128_LOAD32_ZERO)
+                    && chunk.code.get(ip..ip + 3) == Some(&[0x80, 0x01, 0][..])
+                    && !chunk.memory_is_64.first().copied().unwrap_or(false)
+                {
+                    emit_unbox_i32(&mut body, &rt_idx);
+                }
                 emit_simd_prefixed_op(&mut body, op, chunk, &mut ip);
+                if raw_numeric.is_none() && op == Op::I8X16_BITMASK {
+                    box_i32_unless_condition(&mut body, &rt_idx, chunk, ip, in_i32_block, raw_i32_branches);
+                }
             } else if op.group() == 0xFE {
                 emit_thread_prefixed_op(
                     &mut body,
@@ -841,14 +2025,18 @@ pub fn encode_code_section(
                     &mut ip,
                     &rt_idx,
                     temp_local_idx,
+                    temp_local_idx + temp_count,
                     in_i32_block,
-                );
+                    raw_numeric.is_some(), raw_i32_branches);
             } else {
                 emit_vm_internal_op(&mut body, op, chunk, &mut ip);
             }
 
+            let parent_keeps_raw_arm = i32_block_stack.last().copied().unwrap_or(false)
+                || block_result_stack.last().copied().unwrap_or(0) == 0;
             if closed_i32_region
-                && !matches!(next_op(chunk, ip), Some(next) if next == Op::ELSE || (next == Op::END && current_else_branch))
+                && !(parent_keeps_raw_arm
+                    && matches!(next_op(chunk, ip), Some(next) if next == Op::ELSE || (next == Op::END && current_else_branch)))
             {
                 if matches!(next_op(chunk, ip), Some(next) if next == Op::END)
                     && i32_block_stack.last().copied().unwrap_or(false)
@@ -861,8 +2049,7 @@ pub fn encode_code_section(
                         &rt_idx,
                         chunk,
                         ip,
-                        i32_block_stack.last().copied().unwrap_or(false),
-                    );
+                        i32_block_stack.last().copied().unwrap_or(false), raw_i32_branches);
                     if matches!(next_op(chunk, ip), Some(next) if next == Op::END) {
                         if block_result_stack.last().copied().unwrap_or(0) == 0 {
                             body.push(0x21); // local.set $temp
@@ -900,9 +2087,66 @@ pub fn encode_code_section(
         }
 
         body.push(0x0B); // end function
-
+        let mut native = body[..locals_prefix_len].to_vec();
+        native.extend(super::callable::remap_locals(
+            &body[locals_prefix_len..],
+            chunk,
+            total_temp_locals(chunk),
+            &type_ctx.callables,
+        ));
+        let body = native;
         write_leb128_u32(&mut out, body.len() as u32);
         out.extend_from_slice(&body);
+    }
+    if type_ctx.native_resume_function_idx.is_some() {
+        // One ordinary module-local function, no binding/table slot/host hook.
+        // Raw resume is kept separate from GC carrier mutation.
+        let mut body = vec![0, 0x02];
+        write_leb128_i64(&mut body, type_ctx.continuation_landing_type_idx as i64);
+        body.extend_from_slice(&[0x20, 0, 0x20, 1, 0xe3]);
+        write_leb128_u32(&mut body, type_ctx.continuation_type_idx);
+        write_leb128_u32(&mut body, 1);
+        body.push(0);
+        write_leb128_u32(&mut body, 1);
+        write_leb128_u32(&mut body, 0);
+        body.push(0xd0);
+        write_leb128_i64(&mut body, type_ctx.continuation_type_idx as i64);
+        body.extend_from_slice(&[0x0b, 0x0b]);
+        write_leb128_u32(&mut out, body.len() as u32);
+        out.extend_from_slice(&body);
+    }
+    if type_ctx.native_carrier_resume_function_idx.is_some() {
+        let mut body=vec![1,1,0x69]; // one exnref local2
+        body.extend([0x02,0x69]); // exceptional landing has one exnref result
+        body.push(0x1f);write_leb128_i64(&mut body,type_ctx.continuation_landing_type_idx as i64);
+        body.extend([1,3,0]); // catch_all_ref to surrounding exception landing
+        body.extend([0x20,1,0x20,0]);emit_cont_carrier_field(&mut body,type_ctx,0);
+        body.extend([0x20,0]);emit_cont_carrier_field(&mut body,type_ctx,2);
+        body.push(0xfb);write_leb128_u32(&mut body,0x16);write_leb128_i64(&mut body,type_ctx.native_resume_type_idx as i64);
+        body.push(0x14);write_leb128_u32(&mut body,type_ctx.native_resume_type_idx);
+        body.extend([0x0b,0x0f,0x0b,0x21,2]); // normal returns; catch saves exact exnref
+        body.extend([0x20,0]);emit_cont_carrier_cast(&mut body,type_ctx);
+        body.push(0xd0);write_leb128_i64(&mut body,type_ctx.continuation_type_idx as i64);
+        body.push(0xfb);write_leb128_u32(&mut body,5);write_leb128_u32(&mut body,type_ctx.continuation_carrier_type_idx);write_leb128_u32(&mut body,0);
+        body.extend([0x20,2,0x0a,0x0b]); // throw_ref, preserving JS/native exception identity
+        write_leb128_u32(&mut out,body.len() as u32);out.extend(body);
+    }
+    for e in &type_ctx.generators {
+        let body = super::generator_construct::body(e, chunks, type_ctx, &rt_idx);
+        write_leb128_u32(&mut out, body.len() as u32);
+        out.extend(body);
+    }
+    if let Some((target, _, _, results)) = type_ctx.source_entry {
+        // Source functions have a native-only capture parameter. A top-level
+        // entry has no enclosing frame, so it receives null captures.
+        let mut body = vec![0];
+        super::callable::null(&mut body, -17);
+        body.push(0x10);
+        write_leb128_u32(&mut body, target);
+        body.extend(std::iter::repeat_n(0x1a, usize::from(results)));
+        body.push(0x0b);
+        write_leb128_u32(&mut out, body.len() as u32);
+        out.extend(body);
     }
     out
 }
@@ -920,19 +2164,145 @@ fn emit_core_op(
     all_chunks: &[Chunk],
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
     temp_idx: u32,
+    i64_temp_idx: u32,
     _has_temp: bool,
     type_ctx: &WasmTypeContext,
-    host_import_map: &std::collections::HashMap<(String, String), usize>,
+    host_import_map: &std::collections::HashMap<(String, String, Option<u8>), usize>,
     tag_plan: &crate::writer::proposals::exception_handling::ModuleTagPlan,
     in_i32_block: bool,
     current_block_results: u8,
+    forwarded_types: &[Option<u8>],
+    raw_numeric: Option<&RawNumericBody>,
+    native_args: &NativeDirectArgs,
+    raw_i32_branches: &std::collections::HashSet<usize>,
+    declared_calls: &DeclaredCallPlan,
+    i32_regions: &SourceI32Regions,
 ) {
+    if let Some(edge) = chunk.direct_defined_calls.get(&op_start) {
+        assert!(matches!(op,Op::CALL|Op::RETURN_CALL));
+        let callee = all_chunks.get(edge.target as usize).expect("direct defined target");
+        assert!(callee.direct_entry_has_captures!=Some(true) && (callee.capture_count==0 || callee.direct_entry_has_captures==Some(false)),"direct capture environment requires explicit adapter");
+        assert!(!callee.is_async && !callee.is_generator);
+        let signature = callee.func_sig.clone().unwrap_or_else(||(
+            vec!["externref";callee.arity as usize].join(","),
+            vec!["externref";callee.result_arity as usize].join(",")));
+        assert_eq!(signature,(edge.params.clone(),edge.results.clone()));
+        assert_eq!(edge.source,callee.func_sig.is_none());
+        let (base,types) = declared_calls.slots(op_start).expect("direct typed locals");
+        let argc=edge.params.split(',').filter(|s|!s.is_empty()).count();
+        *ip=op_start+if op==Op::CALL {7}else{6};
+        for i in (0..argc).rev() {
+            match types[i] {
+                _ if native_args.calls.contains(&op_start) => {},
+                TYPE_I32 if !in_i32_block => emit_unbox_i32(body,rt_idx),
+                TYPE_F32 => emit_unbox_f32(body,rt_idx),
+                TYPE_F64 => emit_unbox_f64(body,rt_idx),
+                _=>{},
+            }
+            body.push(0x21);write_leb128_u32(body,base+i as u32);
+        }
+        if edge.source {
+            // Source native entries take one hidden captures array before raw
+            // formals. Capture-free direct entry supplies standard typed null.
+            // The actual Source entry formal is externref. The callee
+            // converts a non-null environment to its captures GC array.
+            super::callable::null(body,-17);
+        }
+        for i in 0..argc {body.push(0x20);write_leb128_u32(body,base+i as u32);}
+        body.push(if op==Op::RETURN_CALL {0x12}else{0x10});
+        write_leb128_u32(body,type_ctx.callables.targets[edge.target as usize]);
+        if op==Op::CALL {
+            let output=&types[argc..];
+            // Typed standard callers returning directly retain raw results.
+            // Other value-ABI consumers get the normal number boxes.
+            let retain_raw= !super::callable::source(chunk) && next_op(chunk,*ip)==Some(Op::RETURN);
+            if !retain_raw {
+                for (i,_) in output.iter().enumerate().rev() {
+                    body.push(0x21);write_leb128_u32(body,base+argc as u32+i as u32);
+                }
+                for (i,ty) in output.iter().enumerate() {
+                    body.push(0x20);write_leb128_u32(body,base+argc as u32+i as u32);
+                    match *ty {
+                        TYPE_I32 => box_i32_unless_condition(body,rt_idx,chunk,*ip,in_i32_block, raw_i32_branches),
+                        TYPE_F32 => emit_box_f32(body,rt_idx),
+                        TYPE_F64 => emit_box_f64(body,rt_idx),
+                        _=>{},
+                    }
+                }
+            }
+        }
+        return;
+    }
+    if raw_numeric.is_some() && raw_scalar_shape(op).is_some() {
+        body.push(op.sub() as u8);
+        return;
+    }
+    if let Some(inputs) = i32_regions.inputs(&op_start) {
+        match inputs {
+            [raw] => {
+                if !raw { emit_unbox_i32(body, rt_idx); }
+                body.push(op.sub() as u8);
+            }
+            [true, raw] => {
+                if !raw { emit_unbox_i32(body, rt_idx); }
+                body.push(op.sub() as u8);
+            }
+            [false, raw] => {
+                // A computed RHS must finish before the left conversion can
+                // trap. Rejoin the ordinary boxed binary bridge in this case.
+                if *raw { emit_box_i32(body, rt_idx); }
+                emit_binary_i32_op(false, body, op.sub() as u8, rt_idx, temp_idx);
+            }
+            _ => unreachable!("i32 operator arity"),
+        }
+        if !i32_regions.is_raw(&op_start) {
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+        }
+        return;
+    }
     match op {
         _ if op == Op::LOCAL_GET => {
+            let slot = read_u16(&chunk.code, ip);
+            if super::callable::source(chunk)
+                && let Some(cell) = super::callable::cell_slot(chunk, &type_ctx.callables, slot)
+            {
+                super::callable::local(body, 0x20, cell);
+                super::callable::internal(body, type_ctx.callables.cell);
+                super::callable::field(body, 2, type_ctx.callables.cell, 0);
+                if i32_condition_follows(chunk, *ip) || raw_i32_branches.contains(&*ip) {
+                    emit_unbox_i32(body, rt_idx);
+                }
+                return;
+            }
             body.push(op.sub() as u8);
-            write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
-            if i32_condition_follows(chunk, *ip) {
+            write_leb128_u32(body, slot as u32);
+            let numeric_param = boxed_numeric_param_type(chunk, slot, forwarded_types);
+            let raw_i32_consumer = (i32_condition_follows(chunk, *ip) || raw_i32_branches.contains(&*ip)) || native_args.producers.get(&op_start) == Some(&TYPE_I32);
+            let raw_f32_consumer = native_f32_return_follows(chunk, *ip) || native_args.producers.get(&op_start) == Some(&TYPE_F32);
+            let raw_f64_consumer = native_f64_return_follows(chunk, *ip) || native_args.producers.get(&op_start) == Some(&TYPE_F64);
+            match numeric_param {
+                Some(TYPE_I32) if !raw_i32_consumer => emit_box_i32(body, rt_idx),
+                Some(TYPE_F32) if !raw_f32_consumer => emit_box_f32(body, rt_idx),
+                Some(TYPE_F64) if !raw_f64_consumer => emit_box_f64(body, rt_idx),
+                _ => {}
+            }
+            if numeric_param.is_none()
+                && forwarded_types.get(slot as usize).copied().flatten() != Some(TYPE_I32)
+                && raw_i32_consumer
+            {
                 emit_unbox_i32(body, rt_idx);
+            }
+            if numeric_param.is_none()
+                && forwarded_types.get(slot as usize).copied().flatten() != Some(TYPE_F32)
+                && raw_f32_consumer
+            {
+                emit_unbox_f32(body, rt_idx);
+            }
+            if numeric_param.is_none()
+                && forwarded_types.get(slot as usize).copied().flatten() != Some(TYPE_F64)
+                && raw_f64_consumer
+            {
+                emit_unbox_f64(body, rt_idx);
             }
         }
         _ if op == Op::LOCAL_SET => {
@@ -945,8 +2315,25 @@ fn emit_core_op(
             // ("values remaining on stack at end of block") — never at the
             // instruction that caused it. The VM could not see it: it runs
             // Chunks, and in the Chunks the set really does pop.
+            let slot = read_u16(&chunk.code, ip);
+            if super::callable::source(chunk)
+                && let Some(cell) = super::callable::cell_slot(chunk, &type_ctx.callables, slot)
+            {
+                super::callable::local(body, 0x21, slot as u32);
+                super::callable::local(body, 0x20, cell);
+                super::callable::internal(body, type_ctx.callables.cell);
+                super::callable::local(body, 0x20, slot as u32);
+                super::callable::field(body, 5, type_ctx.callables.cell, 0);
+                return;
+            }
+            match boxed_numeric_param_type(chunk, slot, forwarded_types) {
+                Some(TYPE_I32) => emit_unbox_i32(body, rt_idx),
+                Some(TYPE_F32) => emit_unbox_f32(body, rt_idx),
+                Some(TYPE_F64) => emit_unbox_f64(body, rt_idx),
+                _ => {}
+            }
             body.push(0x21);
-            write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
+            write_leb128_u32(body, slot as u32);
         }
         // ⛔⛔ `local.tee` HAD NO ARM AT ALL and fell through to the catch-all,
         // which pushes the opcode byte and DISCARDS the operand. The emitted
@@ -967,6 +2354,20 @@ fn emit_core_op(
         // not.
         _ if op == Op::LOCAL_TEE => {
             let slot = read_u16(&chunk.code, ip) as u32;
+            if super::callable::source(chunk)
+                && let Some(cell) =
+                    super::callable::cell_slot(chunk, &type_ctx.callables, slot as u16)
+            {
+                super::callable::local(body, 0x22, slot);
+                super::callable::local(body, 0x20, cell);
+                super::callable::internal(body, type_ctx.callables.cell);
+                super::callable::local(body, 0x20, slot);
+                super::callable::field(body, 5, type_ctx.callables.cell, 0);
+                if i32_condition_follows(chunk, *ip) || raw_i32_branches.contains(&*ip) {
+                    emit_unbox_i32(body, rt_idx);
+                }
+                return;
+            }
             if current_block_results == 0
                 && let Some(consumed) = dup_drop_before_void_boundary(chunk, *ip, slot as u16)
             {
@@ -978,10 +2379,33 @@ fn emit_core_op(
                 *ip += consumed;
                 return;
             }
+            let numeric_param = boxed_numeric_param_type(chunk, slot as u16, forwarded_types);
+            match numeric_param {
+                Some(TYPE_I32) => emit_unbox_i32(body, rt_idx),
+                Some(TYPE_F32) => emit_unbox_f32(body, rt_idx),
+                Some(TYPE_F64) => emit_unbox_f64(body, rt_idx),
+                _ => {}
+            }
             body.push(0x22);
             write_leb128_u32(body, slot);
-            if i32_condition_follows(chunk, *ip) {
+            match numeric_param {
+                Some(TYPE_I32) if !(i32_condition_follows(chunk, *ip) || raw_i32_branches.contains(&*ip)) => emit_box_i32(body, rt_idx),
+                Some(TYPE_F32) if !native_f32_return_follows(chunk, *ip) => {
+                    emit_box_f32(body, rt_idx)
+                }
+                Some(TYPE_F64) if !native_f64_return_follows(chunk, *ip) => {
+                    emit_box_f64(body, rt_idx)
+                }
+                _ => {}
+            }
+            if numeric_param.is_none() && (i32_condition_follows(chunk, *ip) || raw_i32_branches.contains(&*ip)) {
                 emit_unbox_i32(body, rt_idx);
+            }
+            if numeric_param.is_none() && native_f32_return_follows(chunk, *ip) {
+                emit_unbox_f32(body, rt_idx);
+            }
+            if numeric_param.is_none() && native_f64_return_follows(chunk, *ip) {
+                emit_unbox_f64(body, rt_idx);
             }
         }
         // Spec `call`: u16 funcidx + VM-internal u8 argc. The argc byte is
@@ -995,9 +2419,13 @@ fn emit_core_op(
             let module_funcidx = chunk
                 .imports
                 .get(funcidx as usize)
+                .or_else(|| all_chunks.first()?.imports.get(funcidx as usize))
                 .and_then(|import| {
                     host_import_map
-                        .get(&(import.module.clone(), import.name.clone()))
+                        .get(&(import.module.clone(), import.name.clone(), Some(argc)))
+                        .or_else(|| {
+                            host_import_map.get(&(import.module.clone(), import.name.clone(), None))
+                        })
                         .copied()
                 })
                 .unwrap_or(funcidx as usize) as u32;
@@ -1013,7 +2441,7 @@ fn emit_core_op(
             // does want the raw i32.
             match type_ctx.raw_result_funcs.get(&module_funcidx) {
                 Some(&crate::encoding::TYPE_I32) => {
-                    box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block)
+                    box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches)
                 }
                 // ⛔ f64 RESULTS NEED IT TOO. `wasm:js-number.toF64` really
                 // returns f64, and the truthiness ladder stores that straight
@@ -1021,7 +2449,13 @@ fn emit_core_op(
                 // like every other. Boxing here is what keeps the ladder's
                 // `f64.ne` reachable through `emit_binary_f64_cmp`, which
                 // unboxes its operands anyway.
-                Some(&crate::encoding::TYPE_F64) => emit_box_f64(body, rt_idx),
+                Some(&crate::encoding::TYPE_F64) if !native_f64_return_follows(chunk, *ip) => {
+                    emit_box_f64(body, rt_idx)
+                }
+                Some(&crate::encoding::TYPE_F32) if !native_f32_return_follows(chunk, *ip) => {
+                    body.push(0xBB); // f64.promote_f32
+                    emit_box_f64(body, rt_idx);
+                }
                 _ => {}
             }
             if matches!(type_ctx.func_result_arity.get(&module_funcidx), Some(0)) {
@@ -1048,6 +2482,54 @@ fn emit_core_op(
             *ip += 1;
             let results = chunk.code[*ip];
             *ip += 1;
+            if is_ref_call && let Some((base, params)) = declared_calls.slots(op_start) {
+                // Numeric bytecode producers use the established boxed-number
+                // ABI (except i64 and explicitly raw i32 result regions).
+                for (i, ty) in params.iter().enumerate().rev() {
+                    match *ty {
+                        TYPE_I32 if !in_i32_block => emit_unbox_i32(body, rt_idx),
+                        TYPE_F32 => emit_unbox_f32(body, rt_idx),
+                        TYPE_F64 => emit_unbox_f64(body, rt_idx),
+                        _ => {}
+                    }
+                    body.push(0x21);
+                    write_leb128_u32(body, base + i as u32);
+                }
+                body.push(0x21);
+                write_leb128_u32(body, base + u32::from(argc));
+                for i in 0..u32::from(argc) {
+                    body.push(0x20);
+                    write_leb128_u32(body, base + i);
+                }
+                body.push(0x20);
+                write_leb128_u32(body, base + u32::from(argc));
+                let signature = &chunk.call_indirect_sigs[&op_start];
+                let type_idx = type_ctx.func_type_by_signature[signature];
+                body.push(0xfb);
+                write_leb128_u32(body, 0x16);
+                write_leb128_i32(body, type_idx as i32);
+                body.push(spec_byte);
+                write_leb128_u32(body, type_idx);
+                if op == Op::CALL_REF {
+                    let (_, result) = signature.split_once("->").unwrap();
+                    let returns = result
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>();
+                    if returns.len() == 1 && next_op(chunk, *ip) != Some(Op::RETURN) {
+                        match returns[0] {
+                            "i32" => {
+                                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches)
+                            }
+                            "f32" => emit_box_f32(body, rt_idx),
+                            "f64" => emit_box_f64(body, rt_idx),
+                            _ => {}
+                        }
+                    }
+                }
+                return;
+            }
             // Stack: [externref_funcref, arg1, ..., argN] — funcref is below args
             // call_ref needs: [arg1, ..., argN, funcref].
             // call_indirect needs: [arg1, ..., argN, i32_table_idx].
@@ -1062,56 +2544,154 @@ fn emit_core_op(
             // 2. Save funcref
             body.push(0x21);
             write_leb128_u32(body, temp_idx + argc as u32);
-            // 3. Restore user args
-            for i in 0..argc {
-                body.push(0x20);
-                write_leb128_u32(body, temp_idx + i as u32);
-            }
-            // 4. Push callee in the spec operand position.
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + argc as u32);
-            // 5. call_indirect / return_call_indirect with the EXACT
-            // functype (argc externrefs -> results externrefs, from the
-            // op's own immediates); first-seen-arity is the fallback for
-            // pre-registry chunks.
-            // ⛔ DECLARED FUNCTYPE FIRST. The three immediates are counts, and
-            // a count cannot choose between two same-arity types — with real
-            // functypes emitted, `func_type_by_arity` (`.or_insert`, first seen
-            // wins) would hand an argc-1 call site whichever argc-1 type came
-            // first, and `call_indirect`'s immediate must EQUAL the callee's
-            // functype or a conforming engine traps. The side table carries the
-            // call site's own `(type $t)` / `(param…)(result…)`.
-            if let Some(&type_idx) = chunk
-                .call_indirect_sigs
-                .get(&op_start)
-                .and_then(|sig| type_ctx.func_type_by_signature.get(sig))
-                .or_else(|| type_ctx.block_type_by_results.get(&(argc, results)))
-                .or_else(|| type_ctx.func_type_by_arity.get(&argc))
-            {
-                emit_unbox_i32(body, rt_idx);
-                if is_ref_call {
-                    // The value ABI stores function references as boxed table
-                    // indices. Recover a typed funcref only at the call boundary;
-                    // raw funcrefs cannot be stored in externref spill locals.
-                    body.push(0x25); // table.get
-                    write_leb128_u32(body, 0);
-                    body.push(0xFB);
-                    write_leb128_u32(body, 0x16); // ref.cast (ref $signature)
-                    write_leb128_i32(body, type_idx as i32);
+            // A typed core caller can still invoke a boxed, generic helper.
+            // Callee signature metadata, not the caller's signature alone,
+            // determines whether the reference uses the callable carrier.
+            if is_ref_call && super::callable::uses_carrier_call(chunk, op_start) {
+                let callee = temp_idx + argc as u32;
+                // Caller-owned validation precedes all dispatch and callback invocation.
+                super::callable::local(body, 0x20, callee);
+                super::callable::internal(body, type_ctx.callables.carrier);
+                super::callable::field(body, 2, type_ctx.callables.carrier, 2);
+                super::callable::i32c(body, 0);
+                body.push(0x47);
+                body.push(0x04);
+                write_blocktype(body, 0, results, type_ctx);
+                super::callable::local(body, 0x20, callee);
+                super::callable::internal(body, type_ctx.callables.carrier);
+                super::callable::field(body, 2, type_ctx.callables.carrier, 3);
+                super::callable::null(body, -17);
+                for i in 0..argc {
+                    super::callable::local(body, 0x20, temp_idx + i as u32);
                 }
-                body.push(spec_byte);
-                write_leb128_u32(body, type_idx); // type index
-                if !is_ref_call {
-                    write_leb128_u32(body, 0); // table index 0
+                super::callable::typed(body, 8, type_ctx.array_type_idx);
+                write_leb128_u32(body, argc as u32);
+                super::callable::external(body);
+                let apply = rt_idx[&("ecma:function", "apply")];
+                if op == Op::RETURN_CALL_REF {
+                    body.push(0x12);
+                    write_leb128_u32(body, apply as u32);
+                } else {
+                    emit_import_call(body, rt_idx, "ecma:function", "apply");
+                    if results == 0 {
+                        body.push(0x1a);
+                    }
                 }
+                body.push(0x05);
+                if let Some(&tidx) = chunk
+                    .call_indirect_sigs
+                    .get(&op_start)
+                    .and_then(|sig| type_ctx.func_type_by_signature.get(sig))
+                {
+                    for i in 0..argc {
+                        super::callable::local(body, 0x20, temp_idx + i as u32);
+                    }
+                    super::callable::local(body, 0x20, callee);
+                    super::callable::internal(body, type_ctx.callables.carrier);
+                    super::callable::field(body, 2, type_ctx.callables.carrier, 0);
+                    super::callable::typed(body, 0x16, tidx);
+                    body.push(spec_byte);
+                    write_leb128_u32(body, tidx);
+                } else {
+                    let mut alternatives: Vec<u8> = type_ctx
+                        .callables
+                        .calls
+                        .keys()
+                        .filter_map(|&(n, r)| (r == results && n != argc).then_some(n))
+                        .collect();
+                    alternatives.sort();
+                    alternatives.dedup();
+                    let mut arities = vec![argc];
+                    arities.extend(alternatives);
+                    for &n in &arities {
+                        super::callable::local(body, 0x20, callee);
+                        super::callable::internal(body, type_ctx.callables.carrier);
+                        super::callable::field(body, 2, type_ctx.callables.carrier, 4);
+                        super::callable::i32c(body, n as i32);
+                        body.push(0x46);
+                        body.push(0x04);
+                        write_blocktype(body, 0, results, type_ctx);
+                        super::callable::local(body, 0x20, callee);
+                        super::callable::internal(body, type_ctx.callables.carrier);
+                        super::callable::field(body, 2, type_ctx.callables.carrier, 1);
+                        super::callable::external(body);
+                        for i in 0..n {
+                            if i < argc {
+                                super::callable::local(body, 0x20, temp_idx + i as u32);
+                            } else {
+                                body.push(0x23);
+                                write_leb128_u32(body, JS_GLOBAL_UNDEFINED);
+                            }
+                        }
+
+                        super::callable::local(body, 0x20, callee);
+                        super::callable::internal(body, type_ctx.callables.carrier);
+                        super::callable::field(body, 2, type_ctx.callables.carrier, 0);
+                        let tidx = type_ctx.callables.calls[&(n, results)];
+                        super::callable::typed(body, 0x16, tidx);
+                        body.push(spec_byte);
+                        write_leb128_u32(body, tidx);
+                        body.push(0x05);
+                    }
+                    // A foreign invalid carrier or undeclared arity cannot masquerade as a guest.
+                    body.push(0x00);
+                    for _ in arities {
+                        body.push(0x0b);
+                    }
+                }
+                body.push(0x0b);
             } else {
-                // No matching type — drop everything, push null.
-                body.push(0x1A); // drop funcref/table_idx source
-                for _ in 0..argc {
-                    body.push(0x1A);
+                // 3. Restore user args
+                for i in 0..argc {
+                    body.push(0x20);
+                    write_leb128_u32(body, temp_idx + i as u32);
                 }
-                body.push(0xD0);
-                body.push(0x6F);
+                // 4. Push callee in the spec operand position.
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + argc as u32);
+                // 5. call_indirect / return_call_indirect with the EXACT
+                // functype (argc externrefs -> results externrefs, from the
+                // op's own immediates); first-seen-arity is the fallback for
+                // pre-registry chunks.
+                // ⛔ DECLARED FUNCTYPE FIRST. The three immediates are counts, and
+                // a count cannot choose between two same-arity types — with real
+                // functypes emitted, `func_type_by_arity` (`.or_insert`, first seen
+                // wins) would hand an argc-1 call site whichever argc-1 type came
+                // first, and `call_indirect`'s immediate must EQUAL the callee's
+                // functype or a conforming engine traps. The side table carries the
+                // call site's own `(type $t)` / `(param…)(result…)`.
+                if let Some(&type_idx) = chunk
+                    .call_indirect_sigs
+                    .get(&op_start)
+                    .and_then(|sig| type_ctx.func_type_by_signature.get(sig))
+                    .or_else(|| type_ctx.block_type_by_results.get(&(argc, results)))
+                    .or_else(|| type_ctx.func_type_by_arity.get(&argc))
+                {
+                    if !is_ref_call {
+                        emit_unbox_i32(body, rt_idx);
+                    }
+                    if is_ref_call {
+                        // The value ABI stores function references as boxed table
+                        // indices. Recover a typed funcref only at the call boundary;
+                        // raw funcrefs cannot be stored in externref spill locals.
+                        body.push(0xFB);
+                        write_leb128_u32(body, 0x16); // ref.cast (ref $signature)
+                        write_leb128_i32(body, type_idx as i32);
+                    }
+                    body.push(spec_byte);
+                    write_leb128_u32(body, type_idx); // type index
+                    if !is_ref_call {
+                        write_leb128_u32(body, type_ctx.internal_callable_table);
+                    }
+                } else {
+                    // No matching type — drop everything, push null.
+                    body.push(0x1A); // drop funcref/table_idx source
+                    for _ in 0..argc {
+                        body.push(0x1A);
+                    }
+                    body.push(0xD0);
+                    body.push(0x6F);
+                }
             }
             if op == Op::CALL_REF
                 && results > 0
@@ -1135,6 +2715,65 @@ fn emit_core_op(
             // structural mismatch (traps in a conforming engine).
             let results = chunk.code[*ip];
             *ip += 1;
+            if raw_numeric.is_some() {
+                let signature = &chunk.call_indirect_sigs[&op_start];
+                body.push(spec_byte);
+                write_leb128_u32(body, type_ctx.func_type_by_signature[signature]);
+                write_leb128_u32(body, table_idx as u32);
+                return;
+            }
+            if let Some((base, types)) = declared_calls.slots(op_start) {
+                let argc = usize::from(argc);
+                let selector = base + types.len() as u32;
+                let address = type_ctx.table_operands.get(table_idx as usize)
+                    .map_or(TYPE_I32, |table| table.0);
+                if address == TYPE_I32 && !in_i32_block { emit_unbox_i32(body, rt_idx); }
+                body.push(0x21);
+                write_leb128_u32(body, selector);
+                for i in (0..argc).rev() {
+                    match types[i] {
+                        TYPE_I32 if !in_i32_block => emit_unbox_i32(body, rt_idx),
+                        TYPE_F32 => emit_unbox_f32(body, rt_idx),
+                        TYPE_F64 => emit_unbox_f64(body, rt_idx),
+                        _ => {},
+                    }
+                    body.push(0x21);
+                    write_leb128_u32(body, base + i as u32);
+                }
+                for i in 0..argc {
+                    body.push(0x20);
+                    write_leb128_u32(body, base + i as u32);
+                }
+                body.push(0x20);
+                write_leb128_u32(body, selector);
+                let signature = &chunk.call_indirect_sigs[&op_start];
+                let (_, returns) = signature.split_once("->").expect("declared indirect signature");
+                body.push(spec_byte);
+                write_leb128_u32(body, type_ctx.func_type_by_signature[signature]);
+                write_leb128_u32(body, table_idx as u32);
+                let direct_return = next_op(chunk, *ip) == Some(Op::RETURN)
+                    && chunk.func_sig.as_ref().is_some_and(|(_, result)| result == returns);
+                if op == Op::CALL_INDIRECT && !direct_return {
+                    // Stage all results before converting any of them. The
+                    // relative order of heterogeneous multi-values is exact.
+                    for i in (0..usize::from(results)).rev() {
+                        body.push(0x21);
+                        write_leb128_u32(body, base + (argc + i) as u32);
+                    }
+                    for i in 0..usize::from(results) {
+                        body.push(0x20);
+                        write_leb128_u32(body, base + (argc + i) as u32);
+                        match types[argc + i] {
+                            TYPE_I32 if results == 1 => box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches),
+                            TYPE_I32 => emit_box_i32(body, rt_idx),
+                            TYPE_F32 => emit_box_f32(body, rt_idx),
+                            TYPE_F64 => emit_box_f64(body, rt_idx),
+                            _ => {},
+                        }
+                    }
+                }
+                return;
+            }
             // Declared functype first — see the sibling site above.
             if let Some(&type_idx) = chunk
                 .call_indirect_sigs
@@ -1245,32 +2884,60 @@ fn emit_core_op(
         // control-flow predicate.
         _ if op == Op::I32_WRAP_I64 => {
             body.push(op.sub() as u8);
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            if raw_numeric.is_none() {
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+            }
         }
         _ if op == Op::MEMORY_SIZE || op == Op::MEMORY_GROW => {
-            // `memory.grow` takes a raw i32 delta and both answer a raw i32.
-            if op == Op::MEMORY_GROW {
+            let memidx = read_leb_u32(&chunk.code, ip);
+            let memory64 = chunk
+                .memory_is_64
+                .get(memidx as usize)
+                .copied()
+                .unwrap_or(false);
+            // Memory64 uses i64 for the delta and result; memory32 crosses
+            // this writer's boxed-value boundary through i32 conversions.
+            if op == Op::MEMORY_GROW && !memory64 && raw_numeric.is_none() {
                 emit_unbox_i32(body, rt_idx);
             }
             body.push(op.sub() as u8);
-            let memidx = read_leb_u32(&chunk.code, ip);
             write_leb128_u32(body, memidx);
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            if !memory64 && raw_numeric.is_none() {
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+            }
         }
         // Memory load: the address is the ONLY operand, so it is on top and
         // unboxes in place; the loaded value rejoins the value ABI.
         _ if memory_load_shape(op).is_some() => {
             let (default_align, result) = memory_load_shape(op).unwrap_or((0, 0));
-            emit_unbox_i32(body, rt_idx); // externref addr → i32
-            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, default_align);
+            let memory64 = chunk
+                .memory_is_64
+                .get(memidx as usize)
+                .copied()
+                .unwrap_or(false);
+            if !memory64 && raw_numeric.is_none() {
+                emit_unbox_i32(body, rt_idx); // externref addr → i32
+            }
+            body.push(op.sub() as u8);
             encode_memarg_with_memidx(body, align, offset, memidx);
+            if result == TYPE_F32
+                && raw_numeric.is_none()
+                && next_op(chunk, *ip) == Some(Op::I32_REINTERPRET_F32)
+            {
+                // Reinterpreting loaded bits is not floating arithmetic. Do
+                // not promote to Number and quiet a signaling NaN in between.
+                body.push(Op::I32_REINTERPRET_F32.sub() as u8);
+                *ip += 4;
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+                return;
+            }
             match result {
-                crate::encoding::TYPE_I32 => {
-                    box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block)
+                crate::encoding::TYPE_I32 if raw_numeric.is_none() => {
+                    box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches)
                 }
-                crate::encoding::TYPE_F64 => emit_box_f64(body, rt_idx),
-                crate::encoding::TYPE_F32 => {
+                crate::encoding::TYPE_F64 if raw_numeric.is_none() => emit_box_f64(body, rt_idx),
+                crate::encoding::TYPE_F32 if raw_numeric.is_none() => {
                     // The reader widens f32 to `Value::F64` and there is no f32
                     // box — the same widening `f32.const` already does here.
                     body.push(0xBB); // f64.promote_f32
@@ -1285,31 +2952,39 @@ fn emit_core_op(
         // value goes to a temp exactly as `ARRAY_SET` does.
         _ if memory_store_shape(op).is_some() => {
             let (default_align, value) = memory_store_shape(op).unwrap_or((0, 0));
-            let liftable = value != crate::encoding::TYPE_I64;
-            if liftable {
-                body.push(0x21); // local.set $temp (save value)
-                write_leb128_u32(body, temp_idx);
-                emit_unbox_i32(body, rt_idx); // externref addr → i32
-                body.push(0x20); // local.get $temp (restore value)
-                write_leb128_u32(body, temp_idx);
-                match value {
-                    crate::encoding::TYPE_I32 => emit_unbox_i32(body, rt_idx),
-                    crate::encoding::TYPE_F64 => emit_unbox_f64(body, rt_idx),
-                    crate::encoding::TYPE_F32 => {
-                        emit_unbox_f64(body, rt_idx);
-                        body.push(0xB6); // f32.demote_f64
-                    }
-                    _ => {}
-                }
-            }
-            // ⛔ AN i64 STORE IS LEFT ALONE, DELIBERATELY. Its value operand is
-            // already a raw i64 (only an i64 instruction can have produced it)
-            // and the temps this writer declares are externref, so the value
-            // cannot be lifted out of the way to reach the address underneath.
-            // Reconciling the address alone would reorder a stack it cannot put
-            // back. The wall is the missing i64 unbox, not this arm.
-            body.push(op.sub() as u8);
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, default_align);
+            let memory64 = chunk
+                .memory_is_64
+                .get(memidx as usize)
+                .copied()
+                .unwrap_or(false);
+            if raw_numeric.is_some() {
+                body.push(op.sub() as u8);
+                encode_memarg_with_memidx(body, align, offset, memidx);
+                return;
+            }
+            let value_temp = if value == crate::encoding::TYPE_I64 {
+                i64_temp_idx
+            } else {
+                temp_idx
+            };
+            body.push(0x21); // local.set saved value
+            write_leb128_u32(body, value_temp);
+            if !memory64 {
+                emit_unbox_i32(body, rt_idx); // externref addr → i32
+            }
+            body.push(0x20); // local.get saved value
+            write_leb128_u32(body, value_temp);
+            match value {
+                crate::encoding::TYPE_I32 => emit_unbox_i32(body, rt_idx),
+                crate::encoding::TYPE_F64 => emit_unbox_f64(body, rt_idx),
+                crate::encoding::TYPE_F32 => {
+                    emit_unbox_f64(body, rt_idx);
+                    body.push(0xB6); // f32.demote_f64
+                }
+                _ => {}
+            }
+            body.push(op.sub() as u8);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
         // WASM global.get/set — the operand IS the global index.
@@ -1323,23 +2998,11 @@ fn emit_core_op(
         // consumed at both ends, so no remapping is needed or wanted here.
         _ if op == Op::GLOBAL_GET => {
             let gidx = read_u32_be(&chunk.code, ip);
-            if let Some(helper_name) = chunk
-                .globals
-                .get(gidx as usize)
-                .and_then(|name| bundled_helper_chunk_for_global(name))
-                && let Some(helper_idx) = all_chunks
-                    .iter()
-                    .position(|candidate| candidate.name == helper_name)
-            {
-                // Outlined helpers are function values too: use the same
-                // boxed table-index ABI as REF_FUNC before any argument spill.
-                body.push(0x41); // i32.const
-                write_leb128_i32(body, helper_idx as i32);
-                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
-            } else {
-                body.push(0x23); // global.get
-                write_leb128_u32(body, gidx);
-            }
+            // Preserve actual writable binding identity. Generated RefFunc
+            // initializers install unambiguous carriers through real alias cells;
+            // names never manufacture numeric table-index callable values.
+            body.push(0x23);
+            write_leb128_u32(body, gidx);
         }
         _ if op == Op::GLOBAL_SET => {
             // ⛔ THE VM DOES NOT KEEP IT. This emitted
@@ -1396,14 +3059,18 @@ fn emit_core_op(
             body.push(0x26);
             write_leb128_u32(body, tbl);
         }
-        // Typed `select t` (0x1C): same stack semantics as untyped
-        // `select` but carries a `vec(valtype)` operand. Our uniform ABI
-        // always selects among externref values, so we emit the canonical
-        // `[1 × externref]` result-type vector inline.
-        _ if op == Op::SELECT_T => {
-            body.push(0x1C);
-            write_leb128_u32(body, 1); // 1 result type
-            body.push(TYPE_EXTERNREF);
+        // The source value ABI selects externrefs and boxes its i32 condition.
+        // Untyped Wasm select only accepts numeric/vector operands. Keep the
+        // whole-body proven integer lane raw; bridge the boxed ABI explicitly.
+        _ if op == Op::SELECT || op == Op::SELECT_T => {
+            if raw_numeric.is_some() {
+                body.push(0x1B);
+            } else {
+                emit_unbox_i32(body, rt_idx);
+                body.push(0x1C);
+                write_leb128_u32(body, 1);
+                body.push(TYPE_EXTERNREF);
+            }
         }
         // `ref.null <heaptype>` — the heaptype is carried as the instruction's
         // own immediate and written straight through, so `ref.null extern` and
@@ -1419,18 +3086,20 @@ fn emit_core_op(
         // ref.is_null produces i32 — box it since our value representation is externref
         _ if op == Op::REF_IS_NULL => {
             body.push(0xD1); // ref.is_null → i32
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            if raw_numeric.is_none() {
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+            }
         }
         // GC proposal (core prefix): `ref.eq` compares two references in the
-        // ANY hierarchy and produces i32.
+        // EQ hierarchy and produces i32.
         //
         // It still cannot blindly cast arbitrary host externrefs to `eqref`.
         // Imported host values are legal values in the VM ABI but they may not
         // live in the GC eq hierarchy after `any.convert_extern`, so the cast
         // would trap before answering false. Take the native `ref.eq` fast
         // path only when both internalised operands test as eqref; otherwise
-        // delegate to the existing ECMA value equality helper, which is
-        // intentionally non-trapping for host references.
+        // use the existing non-coercing host SameValue operation. Abstract
+        // equality is not reference identity and can invoke guest coercions.
         _ if op == Op::REF_EQ => {
             let lhs_temp = temp_idx + 1;
             let rhs_temp = temp_idx;
@@ -1466,11 +3135,10 @@ fn emit_core_op(
             write_leb128_u32(body, lhs_temp);
             body.push(0x20); // local.get $rhs_temp
             write_leb128_u32(body, rhs_temp);
-            emit_import_call(body, rt_idx, "ecma:value", "abstractEq");
-            emit_unbox_bool(body, rt_idx);
+            emit_import_call(body, rt_idx, "ecma:object", "is");
             body.push(0x0B); // end
 
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         }
         // ref.as_non_null is identity at the WASM level — it only
         // distinguishes a non-null reference type at validation time.
@@ -1497,11 +3165,18 @@ fn emit_core_op(
             write_leb128_u32(body, 0);
         }
 
-        // ── f64 binary arithmetic: unbox both → f64 op → rebox ──
+        // ── floating binary arithmetic: unbox both → native op → rebox ──
         // Stack: [externref_a, externref_b]
         // Pattern: local.set $temp (save b) → toF64 (unbox a) → local.get $temp → toF64 (unbox b)
         //          → f64.op → fromF64 (rebox result)
-        _ if op == Op::F64_ADD
+        _ if op == Op::F32_ADD
+            || op == Op::F32_SUB
+            || op == Op::F32_MUL
+            || op == Op::F32_DIV
+            || op == Op::F32_MIN
+            || op == Op::F32_MAX
+            || op == Op::F32_COPYSIGN
+            || op == Op::F64_ADD
             || op == Op::F64_SUB
             || op == Op::F64_MUL
             || op == Op::F64_DIV
@@ -1509,7 +3184,28 @@ fn emit_core_op(
             || op == Op::F64_MAX
             || op == Op::F64_COPYSIGN =>
         {
-            emit_binary_f64_op(body, op.sub() as u8, rt_idx, temp_idx);
+            let single = matches!(
+                op,
+                Op::F32_ADD
+                    | Op::F32_SUB
+                    | Op::F32_MUL
+                    | Op::F32_DIV
+                    | Op::F32_MIN
+                    | Op::F32_MAX
+                    | Op::F32_COPYSIGN
+            );
+            emit_binary_float_op(
+                body,
+                op.sub() as u8,
+                rt_idx,
+                temp_idx,
+                single,
+                if single {
+                    !native_f32_return_follows(chunk, *ip)
+                } else {
+                    !native_f64_return_follows(chunk, *ip)
+                },
+            );
         }
 
         // ── f64 comparisons: unbox both → compare → rebox i32 result ──
@@ -1517,20 +3213,30 @@ fn emit_core_op(
         // emits the bare opcode onto two BOXED operands: "expected f64, found
         // externref". Every comparison that unboxes has to be listed here —
         // an omission is not a missing optimisation, it is invalid wasm.
-        _ if op == Op::F64_LT
+        _ if op == Op::F32_LT
+            || op == Op::F32_GT
+            || op == Op::F32_LE
+            || op == Op::F32_GE
+            || op == Op::F32_EQ
+            || op == Op::F32_NE
+            || op == Op::F64_LT
             || op == Op::F64_GT
             || op == Op::F64_LE
             || op == Op::F64_GE
             || op == Op::F64_EQ
             || op == Op::F64_NE =>
         {
-            emit_binary_f64_cmp(
+            emit_binary_float_cmp(
                 !(is_i32_block_result(chunk, *ip, in_i32_block)
-                    || i32_condition_follows(chunk, *ip)),
+                    || (i32_condition_follows(chunk, *ip) || raw_i32_branches.contains(&*ip))),
                 body,
                 op.sub() as u8,
                 rt_idx,
                 temp_idx,
+                matches!(
+                    op,
+                    Op::F32_LT | Op::F32_GT | Op::F32_LE | Op::F32_GE | Op::F32_EQ | Op::F32_NE
+                ),
             );
         }
 
@@ -1551,9 +3257,13 @@ fn emit_core_op(
             || op == Op::I32_ROTL
             || op == Op::I32_ROTR =>
         {
+            if raw_numeric.is_some() {
+                body.push(op.sub() as u8);
+                return;
+            }
             emit_binary_i32_op(
                 !(is_i32_block_result(chunk, *ip, in_i32_block)
-                    || i32_condition_follows(chunk, *ip)),
+                    || (i32_condition_follows(chunk, *ip) || raw_i32_branches.contains(&*ip))),
                 body,
                 op.sub() as u8,
                 rt_idx,
@@ -1573,9 +3283,13 @@ fn emit_core_op(
             || op == Op::I32_GE_S
             || op == Op::I32_GE_U =>
         {
+            if raw_numeric.is_some() {
+                body.push(op.sub() as u8);
+                return;
+            }
             emit_binary_i32_cmp(
                 !(is_i32_block_result(chunk, *ip, in_i32_block)
-                    || i32_condition_follows(chunk, *ip)),
+                    || (i32_condition_follows(chunk, *ip) || raw_i32_branches.contains(&*ip))),
                 body,
                 op.sub() as u8,
                 rt_idx,
@@ -1583,8 +3297,15 @@ fn emit_core_op(
             );
         }
 
-        // ── f64 unary ops: unbox → op → rebox ──
-        _ if op == Op::F64_NEG
+        // ── floating unary ops: unbox → native op → rebox ──
+        _ if op == Op::F32_NEG
+            || op == Op::F32_ABS
+            || op == Op::F32_CEIL
+            || op == Op::F32_FLOOR
+            || op == Op::F32_TRUNC
+            || op == Op::F32_NEAREST
+            || op == Op::F32_SQRT
+            || op == Op::F64_NEG
             || op == Op::F64_ABS
             || op == Op::F64_CEIL
             || op == Op::F64_FLOOR
@@ -1592,18 +3313,44 @@ fn emit_core_op(
             || op == Op::F64_NEAREST
             || op == Op::F64_SQRT =>
         {
-            emit_unbox_f64(body, rt_idx);
+            let single = matches!(
+                op,
+                Op::F32_NEG
+                    | Op::F32_ABS
+                    | Op::F32_CEIL
+                    | Op::F32_FLOOR
+                    | Op::F32_TRUNC
+                    | Op::F32_NEAREST
+                    | Op::F32_SQRT
+            );
+            if single {
+                emit_unbox_f32(body, rt_idx);
+            } else {
+                emit_unbox_f64(body, rt_idx);
+            }
             body.push(op.sub() as u8);
-            emit_box_f64(body, rt_idx);
+            if single && !native_f32_return_follows(chunk, *ip) {
+                emit_box_f32(body, rt_idx);
+            } else if !single && !native_f64_return_follows(chunk, *ip) {
+                emit_box_f64(body, rt_idx);
+            }
         }
 
         // ── i32 unary ops ──
         _ if op == Op::I32_EQZ => {
+            if raw_numeric.is_some() {
+                body.push(op.sub() as u8);
+                return;
+            }
             emit_unbox_i32(body, rt_idx);
             body.push(op.sub() as u8);
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         }
         _ if op == Op::I32_CLZ || op == Op::I32_CTZ || op == Op::I32_POPCNT => {
+            if raw_numeric.is_some() {
+                body.push(op.sub() as u8);
+                return;
+            }
             emit_unbox_i32(body, rt_idx);
             body.push(op.sub() as u8);
             emit_box_i32(body, rt_idx);
@@ -1612,12 +3359,34 @@ fn emit_core_op(
         // Exact adjacent compiler bit-cast pairs retain raw f32 between the
         // standard operations. Promoting/re-demoting in between would alter
         // signaling NaN bit patterns and add arithmetic absent from bytecode.
+        _ if op == Op::F32_REINTERPRET_I32
+            && !in_i32_block
+            && next_op(chunk, *ip) == Some(Op::F32_STORE) =>
+        {
+            // The ordinary value ABI has [address, boxed i32]. Convert the
+            // address before restoring the bits, then perform the two Wasm
+            // operations without any floating conversion between them.
+            let mut after_store = *ip + 4;
+            let (align, offset, memidx) = read_optional_memarg(chunk, &mut after_store, 2);
+            body.push(0x21);
+            write_leb128_u32(body, temp_idx);
+            if !chunk.memory_is_64.get(memidx as usize).copied().unwrap_or(false) {
+                emit_unbox_i32(body, rt_idx);
+            }
+            body.push(0x20);
+            write_leb128_u32(body, temp_idx);
+            emit_unbox_i32(body, rt_idx);
+            body.push(op.sub() as u8);
+            body.push(Op::F32_STORE.sub() as u8);
+            encode_memarg_with_memidx(body, align, offset, memidx);
+            *ip = after_store;
+        }
         _ if op == Op::F32_DEMOTE_F64 && next_op(chunk, *ip) == Some(Op::I32_REINTERPRET_F32) => {
             emit_unbox_f64(body, rt_idx);
             body.push(op.sub() as u8);
             body.push(Op::I32_REINTERPRET_F32.sub() as u8);
             *ip += 4; // paired no-immediate opcode header
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         }
         _ if op == Op::F32_REINTERPRET_I32 && next_op(chunk, *ip) == Some(Op::F64_PROMOTE_F32) => {
             emit_unbox_i32(body, rt_idx);
@@ -1650,7 +3419,9 @@ fn emit_core_op(
             emit_box_f64(body, rt_idx);
         }
         _ if op == Op::I64_EXTEND_I32_S || op == Op::I64_EXTEND_I32_U => {
-            emit_unbox_i32(body, rt_idx);
+            if raw_numeric.is_none() {
+                emit_unbox_i32(body, rt_idx);
+            }
             body.push(op.sub() as u8); // i64 remains raw
         }
         _ if op == Op::I64_TRUNC_F64_S || op == Op::I64_TRUNC_F64_U => {
@@ -1663,12 +3434,23 @@ fn emit_core_op(
         }
         _ if matches!(
             op,
-            Op::I64_EQZ | Op::I64_EQ | Op::I64_NE
-                | Op::I64_LT_S | Op::I64_LT_U | Op::I64_LE_S | Op::I64_LE_U
-                | Op::I64_GT_S | Op::I64_GT_U | Op::I64_GE_S | Op::I64_GE_U
-        ) => {
+            Op::I64_EQZ
+                | Op::I64_EQ
+                | Op::I64_NE
+                | Op::I64_LT_S
+                | Op::I64_LT_U
+                | Op::I64_LE_S
+                | Op::I64_LE_U
+                | Op::I64_GT_S
+                | Op::I64_GT_U
+                | Op::I64_GE_S
+                | Op::I64_GE_U
+        ) =>
+        {
             body.push(op.sub() as u8);
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            if raw_numeric.is_none() {
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+            }
         }
 
         // ── Conversions: unbox source type → convert → rebox target type ──
@@ -1677,7 +3459,7 @@ fn emit_core_op(
             // unsigned form must not fall through onto the boxed value stack.
             emit_unbox_f64(body, rt_idx);
             body.push(op.sub() as u8);
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         }
         _ if op == Op::F64_FROM_I32 || op == Op::F64_CONVERT_I32_U => {
             // Signedness changes interpretation of the bits, not the ABI.
@@ -1694,12 +3476,63 @@ fn emit_core_op(
             let uv_raw = chunk.code[*ip];
             let uv_count = (uv_raw & 0x7f) as usize; // mask 0x80 no-intern flag
             *ip += 1;
-            *ip += uv_count * 3; // skip upvalue descriptors (u8 is_local + u16 index)
-            // Captured environments retain the writer's existing table-index
-            // fallback until closure objects have an explicit lowering.
-            body.push(0x41); // i32.const
-            write_leb128_i32(body, chunk_idx as i32);
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            let descriptors = *ip;
+            *ip += uv_count * 3;
+            if !super::callable::source(chunk) {
+                body.push(0xd2);
+                write_leb128_u32(body, type_ctx.callables.import_count + chunk_idx as u32);
+            } else if uv_count == 0 && uv_raw & 0x80 == 0 {
+                body.push(0x23);
+                write_leb128_u32(body, type_ctx.callables.cache_base + chunk_idx as u32);
+                super::callable::external(body);
+            } else {
+                let meta = *type_ctx
+                    .callables
+                    .chunks
+                    .get(chunk_idx as usize)
+                    .expect("REF_FUNC target in module");
+                super::callable::carrier(
+                    body,
+                    &type_ctx.callables,
+                    chunk_idx as u32,
+                    |b| {
+                        if uv_count == 0 {
+                            super::callable::null(b, type_ctx.callables.captures as i32);
+                        } else {
+                            for i in 0..uv_count {
+                                let at = descriptors + i * 3;
+                                let slot = read_u16_at(&chunk.code, at + 1);
+                                if chunk.code[at] != 0 {
+                                    let cell = super::callable::cell_slot(
+                                        chunk,
+                                        &type_ctx.callables,
+                                        slot,
+                                    )
+                                    .expect("captured local cell planned");
+                                    super::callable::local(b, 0x20, cell);
+                                    super::callable::internal(b, type_ctx.callables.cell);
+                                } else {
+                                    super::callable::local(
+                                        b,
+                                        0x20,
+                                        super::callable::hidden_virtual(
+                                            chunk,
+                                            super::callable::temps(chunk, &type_ctx.callables),
+                                        ),
+                                    );
+                                    super::callable::internal(b, type_ctx.callables.captures);
+                                    super::callable::i32c(b, slot as i32);
+                                    super::callable::typed(b, 11, type_ctx.callables.captures);
+                                }
+                            }
+                            super::callable::typed(b, 8, type_ctx.callables.captures);
+                            write_leb128_u32(b, uv_count as u32);
+                        }
+                    },
+                    meta,
+                );
+                super::callable::external(body);
+            }
         }
         _ if op == Op::RETHROW || op == Op::DELEGATE => {
             body.push(op.sub() as u8);
@@ -1714,7 +3547,18 @@ fn emit_core_op(
         _ if op == Op::SUSPEND => {
             let tag_idx = read_u16(&chunk.code, ip);
             body.push(crate::writer::proposals::stack_switching::OP_SUSPEND);
-            write_leb128_u32(body, tag_idx as u32);
+            // Synchronous Source generators use logical yield tag zero. The
+            // native module reserves tag zero for exceptions and tag one for
+            // its (externref)->externref suspension protocol. Reader-authored
+            // functions retain their declared tag index unchanged.
+            let native_tag = if tag_idx == 0
+                && !super::generator_construct::entries(std::slice::from_ref(chunk)).is_empty()
+            {
+                1
+            } else {
+                u32::from(tag_idx)
+            };
+            write_leb128_u32(body, native_tag);
         }
         _ if op == Op::RESUME => {
             let _ = read_u16(&chunk.code, ip);
@@ -1758,13 +3602,39 @@ fn emit_core_op(
         // bare 0x41 — malformed WASM.
         _ if op == Op::I32_CONST || op == Op::I64_CONST || op == Op::F64_CONST => {
             let sz = op.operand_format().size_in(&chunk.code, *ip);
+            // A literal RHS has no evaluation effects and is already an i32.
+            // Unbox the stacked value first, then emit the literal directly:
+            // avoid boxing the constant, spilling it, and unboxing it again.
+            // Source entries use the boxed-value stack; declared raw Wasm
+            // bodies and direct-call argument producers retain their own ABI.
+            let after_literal = *ip + sz;
+            if op == Op::I32_CONST
+                && raw_numeric.is_none()
+                && super::callable::source(chunk)
+                && !native_args.producers.contains_key(&op_start)
+                && let Some(binary) = next_op(chunk, after_literal)
+                && binary.group() == 0
+                && matches!(binary.sub(), 0x46..=0x4f | 0x6a..=0x78)
+            {
+                if !i32_regions.inputs(&after_literal).is_some_and(|inputs| inputs.first() == Some(&true)) {
+                    emit_unbox_i32(body, rt_idx);
+                }
+                body.push(0x41);
+                body.extend_from_slice(&chunk.code[*ip..after_literal]);
+                body.push(binary.sub() as u8);
+                *ip = after_literal + 4;
+                if !i32_regions.is_raw(&after_literal) {
+                    box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+                }
+                return;
+            }
             body.push(op.sub() as u8);
             body.extend_from_slice(&chunk.code[*ip..*ip + sz]);
             *ip += sz;
-            if op == Op::F64_CONST {
+            if op == Op::F64_CONST && raw_numeric.is_none() && !native_f64_return_follows(chunk, *ip) && !native_args.producers.contains_key(&op_start) {
                 emit_box_f64(body, rt_idx);
-            } else if op == Op::I32_CONST {
-                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            } else if op == Op::I32_CONST && raw_numeric.is_none() && !native_args.producers.contains_key(&op_start) && !i32_regions.is_raw(&op_start) {
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
             }
             // ⛔ `i64.const` IS NOT BOXED, AND ITS OLD "i64 rides box_i32"
             // PRECEDENT WAS A TYPE ERROR: it emitted
@@ -1785,10 +3655,11 @@ fn emit_core_op(
             body.push(op.sub() as u8);
             body.extend_from_slice(&chunk.code[*ip..*ip + sz]);
             *ip += sz;
-            // Widen to f64 before boxing — the reader deliberately widens
-            // f32 constants to Value::F64, and there is no f32 box.
-            body.push(0xBB); // f64.promote_f32
-            emit_box_f64(body, rt_idx);
+            // The value ABI boxes f32 through f64, except when a typed f32
+            // return consumes the raw constant directly.
+            if raw_numeric.is_none() && !native_f32_return_follows(chunk, *ip) && !native_args.producers.contains_key(&op_start) {
+                emit_box_f32(body, rt_idx);
+            }
         }
 
         _ => {
@@ -1891,16 +3762,8 @@ fn atomic_is_i32_cmpxchg(op: Op) -> bool {
 /// the writer already owns (`ARRAY_GET` unboxes its index here for exactly
 /// this reason).
 ///
-/// ⛔ WHAT IS NOT DONE, AND WHY IT CANNOT BE FROM HERE:
-/// `memory.atomic.wait32`/`wait64` and the whole `i64.atomic.*` family take or
-/// return an i64 OPERAND. There is no i64 unbox: our value ABI is externref,
-/// and `wasm:js-bigint` in js-primitive-builtins exposes ONLY `test` — the
-/// i64 conversions were deliberately removed from the proposal. Closing them
-/// needs a host conversion declared `(result i64)`, relying on
-/// JS-BigInt-integration to do the marshalling — a NEW host function, which is
-/// not mine to add. Those arms are left emitting exactly what they emitted
-/// before; they are no more wrong than they were, and the boundary is here in
-/// writing rather than silent.
+/// The wait32 timeout stays raw i64; only its address and expected value use
+/// the source value ABI. No BigInt or host conversion is needed for that lane.
 fn emit_thread_prefixed_op(
     body: &mut Vec<u8>,
     op: Op,
@@ -1908,7 +3771,10 @@ fn emit_thread_prefixed_op(
     ip: &mut usize,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
     temp_idx: u32,
+    i64_temp_idx: u32,
     in_i32_block: bool,
+    raw_numeric: bool,
+    raw_i32_branches: &std::collections::HashSet<usize>,
 ) {
     if op == Op::ATOMIC_FENCE {
         body.push(0xFE);
@@ -1936,7 +3802,7 @@ fn emit_thread_prefixed_op(
     } else {
         None
     };
-    let mut write_op = |body: &mut Vec<u8>| {
+    let write_op = |body: &mut Vec<u8>| {
         body.push(0xFE);
         write_leb128_u32(body, op.sub() as u32);
         write_leb128_u32(body, spec_align);
@@ -1950,6 +3816,20 @@ fn emit_thread_prefixed_op(
         }
     };
 
+    if op == Op::MEMORY_ATOMIC_WAIT32 && super::callable::source(chunk) {
+        super::callable::local(body, 0x21, i64_temp_idx);
+        super::callable::local(body, 0x21, temp_idx);
+        if !is_memory64 {
+            emit_unbox_i32(body, rt_idx);
+        }
+        super::callable::local(body, 0x20, temp_idx);
+        emit_unbox_i32(body, rt_idx);
+        super::callable::local(body, 0x20, i64_temp_idx);
+        write_op(body);
+        box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+        return;
+    }
+
     if atomic_is_i32_address_only_load(op) {
         emit_unbox_i32(body, rt_idx); // externref addr → i32
         write_op(body);
@@ -1957,20 +3837,25 @@ fn emit_thread_prefixed_op(
         // is a raw-i32 region. `box_i32_unless_condition`, not a bare box: an
         // atomic feeding an `if` directly must stay raw, exactly as for every
         // other i32 producer in this writer.
-        box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+        box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         return;
     }
 
-    if atomic_is_i32_two_operand(op) {
+    // General bodies carry notify operands through the value ABI, as for
+    // atomic stores/RMWs. Proven typed integer bodies retain raw operands.
+    let boxed_notify = op == Op::MEMORY_ATOMIC_NOTIFY && !raw_numeric;
+    if atomic_is_i32_two_operand(op) || boxed_notify {
         body.push(0x21); // local.set $temp (save value)
         write_leb128_u32(body, temp_idx);
-        emit_unbox_i32(body, rt_idx); // externref addr → i32
+        if !boxed_notify || !is_memory64 {
+            emit_unbox_i32(body, rt_idx); // externref addr → i32
+        } // memory64 notify addresses already use the raw i64 lane.
         body.push(0x20); // local.get $temp (restore value)
         write_leb128_u32(body, temp_idx);
         emit_unbox_i32(body, rt_idx); // externref value → i32
         write_op(body);
-        if atomic_is_i32_rmw(op) {
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+        if atomic_is_i32_rmw(op) || boxed_notify {
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         }
         return;
     }
@@ -1988,7 +3873,7 @@ fn emit_thread_prefixed_op(
         write_leb128_u32(body, temp_idx + 1);
         emit_unbox_i32(body, rt_idx);
         write_op(body);
-        box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+        box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         return;
     }
 
@@ -2031,75 +3916,50 @@ fn emit_simd_prefixed_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usi
 }
 
 fn emit_simd_memarg(body: &mut Vec<u8>, chunk: &Chunk, ip: &mut usize, default_align: u32) {
-    // The internal SIMD memarg is self-describing (`SimdMemArg`): present iff
-    // the first LEB carries the 0x80 marker. Instruction group-hi bytes are
-    // always 0x00, so peeking the marker is unambiguous — no opcode-decode
-    // guessing needed.
-    let mut probe = *ip;
-    let marker_align = read_leb_u32(&chunk.code, &mut probe);
-    if marker_align & 0x80 == 0 {
-        write_leb128_u32(body, default_align);
-        write_leb128_u32(body, 0);
-        return;
-    }
-    *ip = probe;
-    let memory64 = marker_align & 0x100 != 0;
-    let align = marker_align & !0x180;
-    let offset = if memory64 {
-        read_leb_u64(&chunk.code, ip)
-    } else {
-        read_leb_u32(&chunk.code, ip) as u64
-    };
-    let memidx = if align & 0x40 != 0 {
-        Some(read_leb_u32(&chunk.code, ip))
-    } else {
-        None
-    };
-    write_leb128_u32(body, align);
-    if memory64 {
-        write_leb128_u64(body, offset);
-    } else {
-        write_leb128_u32(body, offset as u32);
-    }
-    if let Some(memidx) = memidx {
-        write_leb128_u32(body, memidx);
-    }
+    let (align, offset, memory) = read_optional_memarg(chunk, ip, default_align);
+    encode_memarg_with_memidx(body, align, offset, memory);
 }
 
 fn default_simd_align(op: Op) -> u32 {
-    match op.sub() {
-        0x00 | 0x0B => 4,
-        0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06 | 0x0A | 0x57 | 0x5B | 0x5D => 3,
-        0x09 | 0x56 | 0x5A | 0x5C => 2,
-        0x08 | 0x55 | 0x59 => 1,
-        _ => 0,
-    }
+    op.natural_align_bytes().expect("SIMD memory opcode has a natural alignment").trailing_zeros()
 }
 
 // ── Binary operation helpers ─────────────────────────────────────────
 
-/// Emit binary f64 op: [externref_a, externref_b] → f64.op → [externref_result]
+/// Emit a floating binary op across the boxed-value boundary.
 /// Uses temp local to save b while unboxing a.
-fn emit_binary_f64_op(
+fn emit_binary_float_op(
     body: &mut Vec<u8>,
     wasm_opcode: u8,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
     temp_idx: u32,
+    single: bool,
+    box_result: bool,
 ) {
     // Save b to temp local
     body.push(0x21); // local.set
     write_leb128_u32(body, temp_idx);
-    // Unbox a: externref → f64
-    emit_unbox_f64(body, rt_idx);
+    if single {
+        emit_unbox_f32(body, rt_idx);
+    } else {
+        emit_unbox_f64(body, rt_idx);
+    }
     // Restore b from temp local
     body.push(0x20); // local.get
     write_leb128_u32(body, temp_idx);
-    // Unbox b: externref → f64
-    emit_unbox_f64(body, rt_idx);
-    // Operate: f64, f64 → f64
+    if single {
+        emit_unbox_f32(body, rt_idx);
+    } else {
+        emit_unbox_f64(body, rt_idx);
+    }
     body.push(wasm_opcode);
-    // Rebox result: f64 → externref
-    emit_box_f64(body, rt_idx);
+    if box_result {
+        if single {
+            emit_box_f32(body, rt_idx);
+        } else {
+            emit_box_f64(body, rt_idx);
+        }
+    }
 }
 
 /// Allocate a fresh dynamic object, consuming `prop_count` key/value pairs
@@ -2187,13 +4047,98 @@ fn heaptype_is_internal(ht_bytes: &[u8]) -> bool {
 /// it once its own operands are consumed. Bounded like the arity scanner: a
 /// producer at the very end of a chunk has no successor to read.
 fn i32_condition_follows(chunk: &Chunk, ip: usize) -> bool {
-    matches!(next_op(chunk, ip), Some(next) if next == Op::IF || next == Op::BR_IF)
+    matches!(next_op(chunk, ip), Some(next) if next == Op::IF || next == Op::BR_IF || next == Op::BR_TABLE)
         || native_i32_return_follows(chunk, ip)
 }
 
+// Preserve native result lanes through a straight-line suffix of pure
+// constants and typed parameter reads. Source bodies and intervening work
+// retain the value ABI; no general stack-type inference is claimed here.
+fn native_result_lane_follows(chunk: &Chunk, mut ip: usize, current: &str) -> bool {
+    let Some((params, results)) = &chunk.func_sig else { return false; };
+    let results: Vec<_> = results.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if results.is_empty() { return false; }
+    let params: Vec<_> = params.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let mut suffix = Vec::new();
+    loop {
+        let Some(op) = next_op(chunk, ip) else { return false; };
+        if op == Op::RETURN {
+            let Some(lane) = results.len().checked_sub(suffix.len() + 1) else { return false; };
+            return results[lane] == current && results[lane + 1..] == suffix;
+        }
+        if suffix.len() + 1 >= results.len() { return false; }
+        let operand = ip + 4;
+        let ty = match op {
+            Op::I32_CONST => "i32",
+            Op::I64_CONST => "i64",
+            Op::F32_CONST => "f32",
+            Op::F64_CONST => "f64",
+            Op::LOCAL_GET => {
+                if operand + 2 > chunk.code.len() { return false; }
+                let slot = u16::from_be_bytes([chunk.code[operand], chunk.code[operand+1]]) as usize;
+                let Some(ty) = params.get(slot) else { return false; };
+                *ty
+            }
+            Op::NULL => match chunk.code.get(operand) {
+                Some(0x6f) => "externref",
+                Some(0x70) => "funcref",
+                _ => return false,
+            },
+            _ => return false,
+        };
+        suffix.push(ty);
+        ip = operand + op.operand_format().size_in(&chunk.code, operand);
+    }
+}
 fn native_i32_return_follows(chunk: &Chunk, ip: usize) -> bool {
-    next_op(chunk, ip) == Some(Op::RETURN)
-        && chunk.func_sig.as_ref().is_some_and(|(_, result)| result.trim() == "i32")
+    native_result_lane_follows(chunk, ip, "i32")
+}
+fn native_f32_return_follows(chunk: &Chunk, ip: usize) -> bool {
+    native_result_lane_follows(chunk, ip, "f32")
+}
+fn native_f64_return_follows(chunk: &Chunk, ip: usize) -> bool {
+    native_result_lane_follows(chunk, ip, "f64")
+}
+
+/// Offsets of unconditional branches whose label consumes one raw i32.
+/// Block/if labels use their results; loop labels use parameters, so an i32
+/// loop result alone cannot authorize a raw branch payload. Count try_table
+/// labels too, since they participate in standard relative branch depths.
+/// This is collected once per body, rather than rescanning for each producer.
+fn i32_branch_consumers(chunk: &Chunk) -> std::collections::HashSet<usize> {
+    let mut branches = std::collections::HashSet::new();
+    let function_i32 = chunk.func_sig.as_ref()
+        .is_some_and(|(_, results)| results.trim() == "i32");
+    if chunk.block_i32_results.is_empty() && !function_i32 {
+        return branches;
+    }
+    // The function body also has an implicit label with its result signature.
+    let mut controls = vec![function_i32];
+    let mut ip = 0;
+    while ip + 3 < chunk.code.len() {
+        let Some(op) = Op::decode(
+            u16::from_be_bytes([chunk.code[ip], chunk.code[ip + 1]]),
+            u16::from_be_bytes([chunk.code[ip + 2], chunk.code[ip + 3]]),
+        ) else {
+            return std::collections::HashSet::new();
+        };
+        if matches!(op, Op::BLOCK | Op::IF | Op::LOOP | Op::TRY_TABLE) {
+            controls.push(matches!(op, Op::BLOCK | Op::IF)
+                && chunk.block_i32_results.contains(&ip));
+        } else if op == Op::END {
+            controls.pop();
+        } else if op == Op::BR {
+            let mut operand = ip + 4;
+            let depth = read_leb_u32(&chunk.code, &mut operand) as usize;
+            if controls.len().checked_sub(depth + 1)
+                .and_then(|target| controls.get(target)).copied().unwrap_or(false)
+            {
+                branches.insert(ip);
+            }
+        }
+        ip += opcode_size(op, &chunk.code, ip);
+    }
+    branches
 }
 
 /// True when the NEXT bytecode instruction can consume a raw i32 operand at
@@ -2212,9 +4157,8 @@ fn native_i32_return_follows(chunk: &Chunk, ip: usize) -> bool {
 fn i32_raw_consumer_follows(chunk: &Chunk, ip: usize) -> bool {
     matches!(
         next_op(chunk, ip),
-        Some(next) if next == Op::IF || next == Op::BR_IF || next == Op::DROP
-    )
-        || native_i32_return_follows(chunk, ip)
+        Some(next) if next == Op::IF || next == Op::BR_IF || next == Op::BR_TABLE || next == Op::DROP
+    ) || native_i32_return_follows(chunk, ip)
 }
 
 fn void_boundary_value_producer(op: Op) -> bool {
@@ -2371,36 +4315,8 @@ pub(crate) fn effective_structured_block_counts(
         if if_has_immediate_value_arms(chunk, op_start) {
             return (0, 1);
         }
-        if if_else_followed_by(chunk, op_start, Op::LOCAL_SET) {
-            return (0, 1);
-        }
     }
     (params, results)
-}
-
-fn if_else_followed_by(chunk: &Chunk, op_start: usize, follow: Op) -> bool {
-    let mut ip = op_start + 6;
-    let mut depth = 1usize;
-    let mut has_else = false;
-    while ip < chunk.code.len() {
-        let Some(op) = next_op(chunk, ip) else {
-            return false;
-        };
-        if matches!(op, Op::BLOCK | Op::IF | Op::LOOP) {
-            depth += 1;
-        } else if op == Op::END {
-            depth = depth.saturating_sub(1);
-            if depth == 0 {
-                let after_end = ip + opcode_size(op, &chunk.code, ip);
-                return has_else
-                    && matches!(next_op(chunk, after_end), Some(next) if next == follow);
-            }
-        } else if op == Op::ELSE && depth == 1 {
-            has_else = true;
-        }
-        ip += opcode_size(op, &chunk.code, ip);
-    }
-    false
 }
 
 fn if_has_immediate_value_arms(chunk: &Chunk, op_start: usize) -> bool {
@@ -2559,13 +4475,17 @@ fn box_i32_unless_condition(
     chunk: &Chunk,
     ip: usize,
     in_i32_block: bool,
+    raw_i32_branches: &std::collections::HashSet<usize>,
 ) {
     // ⛔ AN i32-RESULT BLOCK IS A RAW REGION. `emit_if_i32`/`emit_block_i32`
     // are the compiler saying "this block's result is a bare i32, not a
     // value" — that is what the whole truthiness ladder is built from, and
     // every arm of it ends in an i32 producer. Boxing those made each arm
     // yield an externref out of a block declared `(result i32)`.
-    if is_i32_block_result(chunk, ip, in_i32_block) || i32_raw_consumer_follows(chunk, ip) {
+    if is_i32_block_result(chunk, ip, in_i32_block)
+        || i32_raw_consumer_follows(chunk, ip)
+        || raw_i32_branches.contains(&ip)
+    {
         return;
     }
     emit_box_i32(body, rt_idx);
@@ -2600,6 +4520,8 @@ fn emit_missing_import_args(
             crate::encoding::TYPE_F32 => {
                 body.push(0x43);
                 body.extend_from_slice(&0f32.to_le_bytes());
+                body.push(0xBB); // f64.promote_f32
+                emit_box_f64(body, rt_idx);
             }
             crate::encoding::TYPE_F64 => {
                 body.push(0x44);
@@ -2633,9 +4555,8 @@ fn emit_missing_import_args(
 ///
 /// The deepest raw param may sit under other arguments, so the ones above it
 /// are spilled to temps and restored — the same reorder `ARRAY_SET` uses.
-/// Only ONE spill temp is taken, which covers every signature table the
-/// writer consults (`substring` and `fromCharCodeArray` are the deepest, at
-/// one). A signature needing more is left untransformed rather than half-done.
+/// Static calls reserve spill locals for every parameter above the deepest
+/// raw one. Variadic imports such as `splice` may require more than two.
 fn emit_unbox_raw_params(
     body: &mut Vec<u8>,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
@@ -2662,19 +4583,27 @@ fn emit_unbox_raw_params(
         return;
     };
     let spill = params.len() - 1 - deepest_raw;
-    // ⛔ THIS LIMIT MUST COVER EVERY TABLE THE WRITER CONSULTS, or it silently
-    // declines to reconcile a call it was written for. `canon stream.read` and
-    // `stream.write` are `(i32 i32 i32)` — deepest raw param at index 0, so two
-    // arguments sit above it. Two is now the deepest any consulted signature
-    // needs; a `return` here is invisible, so raising it is not optional when a
-    // table grows.
-    if spill > 2 {
-        return;
-    }
-    let unbox = |body: &mut Vec<u8>, vt: u8| match vt {
-        crate::encoding::TYPE_I32 => emit_unbox_i32(body, rt_idx),
-        crate::encoding::TYPE_F64 => emit_unbox_f64(body, rt_idx),
-        _ => {}
+    let unbox = |body: &mut Vec<u8>, vt: u8, index: usize| {
+        if let Some(&(nullable, heap)) = type_ctx.import_ref_params.get(&(funcidx, index)) {
+            assert_eq!(
+                heap, type_ctx.string_array_type_idx as i64,
+                "only declared packed-i16 import refs are supported"
+            );
+            emit_internalize(body);
+            body.push(0xFB);
+            write_leb128_u32(body, if nullable { 0x17 } else { 0x16 });
+            write_leb128_i64(body, heap);
+            return;
+        }
+        match vt {
+            crate::encoding::TYPE_I32 => emit_unbox_i32(body, rt_idx),
+            crate::encoding::TYPE_F32 => {
+                emit_unbox_f64(body, rt_idx);
+                body.push(0xB6); // f32.demote_f64
+            }
+            crate::encoding::TYPE_F64 => emit_unbox_f64(body, rt_idx),
+            _ => {}
+        }
     };
     // Spill the arguments sitting above the deepest raw one; temp_idx + i
     // holds param n-1-i.
@@ -2682,29 +4611,38 @@ fn emit_unbox_raw_params(
         body.push(0x21); // local.set
         write_leb128_u32(body, temp_idx + i as u32);
     }
-    unbox(body, params[deepest_raw]);
+    unbox(body, params[deepest_raw], deepest_raw);
     for i in (0..spill).rev() {
         body.push(0x20); // local.get
         write_leb128_u32(body, temp_idx + i as u32);
-        unbox(body, params[params.len() - 1 - i]);
+        unbox(body, params[params.len() - 1 - i], params.len() - 1 - i);
     }
 }
 
-/// Emit binary f64 comparison: [externref_a, externref_b] → f64.cmp → [externref_result(i32)]
-fn emit_binary_f64_cmp(
+/// Emit a floating comparison with either a raw i32 or boxed result.
+fn emit_binary_float_cmp(
     box_result: bool,
     body: &mut Vec<u8>,
     wasm_opcode: u8,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
     temp_idx: u32,
+    single: bool,
 ) {
     body.push(0x21);
     write_leb128_u32(body, temp_idx); // local.set $temp (save b)
-    emit_unbox_f64(body, rt_idx); // toF64(a)
+    if single {
+        emit_unbox_f32(body, rt_idx);
+    } else {
+        emit_unbox_f64(body, rt_idx);
+    }
     body.push(0x20);
     write_leb128_u32(body, temp_idx); // local.get $temp (restore b)
-    emit_unbox_f64(body, rt_idx); // toF64(b)
-    body.push(wasm_opcode); // f64.lt/gt/le/ge → i32
+    if single {
+        emit_unbox_f32(body, rt_idx);
+    } else {
+        emit_unbox_f64(body, rt_idx);
+    }
+    body.push(wasm_opcode);
     if box_result {
         emit_box_i32(body, rt_idx); // fromI32 → externref
     }
@@ -2768,6 +4706,8 @@ fn emit_gc_op(
     type_ctx: &WasmTypeContext,
     temp_idx: u32,
     in_i32_block: bool,
+    raw_i32_branches: &std::collections::HashSet<usize>,
+    value_string_input: bool,
 ) {
     match op {
         _ if op == Op::STRUCT_NEW => {
@@ -2918,48 +4858,102 @@ fn emit_gc_op(
             // array type.
             let typeidx = read_u16(&chunk.code, ip);
             let elem_count = read_u16(&chunk.code, ip);
-            body.push(0xFB);
-            write_leb128_u32(body, 0x08);
-            write_leb128_u32(
-                body,
-                if typeidx == 0 {
-                    type_ctx.array_type_idx
-                } else {
-                    typeidx as u32
-                },
-            );
-            write_leb128_u32(body, elem_count as u32);
-            emit_externalize(body); // (ref $arr) → externref
+            if let Some(&packed) = type_ctx.packed_i16_types.get(&typeidx) {
+                for i in 0..elem_count {
+                    body.push(0x21);
+                    write_leb128_u32(body, temp_idx + i as u32);
+                }
+                for i in (0..elem_count).rev() {
+                    body.push(0x20);
+                    write_leb128_u32(body, temp_idx + i as u32);
+                    emit_unbox_i32(body, rt_idx);
+                }
+                body.push(0xFB);
+                write_leb128_u32(body, 0x08);
+                write_leb128_u32(body, packed);
+                write_leb128_u32(body, elem_count as u32);
+                emit_externalize(body);
+            } else {
+                body.push(0xFB);
+                write_leb128_u32(body, 0x08);
+                write_leb128_u32(
+                    body,
+                    if typeidx == 0 {
+                        type_ctx.array_type_idx
+                    } else {
+                        typeidx as u32
+                    },
+                );
+                write_leb128_u32(body, elem_count as u32);
+                emit_externalize(body); // (ref $arr) → externref
+            }
         }
         _ if op == Op::ARRAY_NEW => {
             // Spec: `array.new $t` (0xFB 0x06), pops [value, length i32].
             // Our bytecode emits the 2-byte type-index immediate like the
             // fixed variant; consume it, drop the type index, and pass
             // through to the engine (which will fill len copies of value).
-            let _typeidx = read_u16(&chunk.code, ip);
-            body.push(0xFB);
-            write_leb128_u32(body, 0x06);
-            write_leb128_u32(body, type_ctx.array_type_idx);
-            emit_externalize(body);
+            let typeidx = read_u16(&chunk.code, ip);
+            if let Some(&packed) = type_ctx.packed_i16_types.get(&typeidx) {
+                body.push(0x21);
+                write_leb128_u32(body, temp_idx);
+                emit_unbox_i32(body, rt_idx);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx);
+                emit_unbox_i32(body, rt_idx);
+                body.push(0xFB);
+                write_leb128_u32(body, 0x06);
+                write_leb128_u32(body, packed);
+                emit_externalize(body);
+            } else {
+                // Value arrays keep the initializer boxed, but the length is
+                // still a raw Wasm i32, just as for array.new_default.
+                emit_unbox_i32(body, rt_idx);
+                body.push(0xFB);
+                write_leb128_u32(body, 0x06);
+                write_leb128_u32(body, type_ctx.array_type_idx);
+                emit_externalize(body);
+            }
         }
         _ if op == Op::ARRAY_NEW_DEFAULT => {
             // Spec: `array.new_default $t` (0xFB 0x07), pops [length].
-            let _typeidx = read_u16(&chunk.code, ip);
+            let typeidx = read_u16(&chunk.code, ip);
             emit_unbox_i32(body, rt_idx);
             body.push(0xFB);
             write_leb128_u32(body, 0x07);
-            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(
+                body,
+                type_ctx
+                    .packed_i16_types
+                    .get(&typeidx)
+                    .copied()
+                    .unwrap_or(type_ctx.array_type_idx),
+            );
             emit_externalize(body);
         }
         _ if op == Op::ARRAY_NEW_DATA => {
             // Spec: `array.new_data $t $d`, pops [offset, size].
-            let _typeidx = read_u16(&chunk.code, ip);
+            let typeidx = read_u16(&chunk.code, ip);
             let data_idx = read_u16(&chunk.code, ip);
-            body.push(0xFB);
-            write_leb128_u32(body, 0x09);
-            write_leb128_u32(body, type_ctx.array_type_idx);
-            write_leb128_u32(body, data_idx as u32);
-            emit_externalize(body);
+            if let Some(&packed) = type_ctx.packed_i16_types.get(&typeidx) {
+                body.push(0x21);
+                write_leb128_u32(body, temp_idx);
+                emit_unbox_i32(body, rt_idx);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx);
+                emit_unbox_i32(body, rt_idx);
+                body.push(0xFB);
+                write_leb128_u32(body, 0x09);
+                write_leb128_u32(body, packed);
+                write_leb128_u32(body, data_idx as u32);
+                emit_externalize(body);
+            } else {
+                body.push(0xFB);
+                write_leb128_u32(body, 0x09);
+                write_leb128_u32(body, type_ctx.array_type_idx);
+                write_leb128_u32(body, data_idx as u32);
+                emit_externalize(body);
+            }
         }
         _ if op == Op::ARRAY_NEW_ELEM => {
             let _typeidx = read_u16(&chunk.code, ip);
@@ -2973,17 +4967,31 @@ fn emit_gc_op(
         _ if op == Op::ARRAY_GET_S || op == Op::ARRAY_GET_U => {
             // Packed variants. Semantics identical to array.get for our
             // externref-only arrays but we must still emit the spec byte.
-            let _typeidx = read_u16(&chunk.code, ip);
-            body.push(0x21);
-            write_leb128_u32(body, temp_idx); // save idx
-            emit_internalize(body);
-            emit_ref_cast_array(body, type_ctx.array_type_idx);
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx);
-            emit_unbox_i32(body, rt_idx);
-            body.push(0xFB);
-            write_leb128_u32(body, op.sub() as u32);
-            write_leb128_u32(body, type_ctx.array_type_idx);
+            let typeidx = read_u16(&chunk.code, ip);
+            if let Some(&packed) = type_ctx.packed_i16_types.get(&typeidx) {
+                body.push(0x21);
+                write_leb128_u32(body, temp_idx);
+                emit_internalize(body);
+                emit_ref_cast_array(body, packed);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx);
+                emit_unbox_i32(body, rt_idx);
+                body.push(0xFB);
+                write_leb128_u32(body, op.sub() as u32);
+                write_leb128_u32(body, packed);
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+            } else {
+                body.push(0x21);
+                write_leb128_u32(body, temp_idx); // save idx
+                emit_internalize(body);
+                emit_ref_cast_array(body, type_ctx.array_type_idx);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx);
+                emit_unbox_i32(body, rt_idx);
+                body.push(0xFB);
+                write_leb128_u32(body, op.sub() as u32);
+                write_leb128_u32(body, type_ctx.array_type_idx);
+            }
         }
         _ if op == Op::ARRAY_INIT_DATA => {
             let _typeidx = read_u16(&chunk.code, ip);
@@ -3184,7 +5192,7 @@ fn emit_gc_op(
             body.push(0xFB);
             write_leb128_u32(body, 0x15);
             body.extend_from_slice(&ht_bytes);
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         }
         _ if op == Op::REF_CAST_NULL => {
             let ht_bytes = read_heaptype_operand(chunk, ip, type_ctx);
@@ -3238,12 +5246,33 @@ fn emit_gc_op(
             }
             body.push(0x05); // else
             {
+                if !type_ctx.packed_i16_types.is_empty() {
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + 1);
+                emit_internalize(body);
+                emit_ref_test_array(body, type_ctx.string_array_type_idx);
+                body.push(0x04);
+                body.push(TYPE_EXTERNREF);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + 1);
+                emit_internalize(body);
+                emit_ref_cast_array(body, type_ctx.string_array_type_idx);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + 0);
+                emit_unbox_i32(body, rt_idx);
+                body.push(0xFB);
+                write_leb128_u32(body, 13);
+                write_leb128_u32(body, type_ctx.string_array_type_idx);
+                emit_box_i32(body, rt_idx);
+                body.push(0x05);
+                }
                 body.push(0x20);
                 write_leb128_u32(body, temp_idx + 1); // local.get arr
                 body.push(0x20);
                 write_leb128_u32(body, temp_idx); // local.get idx
                 body.push(0x10); // call ecma:array.getValue(arr, key)
                 write_leb128_u32(body, array_get_idx as u32);
+                if !type_ctx.packed_i16_types.is_empty() { body.push(0x0B); }
             }
             body.push(0x0B); // end
         }
@@ -3280,6 +5309,28 @@ fn emit_gc_op(
             }
             body.push(0x05); // else
             {
+                if !type_ctx.packed_i16_types.is_empty() {
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + 2);
+                emit_internalize(body);
+                emit_ref_test_array(body, type_ctx.string_array_type_idx);
+                body.push(0x04);
+                body.push(0x40);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + 2);
+                emit_internalize(body);
+                emit_ref_cast_array(body, type_ctx.string_array_type_idx);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + 1);
+                emit_unbox_i32(body, rt_idx);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx);
+                emit_unbox_i32(body, rt_idx);
+                body.push(0xFB);
+                write_leb128_u32(body, 14);
+                write_leb128_u32(body, type_ctx.string_array_type_idx);
+                body.push(0x05);
+                }
                 body.push(0x20);
                 write_leb128_u32(body, temp_idx + 2); // local.get arr
                 body.push(0x20);
@@ -3288,6 +5339,7 @@ fn emit_gc_op(
                 write_leb128_u32(body, temp_idx); // local.get val
                 body.push(0x10); // call ecma:array.setValue(arr, key, val)
                 write_leb128_u32(body, array_set_idx as u32);
+                if !type_ctx.packed_i16_types.is_empty() { body.push(0x0B); }
             }
             body.push(0x0B); // end
         }
@@ -3311,13 +5363,29 @@ fn emit_gc_op(
             }
             body.push(0x05); // else
             {
+                if !type_ctx.packed_i16_types.is_empty() {
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + 0);
+                emit_internalize(body);
+                emit_ref_test_array(body, type_ctx.string_array_type_idx);
+                body.push(0x04);
+                body.push(TYPE_I32);
+                body.push(0x20);
+                write_leb128_u32(body, temp_idx + 0);
+                emit_internalize(body);
+                emit_ref_cast_array(body, type_ctx.string_array_type_idx);
+                body.push(0xFB);
+                write_leb128_u32(body, 15);
+                body.push(0x05);
+                }
                 body.push(0x20);
                 write_leb128_u32(body, temp_idx); // local.get arr
                 body.push(0x10); // call ecma:array.length(arr)
                 write_leb128_u32(body, array_len_idx as u32);
+                if !type_ctx.packed_i16_types.is_empty() { body.push(0x0B); }
             }
             body.push(0x0B); // end
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         }
         _ if op == Op::ARRAY_FILL => {
             emit_internalize(body);
@@ -3388,7 +5456,7 @@ fn emit_gc_op(
             body.extend_from_slice(&ht_bytes);
             let is_test = op == Op::REF_TEST_EXACT || op == Op::REF_TEST_EXACT_NULL;
             if is_test {
-                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
             } else if internal {
                 emit_externalize(body); // the cast result rejoins the value ABI
             }
@@ -3396,6 +5464,39 @@ fn emit_gc_op(
         _ if op == Op::REF_TEST || op == Op::REF_CAST => {
             // `ref.test` / `ref.cast` (non-null): `0xFB {0x14|0x16} <heaptype>`.
             let ht_bytes = read_heaptype_operand(chunk, ip, type_ctx);
+            if op == Op::REF_TEST && super::callable::source(chunk) && ht_bytes == [0x73] {
+                body.push(0x1a);
+                super::callable::i32c(body, 0);
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+                return;
+            }
+            if op == Op::REF_TEST
+                && super::callable::source(chunk)
+                && matches!(ht_bytes.as_slice(), [0x70] | [0x6b])
+            {
+                let func = ht_bytes == [0x70];
+                super::callable::local(body, 0x21, temp_idx);
+                super::callable::local(body, 0x20, temp_idx);
+                super::callable::gc(body, 0x1a);
+                super::callable::typed(body, 0x14, type_ctx.callables.carrier);
+                body.extend([0x04, TYPE_I32]);
+                super::callable::local(body, 0x20, temp_idx);
+                super::callable::internal(body, type_ctx.callables.carrier);
+                super::callable::field(body, 2, type_ctx.callables.carrier, 2);
+                super::callable::i32c(body, 2);
+                body.push(if func { 0x49 } else { 0x46 });
+                body.push(0x05);
+                if func {
+                    super::callable::i32c(body, 0);
+                } else {
+                    super::callable::local(body, 0x20, temp_idx);
+                    super::callable::gc(body, 0x1a);
+                    body.extend([0xfb, 0x14, 0x6b]);
+                }
+                body.push(0x0b);
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+                return;
+            }
             let internal = heaptype_is_internal(&ht_bytes);
             if internal {
                 emit_internalize(body); // externref → anyref
@@ -3404,7 +5505,7 @@ fn emit_gc_op(
             write_leb128_u32(body, op.sub() as u32);
             body.extend_from_slice(&ht_bytes);
             if op == Op::REF_TEST {
-                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+                box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
             } else if internal {
                 emit_externalize(body); // the cast result rejoins the value ABI
             }
@@ -3445,7 +5546,16 @@ fn emit_gc_op(
             emit_internalize(body); // externref → anyref
             body.push(0xFB);
             write_leb128_u32(body, op.sub() as u32);
-            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
+        }
+        _ if op == Op::STRING_MEASURE_WTF8 && value_string_input => {
+            // The Source value ABI carries JS strings as externrefs. The
+            // stringref proposal consumes a real string reference and returns
+            // a native i32; bridge both boundaries explicitly.
+            emit_internalize(body);
+            body.extend([0xfb, 0x16, 0x67]); // ref.cast string
+            emit_stringref_gc_op(body, op);
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block, raw_i32_branches);
         }
         _ if emit_stringref_gc_op(body, op) => {}
         _ => {
@@ -3796,5 +5906,44 @@ mod tests {
             vec![0xFB, 0x17, 0xE2, 0x00],
             "concrete heaptype 98 must be signed LEB, not unsigned 0x62"
         );
+    }
+}
+
+pub(crate) fn total_temp_locals(c: &Chunk) -> u32 {
+    let (x, i) = count_temp_locals(c);
+    x + i + u32::from(has_native_next(c))
+}
+
+#[cfg(test)]
+mod marker_scan_tests {
+    use super::*;
+    use vybe_runtime::chunk::{LocalName, LocalOrigin};
+    #[test]
+    fn marker_free_and_source_markers_have_no_native_regions() {
+        let mut c = Chunk::new("marker-free");
+        c.emit_op(Op::NOP, 1);
+        assert!(native_direct_resumes(&c).is_empty());
+        assert!(native_next_regions(&c).is_empty());
+        c.local_names.push(LocalName::new(0, "<native-generator-resume:bad>", LocalOrigin::Source));
+        c.local_names.push(LocalName::new(1, "<native-generator-next:bad>", LocalOrigin::Source));
+        assert!(native_direct_resumes(&c).is_empty());
+        assert!(native_next_regions(&c).is_empty());
+    }
+    #[test]
+    fn compiler_direct_resume_keeps_coordinates() {
+        let mut c = Chunk::new("resume");
+        c.emit_op_u16(Op::RESUME, 0, 1);
+        c.local_names.push(LocalName::new(0, "<native-generator-resume:0:6>", LocalOrigin::Compiler));
+        assert_eq!(native_direct_resumes(&c), vec![0]);
+    }
+    #[test]
+    fn malformed_compiler_markers_still_fail_validation() {
+        for next in [false, true] {
+            let mut c = Chunk::new("invalid");
+            c.emit_op(Op::NOP, 1);
+            let name = if next { "<native-generator-next:bad>" } else { "<native-generator-resume:bad>" };
+            c.local_names.push(LocalName::new(0, name, LocalOrigin::Compiler));
+            assert!(std::panic::catch_unwind(|| { if next { let _ = native_next_regions(&c); } else { let _ = native_direct_resumes(&c); } }).is_err());
+        }
     }
 }

@@ -23,6 +23,13 @@ fn push_section(out: &mut Vec<u8>, id: u8, payload: &[u8]) {
 }
 
 fn standard_multi_memory_module(body_ops: &[u8]) -> Vec<u8> {
+    standard_multi_memory_module_with_second_width(body_ops, false)
+}
+
+fn standard_multi_memory_module_with_second_width(
+    body_ops: &[u8],
+    second_memory64: bool,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"\0asm");
     out.extend_from_slice(&[1, 0, 0, 0]);
@@ -34,8 +41,10 @@ fn standard_multi_memory_module(body_ops: &[u8]) -> Vec<u8> {
         5,
         &[
             0x02, // two memories
-            0x00, 0x01, // memory 0: min 1 page
-            0x00, 0x01, // memory 1: min 1 page
+            0x00,
+            0x01, // memory 0: min 1 page
+            if second_memory64 { 0x04 } else { 0x00 },
+            0x01, // memory 1: min 1 page
         ],
     );
 
@@ -420,7 +429,7 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
     for (name, opcode, prefix, decoded_op) in load_cases {
         let mut body = Vec::new();
         body.extend_from_slice(prefix);
-        body.extend_from_slice(&[*opcode, 0x02, 0x00]);
+        body.extend_from_slice(&[*opcode, 0x00, 0x00]);
         let bytes = standard_memory64_module_i32_result(&body);
         assert!(
             decoded_body_contains(&bytes, *decoded_op),
@@ -480,7 +489,7 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
     for (name, opcode, prefix, decoded_op) in store_cases {
         let mut body = Vec::new();
         body.extend_from_slice(prefix);
-        body.extend_from_slice(&[*opcode, 0x02, 0x00]);
+        body.extend_from_slice(&[*opcode, 0x00, 0x00]);
         body.extend_from_slice(&[0x41, 0x00]);
         let bytes = standard_memory64_module_i32_result(&body);
         assert!(
@@ -878,9 +887,9 @@ fn decoded_standard_module_materializes_declared_memories() {
     let wasm = standard_multi_memory_module(&[
         0x41, 0x00, // i32.const 0
         0x41, 0x2A, // i32.const 42
-        0x36, 0x42, 0x00, 0x01, // i32.store align=2|memidx, offset=0, memidx=1
+        0x36, 0x42, 0x01, 0x00, // i32.store align=2|memidx, memidx=1, offset=0
         0x41, 0x00, // i32.const 0
-        0x28, 0x42, 0x00, 0x01, // i32.load align=2|memidx, offset=0, memidx=1
+        0x28, 0x42, 0x01, 0x00, // i32.load align=2|memidx, memidx=1, offset=0
     ]);
     let mut chunks = vybe_platform_wasm::read_wasm(&wasm).expect("standard wasm should decode");
     assert_eq!(chunks[0].memory_min_pages, vec![1, 1]);
@@ -902,9 +911,9 @@ fn decoded_standard_module_uses_memidx_for_f64_store_and_load() {
     let wasm = standard_multi_memory_module(&[
         0x41, 0x00, // i32.const 0
         0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14, 0x40, // f64.const 5.0
-        0x39, 0x43, 0x00, 0x01, // f64.store align=3|memidx, offset=0, memidx=1
+        0x39, 0x43, 0x01, 0x00, // f64.store align=3|memidx, memidx=1, offset=0
         0x41, 0x00, // i32.const 0
-        0x2b, 0x43, 0x00, 0x01, // f64.load align=3|memidx, offset=0, memidx=1
+        0x2b, 0x43, 0x01, 0x00, // f64.load align=3|memidx, memidx=1, offset=0
         0xaa, // i32.trunc_f64_s
     ]);
     let mut chunks = vybe_platform_wasm::read_wasm(&wasm).expect("standard wasm should decode");
@@ -939,11 +948,141 @@ fn decoded_standard_module_uses_memidx_for_f64_store_and_load() {
 }
 
 #[test]
+fn decoded_standard_memarg_reads_memory_index_before_nonzero_offset() {
+    let wasm = standard_multi_memory_module(&[
+        0x41, 0x00, // address
+        0x41, 0xc9, 0x00, // value 73
+        0x36, 0x42, 0x01, 0x07, // i32.store memory 1, offset 7
+        0x41, 0x00, // address
+        0x28, 0x42, 0x01, 0x07, // i32.load memory 1, offset 7
+    ]);
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&wasm)
+        .expect("standard multi-memory module");
+    let mut chunks = wasm::read_wasm(&wasm).expect("standard memarg should decode");
+    let function = chunks.remove(1);
+    let store = Op::I32_STORE.encode();
+    let load = Op::I32_LOAD.encode();
+    for op in [store, load] {
+        assert!(
+            function
+                .code
+                .windows(8)
+                .any(|bytes| bytes == [op[0], op[1], op[2], op[3], 0xc2, 0x01, 0x07, 0x01]),
+            "decoded memarg must retain memory 1 and offset 7"
+        );
+    }
+    assert_eq!(VM::new().run(vec![function]).unwrap().as_i32(), 73);
+}
+
+#[test]
+fn decoded_mixed_memory_memargs_keep_each_address_width() {
+    let wasm = standard_multi_memory_module_with_second_width(
+        &[
+            0x42, 0x00, // i64 address for memory 1
+            0x41, 0xc9, 0x00, // value 73
+            0x36, 0x42, 0x01, 0x07, // i32.store memory 1, offset 7
+            0x41, 0x00, // i32 address for memory 0
+            0x41, 0x29, // value 41
+            0x36, 0x02, 0x00, // i32.store memory 0, offset 0
+            0x42, 0x00, // i64 address for memory 1
+            0x28, 0x42, 0x01, 0x07, // i32.load memory 1, offset 7
+        ],
+        true,
+    );
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&wasm)
+        .expect("standard mixed-memory module");
+    let mut chunks = wasm::read_wasm(&wasm).expect("mixed memory should decode");
+    let function = chunks.remove(1);
+    let store = Op::I32_STORE.encode();
+    assert!(function.code.windows(8).any(|bytes| {
+        bytes
+            == [
+                store[0], store[1], store[2], store[3], 0xc2, 0x03, 0x07, 0x01,
+            ]
+    }));
+    assert!(
+        function
+            .code
+            .windows(7)
+            .any(|bytes| { bytes == [store[0], store[1], store[2], store[3], 0x82, 0x01, 0x00] })
+    );
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![function]).unwrap().as_i32(), 73);
+    assert_eq!(vm.memory.load_i32(0).unwrap(), 41);
+}
+
+#[test]
+fn indexed_memarg_rejects_offset_above_u64_range() {
+    let mut body = vec![0x42, 0x00, 0x28, 0x42, 0x01];
+    body.extend_from_slice(&[0x80; 9]);
+    body.push(0x02);
+    let wasm = standard_multi_memory_module_with_second_width(&body, true);
+    let error = wasm::read_wasm(&wasm).expect_err("offset above u64 range must be malformed");
+    assert!(
+        error.contains("integer too large"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn memory32_memarg_rejects_offset_above_u32_range() {
+    let wasm = standard_multi_memory_module(&[
+        0x41, 0x00, // address
+        0x28, 0x02, 0x80, 0x80, 0x80, 0x80, 0x10, // i32.load offset 2^32
+    ]);
+    let error = wasm::read_wasm(&wasm).expect_err("memory32 offset must fit u32");
+    assert!(
+        error.contains("integer too large"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn imported_memory64_accepts_u64_memarg_offset() {
+    let mut wasm = Vec::new();
+    wasm.extend_from_slice(b"\0asm");
+    wasm.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut wasm, 1, &[0x01, 0x60, 0x00, 0x01, 0x7f]);
+    push_section(
+        &mut wasm,
+        2,
+        &[0x01, 0x01, b'm', 0x01, b'x', 0x02, 0x04, 0x01],
+    );
+    push_section(&mut wasm, 3, &[0x01, 0x00]);
+    let body = [
+        0x00, // no locals
+        0x42, 0x00, // i64 address
+        0x28, 0x02, 0x80, 0x80, 0x80, 0x80, 0x10, // i32.load offset 2^32
+        0x0b,
+    ];
+    let mut code = vec![0x01];
+    write_leb_u32(&mut code, body.len() as u32);
+    code.extend_from_slice(&body);
+    push_section(&mut wasm, 10, &code);
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&wasm)
+        .expect("imported memory64 module");
+
+    let chunks = wasm::read_wasm(&wasm).expect("memory64 offset must fit u64");
+    assert_eq!(chunks[0].memory_is_64, vec![true]);
+    assert_eq!(chunks[1].memory_is_64, vec![true]);
+    let load = Op::I32_LOAD.encode();
+    assert!(chunks[1].code.windows(11).any(|bytes| {
+        bytes
+            == [
+                load[0], load[1], load[2], load[3], 0x82, 0x03, 0x80, 0x80, 0x80, 0x80, 0x10,
+            ]
+    }));
+}
+
+#[test]
 fn decoded_standard_memory_copy_from_memory1_to_memory0_preserves_mixed_indices() {
     let wasm = standard_multi_memory_module(&[
         0x41, 0x00, // i32.const 0
         0x41, 0x2D, // i32.const 45
-        0x36, 0x42, 0x00, 0x01, // i32.store align=2|memidx, offset=0, memidx=1
+        0x36, 0x42, 0x01, 0x00, // i32.store align=2|memidx, memidx=1, offset=0
         0x41, 0x04, // dst = 4 in memory 0
         0x41, 0x00, // src = 0 in memory 1
         0x41, 0x04, // len = 4
@@ -975,7 +1114,7 @@ fn decoded_standard_memory_copy_from_memory0_to_memory1_preserves_mixed_indices(
         0x41, 0x04, // len = 4
         0xFC, 0x0A, 0x01, 0x00, // memory.copy dstmem=1 srcmem=0
         0x41, 0x08, // i32.const 8
-        0x28, 0x42, 0x00, 0x01, // i32.load align=2|memidx, offset=0, memidx=1
+        0x28, 0x42, 0x01, 0x00, // i32.load align=2|memidx, memidx=1, offset=0
     ]);
     let mut chunks = vybe_platform_wasm::read_wasm(&wasm).expect("standard wasm should decode");
     let function = chunks.remove(1);

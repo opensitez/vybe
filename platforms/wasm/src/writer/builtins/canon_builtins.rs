@@ -41,6 +41,8 @@ pub const IMPORTS: &[&str] = &[
     "stream.cancel-read",
     "stream.drop-readable",
     "stream.drop-writable",
+    "future.drop-readable",
+    "future.drop-writable",
     "resource.rep",
 ];
 
@@ -75,7 +77,8 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
         // ⛔ NO RESULT. `io.rs` emits no `DROP` after these two, which is the
         // call sites agreeing with the spec and disagreeing with the arity
         // scan's invented `-> externref`.
-        "stream.drop-readable" | "stream.drop-writable" => {
+        "stream.drop-readable" | "stream.drop-writable"
+        | "future.drop-readable" | "future.drop-writable" => {
             write_leb128_u32(out, 1);
             out.push(TYPE_I32);
             write_leb128_u32(out, 0);
@@ -83,4 +86,19 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
         _ => return false,
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn future_end_drop_signatures_are_void_including_canonical_suffixes() {
+        for name in ["future.drop-readable", "future.drop-writable",
+            "future.drop-readable@0", "future.drop-writable@2"] {
+            let mut signature = Vec::new();
+            assert!(write_signature(&mut signature, name));
+            assert_eq!(signature, [1, TYPE_I32, 0], "{name}");
+        }
+    }
 }

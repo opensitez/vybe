@@ -483,7 +483,16 @@ fn reader_rejects_table_init_element_index_out_of_range() {
 
 fn roundtrip(chunks: Vec<Chunk>) -> Vec<Chunk> {
     let bytes = wasm::write_wasm(&chunks);
-    wasm::read_wasm(&bytes).expect("WASM round-trip read failed")
+    let mut decoded = wasm::read_wasm(&bytes).expect("WASM round-trip read failed");
+    // The reader's startup wrapper discards `_start`'s result, as it should.
+    // These tests inspect that exported function's result, so retain it here.
+    let script = &mut decoded[0];
+    let drop_start = script.code.len() - 2 * Op::DROP.encode().len();
+    assert_eq!(&script.code[drop_start..drop_start + 4], &Op::DROP.encode());
+    assert_eq!(&script.code[drop_start + 4..], &Op::RETURN.encode());
+    script.code.drain(drop_start..drop_start + 4);
+    script.lines.drain(drop_start..drop_start + 4);
+    decoded
 }
 
 fn read_leb_u32(bytes: &[u8], ip: &mut usize) -> u32 {
@@ -596,6 +605,23 @@ fn section_payload(bytes: &[u8], target_id: u8) -> Option<&[u8]> {
     None
 }
 
+fn run_roundtrip(chunks: Vec<Chunk>) -> Value {
+    let mut vm = VM::new();
+    vybe_runtime::js_builtins::register(&mut vm);
+    vybe_platform_ecma::register(&mut vm);
+    vm.run(chunks).expect("run failed")
+}
+
+#[test]
+fn reader_startup_discards_exported_result() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_i32_const(42, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let decoded =
+        wasm::read_wasm(&wasm::write_wasm(&[chunk])).expect("WASM round-trip read failed");
+    assert_eq!(run_roundtrip(decoded).as_i32(), 0);
+}
+
 #[test]
 fn roundtrip_const_and_return() {
     let mut chunk = Chunk::new("<script>");
@@ -603,7 +629,7 @@ fn roundtrip_const_and_return() {
     chunk.emit_op(Op::RETURN, 0);
 
     let chunks = roundtrip(vec![chunk]);
-    let r = VM::new().run(chunks).expect("run failed");
+    let r = run_roundtrip(chunks);
     assert_eq!(r.as_i32(), 42);
 }
 
@@ -616,7 +642,7 @@ fn roundtrip_i32_arithmetic() {
     chunk.emit_op(Op::RETURN, 0);
 
     let chunks = roundtrip(vec![chunk]);
-    let r = VM::new().run(chunks).expect("run failed");
+    let r = run_roundtrip(chunks);
     assert_eq!(r.as_i32(), 42);
 }
 
@@ -629,7 +655,7 @@ fn roundtrip_f64_arithmetic() {
     chunk.emit_op(Op::RETURN, 0);
 
     let chunks = roundtrip(vec![chunk]);
-    let r = VM::new().run(chunks).expect("run failed");
+    let r = run_roundtrip(chunks);
     assert_eq!(r.as_f64(), 7.0);
 }
 
@@ -645,7 +671,7 @@ fn roundtrip_structured_control_if_else() {
     chunk.emit_op(Op::RETURN, 0);
 
     let chunks = roundtrip(vec![chunk]);
-    let r = VM::new().run(chunks).expect("run failed");
+    let r = run_roundtrip(chunks);
     assert_eq!(r.as_i32(), 10);
 }
 
@@ -675,7 +701,7 @@ fn roundtrip_loop_with_br() {
     chunk.emit_op(Op::RETURN, 0);
 
     let chunks = roundtrip(vec![chunk]);
-    let r = VM::new().run(chunks).expect("run failed");
+    let r = run_roundtrip(chunks);
     assert_eq!(r.as_i32(), 0);
 }
 
@@ -852,7 +878,7 @@ fn multi_memory_memarg_emits_memory_index_bit_and_immediate() {
     chunk.emit_op(Op::RETURN, 0);
 
     let bytes = wasm::write_wasm(&[chunk]);
-    let pattern = [0x28, 0x42, 0x05, 0x01];
+    let pattern = [0x28, 0x42, 0x01, 0x05];
     assert!(
         bytes.windows(pattern.len()).any(|w| w == pattern),
         "i32.load must preserve multi-memory memarg bytes"
@@ -861,9 +887,7 @@ fn multi_memory_memarg_emits_memory_index_bit_and_immediate() {
 
 #[test]
 fn multi_memory_bulk_ops_emit_memory_index_immediates() {
-    // Non-default memory indices are fixed u16 immediates on the memory
-    // ops (declared in their OperandFormat — the 0xEE selector block is
-    // retired).
+    // Non-default memory indices are LEB128 immediates on the memory ops.
     let mut chunk = Chunk::new("<script>");
     chunk.emit_op_idx(Op::MEMORY_GROW, 1u32, 0);
     chunk.emit_op(Op::DROP, 0);
@@ -889,7 +913,7 @@ fn reader_preserves_multi_memory_load_memarg() {
     let wasm = standard_module_with_body(
         &[
             0x41, 0x00, // i32.const 0
-            0x28, 0x42, 0x05, 0x01, // i32.load align=2|memidx, offset=5, memidx=1
+            0x28, 0x42, 0x01, 0x05, // i32.load align=2|memidx, memidx=1, offset=5
             0x1A, // drop
         ],
         2,
@@ -927,12 +951,11 @@ fn reader_preserves_multi_memory_bulk_indices() {
     let mg = Op::MEMORY_GROW.encode();
     let mc = Op::MEMORY_COPY.encode();
     let mf = Op::MEMORY_FILL.encode();
-    // The memory index is a fixed u16 BE immediate declared in each op's
-    // OperandFormat (memory.copy carries dst then src).
+    // The memory index is a LEB128 immediate (memory.copy carries dst then src).
     let patterns: Vec<Vec<u8>> = vec![
-        vec![mg[0], mg[1], mg[2], mg[3], 0x00, 0x01],
-        vec![mc[0], mc[1], mc[2], mc[3], 0x00, 0x01, 0x00, 0x02],
-        vec![mf[0], mf[1], mf[2], mf[3], 0x00, 0x01],
+        vec![mg[0], mg[1], mg[2], mg[3], 0x01],
+        vec![mc[0], mc[1], mc[2], mc[3], 0x01, 0x02],
+        vec![mf[0], mf[1], mf[2], mf[3], 0x01],
     ];
     for pattern in &patterns {
         assert!(
@@ -1051,6 +1074,49 @@ fn fc_prefixed_proposal_opcodes_have_spec_byte_values() {
         assert_eq!(op.group(), 0xFC);
         assert_eq!(op.sub(), sub);
     }
+}
+
+#[test]
+fn source_table_growth_converts_callable_and_count_to_native_operands() {
+    for null_initializer in [false, true] {
+        let mut entry = Chunk::new("<script>");
+        if null_initializer {
+            entry.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        } else {
+            entry.emit_op_u16(Op::REF_FUNC, 1, 0);
+            entry.emit(0, 0);
+        }
+        entry.emit_i32_const(1, 0);
+        entry.emit_op_idx(Op::TABLE_GROW, 0u32, 0);
+        entry.emit_op(Op::RETURN, 0);
+        let mut function = Chunk::new("worker");
+        function.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        function.emit_op(Op::RETURN, 0);
+        let bytes = wasm::write_wasm_with_options(&[entry, function], wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes).unwrap();
+    }
+}
+
+#[test]
+fn source_wait32_preserves_raw_timeout_and_converts_integer_operands() {
+    let mut entry = Chunk::new("<script>");
+    entry.emit_i32_const(0, 0);
+    entry.emit_i32_const(0, 0);
+    entry.emit_i64_const(0, 0);
+    entry.emit_op(Op::MEMORY_ATOMIC_WAIT32, 0);
+    entry.emit(2, 0); // alignment
+    entry.emit(0, 0); // offset
+    entry.emit_op(Op::RETURN, 0);
+    let bytes = wasm::write_wasm_with_options(&[entry], wasm::WasmWriteOptions {
+        include_vybe_metadata: false,
+        include_name_section: true,
+    });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
 }
 
 #[test]
@@ -1393,7 +1459,7 @@ fn roundtrip_multiple_functions() {
         init: ConstExpr::RefFunc(1),
     });
     let fn_name = main.add_constant(Value::String(Arc::from("__add")));
-    main.emit_op_u16(Op::GLOBAL_GET, fn_name, 0);
+    main.emit_op_u32(Op::GLOBAL_GET, fn_name as u32, 0);
     main.emit_i32_const(20, 0);
     main.emit_i32_const(22, 0);
     main.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
@@ -1415,7 +1481,7 @@ fn rt_run(emit: impl FnOnce(&mut Chunk)) -> Value {
     emit(&mut c);
     c.emit_op(Op::RETURN, 0);
     let chunks = roundtrip(vec![c]);
-    VM::new().run(chunks).expect("run failed")
+    run_roundtrip(chunks)
 }
 
 fn push_i32_rt(c: &mut Chunk, v: i32) {
@@ -1617,9 +1683,12 @@ fn without_custom_sections(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Decoded modules get an EMPTY script chunk; append glue that calls the
-/// first local function (0 args) so the module can execute.
+/// Modules without `_start` get a script containing only RETURN. Replace that
+/// terminator with a call to the first local function (0 args).
 fn call_entry_glue(chunks: &mut [Chunk]) {
+    assert_eq!(chunks[0].code, Op::RETURN.encode());
+    chunks[0].code.clear();
+    chunks[0].lines.clear();
     chunks[0].emit_op_u16(Op::REF_FUNC, 1, 0);
     chunks[0].emit(0, 0); // 0 upvalues
     chunks[0].emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
@@ -1753,9 +1822,9 @@ fn reader_ingests_return_call_ref() {
 }
 
 #[test]
-fn writer_lowers_return_call_ref_to_return_call_indirect() {
+fn writer_lowers_return_call_ref_to_spec_return_call_ref() {
     // Internal dynamic tail call (callee below args) must come out as spec
-    // `return_call_indirect` (0x13), not raw internal bytes.
+    // `return_call_ref` (0x15), with the callee moved above the arguments.
     let mut f = Chunk::new("f");
     f.arity = 1;
     f.local_count = 1;
@@ -1781,8 +1850,8 @@ fn writer_lowers_return_call_ref_to_return_call_indirect() {
     assert!(
         decoded
             .iter()
-            .any(|c| chunk_contains_op(c, Op::RETURN_CALL_INDIRECT)),
-        "RETURN_CALL_REF must round-trip through spec return_call_indirect"
+            .any(|c| chunk_contains_op(c, Op::RETURN_CALL_REF)),
+        "RETURN_CALL_REF must round-trip through spec return_call_ref"
     );
 }
 

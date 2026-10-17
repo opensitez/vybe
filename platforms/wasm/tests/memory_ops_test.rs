@@ -221,9 +221,9 @@ fn function_in_separate_chunk_callable() {
     let name = main.add_constant(Value::String(Arc::from("add")));
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::GLOBAL_SET, name, 0);
+    main.emit_op_u32(Op::GLOBAL_SET, name, 0);
     // Call: add(10, 20)
-    main.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    main.emit_op_u32(Op::GLOBAL_GET, name, 0);
     main.emit_f64_const(10.0, 0);
     main.emit_f64_const(20.0, 0);
     main.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
@@ -253,7 +253,7 @@ fn multiple_chunks_cross_call() {
     quad.arity = 1;
     quad.local_count = 1;
     let dbl_name = quad.add_constant(Value::String(Arc::from("double")));
-    quad.emit_op_u16(Op::GLOBAL_GET, dbl_name, 0);
+    quad.emit_op_u32(Op::GLOBAL_GET, dbl_name, 0);
     quad.emit_op_u16(Op::LOCAL_GET, 0, 0);
     quad.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     quad.emit_op(Op::RETURN, 0);
@@ -265,13 +265,13 @@ fn multiple_chunks_cross_call() {
     // Register double
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::GLOBAL_SET, d_name, 0);
+    main.emit_op_u32(Op::GLOBAL_SET, d_name, 0);
     // Register quad
     main.emit_op_u16(Op::REF_FUNC, 2, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::GLOBAL_SET, q_name, 0);
+    main.emit_op_u32(Op::GLOBAL_SET, q_name, 0);
     // Call quad(5)
-    main.emit_op_u16(Op::GLOBAL_GET, q_name, 0);
+    main.emit_op_u32(Op::GLOBAL_GET, q_name, 0);
     main.emit_f64_const(5.0, 0);
     main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 

@@ -97,6 +97,217 @@ fn memory_fill_writes_byte_to_range() {
 }
 
 #[test]
+fn memory_fill_and_init_boxed_locals_emit_valid_wasm() {
+    for init in [false, true] {
+        for memory_idx in [0u32, 1u32] {
+            let mut chunk = Chunk::new("<boxed-bulk-memory>");
+            chunk.memory_min_pages.extend([1, 1]);
+            if init {
+                chunk.data_segments.push(vec![1, 2, 3, 4]);
+            }
+            let dst = chunk.alloc_scratch(1);
+            let middle = chunk.alloc_scratch(1);
+            let len = chunk.alloc_scratch(1);
+            for (slot, value) in [(dst, 16), (middle, 0), (len, 4)] {
+                chunk.emit_i32_const(value, 0);
+                chunk.emit_op_u16(Op::LOCAL_SET, slot, 0);
+            }
+            for slot in [dst, middle, len] {
+                chunk.emit_op_u16(Op::LOCAL_GET, slot, 0);
+            }
+            if init {
+                chunk.emit_op_idx_idx(Op::MEMORY_INIT, 0u32, memory_idx, 0);
+            } else {
+                chunk.emit_op_idx(Op::MEMORY_FILL, memory_idx, 0);
+            }
+            chunk.emit_i32_const(0, 0);
+            chunk.emit_op(Op::RETURN, 0);
+
+            let binary = vybe_platform_wasm::write_wasm(&[chunk]);
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&binary)
+                .expect("boxed bulk-memory operands must lower to valid standard Wasm");
+        }
+    }
+}
+
+#[test]
+fn memory64_grow_and_size_emit_valid_wasm() {
+    let mut chunk = Chunk::new("<memory64-grow-size>");
+    chunk.memory_min_pages.extend([1, 1]);
+    chunk.memory_is_64 = vec![false, true];
+    chunk.emit_i64_const(1, 0);
+    chunk.emit_op_idx(Op::MEMORY_GROW, 1u32, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op_idx(Op::MEMORY_SIZE, 1u32, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let binary = vybe_platform_wasm::write_wasm(&[chunk]);
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&binary)
+        .expect("memory64 size/grow must use i64 operands and results");
+}
+
+#[test]
+fn memory32_grow_and_size_boxed_values_emit_valid_wasm() {
+    for memory_idx in [0u32, 1u32] {
+        let mut chunk = Chunk::new("<memory32-grow-size>");
+        chunk.memory_min_pages.extend([1, 1]);
+        chunk.emit_i32_const(1, 0);
+        chunk.emit_op_idx(Op::MEMORY_GROW, memory_idx, 0);
+        chunk.emit_op(Op::DROP, 0);
+        chunk.emit_op_idx(Op::MEMORY_SIZE, memory_idx, 0);
+        chunk.emit_op(Op::DROP, 0);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        chunk.emit_op(Op::RETURN, 0);
+
+        let binary = vybe_platform_wasm::write_wasm(&[chunk]);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&binary)
+            .expect("memory32 size/grow must retain boxed-value lowering");
+    }
+}
+
+#[test]
+fn memory64_bulk_operations_emit_valid_wasm() {
+    let validate = |mut chunk: Chunk| {
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        let binary = vybe_platform_wasm::write_wasm(&[chunk]);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&binary)
+            .expect("memory64 bulk operands must have their standard Wasm types");
+    };
+    let new_chunk = || {
+        let mut chunk = Chunk::new("<memory64-bulk>");
+        chunk.memory_min_pages.extend([1, 1]);
+        chunk.memory_is_64 = vec![false, true];
+        chunk
+    };
+
+    let mut fill = new_chunk();
+    fill.emit_i64_const(8, 0);
+    fill.emit_i32_const(42, 0);
+    fill.emit_i64_const(4, 0);
+    fill.emit_op_idx(Op::MEMORY_FILL, 1u32, 0);
+    validate(fill);
+
+    let mut init = new_chunk();
+    init.data_segments.push(vec![1, 2, 3, 4]);
+    init.emit_i64_const(8, 0);
+    init.emit_i32_const(0, 0);
+    init.emit_i32_const(4, 0);
+    init.emit_op_idx_idx(Op::MEMORY_INIT, 0u32, 1u32, 0);
+    validate(init);
+
+    for (dst, src) in [(0u32, 1u32), (1, 0), (1, 1)] {
+        let mut copy = new_chunk();
+        if dst == 1 {
+            copy.emit_i64_const(8, 0);
+        } else {
+            copy.emit_i32_const(8, 0);
+        }
+        if src == 1 {
+            copy.emit_i64_const(4, 0);
+        } else {
+            copy.emit_i32_const(4, 0);
+        }
+        if dst == 1 && src == 1 {
+            copy.emit_i64_const(4, 0);
+        } else {
+            copy.emit_i32_const(4, 0);
+        }
+        copy.emit_op_idx_idx(Op::MEMORY_COPY, dst, src, 0);
+        validate(copy);
+    }
+}
+
+#[test]
+fn memory_load_store_address_widths_emit_valid_wasm() {
+    let emit_memarg = |chunk: &mut Chunk, align: u32, memory_idx: u32| {
+        let marker = 0x80 | align | if memory_idx == 1 { 0x140 } else { 0 };
+        chunk.emit_leb_u32(marker, 0);
+        chunk.emit_leb_u32(7, 0);
+        if memory_idx != 0 {
+            chunk.emit_leb_u32(memory_idx, 0);
+        }
+    };
+    for memory_idx in [0u32, 1u32] {
+        let mut chunk = Chunk::new("<memory-address-width>");
+        chunk.memory_min_pages.extend([1, 1]);
+        chunk.memory_is_64 = vec![false, true];
+        if memory_idx == 1 {
+            chunk.emit_i64_const(8, 0);
+        } else {
+            chunk.emit_i32_const(8, 0);
+        }
+        chunk.emit_i32_const(42, 0);
+        chunk.emit_op(Op::I32_STORE, 0);
+        emit_memarg(&mut chunk, 2, memory_idx);
+        if memory_idx == 1 {
+            chunk.emit_i64_const(8, 0);
+        } else {
+            chunk.emit_i32_const(8, 0);
+        }
+        chunk.emit_op(Op::I32_LOAD, 0);
+        emit_memarg(&mut chunk, 2, memory_idx);
+        chunk.emit_op(Op::DROP, 0);
+
+        if memory_idx == 1 {
+            chunk.emit_i64_const(16, 0);
+        } else {
+            chunk.emit_i32_const(16, 0);
+        }
+        chunk.emit_i64_const(123, 0);
+        chunk.emit_op(Op::I64_STORE, 0);
+        emit_memarg(&mut chunk, 3, memory_idx);
+        if memory_idx == 1 {
+            chunk.emit_i64_const(16, 0);
+        } else {
+            chunk.emit_i32_const(16, 0);
+        }
+        chunk.emit_op(Op::I64_LOAD, 0);
+        emit_memarg(&mut chunk, 3, memory_idx);
+        chunk.emit_op(Op::DROP, 0);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        chunk.emit_op(Op::RETURN, 0);
+
+        let store_at = chunk
+            .code
+            .windows(4)
+            .position(|bytes| bytes == Op::I32_STORE.encode())
+            .expect("i32.store opcode");
+        let mut memarg_at = store_at + 4;
+        let marker = vybe_runtime::opcode::read_leb_u32(&chunk.code, &mut memarg_at);
+        assert_eq!(marker & 0x40 != 0, memory_idx == 1);
+        let binary = vybe_platform_wasm::write_wasm(&[chunk]);
+        let mut emitted_memargs = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&binary) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.expect("code section") {
+                let mut ops = body.get_operators_reader().expect("operators");
+                while !ops.eof() {
+                    match ops.read().expect("operator") {
+                        wasmparser::Operator::I32Store { memarg }
+                        | wasmparser::Operator::I32Load { memarg }
+                        | wasmparser::Operator::I64Store { memarg }
+                        | wasmparser::Operator::I64Load { memarg } => {
+                            emitted_memargs.push((memarg.memory, memarg.offset));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert_eq!(emitted_memargs, vec![(memory_idx, 7); 4]);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&binary)
+            .unwrap_or_else(|error| panic!("memory {memory_idx} load/store validation: {error}"));
+    }
+}
+
+#[test]
 fn memory_fill_zero_count_is_noop() {
     let vm = run_with_memory(64, |c| {
         push_i32(c, 0);
@@ -149,6 +360,113 @@ fn memory_fill_oob_traps() {
 }
 
 // ── memory.copy (0xFC 0x0A) ──────────────────────────────────────────
+
+#[test]
+fn memory_copy_boxed_locals_emit_valid_wasm() {
+    for (dst_memory, src_memory) in [(0u32, 0u32), (1, 0), (0, 1), (1, 1)] {
+        let mut chunk = Chunk::new("<boxed-memory-copy>");
+        chunk.memory_min_pages.extend([1, 1]);
+        let dst = chunk.alloc_scratch(1);
+        let src = chunk.alloc_scratch(1);
+        let len = chunk.alloc_scratch(1);
+        for (slot, value) in [(dst, 16), (src, 0), (len, 4)] {
+            chunk.emit_i32_const(value, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, slot, 0);
+        }
+        for slot in [dst, src, len] {
+            chunk.emit_op_u16(Op::LOCAL_GET, slot, 0);
+        }
+        chunk.emit_op_idx_idx(Op::MEMORY_COPY, dst_memory, src_memory, 0);
+        chunk.emit_i32_const(0, 0);
+        chunk.emit_op(Op::RETURN, 0);
+
+        let binary = vybe_platform_wasm::write_wasm(&[chunk]);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&binary)
+            .expect("boxed memory.copy operands must lower to valid standard Wasm");
+    }
+}
+
+#[test]
+fn writer_preserves_multiple_memory_limits_and_index_types() {
+    let mut chunk = Chunk::new("<multi-memory-limits>");
+    chunk.memory_min_pages = vec![2, 3];
+    chunk.memory_max_pages = vec![Some(4), Some(5)];
+    chunk.memory_is_64 = vec![false, true];
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let binary = vybe_platform_wasm::write_wasm(&[chunk]);
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&binary)
+        .expect("mixed memory32/memory64 declarations must validate");
+    let memories = wasmparser::Parser::new(0)
+        .parse_all(&binary)
+        .find_map(|payload| match payload.expect("valid Wasm section") {
+            wasmparser::Payload::MemorySection(reader) => Some(
+                reader
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("memory declarations"),
+            ),
+            _ => None,
+        })
+        .expect("memory section");
+    assert_eq!(memories.len(), 2);
+    assert_eq!(
+        (
+            memories[0].initial,
+            memories[0].maximum,
+            memories[0].memory64
+        ),
+        (2, Some(4), false)
+    );
+    assert_eq!(
+        (
+            memories[1].initial,
+            memories[1].maximum,
+            memories[1].memory64
+        ),
+        (3, Some(5), true)
+    );
+}
+
+#[test]
+fn writer_uses_first_chunk_memory_declarations() {
+    let mut helper = Chunk::new("helper");
+    helper.memory_min_pages = vec![2, 3];
+    helper.emit_i32_const(0, 0);
+    helper.emit_op(Op::RETURN, 0);
+
+    let mut script = Chunk::new("<script>");
+    script.memory_min_pages = vec![9];
+    script.emit_i32_const(0, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let binary = vybe_platform_wasm::write_wasm(&[helper, script]);
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&binary)
+        .expect("first-chunk memory declarations must validate");
+    let memories = wasmparser::Parser::new(0)
+        .parse_all(&binary)
+        .find_map(|payload| match payload.expect("valid Wasm section") {
+            wasmparser::Payload::MemorySection(reader) => Some(
+                reader
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("memory declarations"),
+            ),
+            _ => None,
+        })
+        .expect("memory section");
+    assert_eq!(
+        memories
+            .iter()
+            .map(|memory| memory.initial)
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+}
 
 #[test]
 fn memory_copy_non_overlapping() {
@@ -615,7 +933,10 @@ fn table_init_source_oob_traps() {
     let err = vm
         .run(vec![chunk])
         .expect_err("table.init source OOB must trap");
-    assert!(err.to_string().contains("source out of bounds"));
+    assert!(
+        err.to_string()
+            .contains("out of bounds table access (table.init source)")
+    );
 }
 
 #[test]
@@ -633,18 +954,22 @@ fn table_init_destination_oob_traps() {
     let err = vm
         .run(vec![chunk])
         .expect_err("table.init destination OOB must trap");
-    assert!(err.to_string().contains("destination out of bounds"));
+    assert!(
+        err.to_string()
+            .contains("out of bounds table access (table.init destination)")
+    );
 }
 
 #[test]
 fn table_init_after_elem_drop_traps() {
     let mut vm = VM::new();
     vm.wasm_tables = vec![vec![Value::Null; 8]];
+    vm.set_elem_segment(0, vec![Value::I32(10)]);
     let mut chunk = Chunk::new("<script>");
     chunk.emit_op_idx(Op::ELEM_DROP, 0u32, 0);
     push_i32(&mut chunk, 0); // dst
     push_i32(&mut chunk, 0); // src offset
-    push_i32(&mut chunk, 0); // count
+    push_i32(&mut chunk, 1); // count
     chunk.emit_op_idx_idx(Op::TABLE_INIT, 0u32, 0u32, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -652,7 +977,8 @@ fn table_init_after_elem_drop_traps() {
         .run(vec![chunk])
         .expect_err("table.init after elem.drop must trap");
     assert!(
-        err.to_string().contains("element segment dropped"),
+        err.to_string()
+            .contains("out of bounds table access (table.init source)"),
         "unexpected trap: {err}"
     );
 }

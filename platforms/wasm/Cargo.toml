@@ -6,9 +6,12 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+wasmparser = "0.261.0"
 inventory = { workspace = true }
 indexmap = { workspace = true }
 vybe_runtime = { workspace = true }
+vybe_ast = { workspace = true }
 
 [dev-dependencies]
-wasmparser = "0.244.0"
+serde_json = { workspace = true }
+vybe_platform_ecma = { workspace = true }
