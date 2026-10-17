@@ -824,33 +824,20 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
         "[method]tcp-socket.send",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let handle = socket_arg(args);
-            let bytes = match method_arg(args, 0) {
-                Some(value) => ctx.stream_drain(value),
-                None => Vec::new(),
-            };
-            let outcome = match handle {
-                Some(handle) => {
-                    let id = socket_id_of(&handle);
-                    match tcp_stream(id) {
-                        Some(shared) => {
-                            let mut guard = shared.lock().unwrap();
-                            match guard.as_mut() {
-                                Some(stream) => {
-                                    match stream.write_all(&bytes).and_then(|()| stream.flush()) {
-                                        Ok(()) => Value::Null,
-                                        Err(error) => socket_err_from(&error),
-                                    }
-                                }
-                                None => socket_err("invalid-state"),
-                            }
-                        }
-                        None => socket_err("invalid-state"),
-                    }
-                }
-                None => socket_err("invalid-state"),
-            };
             let (future_val, future_id) = ctx.create_future();
-            ctx.resolve_future(future_id, outcome);
+            let shared = handle.and_then(|handle| tcp_stream(socket_id_of(&handle)));
+            let result = method_arg(args, 0).ok_or("invalid stream").and_then(|data| {
+                ctx.consume_byte_stream(data, future_id, Box::new(move |bytes| {
+                    let shared = shared.as_ref().ok_or_else(|| socket_err("invalid-state"))?;
+                    let mut guard = shared.lock().unwrap();
+                    let stream = guard.as_mut().ok_or_else(|| socket_err("invalid-state"))?;
+                    match bytes {
+                        Some(bytes) => stream.write_all(bytes),
+                        None => stream.flush(),
+                    }.map_err(|error| socket_err_from(&error))
+                }))
+            });
+            if result.is_err() { ctx.resolve_future(future_id, socket_err("invalid-state")); }
             future_val
         }),
     );
@@ -2120,6 +2107,75 @@ mod concurrency_tests {
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
         (client, server)
+    }
+
+    #[test]
+    fn real_tcp_send_consumes_multiple_guest_chunks_and_completes_on_eof() {
+        use vybe_runtime::{Chunk, Op, VM};
+        use vybe_runtime::event_loop::FuturePhase;
+
+        let (mut peer, socket) = connected_pair();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let handle = new_socket_handle("tcp-socket", "ipv4");
+        let Value::Object(object) = &handle else { panic!("expected socket"); };
+        let id = socket_id_of(object);
+        get_state().lock().unwrap().tcp_streams
+            .insert(id, Arc::new(Mutex::new(Some(socket))));
+        let mut vm = VM::new();
+        super::register(&mut vm);
+        vm.set_global_owned("send_socket", handle);
+        let mut start = Chunk::new("tcp-start-open-stream");
+        start.memory_min_pages.push(1);
+        let new = start.add_import("canon", "stream.new");
+        let send = start.add_import("wasi:sockets/types", "[method]tcp-socket.send");
+        let packed = start.i64_scratch();
+        let writer = start.alloc_scratch(1);
+        start.emit_call(new, 0, 0);
+        start.emit_op_u16(Op::LOCAL_SET, packed, 0);
+        start.emit_op_u16(Op::LOCAL_GET, packed, 0);
+        start.emit_i64_const(32, 0);
+        start.emit_op(Op::I64_SHR_U, 0);
+        start.emit_op(Op::I32_WRAP_I64, 0);
+        start.emit_op_u16(Op::LOCAL_SET, writer, 0);
+        let socket = start.intern_string_constant("send_socket");
+        start.emit_op_u32(Op::GLOBAL_GET, socket, 0);
+        start.emit_op_u16(Op::LOCAL_GET, packed, 0);
+        start.emit_op(Op::I32_WRAP_I64, 0);
+        start.emit_call(send, 2, 0);
+        start.emit_op(Op::DROP, 0);
+        start.emit_op_u16(Op::LOCAL_GET, writer, 0);
+        start.emit_op(Op::RETURN, 0);
+        start.local_count = start.local_count.max(start.scratch_high_water);
+        let writer = vm.run(vec![start]).unwrap().as_i32();
+        for bytes in [&[0, 128][..], &[255, b'\n', 1][..]] {
+            assert_eq!(vm.event_loop.borrow().future_states.values().next().unwrap().phase,
+                FuturePhase::Pending);
+            vm.memory.write_bytes(0, bytes);
+            let mut write = Chunk::new("tcp-send-chunk");
+            let copy = write.add_import("canon", "stream.write");
+            write.emit_i32_const(writer, 0);
+            write.emit_i32_const(0, 0);
+            write.emit_i32_const(bytes.len() as i32, 0);
+            write.emit_call(copy, 3, 0);
+            write.emit_op(Op::RETURN, 0);
+            assert_eq!(vm.run(vec![write]).unwrap().as_i32(), (bytes.len() as i32) << 4);
+            let mut received = vec![0; bytes.len()];
+            peer.read_exact(&mut received).unwrap();
+            assert_eq!(received, bytes);
+        }
+        assert_eq!(vm.event_loop.borrow().future_states.values().next().unwrap().phase,
+            FuturePhase::Pending);
+        let mut close = Chunk::new("tcp-close-stream");
+        let drop_writer = close.add_import("canon", "stream.drop-writable");
+        close.emit_i32_const(writer, 0);
+        close.emit_call(drop_writer, 1, 0);
+        vm.run(vec![close]).unwrap();
+        let events = vm.event_loop.borrow();
+        assert_eq!(events.future_states.len(), 1);
+        let completion = events.future_states.values().next().unwrap();
+        assert_eq!(completion.phase, FuturePhase::Resolved);
+        assert!(matches!(completion.value, Some(Value::Null)));
+        get_state().lock().unwrap().tcp_streams.remove(&id);
     }
 
     #[test]

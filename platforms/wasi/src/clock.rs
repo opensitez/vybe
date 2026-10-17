@@ -4,6 +4,21 @@ use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
 use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
+fn monotonic_now_ns() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+
+fn duration_ns(value: &Value) -> u64 {
+    match value {
+        Value::I64(bits) => *bits as u64,
+        Value::BigInt(integer) if !integer.is_negative() && integer.bit_len() <= 64 => {
+            integer.to_u64_wrapping()
+        }
+        _ => value.as_f64() as u64,
+    }
+}
+
 /// Declare a `wasi:clocks/*` function.
 ///
 /// No resource: a clock is not a handle. 0.2 had one — the `pollable` that
@@ -62,9 +77,7 @@ pub fn register(vm: &mut VM) {
         vec![],
         vec![nanos()],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            let start = START.get_or_init(std::time::Instant::now);
-            Value::F64(start.elapsed().as_nanos() as f64)
+            Value::F64(monotonic_now_ns() as f64)
         }),
     );
 
@@ -102,14 +115,10 @@ pub fn register(vm: &mut VM) {
         vec![nanos()],
         vec![future_result()],
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            static START: OnceLock<Instant> = OnceLock::new();
-            let start = START.get_or_init(Instant::now);
-            let mark_ns = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
-            let elapsed_ns = start.elapsed().as_nanos() as f64;
-            if mark_ns > elapsed_ns {
-                std::thread::sleep(std::time::Duration::from_nanos(
-                    (mark_ns - elapsed_ns) as u64,
-                ));
+            let mark_ns = args.first().map(duration_ns).unwrap_or(0);
+            let remaining_ns = mark_ns.saturating_sub(monotonic_now_ns());
+            if remaining_ns != 0 {
+                std::thread::sleep(std::time::Duration::from_nanos(remaining_ns));
             }
             let (future_val, future_id) = ctx.create_future();
             ctx.resolve_future(future_id, Value::Null);
@@ -126,7 +135,7 @@ pub fn register(vm: &mut VM) {
         vec![nanos()],
         vec![future_result()],
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let how_long_ns = args.first().map(|v| v.as_f64()).unwrap_or(0.0) as u64;
+            let how_long_ns = args.first().map(duration_ns).unwrap_or(0);
             if how_long_ns > 0 {
                 std::thread::sleep(std::time::Duration::from_nanos(how_long_ns));
             }
@@ -407,6 +416,38 @@ struct TzifBlock {
     transition_types: Vec<u8>,
     types: Vec<(i64, bool)>,
     end: usize,
+}
+
+#[cfg(test)]
+mod monotonic_tests {
+    use super::*;
+    use vybe_runtime::{Chunk, Op};
+
+    #[test]
+    fn durations_preserve_core_and_canonical_u64_bits() {
+        for bits in [0, 1, (1u64 << 53) + 1, i64::MAX as u64, u64::MAX] {
+            assert_eq!(duration_ns(&Value::I64(bits as i64)), bits);
+            assert_eq!(duration_ns(&Value::bigint_u64(bits)), bits);
+        }
+        assert_eq!(duration_ns(&Value::F64(1_000.0)), 1_000);
+        assert_eq!(duration_ns(&Value::I32(1_000)), 1_000);
+    }
+
+    #[test]
+    fn registered_now_uses_the_existing_monotonic_reference() {
+        monotonic_now_ns();
+        let mut vm = VM::new();
+        register(&mut vm);
+        let mut chunk = Chunk::new("real-monotonic-now");
+        let now = chunk.add_import("wasi:clocks/monotonic-clock", "now");
+        chunk.emit_call(now, 0, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        let before = monotonic_now_ns();
+        let observed = vm.run(vec![chunk]).unwrap().as_f64() as u64;
+        let after = monotonic_now_ns();
+        assert!(observed >= before && observed <= after,
+            "registered now {observed} must share reference [{before}, {after}]");
+    }
 }
 
 #[cfg(test)]

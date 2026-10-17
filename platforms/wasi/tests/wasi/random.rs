@@ -117,7 +117,7 @@ fn get_random_bytes_negative_length_clamps_to_empty_array() {
 #[test]
 fn get_random_u64_returns_numeric_value() {
     let result = invoke("wasi:random/random", "get-random-u64", vec![]);
-    assert!(matches!(result, Value::F64(_)));
+    assert!(matches!(result, Value::I64(_)));
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn get_insecure_random_bytes_values_stay_in_byte_range() {
 #[test]
 fn get_insecure_random_u64_returns_numeric_value() {
     let result = invoke("wasi:random/insecure", "get-insecure-random-u64", vec![]);
-    assert!(matches!(result, Value::F64(_)));
+    assert!(matches!(result, Value::I64(_)));
 }
 
 #[test]
@@ -198,8 +198,8 @@ fn insecure_seed_returns_two_number_tuple() {
     if let Value::Object(object) = &result {
         let object = object.lock().unwrap();
         if let ObjectKind::Array(values) = &object.kind {
-            assert!(matches!(values.first(), Some(Value::F64(_))));
-            assert!(matches!(values.get(1), Some(Value::F64(_))));
+            assert!(matches!(values.first(), Some(Value::I64(_))));
+            assert!(matches!(values.get(1), Some(Value::I64(_))));
             return;
         }
     }
@@ -207,7 +207,7 @@ fn insecure_seed_returns_two_number_tuple() {
 }
 
 #[test]
-fn insecure_seed_values_are_non_negative_numbers() {
+fn insecure_seed_values_preserve_integer_bits() {
     let result = invoke("wasi:random/insecure-seed", "get-insecure-seed", vec![]);
     let Value::Object(object) = result else {
         panic!("insecure-seed should return array");
@@ -218,10 +218,7 @@ fn insecure_seed_values_are_non_negative_numbers() {
     };
     assert_eq!(values.len(), 2);
     for value in values {
-        let Value::F64(number) = value else {
-            panic!("seed element should be numeric");
-        };
-        assert!(*number >= 0.0);
+        assert!(matches!(value, Value::I64(_)));
     }
 }
 
@@ -267,8 +264,8 @@ fn get_insecure_seed_answers_the_same_shape_as_the_older_name() {
         };
         for value in values {
             assert!(
-                matches!(value, Value::F64(n) if *n >= 0.0),
-                "{name} must answer non-negative numbers, got {value:?}"
+                matches!(value, Value::I64(_)),
+                "{name} must answer exact integer carriers, got {value:?}"
             );
         }
     }

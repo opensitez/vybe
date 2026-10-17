@@ -36,11 +36,19 @@ fn read_chunks(
 }
 
 fn write_bytes(mut output: impl std::io::Write, bytes: &[u8]) -> Result<(), &'static str> {
-    output.write_all(bytes).map_err(|error| match error.kind() {
+    output.write_all(bytes).map_err(output_error)
+}
+
+fn output_error(error: std::io::Error) -> &'static str {
+    match error.kind() {
         std::io::ErrorKind::BrokenPipe => "pipe",
         std::io::ErrorKind::InvalidData => "illegal-byte-sequence",
         _ => "io",
-    })
+    }
+}
+
+fn flush_output(mut output: impl std::io::Write) -> Result<(), &'static str> {
+    output.flush().map_err(output_error)
 }
 
 #[cfg(test)]
@@ -306,7 +314,7 @@ pub fn register(vm: &mut VM) {
 
             let (future_val, future_id) = ctx.create_future();
             let outcome = match failure {
-                Some(code) => Value::String(Arc::from(code)),
+                Some(code) => super::filesystem::err(code),
                 None => Value::Null,
             };
             ctx.resolve_future(future_id, outcome);
@@ -368,20 +376,21 @@ pub fn register(vm: &mut VM) {
         "wasi:cli/stdout",
         "write-via-stream",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let bytes = args.first().map(|stream| ctx.stream_drain(stream)).unwrap_or_default();
-            let outcome = if bytes.is_empty() {
-                Ok(())
-            } else {
-                write_bytes(std::io::stdout().lock(), &bytes)
-            };
-            if outcome.is_ok() && !bytes.is_empty() {
-                vybe_runtime::debugger::record_stdout_write();
-            }
             let (fut, fut_id) = ctx.create_future();
-            ctx.resolve_future(
-                fut_id,
-                outcome.err().map_or(Value::Null, |code| Value::String(Arc::from(code))),
-            );
+            let result = args.first().ok_or("invalid stream").and_then(|stream| {
+                ctx.consume_byte_stream(stream, fut_id, Box::new(|bytes| {
+                    if let Some(bytes) = bytes {
+                        write_bytes(std::io::stdout().lock(), bytes)
+                            .map_err(super::filesystem::err)?;
+                        vybe_runtime::debugger::record_stdout_write();
+                    } else {
+                        flush_output(std::io::stdout().lock())
+                            .map_err(super::filesystem::err)?;
+                    }
+                    Ok(())
+                }))
+            });
+            if result.is_err() { ctx.resolve_future(fut_id, super::filesystem::err("io")); }
             fut
         }),
     );
@@ -390,25 +399,107 @@ pub fn register(vm: &mut VM) {
         "wasi:cli/stderr",
         "write-via-stream",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let bytes = args.first().map(|stream| ctx.stream_drain(stream)).unwrap_or_default();
-            let outcome = if bytes.is_empty() {
-                Ok(())
-            } else {
-                write_bytes(std::io::stderr().lock(), &bytes)
-            };
             let (fut, fut_id) = ctx.create_future();
-            ctx.resolve_future(
-                fut_id,
-                outcome.err().map_or(Value::Null, |code| Value::String(Arc::from(code))),
-            );
+            let result = args.first().ok_or("invalid stream").and_then(|stream| {
+                ctx.consume_byte_stream(stream, fut_id, Box::new(|bytes| {
+                    if let Some(bytes) = bytes {
+                        write_bytes(std::io::stderr().lock(), bytes)
+                            .map_err(super::filesystem::err)?;
+                    } else {
+                        flush_output(std::io::stderr().lock())
+                            .map_err(super::filesystem::err)?;
+                    }
+                    Ok(())
+                }))
+            });
+            if result.is_err() { ctx.resolve_future(fut_id, super::filesystem::err("io")); }
             fut
         }),
     );
 }
 
 #[cfg(test)]
+mod stream_sink_tests {
+    use super::*;
+    use vybe_runtime::{Chunk, Op};
+    use vybe_runtime::event_loop::FuturePhase;
+
+    #[test]
+    fn invalid_stdio_stream_resolves_canonical_error_arm() {
+        for module in ["wasi:cli/stdout", "wasi:cli/stderr"] {
+            let mut vm = VM::new();
+            register(&mut vm);
+            let mut chunk = Chunk::new("invalid-stdio-stream");
+            let sink = chunk.add_import(module, "write-via-stream");
+            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+            chunk.emit_call(sink, 1, 0);
+            chunk.emit_op(Op::RETURN, 0);
+            assert!(matches!(vm.run(vec![chunk]).unwrap(), Value::I32(_)));
+            let events = vm.event_loop.borrow();
+            let completion = events.future_states.values().next().unwrap();
+            assert_eq!(completion.phase, FuturePhase::Resolved);
+            let value = completion.value.as_ref().unwrap();
+            let (case, payload) = vybe_runtime::canon_value::result_parts_public(value);
+            assert_eq!(case, 1);
+            assert!(matches!(payload, Value::String(ref code) if code.as_ref() == "io"));
+            let ty = vybe_runtime::component::ValType::Result(None, Some(Box::new(
+                vybe_runtime::component::ValType::Variant(vec![("io".into(), None)]),
+            )));
+            let memory = vybe_runtime::shared_memory::SharedMemory::new(8);
+            vybe_runtime::canon_value::store(&memory, value, &ty, 0).unwrap();
+            assert_eq!(memory.read_array::<2>(0).unwrap(), [1, 0]);
+        }
+    }
+
+    #[test]
+    fn real_stdio_sink_stays_pending_until_the_guest_writer_closes() {
+        for module in ["wasi:cli/stdout", "wasi:cli/stderr"] {
+            let mut vm = VM::new();
+            register(&mut vm);
+            let mut start = Chunk::new("stdio-start-open-stream");
+            let new = start.add_import("canon", "stream.new");
+            let sink = start.add_import(module, "write-via-stream");
+            let writer = start.alloc_scratch(1);
+            start.local_count = start.local_count.max(start.scratch_high_water);
+            let packed = start.i64_scratch();
+            start.emit_call(new, 0, 0);
+            start.emit_op_u16(Op::LOCAL_SET, packed, 0);
+            start.emit_op_u16(Op::LOCAL_GET, packed, 0);
+            start.emit_i64_const(32, 0);
+            start.emit_op(Op::I64_SHR_U, 0);
+            start.emit_op(Op::I32_WRAP_I64, 0);
+            start.emit_op_u16(Op::LOCAL_SET, writer, 0);
+            start.emit_op_u16(Op::LOCAL_GET, packed, 0);
+            start.emit_op(Op::I32_WRAP_I64, 0);
+            start.emit_call(sink, 1, 0);
+            start.emit_op(Op::DROP, 0);
+            start.emit_op_u16(Op::LOCAL_GET, writer, 0);
+            start.emit_op(Op::RETURN, 0);
+            let writer = vm.run(vec![start]).unwrap().as_i32();
+            {
+                let events = vm.event_loop.borrow();
+                assert_eq!(events.future_states.len(), 1);
+                assert_eq!(events.future_states.values().next().unwrap().phase, FuturePhase::Pending);
+            }
+            let mut finish = Chunk::new("stdio-close-stream");
+            let close = finish.add_import("canon", "stream.drop-writable");
+            finish.emit_i32_const(writer, 0);
+            finish.emit_call(close, 1, 0);
+            finish.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+            finish.emit_op(Op::RETURN, 0);
+            vm.run(vec![finish]).unwrap();
+            let events = vm.event_loop.borrow();
+            assert_eq!(events.future_states.len(), 1);
+            let completion = events.future_states.values().next().unwrap();
+            assert_eq!(completion.phase, FuturePhase::Resolved);
+            assert!(matches!(completion.value, Some(Value::Null)));
+        }
+    }
+}
+
+#[cfg(test)]
 mod write_tests {
-    use super::write_bytes;
+    use super::{flush_output, write_bytes};
     use std::io::{self, Write};
 
     struct BrokenWriter;
@@ -427,5 +518,28 @@ mod write_tests {
     fn output_errors_keep_the_wasi_error_code() {
         assert_eq!(write_bytes(BrokenWriter, b"data"), Err("pipe"));
         assert_eq!(write_bytes(io::sink(), b"data"), Ok(()));
+    }
+
+    #[test]
+    fn eof_flush_preserves_errors_and_reaches_the_writer() {
+        struct FlushWriter(bool);
+        impl io::Write for FlushWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { Ok(bytes.len()) }
+            fn flush(&mut self) -> io::Result<()> {
+                self.0 = true;
+                Ok(())
+            }
+        }
+        let mut writer = FlushWriter(false);
+        assert_eq!(flush_output(&mut writer), Ok(()));
+        assert!(writer.0);
+        struct FlushFailure;
+        impl io::Write for FlushFailure {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { Ok(bytes.len()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::from(io::ErrorKind::BrokenPipe))
+            }
+        }
+        assert_eq!(flush_output(FlushFailure), Err("pipe"));
     }
 }

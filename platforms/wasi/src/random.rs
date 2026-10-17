@@ -28,11 +28,8 @@
 //! trivially invertible, so one observed output reveals the whole state and
 //! every past and future value with it.
 //!
-//! Numbers are carried as `Value::F64`, the platform's numeric
-//! representation (same as `wasi:clocks`). That costs the low 11 bits of a
-//! `u64`, so `get-random-bytes` — not `get-random-u64` — is the full-entropy
-//! path. The carrier is load-bearing elsewhere: PHP's `rand()` scales this
-//! value by `r / 2^64` in f64 (`php/src/emitter/numeric_adapter.rs`).
+//! The `u64` results use an `I64` carrier to preserve all 64 bits. Consumers
+//! that need floating-point scaling convert it explicitly as unsigned.
 //!
 //! Vybe-convenience extensions live under the same `wasi:random/random`
 //! namespace, on top of the WASI primitives:
@@ -99,8 +96,8 @@ fn insecure_seed_pair() -> Value {
     let a = next_u64();
     let b = next_u64();
     Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
-        Value::F64(a as f64),
-        Value::F64(b as f64),
+        Value::I64(a as i64),
+        Value::I64(b as i64),
     ])))
 }
 
@@ -122,7 +119,7 @@ fn insecure_bytes_value(n: usize) -> Value {
 
 #[cfg(test)]
 mod random_tests {
-    use super::{RNG_STATE, advance, insecure_bytes_value, next_u64, secure_u64};
+    use super::{RNG_STATE, advance, insecure_bytes_value, insecure_seed_pair, next_u64, secure_u64};
     use vybe_runtime::value::ObjectKind;
     use vybe_runtime::Value;
 
@@ -149,6 +146,28 @@ mod random_tests {
     #[test]
     fn secure_u64_reads_eight_entropy_bytes() {
         assert!(secure_u64().is_some());
+    }
+
+    #[test]
+    fn insecure_seed_preserves_all_u64_bits() {
+        let original = RNG_STATE.with(|state| state.replace(0xfedc_ba98_7654_3210));
+        let mut expected = 0xfedc_ba98_7654_3210;
+        let first = advance(&mut expected);
+        let second = advance(&mut expected);
+        let pair = insecure_seed_pair();
+        let Value::Object(array) = pair else {
+            panic!("expected seed pair")
+        };
+        let array = array.lock().unwrap();
+        let ObjectKind::Array(values) = &array.kind else {
+            panic!("expected seed array")
+        };
+        assert_eq!(
+            values,
+            &vec![Value::I64(first as i64), Value::I64(second as i64)]
+        );
+        drop(array);
+        RNG_STATE.with(|state| *state.borrow_mut() = original);
     }
 
     #[test]
@@ -246,7 +265,7 @@ pub fn register(vm: &mut VM) {
         vec![],
         vec![ValType::I64],
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            Value::F64(secure_u64().unwrap_or(0) as f64)
+            Value::I64(secure_u64().unwrap_or(0) as i64)
         }),
     );
 
@@ -276,7 +295,7 @@ pub fn register(vm: &mut VM) {
         "get-insecure-random-u64",
         vec![],
         vec![ValType::I64],
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::F64(next_u64() as f64)),
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::I64(next_u64() as i64)),
     );
 
     // ── wasi:random/insecure-seed ──────────────────────────────────────

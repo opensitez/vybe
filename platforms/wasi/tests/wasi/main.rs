@@ -8,6 +8,7 @@ mod filesystem_paths;
 mod filesystem_stream_matrix;
 mod filesystem_symlink_matrix;
 mod http;
+mod http_deferred_body;
 mod http_incoming_server;
 mod http_request_lifecycle;
 mod http_request_matrix;

@@ -1,9 +1,8 @@
 //! `wasi:filesystem` — `wasi:filesystem@0.3.1`
 //! (`proposals/WASI/proposals/filesystem/wit/{types,preopens}.wit`).
 //!
-//! Implements the descriptor-based, capability-rooted surface
-//! defined in `proposals/wasi-filesystem/wit/{types,preopens}.wit`
-//! (package `wasi:filesystem@0.2.8`). Function names match the
+//! Implements the descriptor-based, capability-rooted surface in that WIT.
+//! Function names match the
 //! canonical-ABI form so a Component-Model runtime that loads
 //! Vybe-emitted `.wasm` resolves them against any conforming WASI
 //! implementation:
@@ -164,14 +163,6 @@ pub(super) fn err(code: &str) -> Value {
     Value::Object(vybe_runtime::heap::alloc(o))
 }
 
-/// The `future<result<_, error-code>>` that 0.3.1's stream-consuming writes
-/// answer, already settled.
-///
-/// The WIT says these "return once either full contents of the stream are
-/// written or an error is encountered", so there is nothing left pending by
-/// the time this is built — the future carries the OUTCOME, not a promise of
-/// later work. `Value::Null` is success; an `error-code` string is failure,
-/// matching how the rest of this module spells one.
 /// A 0.3.1 `tuple<stream<u8>, future<result<_, error-code>>>`.
 ///
 /// The one shape every stream-producing WASI 0.3.1 function answers with, so
@@ -192,7 +183,7 @@ fn stream_future_tuple(
         future_id,
         match failure {
             None => Value::Null,
-            Some(code) => Value::String(Arc::from(code)),
+            Some(code) => err(code),
         },
     );
     Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
@@ -342,13 +333,149 @@ mod read_chunk_tests {
     }
 }
 
-fn resolved_write_future(ctx: &mut HostContext, outcome: std::io::Result<()>) -> Value {
+#[cfg(test)]
+mod stream_sink_tests {
+    use super::*;
+    use vybe_runtime::{Chunk, Op};
+    use vybe_runtime::event_loop::FuturePhase;
+
+    #[test]
+    fn invalid_file_stream_resolves_canonical_error_arm() {
+        for method in ["[method]descriptor.write-via-stream", "[method]descriptor.append-via-stream"] {
+            let mut vm = VM::new();
+            register(&mut vm);
+            let mut chunk = Chunk::new("invalid-file-stream");
+            let sink = chunk.add_import("wasi:filesystem/types", method);
+            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+            chunk.emit_call(sink, 2, 0);
+            chunk.emit_op(Op::RETURN, 0);
+            assert!(matches!(vm.run(vec![chunk]).unwrap(), Value::I32(_)));
+            let events = vm.event_loop.borrow();
+            let completion = events.future_states.values().next().unwrap();
+            assert_eq!(completion.phase, FuturePhase::Resolved);
+            let (case, payload) = vybe_runtime::canon_value::result_parts_public(
+                completion.value.as_ref().unwrap(),
+            );
+            assert_eq!(case, 1);
+            assert!(matches!(payload, Value::String(ref code) if code.as_ref() == "invalid"));
+        }
+    }
+
+    #[test]
+    fn invalid_descriptor_with_valid_stream_preserves_error_code() {
+        for method in ["[method]descriptor.write-via-stream", "[method]descriptor.append-via-stream"] {
+            let mut vm = VM::new();
+            register(&mut vm);
+            let mut chunk = Chunk::new("invalid-descriptor-valid-stream");
+            let new = chunk.add_import("canon", "stream.new");
+            let close = chunk.add_import("canon", "stream.drop-writable");
+            let sink = chunk.add_import("wasi:filesystem/types", method);
+            let packed = chunk.i64_scratch();
+            chunk.emit_call(new, 0, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, packed, 0);
+            chunk.emit_op_u16(Op::LOCAL_GET, packed, 0);
+            chunk.emit_i64_const(32, 0);
+            chunk.emit_op(Op::I64_SHR_U, 0);
+            chunk.emit_op(Op::I32_WRAP_I64, 0);
+            chunk.emit_call(close, 1, 0);
+            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+            chunk.emit_op_u16(Op::LOCAL_GET, packed, 0);
+            chunk.emit_op(Op::I32_WRAP_I64, 0);
+            chunk.emit_call(sink, 2, 0);
+            chunk.emit_op(Op::RETURN, 0);
+            assert!(matches!(vm.run(vec![chunk]).unwrap(), Value::I32(_)));
+            let events = vm.event_loop.borrow();
+            let completion = events.future_states.values().next().unwrap();
+            assert_eq!(completion.phase, FuturePhase::Resolved);
+            let (case, payload) = vybe_runtime::canon_value::result_parts_public(
+                completion.value.as_ref().unwrap(),
+            );
+            assert_eq!(case, 1);
+            assert!(matches!(payload, Value::String(ref code) if code.as_ref() == "bad-descriptor"));
+        }
+    }
+
+    #[test]
+    fn real_file_write_and_append_keep_completion_pending_until_eof() {
+        for append in [false, true] {
+            let id = alloc_id();
+            let path = std::env::temp_dir().join(format!("vybe-stream-sink-{}-{id}.bin", std::process::id()));
+            std::fs::write(&path, b"ab").unwrap();
+            registry().lock().unwrap().descriptors.insert(id,
+                DescriptorKind::File(DescriptorPath::new(path.clone())));
+            let mut vm = VM::new();
+            register(&mut vm);
+            vm.set_global_owned("sink_descriptor", make_resource(KIND_DESCRIPTOR, id));
+            let mut start = Chunk::new("file-start-open-stream");
+            start.memory_min_pages.push(1);
+            let new = start.add_import("canon", "stream.new");
+            let sink = start.add_import("wasi:filesystem/types", if append {
+                "[method]descriptor.append-via-stream"
+            } else { "[method]descriptor.write-via-stream" });
+            let writer = start.alloc_scratch(1);
+            start.local_count = start.local_count.max(start.scratch_high_water);
+            let packed = start.i64_scratch();
+            start.emit_call(new, 0, 0);
+            start.emit_op_u16(Op::LOCAL_SET, packed, 0);
+            start.emit_op_u16(Op::LOCAL_GET, packed, 0);
+            start.emit_i64_const(32, 0);
+            start.emit_op(Op::I64_SHR_U, 0);
+            start.emit_op(Op::I32_WRAP_I64, 0);
+            start.emit_op_u16(Op::LOCAL_SET, writer, 0);
+            let descriptor = start.intern_string_constant("sink_descriptor");
+            start.emit_op_u32(Op::GLOBAL_GET, descriptor, 0);
+            start.emit_op_u16(Op::LOCAL_GET, packed, 0);
+            start.emit_op(Op::I32_WRAP_I64, 0);
+            if !append { start.emit_i64_const(2, 0); }
+            start.emit_call(sink, if append { 2 } else { 3 }, 0);
+            start.emit_op(Op::DROP, 0);
+            start.emit_op_u16(Op::LOCAL_GET, writer, 0);
+            start.emit_op(Op::RETURN, 0);
+            let writer = vm.run(vec![start]).unwrap().as_i32();
+            assert_eq!(vm.event_loop.borrow().future_states.values().next().unwrap().phase,
+                FuturePhase::Pending);
+            vm.memory.write_bytes(0, &[0, 128, 255]);
+            let mut finish = Chunk::new("file-write-and-close-stream");
+            let write = finish.add_import("canon", "stream.write");
+            let close = finish.add_import("canon", "stream.drop-writable");
+            let progress = finish.alloc_scratch(1);
+            finish.emit_i32_const(writer, 0);
+            finish.emit_i32_const(0, 0);
+            finish.emit_i32_const(3, 0);
+            finish.emit_call(write, 3, 0);
+            finish.emit_op_u16(Op::LOCAL_SET, progress, 0);
+            finish.emit_i32_const(writer, 0);
+            finish.emit_call(close, 1, 0);
+            finish.emit_op_u16(Op::LOCAL_GET, progress, 0);
+            finish.emit_op(Op::RETURN, 0);
+            assert_eq!(vm.run(vec![finish]).unwrap().as_i32(), 3 << 4);
+            let events = vm.event_loop.borrow();
+            assert_eq!(events.future_states.len(), 1);
+            let completion = events.future_states.values().next().unwrap();
+            assert_eq!(completion.phase, FuturePhase::Resolved);
+            assert!(matches!(completion.value, Some(Value::Null)));
+            assert_eq!(std::fs::read(&path).unwrap(), [b'a', b'b', 0, 128, 255]);
+            registry().lock().unwrap().descriptors.remove(&id);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+/// Retain the file until stream EOF or error; success does not settle early.
+fn consume_file_stream(ctx: &mut HostContext, data: &Value, mut file: Result<File, Value>) -> Value {
     let (future_val, future_id) = ctx.create_future();
-    let settled = match outcome {
-        Ok(()) => Value::Null,
-        Err(e) => Value::String(Arc::from(map_io_error(&e))),
-    };
-    ctx.resolve_future(future_id, settled);
+    let result = ctx.consume_byte_stream(data, future_id, Box::new(move |bytes| {
+        let file = file.as_mut().map_err(|error| error.clone())?;
+        let outcome = match bytes {
+            Some(bytes) => file.write_all(bytes),
+            None => file.flush(),
+        };
+        outcome.map_err(|error| err(map_io_error(&error)))
+    }));
+    if result.is_err() {
+        ctx.resolve_future(future_id, err("invalid"));
+    }
     future_val
 }
 
@@ -553,7 +680,25 @@ fn u64_arg(args: &[Value], idx: usize, default: u64) -> u64 {
     match args.get(idx) {
         Some(Value::F64(n)) => *n as u64,
         Some(Value::I32(n)) => *n as u64,
+        Some(Value::I64(n)) => *n as u64,
+        Some(Value::BigInt(n)) if !n.is_negative() && n.bit_len() <= 64 => n.to_u64_wrapping(),
         _ => default,
+    }
+}
+
+#[cfg(test)]
+mod u64_argument_tests {
+    use super::*;
+
+    #[test]
+    fn filesystem_u64_arguments_preserve_core_bits_and_canonical_precision() {
+        for bits in [0, 2, (1u64 << 53) + 1, i64::MAX as u64, u64::MAX] {
+            assert_eq!(u64_arg(&[Value::I64(bits as i64)], 0, 17), bits);
+            assert_eq!(u64_arg(&[Value::bigint_u64(bits)], 0, 17), bits);
+        }
+        assert_eq!(u64_arg(&[Value::I32(2)], 0, 17), 2);
+        assert_eq!(u64_arg(&[Value::F64(2.0)], 0, 17), 2);
+        assert_eq!(u64_arg(&[], 0, 17), 17);
     }
 }
 
@@ -595,7 +740,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.open-at",
         Box::new(|_ctx, args| {
-            let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(parent_id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let _path_flags = i32_arg(args, 1, 0);
@@ -671,7 +816,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.stat",
         Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let path = {
@@ -692,7 +837,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.stat-at",
         Box::new(|_ctx, args| {
-            let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(parent_id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let _path_flags = i32_arg(args, 1, 0);
@@ -714,7 +859,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.get-type",
         Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let path = {
@@ -751,7 +896,7 @@ fn register_types(vm: &mut VM) {
         // reason for the HOST to keep answering a shape the WIT does not
         // declare, which is what the resource was.
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let path = {
@@ -796,7 +941,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.create-directory-at",
         Box::new(|_ctx, args| {
-            let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(parent_id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(child) = s_arg(args, 1) else {
@@ -817,7 +962,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.unlink-file-at",
         Box::new(|_ctx, args| {
-            let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(parent_id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(child) = s_arg(args, 1) else {
@@ -841,7 +986,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.remove-directory-at",
         Box::new(|_ctx, args| {
-            let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(parent_id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(child) = s_arg(args, 1) else {
@@ -862,13 +1007,13 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.rename-at",
         Box::new(|_ctx, args| {
-            let Some(old_parent) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(old_parent) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(old_child) = s_arg(args, 1) else {
                 return err("invalid");
             };
-            let Some(new_parent) = resource_id(&args[2].clone(), KIND_DESCRIPTOR) else {
+            let Some(new_parent) = resource_id(&args[2], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(new_child) = s_arg(args, 3) else {
@@ -893,7 +1038,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.readlink-at",
         Box::new(|_ctx, args| {
-            let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(parent_id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(child) = s_arg(args, 1) else {
@@ -914,8 +1059,8 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.is-same-object",
         Box::new(|_ctx, args| {
-            let a = resource_id(&args[0].clone(), KIND_DESCRIPTOR);
-            let b = resource_id(&args[1].clone(), KIND_DESCRIPTOR);
+            let a = resource_id(&args[0], KIND_DESCRIPTOR);
+            let b = resource_id(&args[1], KIND_DESCRIPTOR);
             match (a, b) {
                 (Some(a_id), Some(b_id)) if a_id == b_id => Value::Bool(true),
                 (Some(a_id), Some(b_id)) => {
@@ -942,7 +1087,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.read-via-stream",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let offset = u64_arg(args, 1, 0);
@@ -988,34 +1133,26 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.write-via-stream",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
-                return err("bad-descriptor");
-            };
-            let offset = u64_arg(args, 2, 0);
-            let path = {
-                let reg = registry().lock().unwrap();
-                match reg.descriptors.get(&id) {
-                    Some(DescriptorKind::File(p)) => p.clone(),
-                    Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
-            };
-            let bytes = match args.get(1) {
-                Some(data) => ctx.stream_drain(data),
-                None => Vec::new(),
-            };
-            // §write-via-stream: "It is valid to write past the end of a file;
-            // the file is extended to the extent of the write, with bytes
-            // between the previous end and the start of the write set to zero."
-            // `File::seek` past the end plus a write does exactly that.
-            let mut file = match OpenOptions::new().write(true).open(&path) {
-                Ok(f) => f,
-                Err(e) => return err(map_io_error(&e)),
-            };
-            if let Err(e) = file.seek(SeekFrom::Start(offset)) {
-                return err(map_io_error(&e));
-            }
-            resolved_write_future(ctx, file.write_all(&bytes))
+            let file = (|| {
+                let id = args.first().and_then(|arg| resource_id(arg, KIND_DESCRIPTOR))
+                    .ok_or_else(|| err("bad-descriptor"))?;
+                let offset = u64_arg(args, 2, 0);
+                let path = {
+                    let reg = registry().lock().unwrap();
+                    match reg.descriptors.get(&id) {
+                        Some(DescriptorKind::File(p)) => p.clone(),
+                        Some(DescriptorKind::Directory(_)) => return Err(err("is-directory")),
+                        None => return Err(err("bad-descriptor")),
+                    }
+                };
+                // Seeking past EOF lets the OS extend and zero-fill the gap.
+                let mut file = OpenOptions::new().write(true).open(&path)
+                    .map_err(|error| err(map_io_error(&error)))?;
+                file.seek(SeekFrom::Start(offset))
+                    .map_err(|error| err(map_io_error(&error)))?;
+                Ok(file)
+            })();
+            consume_file_stream(ctx, args.get(1).unwrap_or(&Value::Null), file)
         }),
     );
 
@@ -1030,26 +1167,21 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.append-via-stream",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
-                return err("bad-descriptor");
-            };
-            let path = {
-                let reg = registry().lock().unwrap();
-                match reg.descriptors.get(&id) {
-                    Some(DescriptorKind::File(p)) => p.clone(),
-                    Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
-            };
-            let bytes = match args.get(1) {
-                Some(data) => ctx.stream_drain(data),
-                None => Vec::new(),
-            };
-            let mut file = match OpenOptions::new().append(true).create(true).open(&path) {
-                Ok(f) => f,
-                Err(e) => return err(map_io_error(&e)),
-            };
-            resolved_write_future(ctx, file.write_all(&bytes))
+            let file = (|| {
+                let id = args.first().and_then(|arg| resource_id(arg, KIND_DESCRIPTOR))
+                    .ok_or_else(|| err("bad-descriptor"))?;
+                let path = {
+                    let reg = registry().lock().unwrap();
+                    match reg.descriptors.get(&id) {
+                        Some(DescriptorKind::File(p)) => p.clone(),
+                        Some(DescriptorKind::Directory(_)) => return Err(err("is-directory")),
+                        None => return Err(err("bad-descriptor")),
+                    }
+                };
+                OpenOptions::new().append(true).create(true).open(&path)
+                    .map_err(|error| err(map_io_error(&error)))
+            })();
+            consume_file_stream(ctx, args.get(1).unwrap_or(&Value::Null), file)
         }),
     );
 
@@ -1063,7 +1195,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.advise",
         Box::new(|_ctx, args| {
-            if resource_id(&args[0].clone(), KIND_DESCRIPTOR).is_none() {
+            if resource_id(&args[0], KIND_DESCRIPTOR).is_none() {
                 return err("bad-descriptor");
             }
             // `enum advice` declares SIX cases, in this order.
@@ -1096,7 +1228,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.sync-data",
         Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let path = {
@@ -1119,7 +1251,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.get-flags",
         Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let is_dir = {
@@ -1152,7 +1284,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.set-size",
         Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let size = u64_arg(args, 1, 0);
@@ -1180,7 +1312,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.set-times",
         Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let atime = new_timestamp(args.get(1));
@@ -1230,7 +1362,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.sync",
         Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let path = {
@@ -1253,7 +1385,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.set-times-at",
         Box::new(|_ctx, args| {
-            let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(parent_id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(child) = s_arg(args, 2) else {
@@ -1289,13 +1421,13 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.link-at",
         Box::new(|_ctx, args| {
-            let Some(old_parent) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(old_parent) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(old_child) = s_arg(args, 2) else {
                 return err("invalid");
             };
-            let Some(new_parent) = resource_id(&args[3].clone(), KIND_DESCRIPTOR) else {
+            let Some(new_parent) = resource_id(&args[3], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(new_child) = s_arg(args, 4) else {
@@ -1331,13 +1463,13 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.symlink-at",
         Box::new(|_ctx, args| {
-            let Some(parent) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(parent) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(old_path_str) = s_arg(args, 1) else {
                 return err("invalid");
             };
-            let Some(new_parent) = resource_id(&args[2].clone(), KIND_DESCRIPTOR) else {
+            let Some(new_parent) = resource_id(&args[2], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(new_child) = s_arg(args, 3) else {
@@ -1375,7 +1507,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.metadata-hash",
         Box::new(|_ctx, args| {
-            let Some(id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let path = {
@@ -1406,7 +1538,7 @@ fn register_types(vm: &mut VM) {
         "wasi:filesystem/types",
         "[method]descriptor.metadata-hash-at",
         Box::new(|_ctx, args| {
-            let Some(parent_id) = resource_id(&args[0].clone(), KIND_DESCRIPTOR) else {
+            let Some(parent_id) = resource_id(&args[0], KIND_DESCRIPTOR) else {
                 return err("bad-descriptor");
             };
             let Some(child) = s_arg(args, 2) else {

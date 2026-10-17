@@ -199,9 +199,17 @@ pub fn read_directory(dir: &Path) -> Vec<(String, String)> {
     vybe_compiler::primitives::fs_path::emit_read_directory_entries(&mut chunk, 0);
     chunk.emit_op(Op::RETURN, 0);
 
+    let mut chunks = vec![chunk];
+    let (mut definitions, mut functions, mut values) = (Vec::new(), Vec::new(), Vec::new());
+    vybe_compiler::primitives::canon::resolve_emitter_imports(
+        &mut chunks, &mut definitions, &mut functions, &mut values).unwrap();
+    vybe_compiler::primitives::canon::install_canon_section(&mut chunks, definitions);
+    vybe_compiler::primitives::canon::install_type_space(
+        &mut chunks, functions, values, Vec::new());
+
     let mut vm = VM::new();
     register_platforms(&mut vm, &Capabilities::all());
-    let result = vm.run(vec![chunk]).expect("VM run failed");
+    let result = vm.run(chunks).expect("VM run failed");
 
     let Value::Object(object) = &result else {
         panic!("expected an array of directory entries, got {result:?}");
@@ -258,7 +266,9 @@ fn bytes_to_vec(value: &Value) -> Vec<u8> {
 
 #[test]
 fn canonical_byte_append_bulk_batch_preserves_tail() {
-    for size in [64, 509] {
+    for size in [
+        0, 1, 63, 64, 65, 127, 128, 253, 254, 255, 317, 318, 319, 508, 509, 510, 572,
+    ] {
         let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
         for custom_property in [false, true] {
             let mut chunk = Chunk::new("<canonical-byte-append-batch>");
@@ -300,12 +310,14 @@ fn canonical_byte_append_bulk_batch_preserves_tail() {
             let counters = vm.take_runtime_perf().expect("runtime counters");
             let expected = if custom_property {
                 0
-            } else if size == 509 {
-                2
             } else {
-                1
+                let remaining = size % 254;
+                u64::from(size >= 254) + u64::from(remaining >= 64) + u64::from(remaining % 64 != 0)
             };
-            assert_eq!(counters.super_linear_to_managed, expected);
+            assert_eq!(
+                counters.super_linear_to_managed, expected,
+                "size={size}, custom_property={custom_property}"
+            );
         }
     }
 }
@@ -686,4 +698,159 @@ fn canonical_stream_write_then_read_preserves_binary_bytes() {
         let result = vm.run(vec![chunk]).expect("canonical stream round-trip");
         assert_eq!(bytes_to_vec(&result), bytes);
     }
+}
+
+#[test]
+fn canonical_drain_preserves_fragmented_byte_streams() {
+    for size in [0, 1, 63, 64, 65, 253, 254, 255, 256, 257, 511, 512, 1025] {
+        let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let mut chunk = Chunk::new("<fragmented-canonical-byte-stream>");
+        chunk.memory_min_pages.push(1);
+        chunk.data_segments.push(data.clone());
+        chunk.active_data_segments.push(ActiveDataSegment {
+            memory_index: 0,
+            offset: 0,
+            data_index: 0,
+        });
+
+        let pair = chunk.i64_scratch();
+        let readable = chunk.alloc_scratch(1);
+        let writable = chunk.alloc_scratch(1);
+        let stream_new = chunk.add_import("canon", "stream.new");
+        let stream_write = chunk.add_import("canon", "stream.write");
+        let drop_writable = chunk.add_import("canon", "stream.drop-writable");
+        chunk.emit_call(stream_new, 0, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, pair, 0);
+        chunk.emit_op_u16(Op::LOCAL_GET, pair, 0);
+        chunk.emit_op(Op::I32_WRAP_I64, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, readable, 0);
+        chunk.emit_op_u16(Op::LOCAL_GET, pair, 0);
+        chunk.emit_i64_const(32, 0);
+        chunk.emit_op(Op::I64_SHR_U, 0);
+        chunk.emit_op(Op::I32_WRAP_I64, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, writable, 0);
+
+        for offset in (0..size).step_by(64) {
+            chunk.emit_op_u16(Op::LOCAL_GET, writable, 0);
+            chunk.emit_i32_const(offset as i32, 0);
+            chunk.emit_i32_const((size - offset).min(64) as i32, 0);
+            chunk.emit_call(stream_write, 3, 0);
+            chunk.emit_op(Op::DROP, 0);
+        }
+        chunk.emit_op_u16(Op::LOCAL_GET, writable, 0);
+        chunk.emit_call(drop_writable, 1, 0);
+        chunk.emit_op_u16(Op::LOCAL_GET, readable, 0);
+        vybe_compiler::primitives::io::emit_read_stream_to_bytes(&mut chunk, 0);
+        chunk.emit_op(Op::RETURN, 0);
+
+        let mut vm = VM::new();
+        register_platforms(&mut vm, &Capabilities::all());
+        let result = vm.run(vec![chunk]).expect("fragmented canonical stream");
+        assert_eq!(bytes_to_vec(&result), data, "size {size}");
+    }
+}
+
+#[test]
+fn canonical_byte_append_assembles_short_chunks() {
+    for size in [0, 1, 64, 253, 254, 255, 257, 511, 512, 1025] {
+        let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let mut chunk = Chunk::new("<canonical-short-byte-append>");
+        chunk.memory_min_pages.push(1);
+        chunk.data_segments.push(data.clone());
+        chunk.active_data_segments.push(ActiveDataSegment {
+            memory_index: 0,
+            offset: 0,
+            data_index: 0,
+        });
+
+        vybe_compiler::primitives::canon_marshal::emit_new_bytes(&mut chunk, 0);
+        let output = chunk.alloc_scratch(1);
+        let source = chunk.alloc_scratch(1);
+        let count = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, output, 0);
+        for offset in (0..size).step_by(64) {
+            chunk.emit_i32_const(offset as i32, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, source, 0);
+            chunk.emit_i32_const((size - offset).min(64) as i32, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, count, 0);
+            vybe_compiler::primitives::canon_marshal::emit_append_bytes(
+                &mut chunk, 0, output, source, count,
+            );
+        }
+        chunk.emit_op_u16(Op::LOCAL_GET, output, 0);
+        chunk.emit_op(Op::RETURN, 0);
+
+        let mut vm = VM::new();
+        register_platforms(&mut vm, &Capabilities::all());
+        let result = vm.run(vec![chunk]).expect("short byte append");
+        assert_eq!(bytes_to_vec(&result), data, "size {size}");
+    }
+}
+
+#[test]
+#[ignore = "local short-read byte assembly benchmark"]
+fn bench_canonical_byte_append_chunk_sizes() {
+    const SIZE: usize = 256 * 1024;
+    let chunk_bytes = std::env::var("VYBE_BENCH_CHUNK_BYTES")
+        .map(|value| value.parse::<usize>().expect("numeric benchmark chunk size"))
+        .unwrap_or(64);
+    assert!(chunk_bytes > 0 && SIZE % chunk_bytes == 0);
+    let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
+    let mut results = [Vec::new()];
+
+    for samples in &mut results {
+        let mut chunk = Chunk::new("<canonical-short-read-bench>");
+        chunk.memory_min_pages.push(4);
+        chunk.data_segments.push(data.clone());
+        chunk.active_data_segments.push(ActiveDataSegment {
+            memory_index: 0,
+            offset: 0,
+            data_index: 0,
+        });
+        vybe_compiler::primitives::canon_marshal::emit_new_bytes(&mut chunk, 0);
+        let output = chunk.alloc_scratch(1);
+        let source = chunk.alloc_scratch(1);
+        let count = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, output, 0);
+        chunk.emit_i32_const(0, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, source, 0);
+        chunk.emit_i32_const(chunk_bytes as i32, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, count, 0);
+
+        let done = chunk.emit_block(0);
+        let (loop_start, _) = chunk.emit_loop_s(0);
+        chunk.emit_op_u16(Op::LOCAL_GET, source, 0);
+        chunk.emit_i32_const(SIZE as i32, 0);
+        chunk.emit_op(Op::I32_GE_U, 0);
+        chunk.emit_br_if(1, 0);
+        vybe_compiler::primitives::canon_marshal::emit_append_bytes(
+            &mut chunk, 0, output, source, count,
+        );
+        chunk.emit_op_u16(Op::LOCAL_GET, source, 0);
+        chunk.emit_i32_const(chunk_bytes as i32, 0);
+        chunk.emit_op(Op::I32_ADD, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, source, 0);
+        chunk.emit_br(0, 0);
+        chunk.emit_end(0);
+        chunk.patch_loop(loop_start);
+        chunk.emit_end(0);
+        chunk.patch_block(done);
+        chunk.emit_op_u16(Op::LOCAL_GET, output, 0);
+        chunk.emit_op(Op::RETURN, 0);
+
+        for _ in 0..5 {
+            let mut vm = VM::new();
+            register_platforms(&mut vm, &Capabilities::all());
+            let input = chunk.clone();
+            let start = std::time::Instant::now();
+            let result = vm.run(vec![input]).expect("short-read benchmark");
+            samples.push(start.elapsed());
+            assert_eq!(bytes_to_vec(&result), data);
+        }
+        samples.sort_unstable();
+    }
+    println!(
+        "256 KiB / {chunk_bytes}-byte chunks: direct {:?}",
+        results[0][2]
+    );
 }

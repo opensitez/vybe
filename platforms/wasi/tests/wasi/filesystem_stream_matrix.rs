@@ -74,6 +74,7 @@ fn canonical_write_bytes(path: &std::path::Path, payload: &[u8], append: bool) {
     let descriptor = chunk.alloc_scratch(1);
     let readable = chunk.alloc_scratch(1);
     let writable = chunk.alloc_scratch(1);
+    let completion = chunk.alloc_scratch(1);
     let payload_name = chunk.intern_string_constant("__wasi_fs_write_payload");
 
     chunk.emit_call(preopens, 0, 0);
@@ -102,10 +103,10 @@ fn canonical_write_bytes(path: &std::path::Path, payload: &[u8], append: bool) {
                 chunk.emit_f64_const(6.0, 0);
             }
             chunk.emit_call(write_via, if append { 2 } else { 3 }, 0);
-            chunk.emit_op(Op::DROP, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, completion, 0);
         },
     );
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, completion, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -119,7 +120,15 @@ fn canonical_write_bytes(path: &std::path::Path, payload: &[u8], append: bool) {
                 .collect(),
         ))),
     );
-    vm.run(vec![chunk]).expect("canonical file write");
+    let result = vm.run(vec![chunk]).expect("canonical file write");
+    let Value::I32(handle) = result else { panic!("file sink must return a future handle"); };
+    let Some(vybe_runtime::handle_table::HandleEntry::ReadableFutureEnd(end)) =
+        vm.handle_table.get(handle as u32) else { panic!("file sink must return a readable future end"); };
+    let id = end.id;
+    let events = vm.event_loop.borrow();
+    let completion = &events.future_states[&id];
+    assert_eq!(completion.phase, vybe_runtime::event_loop::FuturePhase::Resolved);
+    assert!(matches!(completion.value, Some(Value::Null)), "file sink failed: {:?}", completion.value);
 }
 
 #[test]
@@ -145,6 +154,18 @@ fn canonical_append_preserves_binary_bytes_across_chunk_boundary() {
     let written = std::fs::read(&path).unwrap();
     assert_eq!(&written[..6], b"prefix");
     assert_eq!(&written[6..], payload);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn canonical_empty_write_and_append_settle_at_eof_without_changing_data() {
+    let dir = scratch_dir("write_empty");
+    let path = dir.join("payload.bin");
+    std::fs::write(&path, b"prefix").unwrap();
+    for append in [false, true] {
+        canonical_write_bytes(&path, &[], append);
+        assert_eq!(std::fs::read(&path).unwrap(), b"prefix");
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }
 
