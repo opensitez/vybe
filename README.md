@@ -1,6 +1,51 @@
-# Vybe v0.6.2
+# Vybe v0.7.0
 
-Vybe is a Rust workspace for compiling multiple source languages into one
+## Intro
+Vybe is a WASM Runtime with support for multiple languages and multi platforms. It should run out of the box on Mac, Linux and Windows.
+
+Web standards allows vybe to run either using the internal webcore web engine or the local os web browser
+
+## Usage
+build
+  - git clone https://github.com/opensitez/vybe/
+  - cargo build --bin vybex
+see supported project/language extensions
+  - ./target/debug/vybex
+serve a php folder (default: port 8080) :
+  - ./target/debug/vybex --serve /var/www/html
+run a vb project:
+  - ./target/debug/vybex examples/calculator/calc.vbproj
+run using the local os browser :
+  - ./target/debug/vybex --engine osbrowser examples/connect4.vb
+
+## Suported languages
+Vybe is a WASM Runtime and Compiler for 16 languages including:
+- C
+- Cobol
+- Dart
+- Fortran
+- Go
+- Javascript
+- Lua
+- Pascal
+- PHP
+- Python
+- Java
+- Kotlin
+- Shell
+- Powershell
+- WAST
+
+## Architecture
+Vybe is built using web standards like:
+- WASI 0.3.1 - server side host functions
+- Component model: streams and JS like components
+- ECMA: Host functions you would find in a browser
+- WHATWG: provide a browser like gui interface
+- WASI-SQL: Provide access to sql servers
+- Grameo: Hybrid Pratt Grammar compiler with PEG Like syntax
+
+Rust workspace for compiling multiple source languages into one
 shared JS-shaped AST and one shared WASM bytecode runtime. Every frontend is
 "X over JS": the language grammar and walker normalize source-language syntax
 and idioms into the common AST, then the shared compiler emits standard WASM
@@ -10,11 +55,25 @@ The VM executes WASM-compliant bytecode only. Runtime access is provided by
 platform plugins with spec-shaped host namespaces such as `ecma:*`, `wasi:*`,
 `web:*`, and `node:*`.
 
-
 ![Vybe Architecture](images/vybearchitecture.jpeg)
 ![Vybe Languages](images/vybelanguages.jpeg)
 ![Vybe Layers](images/vybelayers.jpeg)
 ![Vybe Primitives](images/vybeprimitives.jpeg)
+
+## Runner bundles
+
+Build `vybex` for the full language set, `vx` for PHP/Python/JavaScript/C/Go,
+or `dx` for VB/C#/PowerShell:
+
+```sh
+cargo build -p vx
+cargo build -p dx
+./target/debug/vx --list-languages
+./target/debug/dx --list-languages
+```
+
+These packages share the same CLI and compile only their selected language
+dependencies. See [runner bundles](documentation/runner-bundles.md).
 
 ## Workspace Hierarchy
 
@@ -93,10 +152,6 @@ platforms/
     Host platform plugin for Node-shaped surfaces:
     node:fs, node:os, node:path, node:process, node:http, child process, and
     related Node built-ins.
-
-  vybe/
-    Vybe-specific platform plugin. The only non-spec host namespace is
-    vybe:gui for GUI controls, canvas, dialogs, and widget integration.
 
   libc/
     Emit platform for C/libc-style runtime behavior and pointer-oriented
@@ -204,6 +259,24 @@ Run the CLI directly from the workspace:
 ```bash
 cargo run -p vybex -- path/to/file.js
 ```
+
+## Webcore Demo Browser
+
+Run the combined local demo browser from the workspace root:
+
+```bash
+cargo run --manifest-path crates/webcore/Cargo.toml --example demo
+```
+
+For faster startup after building an optimized binary:
+
+```bash
+cargo build --release --manifest-path crates/webcore/Cargo.toml --example demo
+./crates/webcore/target/release/examples/demo
+```
+
+The demo browser opens a launcher page with the local webcore demos and a
+`Demos` menu for jumping between them without returning to the home page.
 
 ## CLI Usage
 
