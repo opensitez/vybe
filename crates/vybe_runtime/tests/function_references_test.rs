@@ -108,6 +108,47 @@ fn call_ref_with_multiple_args() {
     assert_eq!(result.as_i32(), 42);
 }
 
+fn materialize_reference_sequence(flags: &[u8]) -> Vec<Value> {
+    let mut script = Chunk::new("<script>");
+    for flag in flags {
+        script.emit_op_u16(opcode::Op::REF_FUNC, 1, 0);
+        script.emit(*flag, 0);
+    }
+    script.emit_array_new_fixed(0, flags.len() as u16, 0);
+    let mut function = Chunk::new("shared_descriptor_method");
+    function.emit_op(opcode::Op::RETURN, 0);
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, function]).unwrap();
+    let Value::Object(array) = result else {
+        panic!("reference sequence did not return an array");
+    };
+    let array = array.lock().unwrap();
+    let ObjectKind::Array(values) = &array.kind else {
+        panic!("reference sequence did not return array storage");
+    };
+    values.clone()
+}
+
+fn same_reference(left: &Value, right: &Value) -> bool {
+    matches!((left, right), (Value::Object(left), Value::Object(right)) if Arc::ptr_eq(left, right))
+}
+
+#[test]
+fn fresh_method_binding_does_not_replace_an_existing_canonical_funcref() {
+    let refs = materialize_reference_sequence(&[0, 0x80, 0]);
+    assert!(same_reference(&refs[0], &refs[2]));
+    assert!(!same_reference(&refs[0], &refs[1]));
+}
+
+#[test]
+fn fresh_method_bindings_do_not_seed_the_canonical_funcref_cache() {
+    let refs = materialize_reference_sequence(&[0x80, 0, 0x80, 0]);
+    assert!(same_reference(&refs[1], &refs[3]));
+    assert!(!same_reference(&refs[0], &refs[1]));
+    assert!(!same_reference(&refs[2], &refs[3]));
+    assert!(!same_reference(&refs[0], &refs[2]));
+}
+
 #[test]
 fn call_ref_non_function_traps() {
     let mut vm = VM::new();

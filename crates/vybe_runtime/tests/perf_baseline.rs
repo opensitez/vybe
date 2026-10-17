@@ -2724,7 +2724,7 @@ fn global_get_local_loop_counters() {
 
     let mut chunk = Chunk::new("<global-get-local-loop>");
     chunk.local_count = 1;
-    chunk.globals = std::sync::Arc::new(vec![GLOBAL_NAME.to_string()]);
+    chunk.globals = std::sync::Arc::new(vec![GLOBAL_NAME.to_string()].into());
 
     emit_structured_counter_loop(&mut chunk, |c| {
         c.emit_op_u32(Op::GLOBAL_GET, 0, 0);
@@ -4386,7 +4386,7 @@ fn global_get_drop_loop_counters() {
     const GLOBAL_NAME: &str = "__perf_global_get_drop_loop_value";
 
     let mut chunk = Chunk::new("<global-get-drop-loop>");
-    chunk.globals = std::sync::Arc::new(vec![GLOBAL_NAME.to_string()]);
+    chunk.globals = std::sync::Arc::new(vec![GLOBAL_NAME.to_string()].into());
 
     emit_structured_counter_loop(&mut chunk, |c| {
         c.emit_op_u32(Op::GLOBAL_GET, 0, 0);
@@ -4428,7 +4428,7 @@ fn global_set_local_loop_counters() {
 
     let mut chunk = Chunk::new("<global-set-local-loop>");
     chunk.local_count = 1;
-    chunk.globals = std::sync::Arc::new(vec![GLOBAL_NAME.to_string()]);
+    chunk.globals = std::sync::Arc::new(vec![GLOBAL_NAME.to_string()].into());
 
     chunk.emit_i32_const(271, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, VALUE_SLOT, 0);
@@ -4471,7 +4471,7 @@ fn global_set_const_loop_counters() {
     const GLOBAL_NAME: &str = "__perf_global_set_const_loop_value";
 
     let mut chunk = Chunk::new("<global-set-const-loop>");
-    chunk.globals = std::sync::Arc::new(vec![GLOBAL_NAME.to_string()]);
+    chunk.globals = std::sync::Arc::new(vec![GLOBAL_NAME.to_string()].into());
 
     emit_structured_counter_loop(&mut chunk, |c| {
         c.emit_i32_const(919, 0);

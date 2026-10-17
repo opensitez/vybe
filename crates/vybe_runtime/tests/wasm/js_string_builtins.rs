@@ -170,6 +170,42 @@ fn concat_traps_on_non_string() {
 // ── substring ────────────────────────────────────────────────────────
 
 #[test]
+fn substring_interleaved_with_indexed_reads_preserves_utf16_ranges() {
+    let mut vm = VM::new();
+    vybe_runtime::js_builtins::register(&mut vm);
+    let sources: Vec<Arc<str>> = ["A\0Ω中", "😀𐐀A", "A\u{301}"]
+        .into_iter().map(Arc::from).collect();
+    for _ in 0..10 {
+        for source in &sources {
+            vm.set_global_owned("__substring_source", Value::String(source.clone()));
+            let units: Vec<_> = source.encode_utf16().collect();
+            for start in 0..=units.len() {
+                for end in 0..=units.len() {
+                    let mut chunk = Chunk::new("substring-cache-regression");
+                    let name = chunk.intern_string_constant("__substring_source");
+                    chunk.emit_op_u32(Op::GLOBAL_GET, name, 0);
+                    chunk.emit_i32_const(start as i32, 0);
+                    chunk.emit_i32_const(end as i32, 0);
+                    let call = chunk.add_import(MOD, "substring");
+                    chunk.emit_call(call, 3, 0);
+                    chunk.emit_op(Op::RETURN, 0);
+                    let expected = String::from_utf16_lossy(&units[start.min(end)..start.max(end)]);
+                    assert_eq!(vm.run(vec![chunk]).unwrap(), str(&expected));
+                }
+            }
+            let mut chunk = Chunk::new("indexed-cache-regression");
+            let name = chunk.intern_string_constant("__substring_source");
+            chunk.emit_op_u32(Op::GLOBAL_GET, name, 0);
+            chunk.emit_i32_const(0, 0);
+            let call = chunk.add_import(MOD, "charCodeAt");
+            chunk.emit_call(call, 2, 0);
+            chunk.emit_op(Op::RETURN, 0);
+            assert_eq!(vm.run(vec![chunk]).unwrap(), Value::I32(units[0] as i32));
+        }
+    }
+}
+
+#[test]
 fn substring_basic_slice() {
     assert_eq!(
         format!(

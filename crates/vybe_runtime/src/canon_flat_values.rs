@@ -34,7 +34,7 @@
 //! float to `f64` first. Lifting mirrors that by wrapping to i32 BEFORE
 //! reinterpreting.
 
-use crate::canon_flat::{CoreType, flatten_type, flatten_types};
+use crate::canon_flat::{CoreType, flat_count_bounded, flat_types_count_bounded, flatten_type};
 use crate::canon_value::{CanonError, Realloc};
 use crate::component::ValType;
 use crate::value::Value;
@@ -63,8 +63,13 @@ impl FlatLayoutCache {
             variants: HashMap::new(),
             param_tuple: None,
             result_tuple: None,
-            params_flat_len: flatten_types(&ft.params, ptr).len(),
-            result_flat_len: ft.result.as_ref().map_or(0, |t| flatten_type(t, ptr).len()),
+            params_flat_len: flat_types_count_bounded(
+                &ft.params,
+                crate::canon_flat::MAX_FLAT_PARAMS,
+            ),
+            result_flat_len: ft.result.as_ref().map_or(0, |t| {
+                flat_count_bounded(t, crate::canon_flat::MAX_FLAT_PARAMS)
+            }),
         };
         if cache.params_flat_len > crate::canon_flat::MAX_FLAT_PARAMS {
             cache.param_tuple = Some(Self::tuple_layout(&ft.params));
@@ -315,8 +320,16 @@ fn lift_flat_impl(
             CoreValue::I32(i) => Value::I32(i as i32),
             other => return Err(mismatch(other, CoreType::I32)),
         },
+        ValType::U32 => match vi.next()? {
+            CoreValue::I32(i) => Value::F64(i as f64),
+            other => return Err(mismatch(other, CoreType::I32)),
+        },
         ValType::I64 => match vi.next()? {
             CoreValue::I64(i) => Value::I64(i as i64),
+            other => return Err(mismatch(other, CoreType::I64)),
+        },
+        ValType::U64 => match vi.next()? {
+            CoreValue::I64(i) => Value::bigint_u64(i),
             other => return Err(mismatch(other, CoreType::I64)),
         },
         ValType::F32 => match vi.next()? {
@@ -541,7 +554,9 @@ fn lower_flat_into(
         ValType::S16 => flat.push(CoreValue::I32(v.as_i32() as i16 as i32 as u32)),
         ValType::U16 => flat.push(CoreValue::I32(v.as_i32() as u16 as u32)),
         ValType::I32 => flat.push(CoreValue::I32(v.as_i32() as u32)),
+        ValType::U32 => flat.push(CoreValue::I32(crate::canon_value::unsigned_u32(v)?)),
         ValType::I64 => flat.push(CoreValue::I64(v.as_i64() as u64)),
+        ValType::U64 => flat.push(CoreValue::I64(crate::canon_value::unsigned_u64(v)?)),
         ValType::F32 => flat.push(CoreValue::F32(v.as_f64() as f32)),
         ValType::F64 => flat.push(CoreValue::F64(v.as_f64())),
         ValType::Char => flat.push(CoreValue::I32(crate::canon_value::value_to_scalar(v)?)),
@@ -714,7 +729,7 @@ pub fn lower_flat_values(
     ptr_type: CoreType,
 ) -> Result<Vec<CoreValue>, CanonError> {
     lower_flat_values_impl(
-        memory, realloc, max_flat, values, types, ptr_type, None, None,
+        memory, realloc, max_flat, values, types, ptr_type, None, None, None,
     )
 }
 
@@ -737,6 +752,31 @@ pub(crate) fn lower_flat_values_cached(
         ptr_type,
         Some(layouts),
         Some(flat_count),
+        None,
+    )
+}
+
+pub(crate) fn lower_flat_values_cached_into(
+    memory: &crate::shared_memory::SharedMemory,
+    realloc: &mut Realloc<'_>,
+    max_flat: usize,
+    values: &[Value],
+    types: &[ValType],
+    ptr_type: CoreType,
+    layouts: &FlatLayoutCache,
+    flat_count: usize,
+    at: u32,
+) -> Result<Vec<CoreValue>, CanonError> {
+    lower_flat_values_impl(
+        memory,
+        realloc,
+        max_flat,
+        values,
+        types,
+        ptr_type,
+        Some(layouts),
+        Some(flat_count),
+        Some(at),
     )
 }
 
@@ -749,13 +789,14 @@ fn lower_flat_values_impl(
     ptr_type: CoreType,
     layouts: Option<&FlatLayoutCache>,
     flat_count: Option<usize>,
+    spill_at: Option<u32>,
 ) -> Result<Vec<CoreValue>, CanonError> {
     if values.len() != types.len() {
         return Err(CanonError::Unsupported(
             "lower_flat_values: value/type count mismatch",
         ));
     }
-    let count = flat_count.unwrap_or_else(|| flatten_types(types, ptr_type).len());
+    let count = flat_count.unwrap_or_else(|| flat_types_count_bounded(types, max_flat));
     if count <= max_flat {
         let mut flat = Vec::with_capacity(count);
         for (v, t) in values.iter().zip(types) {
@@ -795,13 +836,20 @@ fn lower_flat_values_impl(
         || crate::canon_layout::alignment(tuple_ty),
         |layout| layout.align,
     );
-    let at = realloc(size, align).ok_or(CanonError::OutOfMemory { size })?;
+    let at = match spill_at {
+        Some(at) => at,
+        None => realloc(size, align).ok_or(CanonError::OutOfMemory { size })?,
+    };
     if let Some(layout) = memory_layout {
         crate::canon_value::store_with_layout(memory, realloc, &tuple, tuple_ty, at, layout)?;
     } else {
         crate::canon_value::store_with(memory, realloc, &tuple, tuple_ty, at)?;
     }
-    Ok(vec![flat_from_ptr(at, ptr_type)])
+    Ok(if spill_at.is_some() {
+        Vec::new()
+    } else {
+        vec![flat_from_ptr(at, ptr_type)]
+    })
 }
 
 /// `lift_flat_values` — the mirror, unpacking a spilled tuple when the flat
@@ -845,7 +893,7 @@ fn lift_flat_values_impl(
     layouts: Option<&FlatLayoutCache>,
     flat_count: Option<usize>,
 ) -> Result<Vec<Value>, CanonError> {
-    if flat_count.unwrap_or_else(|| flatten_types(types, ptr_type).len()) <= max_flat {
+    if flat_count.unwrap_or_else(|| flat_types_count_bounded(types, max_flat)) <= max_flat {
         let mut vi = CoreValueIter::new(values);
         let mut out = Vec::with_capacity(types.len());
         for t in types {
@@ -968,6 +1016,25 @@ mod tests {
         assert_eq!(round_trip(&Value::I64(-9), &ValType::I64).as_i64(), -9);
         assert_eq!(round_trip(&Value::F64(1.5), &ValType::F64).as_f64(), 1.5);
         assert!(round_trip(&Value::Bool(true), &ValType::Bool).as_bool());
+    }
+
+    #[test]
+    fn unsigned_scalars_round_trip_flat_without_sign_extension() {
+        let memory = mem();
+        let mut no_alloc = |_, _| None;
+        let mut realloc: Realloc<'_> = &mut no_alloc;
+        for bits in [0, 1 << 31, u32::MAX] {
+            let value = Value::F64(bits as f64);
+            let flat = lower_flat(&memory, &mut realloc, &value, &ValType::U32, CoreType::I32).unwrap();
+            assert_eq!(flat, vec![CoreValue::I32(bits)]);
+            assert!(matches!(round_trip(&value, &ValType::U32), Value::F64(n) if n == bits as f64));
+        }
+        for bits in [0, 1 << 63, u64::MAX] {
+            let value = Value::bigint_u64(bits);
+            let flat = lower_flat(&memory, &mut realloc, &value, &ValType::U64, CoreType::I32).unwrap();
+            assert_eq!(flat, vec![CoreValue::I64(bits)]);
+            assert!(matches!(round_trip(&value, &ValType::U64), Value::BigInt(n) if n.to_u64_wrapping() == bits && !n.is_negative()));
+        }
     }
 
     /// A string's BYTES stay in memory; only (ptr, length) travels flat. The
@@ -1164,6 +1231,7 @@ mod tests {
                 ),
             ])],
             result: None,
+            is_async: false,
         });
         let layouts = FlatLayoutCache::for_functype(&ft, CoreType::I32);
         assert_eq!(layouts.variants.len(), 3);
@@ -1313,12 +1381,66 @@ mod tests {
     }
 
     #[test]
+    fn lowered_string_result_uses_the_callers_result_address() {
+        let m = mem();
+        let ft = crate::canon_def::CanonFuncType {
+            params: vec![],
+            result: Some(ValType::String),
+            is_async: false,
+        };
+        let layouts = FlatLayoutCache::for_functype(&ft, CoreType::I32);
+        let mut allocations = Vec::new();
+        let mut allocate = |size, align| {
+            allocations.push((size, align));
+            Some(512)
+        };
+        let mut realloc: Realloc<'_> = &mut allocate;
+        let flat = lower_flat_values_cached_into(
+            &m,
+            &mut realloc,
+            crate::canon_flat::MAX_FLAT_RESULTS,
+            &[Value::String("hi".into())],
+            &[ValType::String],
+            CoreType::I32,
+            &layouts,
+            layouts.result_flat_len,
+            64,
+        )
+        .unwrap();
+        assert!(flat.is_empty());
+        let mut pair = [0; 8];
+        m.read_bytes(64, &mut pair);
+        assert_eq!(u32::from_le_bytes(pair[..4].try_into().unwrap()), 512);
+        assert_eq!(u32::from_le_bytes(pair[4..].try_into().unwrap()), 2);
+        let mut bytes = [0; 2];
+        m.read_bytes(512, &mut bytes);
+        assert_eq!(&bytes, b"hi");
+
+        assert!(matches!(
+            lower_flat_values_cached_into(
+                &m,
+                &mut realloc,
+                crate::canon_flat::MAX_FLAT_RESULTS,
+                &[Value::String("hi".into())],
+                &[ValType::String],
+                CoreType::I32,
+                &layouts,
+                layouts.result_flat_len,
+                65,
+            ),
+            Err(crate::canon_value::CanonError::Misaligned { .. })
+        ));
+        assert_eq!(allocations, vec![(2, 1)]);
+    }
+
+    #[test]
     fn cached_spilled_tuple_matches_uncached_bytes_and_values() {
         let types = vec![ValType::I32; crate::canon_flat::MAX_FLAT_PARAMS + 2];
         let values: Vec<_> = (0..types.len()).map(|i| Value::I32(i as i32)).collect();
         let ft = crate::canon_def::CanonFuncType {
             params: types.clone(),
             result: None,
+            is_async: false,
         };
         let layouts = FlatLayoutCache::for_functype(&ft, CoreType::I32);
         assert!(layouts.param_tuple.is_some());
@@ -1387,5 +1509,63 @@ mod tests {
             .unwrap()
         });
         assert_eq!(flat, [CoreValue::I32(1), CoreValue::I64(2)]);
+    }
+
+    #[test]
+    fn cached_flat_lengths_preserve_abi_boundaries_without_expanding_fixed_lists() {
+        let exact = crate::canon_def::CanonFuncType {
+            params: vec![ValType::ListFixed(Box::new(ValType::U8), 16)],
+            result: Some(ValType::I64),
+            is_async: false,
+        };
+        let exact_cache = FlatLayoutCache::for_functype(&exact, CoreType::I32);
+        assert_eq!(exact_cache.params_flat_len, 16);
+        assert!(exact_cache.param_tuple.is_none());
+        assert_eq!(exact_cache.result_flat_len, 1);
+        assert!(exact_cache.result_tuple.is_none());
+
+        let large = crate::canon_def::CanonFuncType {
+            params: vec![ValType::ListFixed(Box::new(ValType::U8), 268_435_455)],
+            result: Some(ValType::String),
+            is_async: false,
+        };
+        let large_cache = FlatLayoutCache::for_functype(&large, CoreType::I32);
+        assert_eq!(large_cache.params_flat_len, 17);
+        assert!(large_cache.param_tuple.is_some());
+        assert_eq!(large_cache.result_flat_len, 2);
+        assert!(large_cache.result_tuple.is_some());
+    }
+
+    #[test]
+    #[ignore = "paired allocation microbenchmark"]
+    fn benchmark_bounded_flat_count_against_materialized_types() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let types = vec![ValType::I32; 16];
+        let rounds = 200_000;
+        let before = Instant::now();
+        let mut materialized = 0;
+        for _ in 0..rounds {
+            materialized += black_box(crate::canon_flat::flatten_types(
+                black_box(&types),
+                CoreType::I32,
+            ))
+            .len();
+        }
+        let materialized_time = before.elapsed();
+        let before = Instant::now();
+        let mut bounded = 0;
+        for _ in 0..rounds {
+            bounded += black_box(flat_types_count_bounded(
+                black_box(types.iter()),
+                crate::canon_flat::MAX_FLAT_PARAMS,
+            ));
+        }
+        let bounded_time = before.elapsed();
+        assert_eq!(bounded, materialized);
+        eprintln!(
+            "flat count, {rounds} calls: materialized={materialized_time:?}, bounded={bounded_time:?}"
+        );
     }
 }

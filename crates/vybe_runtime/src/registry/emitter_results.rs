@@ -15,8 +15,24 @@ use crate::Chunk;
 pub enum EmitRequest {
     /// Preserve the language's ordinary value-position representation.
     Value,
+    /// This call result is immediately discarded by its owning statement.
+    DiscardedValue,
     /// The owning expression is directly consumed as an i32 condition.
     I32Condition,
+    /// A statically selected memory32 integer operation consumes this result.
+    I32Word,
+    /// Preserve value-position representation, with an already-evaluated RHS
+    /// physically produced by the compiler's string-literal emitter. The
+    /// constant indexes its immutable string-global key in the current chunk.
+    /// An inferred type or a mutable variable does not establish this fact.
+    StringLiteralRhs { constant: u32 },
+    /// RHS physically produced by the compiler's null-literal emitter.
+    /// Declarations, variables and inferred nullable types do not prove this.
+    NullLiteralRhs,
+    /// At least one already-evaluated operand was physically emitted as a
+    /// numeric, string, Boolean or null literal. Neither an annotation nor
+    /// an inferred type establishes this fact. Preserve ordinary value output.
+    ScalarLiteralOperand,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +43,8 @@ pub enum ResultRepresentation {
     BoxedBoolean,
     /// The produced value is an unboxed i32 Boolean (0 or 1).
     RawI32Boolean,
+    /// An unboxed i32 bit pattern, not necessarily a Boolean or signed number.
+    RawI32Word,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

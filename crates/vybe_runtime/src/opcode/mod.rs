@@ -172,14 +172,15 @@ impl Op {
     ///
     /// The caller is responsible for ensuring four bytes are present. This is
     /// the hot dispatch path, where chunk validation already proved instruction
-    /// boundaries; avoiding the temporary array keeps the fixed-width opcode
-    /// advantage as direct as possible.
+    /// boundaries. A checked four-byte window lets the compiler use one
+    /// unaligned word load without casting the backing pointer or reading
+    /// past the instruction.
     #[inline]
     pub fn from_code_at(code: &[u8], offset: usize) -> Self {
-        Op(((code[offset] as u32) << 24)
-            | ((code[offset + 1] as u32) << 16)
-            | ((code[offset + 2] as u32) << 8)
-            | code[offset + 3] as u32)
+        let bytes = code[offset..]
+            .first_chunk::<4>()
+            .expect("truncated bytecode opcode");
+        Op(u32::from_be_bytes(*bytes))
     }
 
     /// Group (u16). Maps to WASM prefix bytes: 0x00=core, 0xF0=canon, 0xFB=GC, etc.
@@ -493,10 +494,49 @@ impl OperandFormat {
     }
 
     /// Operand size for formats whose size depends on operand bytes.
+    #[inline]
     pub fn size_in(self, code: &[u8], operand_start: usize) -> usize {
+        if matches!(self, Self::U32Leb | Self::SlI32 | Self::SlI64) {
+            let Some(&first) = code.get(operand_start) else { return 0; };
+            if first & 0x80 == 0 { return 1; }
+            // The first byte is already read. Continue from the second byte
+            // rather than calling the general decoder and sizing it twice.
+            let limit = if self == Self::SlI64 { 10 } else { 5 };
+            let mut len = 1;
+            while let Some(&byte) = code.get(operand_start + len) {
+                len += 1;
+                if byte & 0x80 == 0 || len >= limit { break; }
+            }
+            return len;
+        }
+        let fixed = self.fixed_size();
+        if fixed != 0 {
+            return fixed;
+        }
         if self == Self::None {
             return 0;
         }
+        // GC type/field operands commonly fit in one byte each. Keep fixed
+        // formats on their original path and retain the general decoder for
+        // multi-byte or truncated pairs.
+        if self == Self::U32Leb_U32Leb {
+            if let Some(&first) = code.get(operand_start) {
+                if first & 0x80 == 0 {
+                    if let Some(&second) = code.get(operand_start + 1) {
+                        if second & 0x80 == 0 {
+                            return 2;
+                        }
+                    }
+                }
+            }
+        }
+        self.variable_size_in(code, operand_start)
+    }
+
+    // Keep variable decoding out of callers that only need fixed-width
+    // operands. Relocation and execution-cache setup scan every instruction.
+    #[inline(never)]
+    fn variable_size_in(self, code: &[u8], operand_start: usize) -> usize {
         match self {
             Self::U32Leb => leb_u32_size(code, operand_start),
             Self::U32Leb_U32Leb => {
@@ -743,9 +783,15 @@ macro_rules! opcode_category {
     ( $( [$sub:literal] $name:ident => $fmt:ident, $wasm_name:literal; )* ) => {
         // A direct numeric validity lookup avoids resolving a mnemonic for
         // every instruction scanned by validation, relocation and linking.
-            static VALID_SUBCODES: [u64; 1024] = {
+        static VALID_SUBCODES: [u64; 1024] = {
             let mut bits = [0u64; 1024];
-            $( bits[($sub as usize) >> 6] |= 1u64 << (($sub as usize) & 63); )*
+            let subcodes: &[usize] = &[$($sub as usize),*];
+            let mut index = 0;
+            while index < subcodes.len() {
+                let sub = subcodes[index];
+                bits[sub >> 6] |= 1u64 << (sub & 63);
+                index += 1;
+            }
             bits
         };
 
@@ -762,7 +808,14 @@ macro_rules! opcode_category {
 
         const MAX_SUBCODE: usize = {
             let mut max = 0usize;
-            $( if ($sub as usize) > max { max = $sub as usize; } )*
+            let subcodes: &[usize] = &[$($sub as usize),*];
+            let mut index = 0;
+            while index < subcodes.len() {
+                if subcodes[index] > max {
+                    max = subcodes[index];
+                }
+                index += 1;
+            }
             max
         };
 
@@ -771,7 +824,15 @@ macro_rules! opcode_category {
         // instead of comparing against the mnemonic list for each instruction.
         static FORMAT_SUBCODES: [super::OperandFormat; MAX_SUBCODE + 1] = {
             let mut formats = [super::OperandFormat::None; MAX_SUBCODE + 1];
-            $( formats[$sub as usize] = super::OperandFormat::$fmt; )*
+            let entries: &[(usize, super::OperandFormat)] = &[
+                $(($sub as usize, super::OperandFormat::$fmt)),*
+            ];
+            let mut index = 0;
+            while index < entries.len() {
+                let (sub, format) = entries[index];
+                formats[sub] = format;
+                index += 1;
+            }
             formats
         };
 
@@ -785,7 +846,6 @@ macro_rules! opcode_category {
 
         /// Reverse of `name`: the WASM mnemonic → sub-opcode. Generated from the
         /// same table so there is exactly one opcode list to maintain.
-        #[allow(dead_code)]
         pub(super) fn from_name(wasm_name: &str) -> Option<u16> {
             match wasm_name {
                 $( $wasm_name => Some($sub), )*
@@ -796,3 +856,63 @@ macro_rules! opcode_category {
 
 // Re-export the macro for category files
 pub(crate) use opcode_category;
+
+#[cfg(test)]
+mod operand_size_tests {
+    use super::Op;
+
+    #[test]
+    fn paired_leb_shortcut_preserves_truncated_and_multibyte_sizes() {
+        let format = super::OperandFormat::U32Leb_U32Leb;
+        for length in 0..24 {
+            for first in 0..=255 {
+                for second in [0, 1, 63, 127, 128, 129, 255] {
+                    let mut payload = vec![0x80; length];
+                    if let Some(byte) = payload.first_mut() { *byte = first; }
+                    if let Some(byte) = payload.get_mut(1) { *byte = second; }
+                    for start in 0..=length + 1 {
+                        assert_eq!(format.size_in(&payload, start),
+                            format.variable_size_in(&payload, start),
+                            "length={length} first={first} second={second} start={start}");
+                    }
+                }
+            }
+        }
+        for start in [usize::MAX - 1, usize::MAX] {
+            assert_eq!(format.size_in(&[], start), format.variable_size_in(&[], start));
+        }
+    }
+
+    #[test]
+    fn fast_operand_sizes_match_variable_decoder_at_truncated_boundaries() {
+        let payloads = [
+            vec![], vec![0; 256], vec![2, 0x80, 0, 0xff, 0, 0x7f, 0],
+            vec![0x80, 0, 0x40, 0x80, 0x80, 1],
+            vec![0x80, 1, 0x80, 2, 0x80, 3, 0],
+        ];
+        let mut opcodes = 0;
+        for group in 0..256 {
+            for sub in 0..2048 {
+                if let Some(op) = Op::decode(group, sub) {
+                    opcodes += 1;
+                    let format = op.operand_format();
+                    for payload in &payloads {
+                        for start in 0..8 {
+                            assert_eq!(format.size_in(payload, start),
+                                format.variable_size_in(payload, start),
+                                "opcode {group:#x}/{sub:#x} at {start}");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(opcodes > 600, "exercise the complete opcode catalog");
+        for format in [super::OperandFormat::U32Leb, super::OperandFormat::SlI32,
+            super::OperandFormat::SlI64] {
+            for length in 0..20 {
+                let payload = vec![0xff; length];
+                assert_eq!(format.size_in(&payload, 0), format.variable_size_in(&payload, 0));
+            }
+        }
+    }
+}

@@ -36,19 +36,14 @@ pub const THREAD_STORAGE_SLOTS: usize = 2;
 /// def ready(self):   return self.waiting() and self.ready_func()
 /// ```
 ///
-/// Every 🧵 built-in that starts a thread waiting uses `lambda: True` —
-/// `resume_later`, `yield_`, `yield_then_resume`, `yield_then_promote`. The
-/// CONDITION-carrying form (`Thread.wait_until(ready_func)`) belongs to the
-/// synchronous blocking built-ins (stream/future reads), which park a `Fiber`
-/// instead and are a separate mechanism today.
-///
-/// Modelled as an enum rather than a boxed closure so the gap is legible: a
-/// `Condition` variant is the extension point, and its absence is a statement
-/// about which built-ins exist, not a limitation hidden behind a `Box<dyn Fn>`.
+/// The thread built-ins use `Always`. Stackless Component Model callbacks
+/// use `HostEvent` until their waitable set becomes ready.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadyWhen {
     /// `lambda: True` — ready the moment it starts waiting.
     Always,
+    /// An external waitable event has not yet been observed by the VM.
+    HostEvent,
 }
 
 impl ReadyWhen {
@@ -56,6 +51,7 @@ impl ReadyWhen {
     pub fn is_ready(self) -> bool {
         match self {
             ReadyWhen::Always => true,
+            ReadyWhen::HostEvent => false,
         }
     }
 }
@@ -76,7 +72,7 @@ pub enum ThreadState {
 }
 
 /// A single Component Model thread.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Thread {
     /// The suspended continuation, or `None` while this thread is running.
     /// A `Value::Object(ObjectKind::Continuation)` produced by `cont.new`.
@@ -229,14 +225,15 @@ impl std::fmt::Display for ThreadError {
 /// rather than compacting, because an index is a value core wasm holds: moving
 /// a live thread to a different index would silently redirect a
 /// `thread.resume-later` that is already in flight.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ThreadTable {
     slots: Vec<Option<Thread>>,
+    task_counts: std::collections::HashMap<u32, usize, crate::chunk::FxBuildHasher>,
 }
 
 impl ThreadTable {
     pub fn new() -> Self {
-        ThreadTable { slots: Vec::new() }
+        ThreadTable { slots: Vec::new(), task_counts: Default::default() }
     }
 
     /// `task.register_thread(new_thread)` — assign the next index and store.
@@ -249,13 +246,22 @@ impl ThreadTable {
             }
         } as u32;
         thread.index = Some(index);
+        *self.task_counts.entry(thread.task_id).or_default() += 1;
         self.slots[index as usize] = Some(thread);
         index
     }
 
     /// `task.unregister_thread` — called when a thread's function returns.
     pub fn unregister(&mut self, index: u32) -> Option<Thread> {
-        self.slots.get_mut(index as usize)?.take()
+        let thread = self.slots.get_mut(index as usize)?.take()?;
+        let count = self.task_counts.get_mut(&thread.task_id).expect("registered task count");
+        *count -= 1;
+        if *count == 0 { self.task_counts.remove(&thread.task_id); }
+        Some(thread)
+    }
+
+    pub(crate) fn has_task(&self, task: u32) -> bool {
+        self.task_counts.contains_key(&task)
     }
 
     pub fn get(&self, index: u32) -> Option<&Thread> {
@@ -285,11 +291,65 @@ impl ThreadTable {
             .filter_map(|(i, s)| s.as_ref()?.ready().then_some(i as u32))
             .collect()
     }
+
+    pub(crate) fn first_ready_except(&self, excluded: Option<u32>) -> Option<u32> {
+        self.slots.iter().enumerate().find_map(|(index, thread)| {
+            let index = index as u32;
+            (Some(index) != excluded && thread.as_ref()?.ready()).then_some(index)
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_counts_preserve_holes_clone_and_repeated_unregister() {
+        let mut table = ThreadTable::new();
+        let first = table.register(Thread::new(1, Value::Null));
+        let second = table.register(Thread::new(1, Value::Null));
+        let other = table.register(Thread::new(2, Value::Null));
+        let snapshot = table.clone();
+        table.unregister(first).unwrap();
+        assert!(table.has_task(1));
+        assert!(table.unregister(first).is_none());
+        table.unregister(second).unwrap();
+        assert!(!table.has_task(1));
+        assert!(table.has_task(2));
+        let replacement = table.register(Thread::new(3, Value::Null));
+        assert_eq!(replacement, first);
+        assert!(table.has_task(3));
+        assert!(snapshot.has_task(1));
+        table.unregister(other).unwrap();
+        assert!(!table.has_task(2));
+    }
+
+    #[test]
+    #[ignore = "matched ready-thread selection microbenchmark, not an application speedup"]
+    fn bench_ready_selection() {
+        for size in [2, 8, 64, 1024] {
+            let mut threads = ThreadTable::new();
+            for _ in 0..size {
+                let mut thread = Thread::new(1, Value::Null);
+                thread.resume_later().unwrap();
+                threads.register(thread);
+            }
+            const ROUNDS: usize = 10_000;
+            let start = std::time::Instant::now();
+            for _ in 0..ROUNDS {
+                assert_eq!(std::hint::black_box(&threads).ready_indices().into_iter()
+                    .find(|index| *index != 0), Some(1));
+            }
+            let allocated = start.elapsed();
+            let start = std::time::Instant::now();
+            for _ in 0..ROUNDS {
+                assert_eq!(std::hint::black_box(&threads).first_ready_except(Some(0)), Some(1));
+            }
+            let borrowed = start.elapsed();
+            eprintln!("{size} ready threads, {ROUNDS} selections: collected {allocated:?}, borrowed {borrowed:?}");
+        }
+    }
 
     fn cont() -> Value {
         // The state machine never dereferences the continuation; it only cares
@@ -300,6 +360,16 @@ mod tests {
 
     fn suspended_thread() -> Thread {
         Thread::new(1, cont())
+    }
+
+    #[test]
+    fn host_event_wait_is_not_ready_until_the_event_arrives() {
+        let mut thread = suspended_thread();
+        thread.start_waiting_internal(ReadyWhen::HostEvent).unwrap();
+        assert!(thread.waiting());
+        assert!(!thread.ready());
+        thread.ready_func = Some(ReadyWhen::Always);
+        assert!(thread.ready());
     }
 
     #[test]

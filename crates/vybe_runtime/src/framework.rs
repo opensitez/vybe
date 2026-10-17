@@ -166,11 +166,9 @@ impl<'a> Framework<'a> {
     /// method vtable. `None` when that host fn is absent (e.g. its capability
     /// was withheld) — the caller simply skips that method.
     pub fn host_fn_index(&self, module: &str, name: &str) -> Option<usize> {
-        self.vm.as_deref().and_then(|vm| {
-            vm.host_registry
-                .get(&(module.to_string(), name.to_string()))
-                .copied()
-        })
+        self.vm
+            .as_deref()
+            .and_then(|vm| vm.resolve_host_function_index(module, name))
     }
 
     /// Attach host fn `module`::`name` as method `method` on an existing type

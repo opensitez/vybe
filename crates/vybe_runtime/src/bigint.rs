@@ -51,6 +51,9 @@ fn mag_cmp(a: &[u64], b: &[u64]) -> std::cmp::Ordering {
 
 fn mag_add(a: &[u64], b: &[u64]) -> Vec<u64> {
     let (long, short) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    if short.is_empty() {
+        return long.to_vec();
+    }
     let mut out = Vec::with_capacity(long.len() + 1);
     let mut carry = 0u64;
     for i in 0..long.len() {
@@ -67,6 +70,9 @@ fn mag_add(a: &[u64], b: &[u64]) -> Vec<u64> {
 
 /// a - b, requires a >= b.
 fn mag_sub(a: &[u64], b: &[u64]) -> Vec<u64> {
+    if b.is_empty() {
+        return mag_norm(a.to_vec());
+    }
     let mut out = Vec::with_capacity(a.len());
     let mut borrow = 0u64;
     for i in 0..a.len() {
@@ -133,6 +139,12 @@ fn mag_shl(a: &[u64], bits: usize) -> Vec<u64> {
     }
     let limb_shift = bits / 64;
     let bit_shift = bits % 64;
+    if bit_shift == 0 {
+        let mut out = Vec::with_capacity(a.len() + limb_shift);
+        out.resize(limb_shift, 0);
+        out.extend_from_slice(a);
+        return mag_norm(out);
+    }
     let mut out = vec![0u64; a.len() + limb_shift + 1];
     for (i, &w) in a.iter().enumerate() {
         out[i + limb_shift] |= w << bit_shift;
@@ -149,6 +161,9 @@ fn mag_shr(a: &[u64], bits: usize) -> Vec<u64> {
         return Vec::new();
     }
     let bit_shift = bits % 64;
+    if bit_shift == 0 {
+        return mag_norm(a[limb_shift..].to_vec());
+    }
     let mut out = Vec::with_capacity(a.len() - limb_shift);
     for i in limb_shift..a.len() {
         let mut w = a[i] >> bit_shift;
@@ -188,19 +203,51 @@ fn mag_divrem(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
     }
     let n = mag_bit_len(a);
     let mut q: Vec<u64> = vec![0u64; a.len()];
-    let mut r: Vec<u64> = Vec::new();
+    // Before each shift r < b, so the shifted remainder needs at most
+    // b.len() + 1 limbs. Retain that allocation for the entire division.
+    let mut r: Vec<u64> = Vec::with_capacity(b.len() + 1);
     for i in (0..n).rev() {
-        r = mag_shl(&r, 1);
+        let mut carry = 0;
+        for limb in &mut r {
+            let next = *limb >> 63;
+            *limb = (*limb << 1) | carry;
+            carry = next;
+        }
+        if carry != 0 {
+            r.push(carry);
+        }
         if mag_get_bit(a, i) {
-            mag_set_bit(&mut r, 0);
+            if let Some(low) = r.first_mut() {
+                *low |= 1;
+            } else {
+                r.push(1);
+            }
         }
         if mag_cmp(&r, b) != std::cmp::Ordering::Less {
-            r = mag_sub(&r, b);
+            let mut borrow = 0;
+            for (index, limb) in r.iter_mut().enumerate() {
+                let (difference, first_borrow) = limb.overflowing_sub(*b.get(index).unwrap_or(&0));
+                let (difference, second_borrow) = difference.overflowing_sub(borrow);
+                *limb = difference;
+                borrow = u64::from(first_borrow) + u64::from(second_borrow);
+            }
+            debug_assert_eq!(borrow, 0, "division subtraction requires r >= b");
+            while r.last() == Some(&0) {
+                r.pop();
+            }
             mag_set_bit(&mut q, i);
         }
     }
     (mag_norm(q), r)
 }
+
+#[cfg(test)]
+#[path = "bigint_division_allocation_tests.rs"]
+mod division_allocation_tests;
+
+#[cfg(test)]
+#[path = "bigint_zero_operand_tests.rs"]
+mod zero_operand_tests;
 
 fn mag_and(a: &[u64], b: &[u64]) -> Vec<u64> {
     let n = a.len().min(b.len());
@@ -208,6 +255,8 @@ fn mag_and(a: &[u64], b: &[u64]) -> Vec<u64> {
 }
 
 fn mag_or(a: &[u64], b: &[u64]) -> Vec<u64> {
+    if a.is_empty() { return mag_norm(b.to_vec()); }
+    if b.is_empty() { return mag_norm(a.to_vec()); }
     let n = a.len().max(b.len());
     mag_norm(
         (0..n)
@@ -217,6 +266,8 @@ fn mag_or(a: &[u64], b: &[u64]) -> Vec<u64> {
 }
 
 fn mag_xor(a: &[u64], b: &[u64]) -> Vec<u64> {
+    if a.is_empty() { return mag_norm(b.to_vec()); }
+    if b.is_empty() { return mag_norm(a.to_vec()); }
     let n = a.len().max(b.len());
     mag_norm(
         (0..n)
@@ -227,6 +278,7 @@ fn mag_xor(a: &[u64], b: &[u64]) -> Vec<u64> {
 
 /// a & !b (b zero-extended).
 fn mag_andnot(a: &[u64], b: &[u64]) -> Vec<u64> {
+    if b.is_empty() { return mag_norm(a.to_vec()); }
     mag_norm(
         (0..a.len())
             .map(|i| a[i] & !b.get(i).unwrap_or(&0))

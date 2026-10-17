@@ -82,10 +82,10 @@ pub fn flatten_type(t: &ValType, ptr: CoreType) -> Vec<CoreType> {
         // flattens to ONE core `i32`. The width is a MEMORY fact, not a flat
         // one: it decides how many bytes `load`/`store` move, and the range
         // check on the way in and out.
-        ValType::S8 | ValType::U8 | ValType::S16 | ValType::U16 | ValType::I32 => {
+        ValType::S8 | ValType::U8 | ValType::S16 | ValType::U16 | ValType::I32 | ValType::U32 => {
             vec![CoreType::I32]
         }
-        ValType::I64 => vec![CoreType::I64],
+        ValType::I64 | ValType::U64 => vec![CoreType::I64],
         // `f32` flattens to a core `f32`, NOT to `f64` — a demotion here would
         // round in a place the spec does not.
         ValType::F32 => vec![CoreType::F32],
@@ -104,6 +104,9 @@ pub fn flatten_type(t: &ValType, ptr: CoreType) -> Vec<CoreType> {
         // NOT the (ptr, len) pair an unfixed list takes.
         ValType::ListFixed(elem, n) => {
             let one = flatten_type(elem, ptr);
+            if one.is_empty() {
+                return Vec::new();
+            }
             let mut flat = Vec::with_capacity(one.len() * *n as usize);
             for _ in 0..*n {
                 flat.extend(one.iter().copied());
@@ -137,6 +140,57 @@ pub fn flatten_type(t: &ValType, ptr: CoreType) -> Vec<CoreType> {
         // parameter; answering `[i32]` would invent one.
         ValType::Any => Vec::new(),
     }
+}
+
+/// Count flattened values up to `limit + 1`, without expanding fixed lists.
+/// The extra value distinguishes a signature exactly at the ABI limit from
+/// one that must use linear memory.
+pub fn flat_count_bounded(t: &ValType, limit: usize) -> usize {
+    let cap = limit.saturating_add(1);
+    match t {
+        ValType::Any => 0,
+        ValType::String | ValType::List(_) => 2.min(cap),
+        ValType::ListFixed(elem, count) => flat_count_bounded(elem, limit)
+            .saturating_mul(*count as usize)
+            .min(cap),
+        ValType::Record(fields) => fields.iter().fold(0usize, |total, (_, field)| {
+            total.saturating_add(flat_count_bounded(field, limit)).min(cap)
+        }),
+        ValType::Option(inner) => 1usize
+            .saturating_add(flat_count_bounded(inner, limit))
+            .min(cap),
+        ValType::Result(ok, err) => 1usize
+            .saturating_add(
+                ok.as_deref()
+                    .into_iter()
+                    .chain(err.as_deref())
+                    .map(|case| flat_count_bounded(case, limit))
+                    .max()
+                    .unwrap_or(0),
+            )
+            .min(cap),
+        ValType::Variant(cases) => 1usize
+            .saturating_add(
+                cases
+                    .iter()
+                    .filter_map(|(_, case)| case.as_ref())
+                    .map(|case| flat_count_bounded(case, limit))
+                    .max()
+                    .unwrap_or(0),
+            )
+            .min(cap),
+        _ => 1.min(cap),
+    }
+}
+
+pub fn flat_types_count_bounded<'a>(
+    types: impl IntoIterator<Item = &'a ValType>,
+    limit: usize,
+) -> usize {
+    let cap = limit.saturating_add(1);
+    types.into_iter().fold(0usize, |total, ty| {
+        total.saturating_add(flat_count_bounded(ty, limit)).min(cap)
+    })
 }
 
 /// `flatten_variant(cases, opts)` — the discriminant, then the JOIN of every
@@ -194,28 +248,31 @@ pub fn flatten_functype(
     has_callback: bool,
     ptr: CoreType,
 ) -> CoreFuncType {
-    let mut flat_params = flatten_types(params, ptr);
-    let mut flat_results = match result {
-        Some(t) => flatten_type(t, ptr),
-        None => Vec::new(),
+    let param_limit = if is_async && context == FlattenContext::Lower {
+        MAX_FLAT_ASYNC_PARAMS
+    } else {
+        MAX_FLAT_PARAMS
+    };
+    let mut flat_params = if flat_types_count_bounded(params, param_limit) > param_limit {
+        vec![ptr]
+    } else {
+        flatten_types(params, ptr)
     };
 
     if !is_async {
-        if flat_params.len() > MAX_FLAT_PARAMS {
-            flat_params = vec![ptr];
-        }
-        if flat_results.len() > MAX_FLAT_RESULTS {
-            match context {
-                // A lift RETURNS the pointer…
-                FlattenContext::Lift => flat_results = vec![ptr],
-                // …a lower TAKES it, because the caller can often allocate the
-                // space more cheaply (on its own stack) than `realloc` can.
-                FlattenContext::Lower => {
-                    flat_params.push(ptr);
-                    flat_results = Vec::new();
+        let flat_results = match result {
+            Some(t) if flat_count_bounded(t, MAX_FLAT_RESULTS) > MAX_FLAT_RESULTS => {
+                match context {
+                    FlattenContext::Lift => vec![ptr],
+                    FlattenContext::Lower => {
+                        flat_params.push(ptr);
+                        Vec::new()
+                    }
                 }
             }
-        }
+            Some(t) => flatten_type(t, ptr),
+            None => Vec::new(),
+        };
         return CoreFuncType {
             params: flat_params,
             results: flat_results,
@@ -224,33 +281,30 @@ pub fn flatten_functype(
 
     match context {
         FlattenContext::Lift => {
-            if flat_params.len() > MAX_FLAT_PARAMS {
-                flat_params = vec![ptr];
-            }
             // With a callback the core function answers the packed event code;
             // without one it answers nothing and the result arrives later via
             // `task.return`.
-            flat_results = if has_callback {
+            let flat_results = if has_callback {
                 vec![CoreType::I32]
             } else {
                 Vec::new()
             };
+            CoreFuncType {
+                params: flat_params,
+                results: flat_results,
+            }
         }
         FlattenContext::Lower => {
             // FOUR, not sixteen — an async lowering's arguments must outlive a
             // suspension, so the fallback to memory happens sooner.
-            if flat_params.len() > MAX_FLAT_ASYNC_PARAMS {
-                flat_params = vec![ptr];
-            }
-            if !flat_results.is_empty() {
+            if result.is_some_and(|t| flat_count_bounded(t, 0) != 0) {
                 flat_params.push(ptr);
             }
-            flat_results = vec![CoreType::I32];
+            CoreFuncType {
+                params: flat_params,
+                results: vec![CoreType::I32],
+            }
         }
-    }
-    CoreFuncType {
-        params: flat_params,
-        results: flat_results,
     }
 }
 
@@ -266,6 +320,8 @@ mod tests {
     fn scalars_and_string_flatten_to_the_spec_shapes() {
         assert_eq!(flatten_type(&ValType::Bool, CoreType::I32), [CoreType::I32]);
         assert_eq!(flatten_type(&ValType::I64, CoreType::I32), [CoreType::I64]);
+        assert_eq!(flatten_type(&ValType::U32, CoreType::I32), [CoreType::I32]);
+        assert_eq!(flatten_type(&ValType::U64, CoreType::I32), [CoreType::I64]);
         assert_eq!(flatten_type(&ValType::F64, CoreType::I32), [CoreType::F64]);
         // A string is (ptr, length) — TWO, and both of the memory's address
         // type. One is the commonest way to get a signature quietly wrong.
@@ -428,5 +484,118 @@ mod tests {
         // function answers nothing.
         let without = flatten_functype(&[], None, FlattenContext::Lift, true, false, CoreType::I32);
         assert!(without.results.is_empty());
+    }
+
+    #[test]
+    fn bounded_count_matches_flattening_without_expanding_large_fixed_lists() {
+        let cases = [
+            ValType::String,
+            ValType::ListFixed(Box::new(ValType::I32), 0),
+            ValType::ListFixed(Box::new(ValType::String), 3),
+            ValType::Record(vec![(s("a"), ValType::I32), (s("b"), ValType::String)]),
+            ValType::Option(Box::new(ValType::I64)),
+            ValType::Result(Some(Box::new(ValType::I32)), Some(Box::new(ValType::String))),
+            ValType::Variant(vec![(s("a"), None), (s("b"), Some(ValType::String))]),
+        ];
+        for ty in &cases {
+            for limit in [0, 1, 4, 16] {
+                assert_eq!(
+                    flat_count_bounded(ty, limit),
+                    flatten_type(ty, CoreType::I32).len().min(limit + 1),
+                    "{ty:?} at limit {limit}"
+                );
+            }
+        }
+        let large = ValType::ListFixed(Box::new(ValType::U8), 268_435_455);
+        assert_eq!(flat_count_bounded(&large, MAX_FLAT_RESULTS), 2);
+        assert_eq!(flat_count_bounded(&large, MAX_FLAT_PARAMS), 17);
+    }
+
+    #[test]
+    fn bounded_signature_selection_preserves_core_abi_shapes() {
+        fn unbounded(
+            params: &[ValType],
+            result: Option<&ValType>,
+            context: FlattenContext,
+            is_async: bool,
+            has_callback: bool,
+            ptr: CoreType,
+        ) -> CoreFuncType {
+            let mut params = flatten_types(params, ptr);
+            let mut results = result.map_or_else(Vec::new, |ty| flatten_type(ty, ptr));
+            let limit = if is_async && context == FlattenContext::Lower {
+                MAX_FLAT_ASYNC_PARAMS
+            } else {
+                MAX_FLAT_PARAMS
+            };
+            if params.len() > limit {
+                params = vec![ptr];
+            }
+            if is_async {
+                match context {
+                    FlattenContext::Lift => {
+                        results = if has_callback { vec![CoreType::I32] } else { vec![] };
+                    }
+                    FlattenContext::Lower => {
+                        if !results.is_empty() {
+                            params.push(ptr);
+                        }
+                        results = vec![CoreType::I32];
+                    }
+                }
+            } else if results.len() > MAX_FLAT_RESULTS {
+                match context {
+                    FlattenContext::Lift => results = vec![ptr],
+                    FlattenContext::Lower => {
+                        params.push(ptr);
+                        results.clear();
+                    }
+                }
+            }
+            CoreFuncType { params, results }
+        }
+
+        let shapes = vec![
+            ValType::Any,
+            ValType::I32,
+            ValType::String,
+            ValType::ListFixed(Box::new(ValType::I64), 0),
+            ValType::ListFixed(Box::new(ValType::I64), 4),
+            ValType::ListFixed(Box::new(ValType::I64), 16),
+            ValType::ListFixed(Box::new(ValType::I64), 17),
+            ValType::Result(Some(Box::new(ValType::F32)), Some(Box::new(ValType::I64))),
+        ];
+        for params in &shapes {
+            for result in &shapes {
+                for context in [FlattenContext::Lift, FlattenContext::Lower] {
+                    for is_async in [false, true] {
+                        for has_callback in [false, true] {
+                            for ptr in [CoreType::I32, CoreType::I64] {
+                                let params = std::slice::from_ref(params);
+                                let actual = flatten_functype(
+                                    params, Some(result), context, is_async, has_callback, ptr,
+                                );
+                                let expected = unbounded(
+                                    params, Some(result), context, is_async, has_callback, ptr,
+                                );
+                                assert_eq!(actual, expected, "{params:?} {result:?} {context:?} async={is_async} callback={has_callback} ptr={ptr:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let huge = ValType::ListFixed(Box::new(ValType::I64), 1_000_000);
+        for context in [FlattenContext::Lift, FlattenContext::Lower] {
+            let signature = flatten_functype(&[huge.clone()], Some(&huge), context, false, false, CoreType::I64);
+            assert_eq!(signature.params, if context == FlattenContext::Lower { vec![CoreType::I64, CoreType::I64] } else { vec![CoreType::I64] });
+            assert_eq!(signature.results, if context == FlattenContext::Lift { vec![CoreType::I64] } else { vec![] });
+        }
+        let zero_width = ValType::ListFixed(Box::new(ValType::Record(vec![])), 268_435_455);
+        let signature = flatten_functype(
+            &[zero_width], None, FlattenContext::Lift, false, false, CoreType::I32,
+        );
+        assert!(signature.params.is_empty());
     }
 }

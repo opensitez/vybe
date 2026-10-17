@@ -1059,6 +1059,22 @@ fn ref_is_null_on_undefined() {
         chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
     }
     chunk.emit_op(Op::REF_IS_NULL, 0);
+    assert_bool(&vm.run(vec![chunk]).unwrap(), false);
+}
+
+#[test]
+fn ref_is_null_on_typed_null() {
+    let mut vm = VM::new();
+    let mut chunk = Chunk::new("test");
+    chunk.local_count = 1;
+    let name = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    vm.set_global_owned(name.clone(), Value::TypedNull(0));
+    let ci = chunk.intern_string_constant(&name);
+    chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
+    chunk.emit_op(Op::REF_IS_NULL, 0);
     assert_bool(&vm.run(vec![chunk]).unwrap(), true);
 }
 

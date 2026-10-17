@@ -46,17 +46,20 @@ fn array_elems(v: Option<&Value>) -> Option<Vec<Value>> {
 
 /// The `data` array as bytes. Elements are `i8`, so they arrive as integers.
 fn data_bytes(v: Option<&Value>) -> Vec<u8> {
-    array_elems(v)
-        .unwrap_or_default()
-        .iter()
-        .map(|e| match e {
-            Value::I32(n) => *n as u8,
-            Value::I64(n) => *n as u8,
-            Value::F64(n) => *n as u8,
-            _ => 0,
-        })
-        .collect()
+    let Some(Value::Object(object)) = v else { return Vec::new() };
+    let object = object.lock().unwrap();
+    let ObjectKind::Array(elems) = &object.kind else { return Vec::new() };
+    elems.iter().map(|e| match e {
+        Value::I32(n) => *n as u8,
+        Value::I64(n) => *n as u8,
+        Value::F64(n) => *n as u8,
+        _ => 0,
+    }).collect()
 }
+
+#[cfg(test)]
+#[path = "js_prototype_data_tests.rs"]
+mod data_tests;
 
 /// A cursor over the configuration byte stream. Every read is fallible: the
 /// stream is module-supplied data and a malformed one must trap, never index

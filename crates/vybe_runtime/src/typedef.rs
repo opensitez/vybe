@@ -11,6 +11,17 @@
 
 use std::collections::HashMap;
 
+#[path = "subtype_walk.rs"]
+mod subtype_walk;
+
+#[cfg(test)]
+#[path = "subtype_walk_tests.rs"]
+mod subtype_walk_tests;
+
+#[cfg(test)]
+#[path = "type_metadata_reserve_tests.rs"]
+mod type_metadata_reserve_tests;
+
 /// A method entry in a type's vtable.
 #[derive(Debug, Clone)]
 pub enum Method {
@@ -44,6 +55,7 @@ pub struct FieldDef {
 pub struct TypeDef {
     /// Type name (e.g. "List", "Button", "Animal", "FileHandle")
     pub name: String,
+    pub native_identity: Option<crate::native_gc::TypeIdentity>,
     /// WASM GC composite shape (struct / array / func). Copied from the
     /// `TypeEntry` at load. `Array` makes `array.get`/`set`/`copy` on an
     /// instance apply spec trapping semantics; `Struct` (the default) is the
@@ -105,10 +117,81 @@ pub struct TypeDef {
     pub field_descriptors: HashMap<String, crate::chunk::PropertyDescriptor>,
 }
 
+#[cfg(test)]
+mod field_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn known_field_batches_keep_storage_indices_and_descriptors() {
+        for count in [0usize, 8, 32, 128, 512] {
+            let mut ty = TypeDef::new("reserved_fields");
+            ty.reserve_fields(count);
+            let allocation = ty.field_defs.as_ptr();
+            let map_capacity = ty.field_map.capacity();
+            for index in 0..count {
+                let mut descriptor = crate::chunk::PropertyDescriptor::standard();
+                descriptor.writable = index % 2 == 0;
+                let name = format!("field_{index}");
+                assert_eq!(ty.add_field_with_descriptor(&name, descriptor), index);
+                assert_eq!(ty.field_index(&name), Some(index));
+                assert_eq!(ty.field_defs[index].descriptor.writable, index % 2 == 0);
+                assert_eq!(ty.field_defs.as_ptr(), allocation);
+                assert_eq!(ty.field_map.capacity(), map_capacity);
+            }
+            assert_eq!(ty.field_count(), count);
+            assert_eq!(ty.field_index("absent"), None);
+        }
+    }
+
+    #[test]
+    fn equivalent_native_groups_reuse_the_registry_identity() {
+        use crate::native_gc::{CompositeType, RecGroup, SubType};
+        let shape = SubType {
+            final_: true, shared: false, supertypes: vec![],
+            descriptor: None, describes: None,
+            composite: CompositeType::Func { params: vec![], results: vec![] },
+        };
+        let a = RecGroup::new(vec![shape.clone()], vec![]).identity(0).unwrap();
+        let b = RecGroup::new(vec![shape], vec![]).identity(0).unwrap();
+        let mut registry = TypeRegistry::new();
+        for identity in [&a, &b] {
+            registry.load_type_table(&[crate::chunk::TypeEntry {
+                name: "diagnostic".into(), native_identity: Some(identity.clone()),
+                kind: crate::chunk::CompositeKind::Func, ..Default::default()
+            }]);
+        }
+        assert!(std::ptr::eq(
+            registry.interned_native_identity(&a).unwrap(),
+            registry.interned_native_identity(&b).unwrap(),
+        ));
+    }
+}
+
 impl TypeDef {
+    /// Reserve the known field batch for a newly loaded module type.
+    fn reserve_fields(&mut self, count: usize) {
+        self.field_defs.reserve(count);
+        self.field_map.reserve(count);
+    }
+
+    fn reserve_metadata(&mut self, entry: &crate::chunk::TypeEntry) {
+        // Tiny batches keep their existing first-insert allocation path.
+        // Descriptor keys are already unique in the input map. Required
+        // signatures append every entry, including repeated method names.
+        if entry.field_descriptors.len() > 3 {
+            self.field_descriptors.reserve(entry.field_descriptors.len());
+        }
+        if entry.is_interface && entry.methods.len() > 4 {
+            self.required_methods.reserve(entry.methods.len());
+        }
+        // Do not reserve methods by raw input length: overloads and duplicate
+        // names can collapse to a much smaller final method map.
+    }
+
     pub fn new(name: &str) -> Self {
         TypeDef {
             name: name.into(),
+            native_identity: None,
             kind: crate::chunk::CompositeKind::Struct,
             parent: None,
             field_defs: Vec::new(),
@@ -250,6 +333,7 @@ pub struct TypeRegistry {
     pub types: Vec<TypeDef>,
     /// Name → type_id lookup
     name_map: HashMap<String, usize>,
+    native_types: HashMap<crate::native_gc::TypeIdentity, usize>,
 }
 
 impl TypeRegistry {
@@ -257,6 +341,7 @@ impl TypeRegistry {
         let mut reg = TypeRegistry {
             types: Vec::new(),
             name_map: HashMap::new(),
+            native_types: HashMap::new(),
         };
         // Type 0: Object (universal base)
         reg.register(TypeDef::new("Object"));
@@ -274,7 +359,36 @@ impl TypeRegistry {
     /// Get type_id by name. Case-insensitive: the map is keyed with lowercase
     /// (register() always lowercases), so lookup normalises to lowercase too.
     pub fn get_id(&self, name: &str) -> Option<usize> {
+        // These names are already the exact key register() stores. Borrow
+        // them instead of allocating a lowercase copy on every lookup.
+        // Non-ASCII names retain str::to_lowercase's Unicode semantics.
+        if name.bytes().all(|byte| byte.is_ascii() && !byte.is_ascii_uppercase()) {
+            return self.name_map.get(name).copied();
+        }
         self.name_map.get(&name.to_lowercase()).copied()
+    }
+
+    /// Lookup a key already normalized with `str::to_lowercase`.
+    /// General callers must use `get_id` to preserve case-insensitive lookup.
+    #[inline]
+    pub(crate) fn get_lowercase_id(&self, name: &str) -> Option<usize> {
+        self.name_map.get(name).copied()
+    }
+
+    pub fn get_entry_id(&self, entry: &super::chunk::TypeEntry) -> Option<usize> {
+        match &entry.native_identity {
+            Some(identity) => self.native_types.get(identity).copied(),
+            None => self.get_id(&entry.name),
+        }
+    }
+
+    pub(crate) fn get_native_id(&self, identity: &crate::native_gc::TypeIdentity) -> Option<usize> {
+        self.native_types.get(identity).copied()
+    }
+
+    pub(crate) fn interned_native_identity(&self, identity: &crate::native_gc::TypeIdentity)
+        -> Option<&crate::native_gc::TypeIdentity> {
+        self.native_types.get_key_value(identity).map(|(identity, _)| identity)
     }
 
     /// Get a type definition by id.
@@ -430,41 +544,43 @@ impl TypeRegistry {
     }
 
     /// Check if type_id is a subtype of target_id.
-    /// Walks parent chain AND checks interface implementations.
+    /// Walks parent and interface edges, including inherited interfaces.
     pub fn is_subtype(&self, type_id: usize, target_id: usize) -> bool {
         if type_id == target_id {
             return true;
         }
-
-        // Check interface implementations
-        if let Some(typedef) = self.types.get(type_id) {
-            if typedef.implements.contains(&target_id) {
-                return true;
-            }
+        let Some(root) = self.types.get(type_id) else {
+            return false;
+        };
+        // Keep common identity and direct-edge checks allocation-free.
+        if root.parent == Some(target_id) || root.implements.contains(&target_id) {
+            return true;
         }
-
-        // Walk parent chain
-        let mut tid = type_id;
-        loop {
-            if let Some(typedef) = self.types.get(tid) {
-                if let Some(parent) = typedef.parent {
-                    if parent == target_id {
+        if root.parent.is_none() && root.implements.is_empty() {
+            return false;
+        }
+        // Ordinary parent chains need no traversal worklist or visited set.
+        // Start the graph walk where interfaces first appear: earlier nodes
+        // have no interface edges and their parent targets were checked.
+        // A registry-sized budget also bounds malformed cyclic parent chains.
+        let mut graph_start = type_id;
+        if root.implements.is_empty() {
+            let mut next = root.parent;
+            for _ in 0..self.types.len() {
+                let Some(tid) = next else { return false; };
+                if tid == target_id { return true; }
+                let Some(typedef) = self.types.get(tid) else { return false; };
+                if !typedef.implements.is_empty() {
+                    if typedef.parent == Some(target_id) || typedef.implements.contains(&target_id) {
                         return true;
                     }
-                    // Also check parent's interface implementations
-                    if let Some(parent_td) = self.types.get(parent) {
-                        if parent_td.implements.contains(&target_id) {
-                            return true;
-                        }
-                    }
-                    tid = parent;
-                } else {
-                    return false;
+                    graph_start = tid;
+                    break;
                 }
-            } else {
-                return false;
+                next = typedef.parent;
             }
         }
+        subtype_walk::graph_is_subtype(self, graph_start, target_id)
     }
 
     /// Add an interface implementation to a type.
@@ -532,10 +648,16 @@ impl TypeRegistry {
         // needs.
         let mut local_ids: Vec<usize> = Vec::with_capacity(types.len());
         for entry in types {
-            let id = match self.get_id(&entry.name) {
+            let id = match self.get_entry_id(entry) {
                 Some(existing) => existing,
                 None => {
                     let mut td = TypeDef::new(&entry.name);
+                    td.native_identity = entry.native_identity.clone();
+                    if let Some(identity) = &td.native_identity {
+                        td.shared = identity.definition().shared;
+                    }
+                    td.reserve_fields(entry.fields.len());
+                    td.reserve_metadata(entry);
                     // Carry the WASM GC composite shape so instances stamped
                     // with this type id trap on `array.*` when it is an
                     // `(array …)`.
@@ -543,7 +665,14 @@ impl TypeRegistry {
                     if entry.is_interface {
                         td.is_interface = true;
                     }
-                    self.register(td)
+                    if let Some(identity) = &entry.native_identity {
+                        let id = self.types.len();
+                        self.types.push(td);
+                        self.native_types.insert(identity.clone(), id);
+                        id
+                    } else {
+                        self.register(td)
+                    }
                 }
             };
             local_ids.push(id);
@@ -564,11 +693,10 @@ impl TypeRegistry {
         }
 
         // Second pass: add fields, methods, interface implementations, constructors
-        for entry in types {
-            let type_id = match self.get_id(&entry.name) {
-                Some(id) => id,
-                None => continue,
-            };
+        // Registration has already resolved every entry, including duplicate
+        // and imported names. Reuse those IDs rather than lowercasing and
+        // hashing every name again. Fields and methods do not change name_map.
+        for (entry, &type_id) in types.iter().zip(&local_ids) {
 
             // Add fields
             {
@@ -707,5 +835,23 @@ impl ResourceTable {
             .get(&handle)
             .map(|e| !e.dropped)
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod normalized_type_lookup_tests {
+    #[test]
+    fn normalized_lookup_preserves_general_lookup_results() {
+        let mut vm = crate::VM::new();
+        let registry = &mut vm.type_registry;
+        // Isolate name-index lookup; no type definitions are needed here.
+        for (index, name) in ["ClassName", "Namespace.Class", "İ", "Σςσ", "Straße", "中文", "A\0B"].into_iter().enumerate() {
+            registry.name_map.insert(name.to_lowercase(), index + 100);
+        }
+        for name in ["ClassName", "CLASSNAME", "Namespace.Class", "namespace.class", "İ", "i\u{307}", "Σςσ", "Straße", "中文", "A\0B", "missing", ""] {
+            let canonical = name.to_lowercase();
+            assert_eq!(registry.get_lowercase_id(&canonical), registry.get_id(name));
+            assert_eq!(registry.get_lowercase_id(&canonical), registry.get_id(&canonical));
+        }
     }
 }

@@ -540,7 +540,8 @@ fn invoke_zero_args_arity_zero() {
     vm.run(vec![dummy_main, func.clone()]).ok();
 
     let func_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("get42".to_string()),
             arity: 0,
@@ -576,7 +577,8 @@ fn invoke_fewer_args_padding() {
     vm.run(vec![dummy_main, func]).ok();
 
     let func_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("check_pad".to_string()),
             arity: 3,
@@ -616,7 +618,8 @@ fn invoke_exact_args() {
     vm.run(vec![dummy_main, func]).ok();
 
     let func_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("sum3".to_string()),
             arity: 3,
@@ -654,7 +657,8 @@ fn invoke_returning_value() {
     vm.run(vec![dummy_main, func]).ok();
 
     let func_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("greet".to_string()),
             arity: 0,
@@ -692,7 +696,8 @@ fn invoke_returning_object() {
     vm.run(vec![dummy_main, func]).ok();
 
     let func_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("make_obj".to_string()),
             arity: 0,
@@ -749,7 +754,8 @@ fn invoke_host_function() {
     vm.run(vec![dummy_main, wrapper]).ok();
 
     let wrapper_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("wrapper".to_string()),
             arity: 1,
@@ -787,7 +793,8 @@ fn invoke_stack_clean_between_invocations() {
     vm.run(vec![dummy_main, func]).ok();
 
     let func_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("double".to_string()),
             arity: 1,
@@ -840,7 +847,8 @@ fn invoke_preserves_globals() {
     vm.run(vec![dummy_main, setter, getter]).ok();
 
     let setter_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("set_global".to_string()),
             arity: 1,
@@ -852,7 +860,8 @@ fn invoke_preserves_globals() {
     })));
 
     let getter_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("get_global".to_string()),
             arity: 0,
@@ -893,7 +902,8 @@ fn invoke_function_that_uses_struct_get() {
     vm.run(vec![dummy_main, func]).ok();
 
     let func_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("get_x".to_string()),
             arity: 1,

@@ -34,7 +34,7 @@ use crate::cm_thread::ThreadTable;
 /// Recorded in `cmplan.md`: it means two components would share an instance
 /// where the spec gives each its own, which matters for `may_enter` reentrance
 /// and for the handle/thread index spaces.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ComponentInstance {
     /// The instance's `threads` table — `thread.new-indirect` registers here
     /// and every other 🧵 built-in addresses threads by index into it.

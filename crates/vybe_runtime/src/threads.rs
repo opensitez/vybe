@@ -9,6 +9,13 @@ use crate::opcode::{Op, read_leb_u32, read_leb_u64};
 use crate::value::Value;
 use crate::vm::VM;
 
+#[path = "atomic_memarg_decode.rs"]
+mod atomic_memarg_decode;
+
+#[cfg(test)]
+#[path = "atomic_memory_index_tests.rs"]
+mod atomic_memory_index_tests;
+
 #[derive(Clone, Copy)]
 enum AtomicWidth {
     W8,
@@ -47,22 +54,25 @@ impl VM {
             }
             _ if op == Op::MEMORY_ATOMIC_NOTIFY => {
                 let count = self.pop_i32_fast();
-                let (_, addr) = self.pop_atomic_addr(AtomicWidth::W32)?;
-                self.push_fast(Value::I32(self.memory.notify(addr, count)));
+                let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W32)?;
+                let result = self.atomic_wait_memory(memidx)?.notify(addr, count);
+                self.push_fast(Value::I32(result));
                 Ok(true)
             }
             _ if op == Op::MEMORY_ATOMIC_WAIT32 => {
                 let timeout = self.pop_i64_fast();
                 let expected = self.pop_i32_fast();
-                let (_, addr) = self.pop_atomic_addr(AtomicWidth::W32)?;
-                self.push_fast(Value::I32(self.memory.wait32(addr, expected, timeout)));
+                let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W32)?;
+                let result = self.atomic_wait_memory(memidx)?.wait32(addr, expected, timeout);
+                self.push_fast(Value::I32(result));
                 Ok(true)
             }
             _ if op == Op::MEMORY_ATOMIC_WAIT64 => {
                 let timeout = self.pop_i64_fast();
                 let expected = self.pop_i64_fast();
-                let (_, addr) = self.pop_atomic_addr(AtomicWidth::W64)?;
-                self.push_fast(Value::I32(self.memory.wait64(addr, expected, timeout)));
+                let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W64)?;
+                let result = self.atomic_wait_memory(memidx)?.wait64(addr, expected, timeout);
+                self.push_fast(Value::I32(result));
                 Ok(true)
             }
             _ if op == Op::I32_ATOMIC_LOAD => {
@@ -255,6 +265,12 @@ impl VM {
         let _ = self.read_byte();
     }
 
+    fn atomic_wait_memory(&self, memidx: usize) -> Result<&crate::shared_memory::SharedMemory, VMError> {
+        if memidx == 0 { return Ok(&self.memory); }
+        self.extra_memories.get(memidx - 1)
+            .ok_or_else(|| VMError::new("trap: atomic memory index out of range"))
+    }
+
     fn pop_atomic_addr(&mut self, width: AtomicWidth) -> Result<(usize, usize), VMError> {
         let (offset, memidx, memory64) = self.read_atomic_memarg();
         let addr = if memory64 {
@@ -280,20 +296,9 @@ impl VM {
         let chunk_idx = self.frame().chunk_index;
         let code = &self.chunks[chunk_idx].code;
         let mut ip = self.frame().ip;
-        let align = read_leb_u32(code, &mut ip);
-        let memory64 = align & 0x80 != 0;
-        let offset = if memory64 {
-            read_leb_u64(code, &mut ip)
-        } else {
-            read_leb_u32(code, &mut ip) as u64
-        };
-        let memidx = if align & 0x40 != 0 {
-            read_leb_u32(code, &mut ip) as usize
-        } else {
-            0
-        };
+        let result = atomic_memarg_decode::decode(code, &mut ip);
         self.frame_mut().ip = ip;
-        (offset, memidx, memory64)
+        result
     }
 
     fn check_atomic_access(
@@ -391,15 +396,17 @@ impl VM {
             }
         } else {
             let memory = self.extra_mem_mut(memidx);
-            let end = atomic_checked_end(addr, size, memory.len())?;
-            let old = read_atomic_value(&memory[addr..end], width);
-            if let Some(new) = update
-                .take()
-                .expect("atomic update callback already used")(old)
-            {
-                write_atomic_value(&mut memory[addr..end], width, new);
-            }
-            Ok(old)
+            memory.with_buffer_mut(|memory| {
+                let end = atomic_checked_end(addr, size, memory.len())?;
+                let old = read_atomic_value(&memory[addr..end], width);
+                if let Some(new) = update
+                    .take()
+                    .expect("atomic update callback already used")(old)
+                {
+                    write_atomic_value(&mut memory[addr..end], width, new);
+                }
+                Ok(old)
+            })
         }
     }
 

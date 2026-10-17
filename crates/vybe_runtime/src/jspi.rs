@@ -28,12 +28,15 @@ impl VM {
                 while scheduler.has_pending(self) {
                     scheduler.turn(self)?;
                 }
+                if self.tick_component_threads()? {
+                    continue;
+                }
                 // Out of runnable work, but a reader may be parked on a stream
                 // that has a producer nobody has asked yet. Driving it HERE
                 // rather than from the read itself is what lets a blocking
                 // producer be correct: everything that could have run has run,
                 // so waiting for a peer can no longer starve one.
-                if !self.drive_parked_producers() {
+                if !self.drive_parked_producers()? {
                     break;
                 }
             }
@@ -42,8 +45,11 @@ impl VM {
         loop {
             let has_pending = self.event_loop.borrow().has_pending() || self.deferred_pending();
             if !has_pending {
+                if self.tick_component_threads()? {
+                    continue;
+                }
                 // Same last-resort producer drive as the scheduler path above.
-                if self.drive_parked_producers() {
+                if self.drive_parked_producers()? {
                     continue;
                 }
                 break;
@@ -60,12 +66,13 @@ impl VM {
                         self.invoke(&callback, &[value])?;
                     }
                     Task::ResumeFiber(fiber) => {
+                        let scheduled = fiber.cm_exit_on_completion;
                         let completion = self.resume_fiber(fiber)?;
                         // Keep the most recent fiber completion so `run()`'s
                         // Suspended path can surface the program's final
                         // value (top-level await suspends the script fiber).
                         // A re-parked fiber ran nothing and has no completion.
-                        if !self.resume_reparked {
+                        if !self.resume_reparked && !scheduled {
                             self.last_fiber_completion = Some(completion);
                         }
                     }
@@ -73,12 +80,35 @@ impl VM {
             }
 
             // 2. Wait for and process one due deferred callback
-            self.wait_for_deferred();
+            let cm_ran = self.tick_component_threads()?;
+            if !self.event_loop.borrow().immediate.is_empty() {
+                continue;
+            }
+            if !cm_ran {
+                self.wait_for_deferred();
+            }
             if let Some(callback) = self.next_due_deferred() {
                 self.invoke(&callback, &[])?;
             }
         }
         self.report_parked_sync_copies()
+    }
+
+    /// Drive one Component Model Store.tick quantum outside active core calls.
+    /// This is an embedding operation, not a guest instruction or import.
+    pub fn tick_component_threads(&mut self) -> Result<bool, VMError> {
+        if !self.exec_floors.is_empty() {
+            return Ok(false);
+        }
+        let host_progress = self.complete_guest_host_stream_writes()?;
+        self.refresh_cm_callback_waiters()?;
+        let Some(index) = self.cm_instance.threads.first_ready_except(None) else {
+            return Ok(host_progress);
+        };
+        let saved = self.save_fiber();
+        let outcome = self.run_ready_cm_thread(index);
+        self.resume_fiber_with(saved, None)?;
+        outcome.map(|_| true)
     }
 
     /// Nothing is runnable and nothing is deferred, so no producer is left to
@@ -100,15 +130,15 @@ impl VM {
     ///
     /// `true` means something arrived and a parked reader has been woken, so
     /// the caller goes round again.
-    fn drive_parked_producers(&mut self) -> bool {
+    fn drive_parked_producers(&mut self) -> Result<bool, VMError> {
         let ids = self.event_loop.borrow().parked_stream_ids();
         let mut progressed = false;
         for id in ids {
-            if self.run_stream_producer(id) {
+            if self.run_stream_producer(id)? {
                 progressed = true;
             }
         }
-        progressed
+        Ok(progressed)
     }
 
     fn report_parked_sync_copies(&mut self) -> Result<(), VMError> {
@@ -134,6 +164,11 @@ impl VM {
         fiber: Fiber,
         push_value: Option<Value>,
     ) -> Result<(), VMError> {
+        // Fibers may be constructed by an embedder with valid cold frames,
+        // rather than only saved from functions that have already executed.
+        for frame in &fiber.frames {
+            self.ensure_execution_fast_paths(frame.chunk_index);
+        }
         self.stack = fiber.stack;
         self.frames = fiber
             .frames
@@ -154,6 +189,13 @@ impl VM {
         self.cur_fiber_id = fiber.fiber_id;
         self.cur_fiber_result_promise = fiber.result_promise;
         self.async_floors = fiber.async_floors;
+        self.current_thread = fiber.cm_thread;
+        if let Some(thread) = self.current_thread
+            .and_then(|index| self.cm_instance.threads.get_mut(index))
+        {
+            thread.ready_func = None;
+            thread.take_cont();
+        }
         if let Some(val) = push_value {
             self.push(val)?;
         }
@@ -162,7 +204,29 @@ impl VM {
 
     /// Resume a suspended fiber — restore its state and continue execution.
     pub(crate) fn resume_fiber(&mut self, fiber: Fiber) -> Result<Value, VMError> {
+        if !fiber.cm_exit_on_completion {
+            return self.resume_fiber_inner(fiber, &mut false);
+        }
+        let thread = fiber.cm_thread
+            .ok_or_else(|| VMError::new("trap: scheduled copy has no component thread"))?;
+        let previous_canon = self.canon_type_immediate;
+        let caller = self.save_fiber();
+        let mut complete = false;
+        let outcome = self.resume_fiber_inner(fiber, &mut complete).and_then(|value| {
+            if complete { self.retire_cm_thread(thread, None)?; }
+            Ok(value)
+        });
+        self.resume_fiber_with(caller, None)?;
+        self.canon_type_immediate = previous_canon;
+        outcome
+    }
+
+    fn resume_fiber_inner(&mut self, fiber: Fiber, complete: &mut bool) -> Result<Value, VMError> {
+        let scheduled = fiber.cm_exit_on_completion;
         self.resume_reparked = false;
+        for frame in &fiber.frames {
+            self.ensure_execution_fast_paths(frame.chunk_index);
+        }
         // Restore state from fiber
         self.stack = fiber.stack;
         self.frames = fiber
@@ -184,6 +248,13 @@ impl VM {
         self.cur_fiber_id = fiber.fiber_id;
         self.cur_fiber_result_promise = fiber.result_promise;
         self.async_floors = fiber.async_floors;
+        self.current_thread = fiber.cm_thread;
+        if let Some(thread) = self.current_thread
+            .and_then(|index| self.cm_instance.threads.get_mut(index))
+        {
+            thread.ready_func = None;
+            thread.take_cont();
+        }
 
         // A synchronous `canon stream.read` / `future.read` parked mid-copy.
         // The read instruction has already retired, so the COPY happens here,
@@ -204,6 +275,13 @@ impl VM {
                     let is_future =
                         matches!(pending.kind, crate::fiber::PendingCopyKind::Future(_));
                     again.pending_copy = Some(pending);
+                    again.cm_exit_on_completion = scheduled;
+                    if let Some(thread) = self.current_thread
+                        .and_then(|index| self.cm_instance.threads.get_mut(index))
+                    {
+                        thread.put_cont(Value::Undefined);
+                        thread.ready_func = Some(crate::cm_thread::ReadyWhen::HostEvent);
+                    }
                     let mut el = self.event_loop.borrow_mut();
                     if is_future {
                         el.suspend_future_sync_reader(end_id, again);
@@ -242,6 +320,7 @@ impl VM {
         loop {
             match self.execute_with_async() {
                 Ok(ExecResult::Done(val)) => {
+                    *complete = true;
                     // JSPI promising boundary: an async body that suspended
                     // earlier has now run to completion — settle the pending
                     // result Promise its caller holds.
@@ -269,6 +348,14 @@ impl VM {
                         }
                     }
                     // Whole-save already happened — event loop takes over.
+                    return Ok(Value::Null);
+                }
+                Ok(ExecResult::Suspended { kind: crate::vm::SuspensionKind::StreamRead, id }) if scheduled => {
+                    let thread = self.current_thread
+                        .ok_or_else(|| VMError::new("trap: scheduled copy has no component thread"))?;
+                    if !self.event_loop.borrow_mut().mark_copy_thread_exit(id, self.cur_fiber_id, thread) {
+                        return Err(VMError::new("trap: scheduled copy lost its continuation"));
+                    }
                     return Ok(Value::Null);
                 }
                 Ok(ExecResult::Suspended { .. }) => return Ok(Value::Null),
@@ -638,6 +725,7 @@ impl VM {
         // Async-call floors index THIS fiber's frame stack — swap them out with
         // the rest of the state so they never index another fiber's frames.
         fiber.async_floors = std::mem::take(&mut self.async_floors);
+        fiber.cm_thread = self.current_thread;
         fiber
     }
 }

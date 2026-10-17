@@ -2,6 +2,63 @@
 use vybe_runtime::{Chunk, TypeDef, VM, Value};
 
 #[test]
+fn component_value_size_boundaries_load_through_both_vm_paths() {
+    use std::sync::Arc;
+    use vybe_runtime::component::ValType;
+
+    let fixed = |element, count| ValType::ListFixed(Box::new(element), count);
+    let tuple = |first, second| ValType::Record(vec![("0".into(), first), ("1".into(), second)]);
+    let map = |value| ValType::List(Box::new(tuple(ValType::U8, value)));
+    let valid = [
+        fixed(ValType::U8, 268_435_455),
+        fixed(ValType::I64, 33_554_431),
+        fixed(ValType::String, 16_777_215),
+        tuple(fixed(ValType::U8, 268_435_454), fixed(ValType::U8, 1)),
+        map(fixed(ValType::U8, 268_435_455)),
+        ValType::Option(Box::new(map(fixed(ValType::U8, 268_435_455)))),
+        ValType::Stream(Box::new(fixed(ValType::U8, 268_435_455))),
+    ];
+    let invalid = [
+        fixed(ValType::U8, 268_435_456),
+        fixed(ValType::I64, 33_554_432),
+        fixed(ValType::String, 16_777_216),
+        fixed(fixed(ValType::U8, 268_435_455), 2),
+        tuple(fixed(ValType::U8, 268_435_455), fixed(ValType::U8, 1)),
+    ];
+
+    for linked in [false, true] {
+        for ty in &valid {
+            let mut chunk = Chunk::new("<script>");
+            chunk.canon_valtypes = Arc::new(vec![Some(ty.clone())]);
+            let mut vm = VM::new();
+            let result = if linked {
+                vm.run_linked(vec![chunk], vec![])
+            } else {
+                vm.run(vec![chunk])
+            };
+            result.expect("valid component value type");
+        }
+        for ty in &invalid {
+            let mut chunk = Chunk::new("<script>");
+            chunk.canon_valtypes = Arc::new(vec![Some(ty.clone())]);
+            let mut vm = VM::new();
+            let result = if linked {
+                vm.run_linked(vec![chunk], vec![])
+            } else {
+                vm.run(vec![chunk])
+            };
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("exceeds maximum byte size"),
+                "expected size validation for {ty:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn bare_canon_lift_requires_canon_section_row() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");

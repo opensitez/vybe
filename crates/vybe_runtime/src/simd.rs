@@ -13,6 +13,9 @@ use crate::error::VMError;
 use crate::value::Value;
 use crate::vm::VM;
 
+#[path = "simd_kernels.rs"]
+mod kernels;
+
 #[inline(always)]
 fn lane_i32(bytes: &[u8; 16], lane: usize) -> i32 {
     let i = lane * 4;
@@ -122,245 +125,370 @@ fn write_f64_lane(out: &mut [u8; 16], lane: usize, value: f64) {
 }
 
 impl VM {
+    /// Keep the result in the lower operand slot. This avoids two pops,
+    /// a push-capacity check, and intermediate vector copies.
+    #[inline(always)]
+    fn simd_replace_pair(
+        &mut self,
+        f: impl FnOnce(&[u8; 16], &[u8; 16]) -> [u8; 16],
+    ) -> Result<(), VMError> {
+        let len = self.stack.len();
+        assert!(len >= 2, "stack underflow");
+        let out = match (&self.stack[len - 2], &self.stack[len - 1]) {
+            (Value::V128(a), Value::V128(b)) => f(a, b),
+            _ => [0; 16],
+        };
+        self.stack[len - 2] = Value::V128(out);
+        self.stack.truncate(len - 1);
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn simd_replace_unary(
+        &mut self,
+        f: impl FnOnce(&[u8; 16]) -> Value,
+        fallback: Value,
+    ) -> Result<(), VMError> {
+        let out = match self.stack.last().expect("stack underflow") {
+            Value::V128(a) => f(a),
+            _ => fallback,
+        };
+        *self.stack.last_mut().expect("stack underflow") = out;
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_eq(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i16x8_eq)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i32x4_eq(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i32x4_eq)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_ne(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i8x16_ne)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_eq(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i8x16_eq)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_add(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i8x16_add)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_swizzle(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i8x16_swizzle)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_add_sat_s(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i8x16_add_sat_s)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_add_sat_u(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i8x16_add_sat_u)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_sub_sat_s(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i8x16_sub_sat_s)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_sub_sat_u(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i8x16_sub_sat_u)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_sub(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i8x16_sub)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_add(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i16x8_add)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_avgr_u(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i16x8_avgr_u)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_bitmask(&mut self) -> Result<(), VMError> {
+        self.simd_replace_unary(|bytes| Value::I32(kernels::i16x8_bitmask(bytes)), Value::I32(0))
+    }
+
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_all_true(&mut self) -> Result<(), VMError> {
+        self.simd_replace_unary(|bytes| Value::I32(kernels::i16x8_all_true(bytes)), Value::I32(0))
+    }
+
+    #[cfg(test)]
+    #[inline(always)]
+    fn simd_i16x8_all_true_scalar_reference(&mut self) -> Result<(), VMError> {
+        self.simd_i16x8_testop(|lane| lane != 0)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_add_sat_s(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i16x8_add_sat_s)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_add_sat_u(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i16x8_add_sat_u)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_sub_sat_s(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i16x8_sub_sat_s)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_sub_sat_u(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i16x8_sub_sat_u)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_sub(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i16x8_sub)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i16x8_mul(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i16x8_mul)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i32x4_add(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i32x4_add)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i32x4_sub(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i32x4_sub)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i64x2_add(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i64x2_add)
+    }
+
+    #[inline(always)]
+    pub(crate) fn simd_i64x2_sub(&mut self) -> Result<(), VMError> {
+        self.simd_replace_pair(kernels::i64x2_sub)
+    }
     #[inline(always)]
     pub(crate) fn simd_i32x4_binop(&mut self, f: impl Fn(i32, i32) -> i32) -> Result<(), VMError> {
-        if let Some((va, vb)) = self.pop_v128_pair_fast() {
+        self.simd_replace_pair(|va, vb| {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let la = lane_i32(&va, i);
-                let lb = lane_i32(&vb, i);
+                let la = lane_i32(va, i);
+                let lb = lane_i32(vb, i);
                 write_i32_lane(&mut out, i, f(la, lb));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            out
+        })
     }
     #[inline(always)]
     pub(crate) fn simd_f64x2_binop(&mut self, f: impl Fn(f64, f64) -> f64) -> Result<(), VMError> {
-        if let Some((va, vb)) = self.pop_v128_pair_fast() {
+        self.simd_replace_pair(|va, vb| {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = lane_f64(&va, i);
-                let lb = lane_f64(&vb, i);
+                let la = lane_f64(va, i);
+                let lb = lane_f64(vb, i);
                 write_f64_lane(&mut out, i, f(la, lb));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            out
+        })
     }
     #[inline(always)]
     pub(crate) fn simd_f64x2_cmp(&mut self, f: impl Fn(f64, f64) -> bool) -> Result<(), VMError> {
-        if let Some((va, vb)) = self.pop_v128_pair_fast() {
+        self.simd_replace_pair(|va, vb| {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = lane_f64(&va, i);
-                let lb = lane_f64(&vb, i);
+                let la = lane_f64(va, i);
+                let lb = lane_f64(vb, i);
                 let mask: u64 = if f(la, lb) { u64::MAX } else { 0 };
                 write_u64_lane(&mut out, i, mask);
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            out
+        })
     }
     #[inline(always)]
     pub(crate) fn simd_f32x4_binop(&mut self, f: impl Fn(f32, f32) -> f32) -> Result<(), VMError> {
-        if let Some((va, vb)) = self.pop_v128_pair_fast() {
+        self.simd_replace_pair(|va, vb| {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let la = lane_f32(&va, i);
-                let lb = lane_f32(&vb, i);
+                let la = lane_f32(va, i);
+                let lb = lane_f32(vb, i);
                 write_f32_lane(&mut out, i, f(la, lb));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            out
+        })
     }
     #[inline(always)]
     pub(crate) fn simd_i8x16_binop(&mut self, f: impl Fn(u8, u8) -> u8) -> Result<(), VMError> {
-        if let Some((va, vb)) = self.pop_v128_pair_fast() {
+        self.simd_replace_pair(|va, vb| {
             let mut out = [0u8; 16];
             for i in 0..16 {
                 out[i] = f(va[i], vb[i]);
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            out
+        })
     }
     #[inline(always)]
     pub(crate) fn simd_i16x8_binop(&mut self, f: impl Fn(i16, i16) -> i16) -> Result<(), VMError> {
-        if let Some((va, vb)) = self.pop_v128_pair_fast() {
+        self.simd_replace_pair(|va, vb| {
             let mut out = [0u8; 16];
             for i in 0..8 {
                 let la = i16::from_le_bytes([va[i * 2], va[i * 2 + 1]]);
                 let lb = i16::from_le_bytes([vb[i * 2], vb[i * 2 + 1]]);
                 write_i16_lane(&mut out, i, f(la, lb));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            out
+        })
     }
     #[inline(always)]
     pub(crate) fn simd_i8x16_unop(&mut self, f: impl Fn(u8) -> u8) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
+        self.simd_replace_unary(|a| {
             let mut out = [0u8; 16];
             for i in 0..16 {
                 out[i] = f(a[i]);
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            Value::V128(out)
+        }, Value::V128([0; 16]))
     }
     #[inline(always)]
     pub(crate) fn simd_i16x8_unop(&mut self, f: impl Fn(i16) -> i16) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
+        self.simd_replace_unary(|a| {
             let mut out = [0u8; 16];
             for i in 0..8 {
                 let v = i16::from_le_bytes([a[i * 2], a[i * 2 + 1]]);
                 write_i16_lane(&mut out, i, f(v));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            Value::V128(out)
+        }, Value::V128([0; 16]))
     }
     #[inline(always)]
     pub(crate) fn simd_i32x4_unop(&mut self, f: impl Fn(i32) -> i32) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
+        self.simd_replace_unary(|a| {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let v = lane_i32(&a, i);
+                let v = lane_i32(a, i);
                 write_i32_lane(&mut out, i, f(v));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            Value::V128(out)
+        }, Value::V128([0; 16]))
     }
     #[inline(always)]
     pub(crate) fn simd_i64x2_unop(&mut self, f: impl Fn(i64) -> i64) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
+        self.simd_replace_unary(|a| {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let v = lane_i64(&a, i);
+                let v = lane_i64(a, i);
                 write_i64_lane(&mut out, i, f(v));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            Value::V128(out)
+        }, Value::V128([0; 16]))
     }
     #[inline(always)]
     pub(crate) fn simd_f32x4_unop(&mut self, f: impl Fn(f32) -> f32) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
+        self.simd_replace_unary(|a| {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let v = lane_f32(&a, i);
+                let v = lane_f32(a, i);
                 write_f32_lane(&mut out, i, f(v));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            Value::V128(out)
+        }, Value::V128([0; 16]))
     }
     #[inline(always)]
     pub(crate) fn simd_f64x2_unop(&mut self, f: impl Fn(f64) -> f64) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
+        self.simd_replace_unary(|a| {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let v = lane_f64(&a, i);
+                let v = lane_f64(a, i);
                 write_f64_lane(&mut out, i, f(v));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            Value::V128(out)
+        }, Value::V128([0; 16]))
     }
     #[inline(always)]
     pub(crate) fn simd_i64x2_binop(&mut self, f: impl Fn(i64, i64) -> i64) -> Result<(), VMError> {
-        if let Some((va, vb)) = self.pop_v128_pair_fast() {
+        self.simd_replace_pair(|va, vb| {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = lane_i64(&va, i);
-                let lb = lane_i64(&vb, i);
+                let la = lane_i64(va, i);
+                let lb = lane_i64(vb, i);
                 write_i64_lane(&mut out, i, f(la, lb));
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            out
+        })
     }
     #[inline(always)]
     pub(crate) fn simd_f32x4_cmp(&mut self, f: impl Fn(f32, f32) -> bool) -> Result<(), VMError> {
-        if let Some((va, vb)) = self.pop_v128_pair_fast() {
+        self.simd_replace_pair(|va, vb| {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let la = lane_f32(&va, i);
-                let lb = lane_f32(&vb, i);
+                let la = lane_f32(va, i);
+                let lb = lane_f32(vb, i);
                 let mask: u32 = if f(la, lb) { u32::MAX } else { 0 };
                 write_u32_lane(&mut out, i, mask);
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            out
+        })
     }
     #[inline(always)]
     pub(crate) fn simd_i64x2_cmp(&mut self, f: impl Fn(i64, i64) -> bool) -> Result<(), VMError> {
-        if let Some((va, vb)) = self.pop_v128_pair_fast() {
+        self.simd_replace_pair(|va, vb| {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = lane_i64(&va, i);
-                let lb = lane_i64(&vb, i);
+                let la = lane_i64(va, i);
+                let lb = lane_i64(vb, i);
                 let mask: u64 = if f(la, lb) { u64::MAX } else { 0 };
                 write_u64_lane(&mut out, i, mask);
             }
-            { self.push_fast(Value::V128(out)); Ok(()) }
-        } else {
-            { self.push_fast(Value::V128([0; 16])); Ok(()) }
-        }
+            out
+        })
     }
     #[inline(always)]
     pub(crate) fn simd_i8x16_testop(&mut self, f: impl Fn(u8) -> bool) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
+        self.simd_replace_unary(|a| {
             let result = a.iter().all(|&b| f(b));
-            { self.push_fast(Value::I32(if result { 1 } else { 0 })); Ok(()) }
-        } else {
-            { self.push_fast(Value::I32(0)); Ok(()) }
-        }
+            Value::I32(if result { 1 } else { 0 })
+        }, Value::I32(0))
     }
     #[inline(always)]
     pub(crate) fn simd_i16x8_testop(&mut self, f: impl Fn(i16) -> bool) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
+        self.simd_replace_unary(|a| {
             let result = (0..8).all(|i| f(i16::from_le_bytes([a[i * 2], a[i * 2 + 1]])));
-            { self.push_fast(Value::I32(if result { 1 } else { 0 })); Ok(()) }
-        } else {
-            { self.push_fast(Value::I32(0)); Ok(()) }
-        }
+            Value::I32(if result { 1 } else { 0 })
+        }, Value::I32(0))
     }
     #[inline(always)]
     pub(crate) fn simd_i32x4_testop(&mut self, f: impl Fn(i32) -> bool) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
-            let result = (0..4).all(|i| f(lane_i32(&a, i)));
-            { self.push_fast(Value::I32(if result { 1 } else { 0 })); Ok(()) }
-        } else {
-            { self.push_fast(Value::I32(0)); Ok(()) }
-        }
+        self.simd_replace_unary(|a| {
+            let result = (0..4).all(|i| f(lane_i32(a, i)));
+            Value::I32(if result { 1 } else { 0 })
+        }, Value::I32(0))
     }
     #[inline(always)]
     pub(crate) fn simd_i64x2_testop(&mut self, f: impl Fn(i64) -> bool) -> Result<(), VMError> {
-        if let Some(a) = self.pop_v128_fast() {
-            let result = (0..2).all(|i| f(lane_i64(&a, i)));
-            { self.push_fast(Value::I32(if result { 1 } else { 0 })); Ok(()) }
-        } else {
-            { self.push_fast(Value::I32(0)); Ok(()) }
-        }
+        self.simd_replace_unary(|a| {
+            let result = (0..2).all(|i| f(lane_i64(a, i)));
+            Value::I32(if result { 1 } else { 0 })
+        }, Value::I32(0))
     }
 
     /// Test if a value matches a type name (used by ref_test, ref_cast, br_on_cast).
@@ -456,7 +584,7 @@ impl VM {
     /// `(func …)`. `None` for struct/array types, which are matched by rtt.
     /// The signature lives in the entry's `fields` — the same general payload
     /// an array type's element storage type uses.
-    fn declared_func_sig(&self, type_index: u32) -> Option<(String, String)> {
+    fn declared_func_sig(&self, type_index: u32) -> Option<(&str, &str)> {
         let idx = type_index as usize;
         if idx == 0 {
             return None;
@@ -466,8 +594,8 @@ impl VM {
             return None;
         }
         Some((
-            entry.fields.first().cloned().unwrap_or_default(),
-            entry.fields.get(1).cloned().unwrap_or_default(),
+            entry.fields.first().map(String::as_str).unwrap_or_default(),
+            entry.fields.get(1).map(String::as_str).unwrap_or_default(),
         ))
     }
 
@@ -487,6 +615,29 @@ impl VM {
     /// supertypes; no name, no fallback. A value with no rtt is simply not an
     /// instance of a declared type.
     pub(crate) fn test_concrete(&self, val: &Value, type_index: u32) -> bool {
+        // Named heap types are struct/array/function references. Scalar and
+        // null values cannot match one, so reject them before module/type
+        // lookup. Object references still take the complete subtype/signature
+        // path below; nullable tests handle null before reaching this method.
+        if !matches!(val, Value::Object(_)) {
+            return false;
+        }
+        let target = self.resolve_gc_rtt(type_index as usize);
+        if let Some(ty) = self.type_registry.get(target).filter(|ty| ty.native_identity.is_some()) {
+            if ty.kind == crate::chunk::CompositeKind::Func {
+                return self.function_chunk_index(val)
+                    .and_then(|index| self.chunks.get(index)?.native_func_type.as_ref())
+                    .and_then(|identity| self.type_registry.get_native_id(identity))
+                    .is_some_and(|actual| self.type_registry.is_subtype(actual, target));
+            }
+            return match val {
+                Value::Object(object) => {
+                    let actual = object.lock().unwrap().type_id;
+                    actual != 0 && self.type_registry.is_subtype(actual, target)
+                }
+                _ => false,
+            };
+        }
         // A FUNCTION reference is matched STRUCTURALLY, not by rtt: a function
         // carries no allocation-time type stamp, and the spec's rule
         // (`Comptype_sub/func`) compares the parameter and result TYPES with
@@ -496,7 +647,7 @@ impl VM {
         if let Some((want_params, want_results)) = self.declared_func_sig(type_index) {
             return match self.function_chunk_index(val) {
                 Some(ci) => match &self.chunks[ci].func_sig {
-                    Some((params, results)) => *params == want_params && *results == want_results,
+                    Some((params, results)) => params.as_str() == want_params && results.as_str() == want_results,
                     // A function with no recorded signature cannot be claimed
                     // to match — answering true here would be a guess.
                     None => false,
@@ -504,7 +655,6 @@ impl VM {
                 None => false,
             };
         }
-        let target = self.resolve_gc_rtt(type_index as usize);
         if target == 0 {
             return false;
         }
@@ -635,6 +785,16 @@ impl VM {
         let crate::opcode::heaptype::HeapType::Concrete(index) = ht else {
             return self.ref_test(val, ht);
         };
+        let target = self.resolve_gc_rtt(index as usize);
+        if let Some(ty) = self.type_registry.get(target).filter(|ty| ty.native_identity.is_some()) {
+            if ty.kind == crate::chunk::CompositeKind::Func {
+                return self.function_chunk_index(val)
+                    .and_then(|index| self.chunks.get(index)?.native_func_type.as_ref())
+                    .and_then(|identity| self.type_registry.get_native_id(identity))
+                    .is_some_and(|actual| actual == target);
+            }
+            return matches!(val, Value::Object(object) if object.lock().unwrap().type_id == target);
+        }
         // ⚠ A FUNCTION TYPE IS MATCHED NOMINALLY WHEN THE CAST IS EXACT.
         //
         // Ordinary `ref.test`/`ref.cast` compare function types STRUCTURALLY —
@@ -664,7 +824,6 @@ impl VM {
         // reached the registry under a different key), so every exact cast in
         // `exact-casts.wast`'s array module failed a cast that should succeed.
         // One resolution path for both tests is the point.
-        let target = self.resolve_gc_rtt(index as usize);
         if target == 0 {
             return false;
         }
@@ -679,73 +838,7 @@ impl VM {
         }
     }
 
-    /// Does this value carry a real rtt — i.e. was it allocated as a declared
-    /// type rather than as a dynamic object?
-    ///
-    /// `type_id == 0` is the untyped form (`struct.new 0`), which is what
-    /// platform exceptions and object literals still get.
-    pub(crate) fn value_has_rtt(&self, val: &Value) -> bool {
-        match val {
-            Value::Object(o) => o.lock().unwrap().type_id > 0,
-            _ => false,
-        }
-    }
 
-    pub(crate) fn ref_test_or_declared_name(
-        &self,
-        val: &Value,
-        ht: crate::opcode::heaptype::HeapType,
-    ) -> bool {
-        if self.ref_test(val, ht) {
-            return true;
-        }
-        match ht {
-            crate::opcode::heaptype::HeapType::Abstract(_) => false,
-            // A concrete FUNCTION type is decided structurally and that answer
-            // is FINAL — falling through to the name path would let a
-            // `__type`/prototype match override it, so a cast to a function
-            // type the reference does not have would succeed instead of
-            // trapping. The name path exists for language-level type tests,
-            // which have nothing to say about a WASM function signature.
-            crate::opcode::heaptype::HeapType::Concrete(index)
-                if self.declared_func_sig(index).is_some() =>
-            {
-                false
-            }
-            // ⛔⛔ THE NAME PATH IS FOR OBJECTS WITH NO rtt — NEVER AS AN
-            // OVERRIDE OF ONE.
-            //
-            // `test_type` answers from `properties["__type"]` / `["__types"]`,
-            // which are ORDINARY WRITABLE PROPERTIES. Consulting them for an
-            // object that already carries an rtt made identity FORGEABLE:
-            //
-            //     const u = new User();
-            //     u.__type = "Admin";
-            //     u instanceof Admin   →  true      ⛔
-            //
-            // A real instance re-labelled itself into another class by
-            // assignment, and every consumer that believes it is asking the rtt
-            // — typed `catch`, `instanceof`, `is`, `isinstance`, the seam-3
-            // receiver guard, the private-field brand check — was really asking
-            // "does this object carry the right string".
-            //
-            // The rtt is stamped at allocation and there is no instruction that
-            // can change it, so for a typed object `ref_test` is already the
-            // complete and unforgeable answer. The name path exists only for
-            // values that never got an rtt — platform exceptions and dynamic
-            // object literals, both of which are still allocated untyped — and
-            // it is scoped to exactly those here rather than trusted globally.
-            //
-            // ⚠ This does NOT make identity unforgeable for an untyped object;
-            // nothing can until every allocation carries an rtt. It removes the
-            // case where a GENUINE instance can be relabelled, which is the one
-            // that reads as privilege escalation.
-            crate::opcode::heaptype::HeapType::Concrete(index) if self.value_has_rtt(val) => false,
-            crate::opcode::heaptype::HeapType::Concrete(index) => self
-                .declared_type_name(index)
-                .is_some_and(|name| self.test_type(val, &name)),
-        }
-    }
 
     /// Type test **by name** — a LANGUAGE operation, not a WASM one.
     ///
@@ -845,4 +938,108 @@ impl VM {
     }
 
     // -- Execute --
+}
+
+#[cfg(test)]
+#[path = "simd_perf_tests.rs"]
+mod bulk_simd_perf_gates;
+
+impl crate::vm::VM {
+    #[inline(always)]
+    pub(crate) fn simd_i8x16_bitmask_native(&mut self) -> Result<(), crate::error::VMError> {
+        let operand = self.stack.last_mut().expect("stack underflow");
+        let mask = match operand {
+            crate::value::Value::V128(bytes) => kernels::i8x16_bitmask(bytes),
+            _ => 0,
+        };
+        *operand = crate::value::Value::I32(mask);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod all_true_stack_tests {
+    use super::*;
+    use std::{hint::black_box, time::Instant};
+
+    #[test]
+    fn i16_all_true_replaces_only_top_operand_with_canonical_i32() {
+        for bytes in [[0u8; 16], [1u8; 16], [0x80u8; 16]] {
+            let mut vm = VM::new();
+            vm.stack = vec![Value::I64(-7), Value::V128(bytes)];
+            vm.simd_i16x8_all_true().unwrap();
+            assert_eq!(vm.stack.len(), 2);
+            assert_eq!(vm.stack[0], Value::I64(-7));
+            let expected = bytes.chunks_exact(2)
+                .all(|lane| lane[0] != 0 || lane[1] != 0) as i32;
+            assert_eq!(vm.stack[1], Value::I32(expected));
+        }
+    }
+
+    fn scalar(vm: &mut VM) {
+        vm.simd_i16x8_all_true_scalar_reference().unwrap();
+    }
+
+    fn optimized(vm: &mut VM) {
+        vm.simd_i16x8_all_true().unwrap();
+    }
+
+    fn sample(kernel: fn(&mut VM), vm: &mut VM, inputs: &[[u8; 16]]) -> u128 {
+        let kernel = black_box(kernel);
+        let start = Instant::now();
+        for index in 0..100_000 {
+            vm.stack[1] = Value::V128(inputs[index % inputs.len()]);
+            kernel(black_box(&mut *vm));
+            black_box(&vm.stack[1]);
+        }
+        start.elapsed().as_nanos()
+    }
+
+    #[test]
+    #[ignore = "paired performance experiment; run optimized test executable explicitly"]
+    fn benchmark_i16_all_true_actual_stack_helpers() {
+        assert!(!cfg!(debug_assertions), "compile with optimizations enabled");
+        let mut seed = 0x41b8a531u32;
+        let mut mixed = Vec::with_capacity(512);
+        for index in 0..512 {
+            let mut bytes = [0u8; 16];
+            for byte in &mut bytes {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                *byte = seed as u8;
+            }
+            if index % 3 != 0 {
+                let offset = (index % 8) * 2;
+                bytes[offset..offset + 2].fill(0);
+            }
+            mixed.push(bytes);
+        }
+        for (pattern, inputs) in [
+            ("mixed", mixed),
+            ("nonzero", vec![[1u8; 16]; 512]),
+            ("zero", vec![[0u8; 16]; 512]),
+        ] {
+            let mut vm = VM::new();
+            vm.stack = vec![Value::I64(-7), Value::V128([0; 16])];
+            let mut ratios = Vec::with_capacity(21);
+            for round in 0..23 {
+                let (before, after) = if round % 2 == 0 {
+                    (sample(scalar, &mut vm, &inputs), sample(optimized, &mut vm, &inputs))
+                } else {
+                    let after = sample(optimized, &mut vm, &inputs);
+                    (sample(scalar, &mut vm, &inputs), after)
+                };
+                assert_eq!(vm.stack.len(), 2);
+                assert_eq!(vm.stack[0], Value::I64(-7));
+                let bytes = inputs[99_999 % inputs.len()];
+                let expected = bytes.chunks_exact(2)
+                    .all(|lane| lane[0] != 0 || lane[1] != 0) as i32;
+                assert_eq!(vm.stack[1], Value::I32(expected));
+                if round >= 2 { ratios.push(before as f64 / after as f64); }
+            }
+            ratios.sort_by(f64::total_cmp);
+            println!("i16x8.all_true stack pattern={pattern} paired_ratio={:.3}", ratios[10]);
+        }
+    }
 }

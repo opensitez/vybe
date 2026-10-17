@@ -117,7 +117,9 @@ impl FuncSig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValType {
     I32,
+    U32,
     I64,
+    U64,
     F64,
     String,
     Bool,
@@ -356,7 +358,6 @@ impl Linker {
                 all_exports.insert((iface.clone(), func.clone()), adjusted);
             }
         }
-
         // 3. Validate imports — each component's imports should be resolvable
         // from either component exports or host functions.
         // "*" module imports are resolved against all component exports.
@@ -367,12 +368,6 @@ impl Linker {
             for (iface, func) in &comp.imports {
                 if all_exports.contains_key(&(iface.clone(), func.clone())) {
                     continue; // resolved from component exports
-                }
-                if self
-                    .host_exports
-                    .contains_key(&(iface.clone(), func.clone()))
-                {
-                    continue; // resolved from host
                 }
                 // Non-"*" imports (e.g. "wasi:cli", "vybe:math") are host imports
                 // resolved at runtime — don't flag as unresolved
@@ -571,11 +566,9 @@ impl Linker {
 
             // Store unified imports on the first merged chunk (script chunk 0)
             if !all_chunks.is_empty() {
-                all_chunks[0].imports = unified_imports;
+                all_chunks[0].imports = unified_imports.into();
             }
         }
-
-        let resolved_exports: HashMap<(String, String), ExportImpl> = all_exports;
 
         // 7. Pre-resolve unified import table → ImportTarget for the VM.
         // This lets the VM skip runtime resolution for linked components.
@@ -583,7 +576,7 @@ impl Linker {
         if !all_chunks.is_empty() {
             for imp in &all_chunks[0].imports {
                 let key = (imp.module.clone(), imp.name.clone());
-                if let Some(export) = resolved_exports.get(&key) {
+                if let Some(export) = all_exports.get(&key) {
                     match export {
                         ExportImpl::ChunkFn(ci) => {
                             let arity = if *ci < all_chunks.len() {
@@ -600,17 +593,6 @@ impl Linker {
                             resolved_imports.push(crate::vm::ImportTarget::Host(*idx));
                         }
                     }
-                } else if let Some(host_export) = self.host_exports.get(&key) {
-                    match host_export {
-                        ExportImpl::HostFn(idx) => {
-                            resolved_imports.push(crate::vm::ImportTarget::Host(*idx));
-                        }
-                        _ => {
-                            // Unresolved — will be resolved at runtime by the VM
-                            resolved_imports
-                                .push(crate::vm::ImportTarget::StdlibRedirect(imp.name.clone()));
-                        }
-                    }
                 } else {
                     // Not resolved at link time — VM will resolve at runtime
                     resolved_imports
@@ -618,10 +600,9 @@ impl Linker {
                 }
             }
         }
-
         Ok(LinkResult {
             chunks: all_chunks,
-            exports: resolved_exports,
+            exports: all_exports,
             component_offsets,
             type_exports: all_type_exports,
             resolved_imports,

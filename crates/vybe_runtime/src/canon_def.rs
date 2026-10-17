@@ -40,11 +40,12 @@ pub enum StringEncoding {
 
 /// `opts ::= opt*:vec(<canonopt>)`.
 ///
-/// `memory` and `realloc` are kept even though this VM has exactly one of each
-/// (`SharedMemory`, `bump_realloc`). The resolver ASSERTS the immediate names
-/// that one rather than dropping the field — same reasoning as
+/// The VM currently supports one linear memory. The resolver ASSERTS the
+/// immediate memory index rather than dropping it — same reasoning as
 /// `canon_element_type` refusing instead of defaulting: on the day a second
-/// memory exists, a stale index must fail loudly instead of aliasing.
+/// memory exists, a stale index must fail loudly instead of aliasing. A
+/// declared `realloc` is invoked for canonical lowering; rows without one
+/// retain the internal allocator for existing callers.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CanonOpts {
     pub string_encoding: StringEncoding,
@@ -70,6 +71,18 @@ pub struct CanonOpts {
 pub struct CanonFuncType {
     pub params: Vec<ValType>,
     pub result: Option<ValType>,
+    /// Component function effect; a synchronous canonical ABI may still expose it.
+    pub is_async: bool,
+}
+
+/// Instantiation-time binding from an imported component function to a
+/// function supplied by the enclosing component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComponentFuncLink {
+    pub import: u32,
+    pub supplied: u32,
+    pub expected_type: u32,
+    pub supplied_type: u32,
 }
 
 /// What a `canon lift` / `canon lower` wraps.
@@ -99,6 +112,10 @@ pub enum CalleeRef {
 pub struct CanonDef {
     /// `$callee` — `lift` / `lower` only.
     pub callee: Option<CalleeRef>,
+    /// Core destructor captured from the resource type named by `resource.drop`.
+    pub resource_dtor: Option<CalleeRef>,
+    /// Representation width declared by the resource type, if known.
+    pub resource_rep: Option<crate::canon_flat::CoreType>,
     /// `t:<typeidx>` (stream/future element), `rt:<typeidx>` (resource), or
     /// `ft:<typeidx>` for `lift` — an index into the component type space.
     pub ty: Option<u32>,
@@ -112,6 +129,8 @@ pub struct CanonDef {
     pub context: Option<(ValType, u32)>,
     /// `tbl:<core:tableidx>` — `thread.new-indirect`, `thread.spawn-indirect`.
     pub table: Option<u32>,
+    /// Core worker parameter type, resolved independently of component types.
+    pub worker_param: Option<crate::canon_flat::CoreType>,
     pub opts: CanonOpts,
     /// `cancel?` — `thread.{suspend,yield,...}`, `{stream,future}.cancel-*`.
     pub cancellable: bool,
@@ -255,6 +274,7 @@ mod tests {
         let ft = CanonFuncType {
             params: vec![ValType::I32, ValType::String],
             result: Some(ValType::Bool),
+            is_async: false,
         };
         assert_eq!(ft.params.len(), 2);
         assert!(ft.result.is_some());

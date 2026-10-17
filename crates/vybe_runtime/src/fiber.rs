@@ -49,6 +49,10 @@ pub struct Fiber {
     /// the rest of the execution state so floors never index another fiber's
     /// frames.
     pub(crate) async_floors: Vec<usize>,
+    /// Component thread identity travels with the suspended execution state.
+    pub(crate) cm_thread: Option<u32>,
+    /// A scheduled CM producer exits when this continuation finishes.
+    pub(crate) cm_exit_on_completion: bool,
     /// A SYNCHRONOUS `canon stream.read` / `future.read` parked mid-copy.
     ///
     /// `CanonicalABI.md` §`canon stream.{read,write}`: only the `async` variant
@@ -71,6 +75,9 @@ pub struct PendingCopy {
     pub handle: u32,
     pub end_id: u64,
     pub ptr: usize,
+    /// Canonical buffer options must survive switching to another fiber.
+    pub memory: u32,
+    pub realloc: Option<u32>,
     /// Element count, not bytes — the unit `canon stream.read` copies in.
     pub n: usize,
     pub kind: PendingCopyKind,
@@ -78,6 +85,8 @@ pub struct PendingCopy {
 
 #[derive(Debug, Clone)]
 pub enum PendingCopyKind {
+    StreamReadZero,
+    StreamWritePending,
     /// `stream<u8>` — the byte path.
     StreamBytes,
     /// `stream<T>`, `T` ≠ `u8` — elements are stored at `T`'s layout.
@@ -114,6 +123,8 @@ impl Fiber {
             fiber_id: 0,
             result_promise: None,
             async_floors: Vec::new(),
+            cm_thread: None,
+            cm_exit_on_completion: false,
             pending_copy: None,
         }
     }

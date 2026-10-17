@@ -39,6 +39,10 @@ pub(crate) fn resolve_host_export<'a>(
     }
 }
 
+#[cfg(test)]
+#[path = "module_export_walk_tests.rs"]
+mod walk_tests;
+
 /// A registered module — Synthetic (Rust-backed), Wasm (loaded `.wasm`),
 /// or Adapter (source-language file re-exporting from Synthetic modules).
 #[derive(Debug)]

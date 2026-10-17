@@ -11,6 +11,13 @@ use crate::opcode::Op;
 use crate::shared_memory::SharedMemory;
 use crate::value::{Object, ObjectKind, Upvalue, Value};
 
+mod cache_census;
+mod import_cache_peak;
+mod module_storage;
+mod request_units;
+pub use request_units::{LoadedRequestUnit,RequestUnitDenial};
+mod native_cache_preparation;
+
 const ERROR_HISTORY_LEN: usize = 32;
 
 pub(crate) struct ErrorStep {
@@ -19,6 +26,9 @@ pub(crate) struct ErrorStep {
     stack_top: Option<Value>,
 }
 
+// CALL uses24 operand bits; RETURN_CALL uses16. This runtime-only cache
+// marker never enters guest code, Wasm binaries, or another opcode's domain.
+pub(crate) const DECODED_DEFINED_CALL: u32 = 0x8000_0000;
 pub(crate) const DECODED_MEMARG_FALLBACK: u32 = u32::MAX;
 pub(crate) const DECODED_MEMARG_PRESENT: u32 = 0x8000_0000;
 pub(crate) const DECODED_MEMARG_LEN_SHIFT: u32 = 24;
@@ -266,6 +276,9 @@ pub struct RuntimePerfCounters {
     pub call_target_canon: u64,
     pub call_target_slow: u64,
     pub host_imports: Vec<(String, u64)>,
+    /// Cached counter rows for stable VM host-function indices. A missing
+    /// registry name uses usize::MAX so profiling does not rescan it.
+    pub host_import_indices: Vec<Option<usize>>,
     pub native_next_ops: Vec<(String, u64)>,
     pub native_windows: Vec<(String, u64)>,
     pub local_windows: Vec<(String, u64)>,
@@ -398,6 +411,43 @@ impl RuntimePerfCounters {
         } else {
             self.host_imports.push((name, 1));
         }
+    }
+
+    #[inline]
+    pub fn record_host_import_index(
+        &mut self,
+        host_idx: usize,
+        resolve_name: impl FnOnce() -> Option<String>,
+    ) {
+        if let Some(Some(row)) = self.host_import_indices.get(host_idx) {
+            if *row != usize::MAX {
+                let count = &mut self.host_imports[*row].1;
+                *count = count.saturating_add(1);
+            }
+            return;
+        }
+        let row = match resolve_name() {
+            Some(name) => {
+                let row = self.host_imports.iter().position(|(entry, _)| *entry == name);
+                match row {
+                    Some(row) => {
+                        let count = &mut self.host_imports[row].1;
+                        *count = count.saturating_add(1);
+                        row
+                    }
+                    None => {
+                        let row = self.host_imports.len();
+                        self.host_imports.push((name, 1));
+                        row
+                    }
+                }
+            }
+            None => usize::MAX,
+        };
+        if self.host_import_indices.len() <= host_idx {
+            self.host_import_indices.resize(host_idx + 1, None);
+        }
+        self.host_import_indices[host_idx] = Some(row);
     }
 
     #[inline(always)]
@@ -801,6 +851,8 @@ pub struct HostContext<'a> {
     /// Raw pointer to VM.last_exception — set by THROW when no handler matches.
     /// Null when no VM is attached (HostContext::empty()).
     last_exception_slot: *mut Option<Value>,
+    /// A Component Model trap raised by a host callback while minting a handle.
+    pending_host_trap_slot: *mut Option<crate::error::VMError>,
     /// Raw pointer to VM.pending_exit — set by `wasi:cli/exit` to end the run.
     /// Null when no VM is attached (HostContext::empty()).
     exit_slot: *mut bool,
@@ -840,7 +892,7 @@ pub struct HostContext<'a> {
     /// Globals are indexed by globalidx; host interop still asks BY NAME, so
     /// the slot carries both halves — the storage and the resolver.
     globals_slot: *mut Vec<Value>,
-    global_index_slot: *mut HashMap<String, u32>,
+    global_index_slot: *mut crate::global_name_index::GlobalNameIndex,
     /// Raw pointer to VM.stack for closing escaped upvalues in timer callbacks.
     /// Null when no VM is attached (HostContext::empty()).
     #[allow(dead_code)]
@@ -1320,7 +1372,7 @@ impl<'a> HostContext<'a> {
         }
         unsafe {
             let vals: &mut Vec<Value> = &mut *self.globals_slot;
-            let index: &mut HashMap<String, u32> = &mut *self.global_index_slot;
+            let index: &mut crate::global_name_index::GlobalNameIndex = &mut *self.global_index_slot;
             // ⚠ A GLOBAL IS NEVER CREATED HERE.
             //
             // This used to mint an entry — `index.insert(name); vals.push(Null)` —
@@ -1422,13 +1474,36 @@ impl<'a> HostContext<'a> {
 
     // ── CM3 / WASI 0.3 async ────────────────────────────────────────────────
 
-    /// Create a future. Returns the future Value (for guest code) and its ID (for host resolve).
+    /// Create a host-produced future. The guest owns its readable canonical
+    /// handle; the host retains the ID used to resolve or reject it.
     pub fn create_future(&mut self) -> (Value, u64) {
         use crate::value::{Object, ObjectKind};
         if let Some(ref el) = self.event_loop {
+            unsafe {
+                if !self.handle_table_slot.is_null() && !(*self.handle_table_slot).can_allocate(1) {
+                    self.record_handle_trap("trap: component handle table exhausted");
+                    return (Value::Null, 0);
+                }
+            }
             let id = el.borrow_mut().create_future();
+            unsafe {
+                if !self.handle_table_slot.is_null() {
+                    match (*self.handle_table_slot).insert(
+                        crate::handle_table::HandleEntry::ReadableFutureEnd(
+                            crate::handle_table::StreamEnd::new(id),
+                        ),
+                    ) {
+                        Ok(handle) => return (Value::I32(handle as i32), id),
+                        Err(message) => {
+                            self.record_handle_trap(message);
+                            return (Value::Null, id);
+                        }
+                    }
+                }
+            }
             let obj = Object {
-                properties: indexmap::IndexMap::new(),
+                descriptor: None,
+            properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Future { id },
                 type_id: 0,
                 fields: Vec::new(),
@@ -1506,16 +1581,42 @@ impl<'a> HostContext<'a> {
     /// `None` when there is no handle table to lift into, which is the same
     /// condition under which [`create_stream`] falls back to its object form.
     pub fn create_own_resource(&mut self, type_id: u32, rep: Value) -> Option<Value> {
+        let rep = match rep {
+            Value::I32(_) | Value::I64(_) => rep,
+            Value::F64(value)
+                if value.is_finite()
+                    && value.fract() == 0.0
+                    && value >= 0.0
+                    && value <= u32::MAX as f64 =>
+            {
+                Value::I32(value as u32 as i32)
+            }
+            _ => {
+                self.record_handle_trap("trap: resource representation is not a core integer");
+                return None;
+            }
+        };
         unsafe {
             if self.handle_table_slot.is_null() {
                 return None;
             }
-            let handle =
-                (*self.handle_table_slot).insert(crate::handle_table::HandleEntry::OwnedResource {
+            let handle = (*self.handle_table_slot)
+                .insert(crate::handle_table::HandleEntry::OwnedResource {
                     type_id,
                     value: rep,
-                });
+                    num_lends: 0,
+                })
+                .map_err(|message| self.record_handle_trap(message))
+                .ok()?;
             Some(Value::I32(handle as i32))
+        }
+    }
+
+    fn record_handle_trap(&mut self, message: &'static str) {
+        unsafe {
+            if !self.pending_host_trap_slot.is_null() {
+                *self.pending_host_trap_slot = Some(crate::error::VMError::new(message));
+            }
         }
     }
 
@@ -1530,6 +1631,12 @@ impl<'a> HostContext<'a> {
     pub fn create_stream_of(&mut self, elem: Option<crate::component::ValType>) -> (Value, u64) {
         use crate::value::{Object, ObjectKind};
         if let Some(ref el) = self.event_loop {
+            unsafe {
+                if !self.handle_table_slot.is_null() && !(*self.handle_table_slot).can_allocate(1) {
+                    self.record_handle_trap("trap: component handle table exhausted");
+                    return (Value::Null, 0);
+                }
+            }
             let id = el.borrow_mut().create_stream_of(elem);
             unsafe {
                 if !self.handle_table_slot.is_null() {
@@ -1538,11 +1645,18 @@ impl<'a> HostContext<'a> {
                             crate::handle_table::StreamEnd::new(id),
                         ),
                     );
-                    return (Value::I32(handle as i32), id);
+                    match handle {
+                        Ok(handle) => return (Value::I32(handle as i32), id),
+                        Err(message) => {
+                            self.record_handle_trap(message);
+                            return (Value::Null, id);
+                        }
+                    }
                 }
             }
             let obj = Object {
-                properties: indexmap::IndexMap::new(),
+                descriptor: None,
+            properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Stream { id },
                 type_id: 0,
                 fields: Vec::new(),
@@ -1558,10 +1672,11 @@ impl<'a> HostContext<'a> {
     pub fn stream_push(&mut self, stream_id: u64, item: Value) {
         if let Some(ref el) = self.event_loop {
             let mut el_mut = el.borrow_mut();
-            if let Some(fiber) = el_mut.stream_push(stream_id, item) {
-                el_mut
-                    .immediate
-                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+            let result = el_mut.stream_push(stream_id, item);
+            match result {
+                Ok(Some(fiber)) => el_mut.immediate.push_back(crate::event_loop::Task::ResumeFiber(fiber)),
+                Ok(None) => {},
+                Err(message) => { drop(el_mut); self.record_handle_trap(message); }
             }
         }
     }
@@ -1606,7 +1721,7 @@ impl<'a> HostContext<'a> {
 
     /// Synchronously drain all buffered items from a `stream<u8>` Value into bytes.
     /// Used by host functions that receive a guest stream and need to read all buffered data.
-    /// Items are converted: I32 → single byte, String → UTF-8 bytes, Array<I32> → byte sequence.
+    /// Only byte streams can be drained here; typed elements are not coerced.
     /// Returns empty Vec if the value is not a Stream or the stream has no buffered data.
     pub fn stream_drain(&mut self, stream_val: &Value) -> Vec<u8> {
         use crate::value::ObjectKind;
@@ -1630,9 +1745,46 @@ impl<'a> HostContext<'a> {
             return Vec::new();
         };
         if let Some(ref el) = self.event_loop {
+            if el.borrow().stream_elem(stream_id).is_some() {
+                self.record_handle_trap("typed streams cannot be drained as bytes");
+                return Vec::new();
+            }
             return el.borrow_mut().stream_read_bytes(stream_id, usize::MAX);
         }
         Vec::new()
+    }
+
+    /// Transfer a readable byte stream to a native consumer, with no guest API.
+    /// Chunks are lent in bulk; EOF is represented by `None`.
+    pub fn consume_byte_stream(
+        &mut self, stream: &Value, future: u64,
+        consume: Box<dyn FnMut(Option<&[u8]>) -> Result<(), Value>>,
+    ) -> Result<(), &'static str> {
+        if let Value::I32(handle) = stream {
+            // A host cannot take ownership while a guest buffer is lent or
+            // its completion belongs to a waitable set.
+            unsafe {
+                if self.handle_table_slot.is_null() || !matches!(
+                    (*self.handle_table_slot).get(*handle as u32),
+                    Some(crate::handle_table::HandleEntry::ReadableStreamEnd(end))
+                        if end.state == crate::handle_table::CopyState::Idle && !end.in_waitable_set
+                ) { return Err("readable stream is not transferable"); }
+            }
+        }
+        let id = match stream {
+            Value::I32(handle) => self.resolve_readable_stream_handle(*handle as u32),
+            Value::Object(object) => match object.lock().unwrap().kind {
+                ObjectKind::Stream { id } => Some(id),
+                _ => None,
+            },
+            _ => None,
+        }.ok_or("invalid readable byte stream")?;
+        let events = self.event_loop.as_ref().ok_or("missing event loop")?;
+        events.borrow_mut().set_byte_consumer(id, future, consume)?;
+        if let Value::I32(handle) = stream {
+            unsafe { (*self.handle_table_slot).remove(*handle as u32); }
+        }
+        Ok(())
     }
 
     /// Resolve a CM3 readable-stream-end handle (i32 from the handle table)
@@ -1746,6 +1898,7 @@ impl<'a> HostContext<'a> {
             memory: None,
             event_loop: None,
             last_exception_slot: std::ptr::null_mut(),
+            pending_host_trap_slot: std::ptr::null_mut(),
             host_receiver_slot: std::ptr::null_mut(),
             module_receiver_abi: crate::chunk::ReceiverAbi::Ambient,
             exit_slot: std::ptr::null_mut(),
@@ -1837,6 +1990,7 @@ pub enum CanonBuiltin {
     StreamNew,
     StreamRead,
     StreamWrite,
+    StreamForward,
     StreamCancelRead,
     StreamCancelWrite,
     StreamDropReadable,
@@ -1844,6 +1998,7 @@ pub enum CanonBuiltin {
     FutureNew,
     FutureRead,
     FutureWrite,
+    FutureForward,
     FutureCancelRead,
     FutureCancelWrite,
     FutureDropReadable,
@@ -1932,6 +2087,7 @@ impl CanonBuiltin {
             Self::StreamNew => "stream.new",
             Self::StreamRead => "stream.read",
             Self::StreamWrite => "stream.write",
+            Self::StreamForward => "stream.forward",
             Self::StreamCancelRead => "stream.cancel-read",
             Self::StreamCancelWrite => "stream.cancel-write",
             Self::StreamDropReadable => "stream.drop-readable",
@@ -1939,6 +2095,7 @@ impl CanonBuiltin {
             Self::FutureNew => "future.new",
             Self::FutureRead => "future.read",
             Self::FutureWrite => "future.write",
+            Self::FutureForward => "future.forward",
             Self::FutureCancelRead => "future.cancel-read",
             Self::FutureCancelWrite => "future.cancel-write",
             Self::FutureDropReadable => "future.drop-readable",
@@ -1984,6 +2141,7 @@ impl CanonBuiltin {
             "stream.new" => Self::StreamNew,
             "stream.read" => Self::StreamRead,
             "stream.write" => Self::StreamWrite,
+            "stream.forward" => Self::StreamForward,
             "stream.cancel-read" => Self::StreamCancelRead,
             "stream.cancel-write" => Self::StreamCancelWrite,
             "stream.drop-readable" => Self::StreamDropReadable,
@@ -1991,6 +2149,7 @@ impl CanonBuiltin {
             "future.new" => Self::FutureNew,
             "future.read" => Self::FutureRead,
             "future.write" => Self::FutureWrite,
+            "future.forward" => Self::FutureForward,
             "future.cancel-read" => Self::FutureCancelRead,
             "future.cancel-write" => Self::FutureCancelWrite,
             "future.drop-readable" => Self::FutureDropReadable,
@@ -2091,7 +2250,11 @@ pub enum ImportTarget {
     /// builtin body pops what it needs.
     /// A canonical built-in, with the type immediate its `canon`
     /// definition carried (`None` when the import declared none).
-    Canon(CanonBuiltin, Option<u32>),
+    Canon {
+        builtin: CanonBuiltin,
+        type_idx: Option<u32>,
+        component_result: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2346,7 +2509,11 @@ pub(crate) enum ResolvedCallTarget {
     EcmaBoolean(EcmaBooleanBuiltin, usize),
     EcmaObject(EcmaObjectBuiltin, usize),
     EcmaArray(EcmaArrayBuiltin, usize),
-    Canon(CanonBuiltin, Option<u32>),
+    Canon {
+        builtin: CanonBuiltin,
+        type_idx: Option<u32>,
+        component_result: bool,
+    },
     Slow(ImportTarget),
 }
 
@@ -2371,7 +2538,11 @@ impl ResolvedCallTarget {
             ImportTarget::EcmaBoolean(builtin, host_idx) => Self::EcmaBoolean(*builtin, *host_idx),
             ImportTarget::EcmaObject(builtin, host_idx) => Self::EcmaObject(*builtin, *host_idx),
             ImportTarget::EcmaArray(builtin, host_idx) => Self::EcmaArray(*builtin, *host_idx),
-            ImportTarget::Canon(builtin, type_idx) => Self::Canon(*builtin, *type_idx),
+            ImportTarget::Canon { builtin, type_idx, component_result } => Self::Canon {
+                builtin: *builtin,
+                type_idx: *type_idx,
+                component_result: *component_result,
+            },
             ImportTarget::StdlibRedirect(_) | ImportTarget::StringConst(_) => {
                 Self::Slow(target.clone())
             }
@@ -2395,7 +2566,11 @@ impl ResolvedCallTarget {
             ImportTarget::EcmaBoolean(builtin, host_idx) => Self::EcmaBoolean(builtin, host_idx),
             ImportTarget::EcmaObject(builtin, host_idx) => Self::EcmaObject(builtin, host_idx),
             ImportTarget::EcmaArray(builtin, host_idx) => Self::EcmaArray(builtin, host_idx),
-            ImportTarget::Canon(builtin, type_idx) => Self::Canon(builtin, type_idx),
+            ImportTarget::Canon { builtin, type_idx, component_result } => Self::Canon {
+                builtin,
+                type_idx,
+                component_result,
+            },
             ImportTarget::StdlibRedirect(_) | ImportTarget::StringConst(_) => Self::Slow(target),
         }
     }
@@ -2465,6 +2640,22 @@ pub(crate) struct ObjectGetInlineCache {
     pub(crate) key: String,
     pub(crate) index: usize,
 }
+
+#[cfg(test)]
+#[path = "local_pair_execution_tests.rs"]
+mod local_pair_execution_tests;
+
+#[cfg(test)]
+#[path = "object_literal_execution_tests.rs"]
+mod object_literal_execution_tests;
+
+#[cfg(test)]
+#[path = "gc_array_allocation_tests.rs"]
+mod gc_array_allocation_tests;
+
+#[cfg(test)]
+#[path = "gc_array_constructor_execution_tests.rs"]
+mod gc_array_constructor_execution_tests;
 
 impl NativeCallSiteTarget {
     #[inline(always)]
@@ -2608,28 +2799,12 @@ pub(crate) struct CallTagDef {
     /// arity check at a call site is expressed in it.
     pub(crate) params: u8,
     pub(crate) results: u8,
-    /// The DECLARED functype spelling (`"i32->i32"`), empty when the producer
-    /// supplied none.
-    ///
-    /// ⛔ A SHAPE IS NOT A FUNCTYPE, and canonical tags used to be interned on
-    /// the shape alone: `canonical_call_tags: HashMap<(u8,u8), u32>`. So
-    /// `call_tag.canon [i32]->[i32]` and `call_tag.canon [f64]->[f64]` were ONE
-    /// tag, and an `i32`-shaped funcref answered the `f64` canonical tag —
-    /// measured, accepted, wrong. The Overview derives the canonical tag *of a
-    /// functype*; two functypes are two tags. Since `call_indirect $table
-    /// $functype` is shorthand for `call_with_tag (call_tag.canon $functype)`,
-    /// interning on the shape reduced the Security property to arity-safety.
-    pub(crate) signature: String,
     /// Fall-back handler (`call_tag.new $functype $func`). When a `funcref`
     /// does not handle this tag, the Overview tail-calls this with the same
     /// arguments "but replacing the call-tag value with the value of the
     /// current `funcref`". `None` — which is always the case for a canonical
     /// tag — means an unhandled tag TRAPS.
     pub(crate) fallback: Option<Value>,
-    /// True for a tag produced by `call_tag.canon`. Canonical tags never carry
-    /// a fall-back, and the Overview says so: "For canonical call tags, the
-    /// answer is simply that the program traps."
-    pub(crate) canonical: bool,
 }
 
 /// Exception handler entry — pushed per catch clause by `try_table`,
@@ -2781,6 +2956,11 @@ impl HostFnDecl {
 /// The host (compiler runtime) registers native functions via `register_host_fn`
 /// and sets up globals before calling `run`.
 pub struct VM {
+    request_code_epoch:std::sync::Arc<()>,
+    // Historical diagnostic receipt, intentionally retained across reset/reload.
+    // A child VM starts its own recorder rather than inheriting a parent peak.
+    import_cache_peak: import_cache_peak::ImportCachePeakRecorder,
+    pub(crate) runtime_helper_scope: std::sync::Arc<()>,
     /// The thisArgument a host function has set for the callback it is about to
     /// make — see [`HostContext::host_receiver_slot`] for why the module global
     /// cannot carry it once the receiver becomes a parameter.
@@ -2811,7 +2991,7 @@ pub struct VM {
     /// imported globals, which WASM also resolves by name at instantiate time)
     /// and by the debugger. Not one fact in two homes: the vector is the
     /// storage, this is a resolver used before execution starts.
-    pub global_index: HashMap<String, u32>,
+    pub global_index: crate::global_name_index::GlobalNameIndex,
     pub(crate) open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
     pub(crate) host_fns: Vec<HostFn>,
     pub(crate) host_call_args: Vec<Value>,
@@ -2825,6 +3005,11 @@ pub struct VM {
     /// `modules[*].exports[*]`. Kept for hot-path dispatch; the
     /// authoritative per-module view lives in `modules`.
     pub host_registry: HashMap<(String, String), usize>,
+    pub(crate) string_lengths: std::cell::RefCell<crate::string_lengths::StringLengths>,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) cache_string_lengths: bool,
+    #[cfg(feature = "primitive-benchmarks")]
+    pub(crate) batch_void_blocks: bool,
     /// ECMA-262 §16.2.1 Abstract Module Records, keyed by canonical
     /// specifier (`"wasi:cli/environment"`, `"ecma:math"`, etc.).
     /// Populated by `register_host_fn` and the ESM-Integration
@@ -2911,6 +3096,8 @@ pub struct VM {
     pub deferred_sources: Vec<std::sync::Arc<dyn crate::scheduler::DeferredSource>>,
     /// WASM GC-style type definitions with vtable method dispatch.
     pub type_registry: crate::typedef::TypeRegistry,
+    pub(crate) jit: crate::jit::State,
+    pub(crate) jit_enabled: bool,
     /// Names of the running module's own defined types, in `chunk.types` order.
     /// Diagnostics only — nothing resolves a type by name at run time; see
     /// `module_type_ids`.
@@ -2954,7 +3141,7 @@ pub struct VM {
     pub memory: SharedMemory,
     /// Additional memories for multi-memory support.
     /// memory index 0 = self.memory, index 1+ = extra_memories[i-1].
-    pub(crate) extra_memories: Vec<Vec<u8>>,
+    pub(crate) extra_memories: Vec<crate::shared_memory::SharedMemory>,
     /// Maximum page limits for memories 1+ from decoded module types.
     pub(crate) extra_memory_max_pages: Vec<Option<usize>>,
     /// Bulk-memory data segments that have been dropped.
@@ -3076,31 +3263,39 @@ pub struct VM {
     /// `br_table` operands are variable-width LEB vectors; without this cache a
     /// hot switch decodes the whole table on every dispatch.
     pub(crate) br_table_targets: Vec<Vec<Option<BrTableTargets>>>,
-    /// Per-chunk decoded opcode cache, indexed by byte offset. Entries are
+    /// Per-chunk decoded opcode cache, indexed by opcode byte offset / 4. Entries are
     /// populated only for valid instruction starts; dispatch indexes this with
-    /// the current `ip`, which validation has already proven is an instruction
+    /// `ip / 4`; four-byte headers occupy distinct buckets even when unaligned.
+    /// Validation has already proven the current `ip` is an instruction
     /// boundary.
     pub(crate) decoded_ops: Vec<Vec<Op>>,
-    /// Per-chunk first-operand cache, indexed by byte offset in parallel with
-    /// `decoded_ops`. This is intentionally a raw `u32`: hot fixed-width
+    /// Per-chunk first-operand cache, indexed by opcode byte offset / 4.
+    /// Internal four-byte opcodes occupy distinct buckets even when unaligned.
+    /// This is intentionally a raw `u32`: hot fixed-width
     /// operands such as locals/globals should not re-read bytecode every time
     /// through the dispatch loop, and WASM indices are `u32` by definition.
     pub(crate) decoded_operands: Vec<Vec<u32>>,
-    /// Per-chunk wide operand cache, indexed by byte offset in parallel with
-    /// `decoded_ops`. Used for fixed-width operands that do not fit in the
-    /// compact `u32` cache: `f64.const` bits and fully relocated `ref.func` targets.
+    /// Per-chunk wide operand pool. F64_CONST and REF_FUNC use their u32
+    /// decoded operand slot as the index into this pool; other opcodes keep
+    /// their ordinary u32 values. Bytecode and capture bytes are unchanged.
     pub(crate) decoded_operands64: Vec<Vec<u64>>,
     /// Per-call-site native dispatch specialization, indexed by opcode byte
-    /// offset. This is interpreter metadata only: bytecode stays the canonical
+    /// offset / 4. This is interpreter metadata only: bytecode stays the canonical
     /// WASM call immediate, but repeated calls to VM-native JS/ECMA imports
     /// skip import resolution and jump straight to the existing builtin helper.
+    /// Empty rows have no native targets. Populated rows cover the entire
+    /// chunk so dispatch pointers remain stable while sites are updated.
     pub(crate) native_call_sites: Vec<Vec<Option<NativeCallSiteTarget>>>,
+    /// Module-bound sites retained compactly until first entry. Unlike the
+    /// transient import lookup caches, these survive nested table restoration.
+    pub(crate) pending_native_call_sites: HashMap<usize, Vec<(usize, NativeCallSiteTarget)>>,
     /// Per-call-site result-consumer specialization, indexed by opcode byte
-    /// offset. This recognizes small stack-shape patterns after a VM-native
+    /// offset / 4. This recognizes small stack-shape patterns after a VM-native
     /// import call once at chunk load time so hot native call arms avoid
     /// repeatedly peeking at following opcodes.
+    /// Empty rows have no applicable consumers. Populated rows remain dense.
     pub(crate) native_result_fast_paths: Vec<Vec<NativeResultFastPath>>,
-    /// Per-op local fast-path metadata, indexed by byte offset. This keeps
+    /// Per-op local fast-path metadata, indexed by opcode byte offset / 4. This keeps
     /// profitable local/global adjacent fusions out of the generic hot arms:
     /// the code walker classifies the bytecode once, then dispatch performs a
     /// single metadata load instead of re-reading following opcodes.
@@ -3135,6 +3330,8 @@ pub struct VM {
     /// Populated by the THROW opcode when no ExceptionHandler matches.
     /// Consumed by HostContext::try_invoke to report the thrown value.
     pub last_exception: Option<Value>,
+    /// Trap raised by a host callback that exhausted the CM3 handle table.
+    pub(crate) pending_host_trap: Option<crate::error::VMError>,
     /// Set by a host function (`wasi:cli/exit`) to request clean termination of
     /// the current run. Checked after each host call in CALL_IMPORT: it ends
     /// `run()` by returning control to the embedder from any frame depth — NOT a
@@ -3246,6 +3443,8 @@ pub struct VM {
     /// HERE (by a `canon lift`) needs no linker to call: the linker is for
     /// component functions that arrive as IMPORTS.
     pub component_funcs: Vec<Option<u32>>,
+    /// Import aliases resolved once at component instantiation.
+    pub(crate) component_func_resolved: Vec<Option<u32>>,
     /// The module's canon section — `Binary.md` §"Canonical Definitions".
     /// A canon import resolves to a row here at link time, which is the spec's
     /// instantiation-time capture of `$callee` / `$opts` / `$ft`.
@@ -3269,6 +3468,11 @@ pub struct VM {
     pub(crate) canon_type_immediate: Option<u32>,
     /// Active CM3 tasks (keyed by task ID). Each async export invocation creates one.
     pub cm_tasks: Vec<crate::cm_task::CMTask>,
+    /// Stackless CM3 callback threads parked after YIELD or WAIT.
+    pub(crate) pending_cm_callbacks: Vec<crate::cm_task::PendingCallback>,
+    /// Guest-owned async stream buffers, indexed by paired stream identity.
+    pub(crate) async_stream_reads: HashMap<u64, crate::fiber::PendingCopy>,
+    pub(crate) guest_stream_writes: HashMap<u64, crate::guest_stream::GuestStreamWrite>,
     /// Next CM3 task ID.
     #[allow(dead_code)]
     pub(crate) next_cm_task_id: u32,
@@ -3294,7 +3498,7 @@ pub struct VmSnapshot {
     /// Both halves: the values AND the name→index resolver, so a script-added
     /// global vanishes on reset instead of leaving a live index behind.
     globals: Vec<Value>,
-    global_index: HashMap<String, u32>,
+    global_index: crate::global_name_index::GlobalNameIndex,
     memory: Vec<u8>,
     extra_memories: Vec<Vec<u8>>,
     wasm_tables: Vec<Vec<Value>>,
@@ -3304,6 +3508,11 @@ pub struct VmSnapshot {
     handle_table: crate::handle_table::HandleTable,
     waitable_sets: crate::waitable::WaitableRegistry,
     cm_tasks: Vec<crate::cm_task::CMTask>,
+    pending_cm_callbacks: Vec<crate::cm_task::PendingCallback>,
+    async_stream_reads: HashMap<u64, crate::fiber::PendingCopy>,
+    guest_stream_writes: HashMap<u64, crate::guest_stream::GuestStreamWrite>,
+    cm_instance: crate::cm_instance::ComponentInstance,
+    current_thread: Option<u32>,
     /// The component model's CANON SECTION and its type spaces.
     ///
     /// ⛔ These were the one piece of component state the snapshot did not
@@ -3322,6 +3531,8 @@ pub struct VmSnapshot {
     canon_defs: Vec<crate::canon_def::CanonDef>,
     canon_types: Vec<Option<crate::component::ValType>>,
     canon_functypes: Vec<Option<crate::canon_def::CanonFuncType>>,
+    component_funcs: Vec<Option<u32>>,
+    component_func_resolved: Vec<Option<u32>>,
     try_group_counter: u64,
     cur_fiber_id: u64,
     next_fiber_id: u64,
@@ -3429,15 +3640,28 @@ pub struct BlockTargets {
     pub end_ip: usize,
 }
 
-/// Immutable structured-control metadata. Most byte offsets do not start a
-/// block: store only a compact index there, not an entire optional target.
+/// Immutable structured-control metadata. Four-byte instruction headers have
+/// distinct offset/4 buckets; store a tagged index per bucket, not per byte.
+/// Anomalous colliding entries retain the original dense representation.
 #[derive(Debug, Default)]
 pub(crate) struct BlockTargetCache {
     indices: Vec<u32>,
     targets: Vec<BlockTargets>,
+    bucketed: bool,
 }
 
 impl BlockTargetCache {
+    fn make_dense(&mut self, code_len: usize) {
+        let old = std::mem::replace(&mut self.indices, vec![u32::MAX; code_len]);
+        for (bucket, encoded) in old.into_iter().enumerate() {
+            if encoded != u32::MAX {
+                let offset = bucket * 4 + (encoded & 3) as usize;
+                self.indices[offset] = encoded >> 2;
+            }
+        }
+        self.bucketed = false;
+    }
+
     fn from_entries(
         code_len: usize,
         entries: impl IntoIterator<Item = (usize, BlockTargets)>,
@@ -3448,11 +3672,28 @@ impl BlockTargetCache {
                 continue;
             }
             if cache.indices.is_empty() {
-                cache.indices.resize(code_len, u32::MAX);
+                cache.indices.resize(code_len.div_ceil(4), u32::MAX);
+                cache.bucketed = true;
             }
             let index = u32::try_from(cache.targets.len())
                 .expect("block target count exceeds the Wasm index space");
-            cache.indices[offset] = index;
+            if cache.bucketed {
+                let previous = cache.indices[offset / 4];
+                // Four-byte instruction headers occupy distinct buckets even
+                // when unaligned. Keep the low offset bits to reject lookups
+                // at other bytes in the bucket. Arbitrary colliding metadata
+                // and very large target tables retain the original dense path.
+                if index >= u32::MAX >> 2
+                    || (previous != u32::MAX && previous & 3 != offset as u32 & 3)
+                {
+                    cache.make_dense(code_len);
+                }
+            }
+            if cache.bucketed {
+                cache.indices[offset / 4] = (index << 2) | (offset as u32 & 3);
+            } else {
+                cache.indices[offset] = index;
+            }
             cache.targets.push(target);
         }
         cache
@@ -3465,12 +3706,14 @@ impl BlockTargetCache {
         if self.indices.is_empty() {
             return None;
         }
-        let index = unsafe { *self.indices.get_unchecked(offset) };
-        if index == u32::MAX {
-            None
-        } else {
-            Some(unsafe { *self.targets.get_unchecked(index as usize) })
-        }
+        let slot = if self.bucketed { offset / 4 } else { offset };
+        let encoded = unsafe { *self.indices.get_unchecked(slot) };
+        if encoded == u32::MAX { return None; }
+        let index = if self.bucketed {
+            if encoded & 3 != offset as u32 & 3 { return None; }
+            encoded >> 2
+        } else { encoded };
+        Some(unsafe { *self.targets.get_unchecked(index as usize) })
     }
 }
 
@@ -3512,7 +3755,7 @@ mod block_target_cache_tests {
             ),
         ];
         let cache = BlockTargetCache::from_entries(100, entries);
-        assert_eq!(cache.indices.len(), 100);
+        assert_eq!(cache.indices.len(), 25);
         assert_eq!(cache.targets.len(), 3);
         for (offset, expected) in entries {
             let actual = unsafe { cache.get_unchecked(offset) }.unwrap();
@@ -3521,6 +3764,35 @@ mod block_target_cache_tests {
         }
         assert!(unsafe { cache.get_unchecked(0) }.is_none());
         assert!(unsafe { cache.get_unchecked(99) }.is_none());
+    }
+
+    #[test]
+    fn colliding_byte_offsets_keep_exact_dense_fallback() {
+        let target = BlockTargets { else_ip: Some(8), end_ip: 20 };
+        let entries = [(3, target), (0, target), (7, target), (7, target)];
+        let cache = BlockTargetCache::from_entries(21, entries);
+        assert!(!cache.bucketed);
+        for offset in 0..21 {
+            let actual = unsafe { cache.get_unchecked(offset) };
+            assert_eq!(actual.map(|value| (value.else_ip, value.end_ip)),
+                entries.iter().rev().find(|(at, _)| *at == offset)
+                    .map(|(_, value)| (value.else_ip, value.end_ip)));
+        }
+    }
+
+    #[test]
+    fn unaligned_headers_use_quarter_sized_index() {
+        let entries = (3..100_000).step_by(7).map(|offset| (offset,
+            BlockTargets { else_ip: None, end_ip: offset + 4 }));
+        let cache = BlockTargetCache::from_entries(100_000, entries);
+        assert!(cache.bucketed);
+        assert_eq!(cache.indices.capacity(), 25_000);
+        for offset in 0..100_000 {
+            let actual = unsafe { cache.get_unchecked(offset) };
+            let expected = offset >= 3 && (offset - 3) % 7 == 0;
+            assert_eq!(actual.is_some(), expected);
+            if let Some(target) = actual { assert_eq!(target.end_ip, offset + 4); }
+        }
     }
 }
 
@@ -3547,6 +3819,8 @@ pub(crate) enum LoopSuperop {
         cursor_slot: u16,
         len_slot: u16,
         i_slot: u16,
+        batch: u16,
+        scratch_slot: Option<u16>,
     },
     CanonicalLinearToByteArrayTail {
         arr_slot: u16,
@@ -3624,6 +3898,17 @@ pub(crate) enum LoopSuperop {
         len_slot: u16,
         i_slot: u16,
         value_slot: u16,
+    },
+    LinearMemoryV128Copy {
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        value_slot: u16,
+        load_mem_offset: u64,
+        store_mem_offset: u64,
     },
     LinearMemoryF64Copy {
         src_slot: u16,
@@ -3999,9 +4284,22 @@ pub(crate) enum LinearMemoryTypedFillValue {
     I64,
     F32,
     F64,
+    V128,
 }
 
 impl VM {
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_batch_void_blocks(&mut self, enabled: bool) {
+        self.batch_void_blocks = enabled;
+    }
+    /// Benchmark the exact original property-length expression on this VM.
+    /// Available only to explicitly enabled host-side benchmark harnesses.
+    #[cfg(feature = "primitive-benchmarks")]
+    pub fn benchmark_uncached_string_lengths(&mut self, uncached: bool) {
+        self.cache_string_lengths = !uncached;
+        self.string_lengths = std::cell::RefCell::new(crate::string_lengths::StringLengths::default());
+    }
+
     /// The receiver this VM hands a callee that declares one — §10.2.1
     /// `[[Call]](thisArgument, argumentsList)` argument 0.
     ///
@@ -4053,6 +4351,16 @@ impl VM {
         self.perf_counters = enabled.then(RuntimePerfCounters::default);
     }
 
+    /// Enable the available native tier for this VM. Instrumented execution
+    /// and unsupported functions always retain interpreter semantics.
+    pub fn set_jit_enabled(&mut self, enabled: bool) {
+        self.jit_enabled = enabled;
+    }
+
+    pub fn jit_counters(&self) -> crate::jit::Counters {
+        self.jit.counters
+    }
+
     /// Retain a bounded instruction history for unhandled error reports.
     pub fn record_error_context(&mut self, enabled: bool) {
         self.error_history = enabled.then(|| VecDeque::with_capacity(ERROR_HISTORY_LEN));
@@ -4069,6 +4377,8 @@ impl VM {
         let error_context =
             std::env::var("VYBE_ERROR_CONTEXT").map_or(false, |v| v == "1" || v == "true");
         VM {
+            request_code_epoch:std::sync::Arc::new(()),
+            runtime_helper_scope: std::sync::Arc::new(()),
             host_receiver: Value::Undefined,
             host_originated_call: false,
             suppress_receiver_prepend: false,
@@ -4080,13 +4390,18 @@ impl VM {
             global_index: {
                 let mut ix = HashMap::new();
                 ix.insert("undefined".to_string(), 0u32);
-                ix
+                ix.into()
             },
             open_upvalues: Vec::new(),
             host_fns: Vec::new(),
             host_call_args: Vec::with_capacity(16),
             host_fn_takes_receiver: Vec::new(),
             host_registry: HashMap::new(),
+            string_lengths: std::cell::RefCell::new(crate::string_lengths::StringLengths::default()),
+            #[cfg(feature = "primitive-benchmarks")]
+            cache_string_lengths: true,
+            #[cfg(feature = "primitive-benchmarks")]
+            batch_void_blocks: true,
             modules: HashMap::new(),
             import_table: Vec::<ImportTarget>::new(),
             resolved_import_table: Vec::new(),
@@ -4111,6 +4426,9 @@ impl VM {
             scheduler: None,
             deferred_sources: Vec::new(),
             type_registry: crate::typedef::TypeRegistry::new(),
+            jit: crate::jit::State::default(),
+            jit_enabled: cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                && std::env::var("VYBE_JIT").map_or(true, |v| v != "0"),
             module_type_names: Vec::new(),
             module_type_ids: Vec::new(),
             chunk_type_base: Vec::new(),
@@ -4151,12 +4469,18 @@ impl VM {
             decoded_operands: Vec::new(),
             decoded_operands64: Vec::new(),
             native_call_sites: Vec::new(),
+            pending_native_call_sites: HashMap::new(),
+            import_cache_peak: import_cache_peak::ImportCachePeakRecorder {
+                enabled: std::env::var_os("VYBE_VM_CACHE_CENSUS").is_some(),
+                ..Default::default()
+            },
             native_result_fast_paths: Vec::new(),
             local_fast_paths: Vec::new(),
             object_get_cache: std::array::from_fn(|_| None),
             callback_invoker: None,
             invoker_vm_slot: Box::new(std::cell::Cell::new(std::ptr::null_mut())),
             last_exception: None,
+            pending_host_trap: None,
             pending_exit: false,
             pending_exit_code: 0,
             case_aliases: HashMap::new(),
@@ -4195,12 +4519,16 @@ impl VM {
             // missing declaration, not index 0 standing in for it.
             canon_functypes: Vec::new(),
             component_funcs: Vec::new(),
+            component_func_resolved: Vec::new(),
             canon_defs: Vec::new(),
             canon_call_shapes: Vec::new(),
             cm_instance: crate::cm_instance::ComponentInstance::new(),
             current_thread: None,
             canon_type_immediate: None,
             cm_tasks: Vec::new(),
+            pending_cm_callbacks: Vec::new(),
+            async_stream_reads: HashMap::new(),
+            guest_stream_writes: HashMap::new(),
             next_cm_task_id: 1,
             waitable_sets: crate::waitable::WaitableRegistry::new(),
         }
@@ -4217,7 +4545,7 @@ impl VM {
             globals: self.globals.clone(),
             global_index: self.global_index.clone(),
             memory: self.memory.with_buffer(|b| b.to_vec()),
-            extra_memories: self.extra_memories.clone(),
+            extra_memories: self.extra_memories.iter().map(|m| m.with_buffer(|bytes| bytes.to_vec())).collect(),
             wasm_tables: self.wasm_tables.clone(),
             dropped_data: self.dropped_data.clone(),
             dropped_elems: self.dropped_elems.clone(),
@@ -4225,9 +4553,16 @@ impl VM {
             canon_defs: self.canon_defs.clone(),
             canon_types: self.canon_types.clone(),
             canon_functypes: self.canon_functypes.clone(),
+            component_funcs: self.component_funcs.clone(),
+            component_func_resolved: self.component_func_resolved.clone(),
             handle_table: self.handle_table.clone(),
             waitable_sets: self.waitable_sets.clone(),
             cm_tasks: self.cm_tasks.clone(),
+            pending_cm_callbacks: self.pending_cm_callbacks.clone(),
+            async_stream_reads: self.async_stream_reads.clone(),
+            guest_stream_writes: self.guest_stream_writes.clone(),
+            cm_instance: self.cm_instance.clone(),
+            current_thread: self.current_thread,
             try_group_counter: self.try_group_counter,
             cur_fiber_id: self.cur_fiber_id,
             next_fiber_id: self.next_fiber_id,
@@ -4274,6 +4609,9 @@ impl VM {
     /// creates: host fns and their registry, the boot chunks (prelude), the
     /// scheduler the embedder installed, and the debugger/eval/reload hooks.
     pub fn reset_to(&mut self, snap: &VmSnapshot) {
+        self.invalidate_request_units();
+        self.jit = crate::jit::State::default();
+        *self.string_lengths.borrow_mut() = crate::string_lengths::StringLengths::default();
         // 1. Heap: force-clear the script generation (breaks cycles so refcounts
         //    collapse to 0) and rewire baseline objects to their boot contents.
         //    Runs FIRST: collect_since clears contents regardless of live roots,
@@ -4288,7 +4626,17 @@ impl VM {
             b.clear();
             b.extend_from_slice(&snap.memory);
         });
-        self.extra_memories = snap.extra_memories.clone();
+        self.extra_memories.truncate(snap.extra_memories.len());
+        for (index, bytes) in snap.extra_memories.iter().enumerate() {
+            if let Some(memory) = self.extra_memories.get(index) {
+                memory.with_buffer_mut(|buffer| {
+                    buffer.clear();
+                    buffer.extend_from_slice(bytes);
+                });
+            } else {
+                self.extra_memories.push(crate::shared_memory::SharedMemory::from_vec(bytes.clone()));
+            }
+        }
         self.wasm_tables = snap.wasm_tables.clone();
         self.dropped_data = snap.dropped_data.clone();
         self.dropped_elems = snap.dropped_elems.clone();
@@ -4298,6 +4646,11 @@ impl VM {
         self.handle_table = snap.handle_table.clone();
         self.waitable_sets = snap.waitable_sets.clone();
         self.cm_tasks = snap.cm_tasks.clone();
+        self.pending_cm_callbacks = snap.pending_cm_callbacks.clone();
+        self.async_stream_reads = snap.async_stream_reads.clone();
+        self.guest_stream_writes = snap.guest_stream_writes.clone();
+        self.cm_instance = snap.cm_instance.clone();
+        self.current_thread = snap.current_thread;
         // The canon section and its type spaces — see `VmSnapshot::canon_defs`.
         // A second job's section is REJECTED, not overwritten, so leaving these
         // behind made the first component program in a worker poison the rest.
@@ -4308,6 +4661,8 @@ impl VM {
         self.canon_mem_layouts.clear();
         self.canon_inline_layouts.clear();
         self.canon_functypes = snap.canon_functypes.clone();
+        self.component_funcs = snap.component_funcs.clone();
+        self.component_func_resolved = snap.component_func_resolved.clone();
         // 4b. Drop the prior run's appended CODE (and its embedded string/data
         //     constants — security: no earlier tenant's bytes survive) + the
         //     chunk-parallel structures that grow with it. Everything below the
@@ -4318,6 +4673,7 @@ impl VM {
         self.decoded_operands.truncate(snap.chunks_len);
         self.decoded_operands64.truncate(snap.chunks_len);
         self.native_call_sites.truncate(snap.chunks_len);
+        self.pending_native_call_sites.retain(|index, _| *index < snap.chunks_len);
         self.native_result_fast_paths.truncate(snap.chunks_len);
         self.local_fast_paths.truncate(snap.chunks_len);
         self.block_targets.truncate(snap.chunks_len);
@@ -4417,6 +4773,7 @@ impl VM {
         self.pending_settled_await = None;
         self.last_fiber_completion = None;
         self.last_exception = None;
+        self.pending_host_trap = None;
         self.pending_exit = false;
         self.pending_exit_code = 0;
         self.dbg_last_import = None;
@@ -4595,6 +4952,7 @@ impl VM {
     }
 
     fn apply_reload(&mut self, mut new_chunks: Vec<Chunk>) -> Result<String, String> {
+        self.invalidate_request_units();
         // Same load-time gate as `run_linked_impl` — reloaded bodies execute
         // without the dispatch loop re-validating each instruction.
         Self::validate_chunk_code(&new_chunks).map_err(|e| e.to_string())?;
@@ -4629,6 +4987,8 @@ impl VM {
         let changed: Vec<usize> = (0..new_chunks.len())
             .filter(|&i| {
                 new_chunks[i].code != self.chunks[i].code
+                    || new_chunks[i].direct_defined_calls != self.chunks[i].direct_defined_calls
+                    || new_chunks[i].direct_entry_has_captures != self.chunks[i].direct_entry_has_captures
                     || !imports_equal_as_set(&new_chunks[i].imports, &self.chunks[i].imports)
                     || format!("{:?}", new_chunks[i].constants)
                         != format!("{:?}", self.chunks[i].constants)
@@ -4718,6 +5078,9 @@ impl VM {
                     .cloned()
                     .unwrap_or_else(|| Self::build_br_table_targets_for_chunk(&old));
                 let relocated = self.chunks.len();
+                if let Some(sites) = self.pending_native_call_sites.get(&i).cloned() {
+                    self.pending_native_call_sites.insert(relocated, sites);
+                }
                 self.chunks.push(old);
                 self.decoded_ops.push(old_decoded);
                 self.decoded_operands.push(old_operands);
@@ -4742,6 +5105,9 @@ impl VM {
                 let base = self.chunk_type_base.get(i).copied().unwrap_or(0);
                 self.chunk_type_base.resize(relocated, 0);
                 self.chunk_type_base.push(base);
+                let owner=self.chunk_import_owner.get(i).copied().unwrap_or(0);
+                self.chunk_import_owner.resize(relocated,0);
+                self.chunk_import_owner.push(owner);
                 for f in self.frames.iter_mut() {
                     if f.chunk_index == i {
                         f.chunk_index = relocated;
@@ -4749,6 +5115,7 @@ impl VM {
                 }
             }
             std::mem::swap(&mut self.chunks[i], &mut new_chunks[i]);
+            self.pending_native_call_sites.remove(&i);
             if self.decoded_ops.len() <= i {
                 self.decoded_ops.resize_with(i + 1, Vec::new);
             }
@@ -5015,34 +5382,16 @@ impl VM {
         }
     }
 
-    /// Evaluate a constant expression (Extended Const Expressions).
-    /// Used for global initialization at load time.
-    pub(crate) fn eval_const_expr(&self, expr: &crate::chunk::ConstExpr) -> Value {
-        // The executing frame names the type base, exactly as `resolve_gc_rtt`
-        // does for the equivalent instruction.
-        let base = self
-            .frames
-            .last()
-            .and_then(|frame| self.chunk_type_base.get(frame.chunk_index))
-            .copied()
-            .unwrap_or(0);
-        self.eval_const_expr_with_type_base(expr, base)
-    }
-
-    /// [`Self::eval_const_expr`] with the GC type base stated outright, for the
-    /// instantiation-time callers that have no frame to derive it from.
-    pub(crate) fn eval_const_expr_with_type_base(
-        &self,
-        expr: &crate::chunk::ConstExpr,
-        type_base: usize,
-    ) -> Value {
+    fn eval_const_expr_with_context(
+        &mut self, expr: &crate::chunk::ConstExpr, type_base: usize, function_base: usize,
+    ) -> Result<Value, VMError> {
         use crate::chunk::ConstExpr;
-        match expr {
+        Ok(match expr {
             ConstExpr::Value(v) => v.clone(),
             ConstExpr::GlobalGet(name) => self.global(name).cloned().unwrap_or(Value::Null),
             ConstExpr::Add(left, right) => {
-                let l = self.eval_const_expr_with_type_base(left, type_base);
-                let r = self.eval_const_expr_with_type_base(right, type_base);
+                let l = self.eval_const_expr_with_context(left, type_base, function_base)?;
+                let r = self.eval_const_expr_with_context(right, type_base, function_base)?;
                 match (&l, &r) {
                     (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_add(*b)),
                     (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_add(*b)),
@@ -5051,8 +5400,8 @@ impl VM {
                 }
             }
             ConstExpr::Mul(left, right) => {
-                let l = self.eval_const_expr_with_type_base(left, type_base);
-                let r = self.eval_const_expr_with_type_base(right, type_base);
+                let l = self.eval_const_expr_with_context(left, type_base, function_base)?;
+                let r = self.eval_const_expr_with_context(right, type_base, function_base)?;
                 match (&l, &r) {
                     (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_mul(*b)),
                     (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_mul(*b)),
@@ -5061,19 +5410,32 @@ impl VM {
                 }
             }
             ConstExpr::RefFunc(chunk_idx) => {
-                if *chunk_idx < self.chunks.len() {
-                    let chunk = &self.chunks[*chunk_idx];
-                    let func = crate::value::Function {
-                        name: Some(chunk.name.clone()),
-                        arity: chunk.arity,
-                        chunk_index: *chunk_idx,
-                        upvalues: Vec::new(),
-                    };
-                    let mut obj = Object::new();
-                    obj.kind = ObjectKind::Function(func);
-                    Value::Object(crate::heap::alloc(obj))
+                let chunk_idx = chunk_idx.checked_add(function_base)
+                    .ok_or_else(|| VMError::new("constant function index overflow"))?;
+                if chunk_idx < self.chunks.len() {
+                    // A constant ref.func and the instruction name the same
+                    // function reference. Descriptor vtables, including
+                    // inherited slots, must not allocate a fresh callable
+                    // wrapper for each occurrence of that reference.
+                    self.make_funcref(chunk_idx)
                 } else {
                     Value::Null
+                }
+            }
+            ConstExpr::ImportedRefFunc(index) => {
+                match self.import_table.get(*index as usize) {
+                    Some(ImportTarget::Host(index)) => {
+                        let mut object = Object::new();
+                        object.kind = ObjectKind::HostFunction(*index);
+                        Value::Object(crate::heap::alloc(object))
+                    }
+                    Some(ImportTarget::ChunkFn { chunk_index, .. }) => {
+                        let chunk_index = *chunk_index;
+                        self.make_funcref(chunk_index)
+                    }
+                    Some(ImportTarget::StdlibRedirect(name)) => self.global(name).cloned()
+                        .ok_or_else(|| VMError::new("unresolved imported constant function"))?,
+                    _ => return Err(VMError::new("unsupported imported constant function target")),
                 }
             }
             // An `i31ref` is UNBOXED: `Op::I31_NEW` masks to 31 bits and pushes
@@ -5083,16 +5445,27 @@ impl VM {
             // instruction's.
             ConstExpr::RefI31(inner) => {
                 let v = self
-                    .eval_const_expr_with_type_base(inner, type_base)
+                    .eval_const_expr_with_context(inner, type_base, function_base)?
                     .as_i32();
                 Value::I32(v & 0x7FFF_FFFF)
+            }
+            ConstExpr::StructNew { typeidx, fields } => {
+                let fields = fields.iter().map(|field|
+                    self.eval_const_expr_with_context(field, type_base, function_base))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.const_struct(*typeidx, type_base, fields)?
+            }
+            ConstExpr::StructNewDefault { typeidx } => {
+                let type_id = self.const_struct_type(*typeidx, type_base)?;
+                let fields = self.default_gc_struct_fields(type_id)?;
+                self.const_struct_fields(type_id, fields)?
             }
             // Mirrors `Op::ARRAY_NEW_DEFAULT`: a defaulted array carrying the
             // resolved rtt, so a GC array built by an element expression traps
             // on out-of-bounds exactly like one built by the instruction.
             ConstExpr::ArrayNewDefault { typeidx, len } => {
                 let n = self
-                    .eval_const_expr_with_type_base(len, type_base)
+                    .eval_const_expr_with_context(len, type_base, function_base)?
                     .as_i32()
                     .max(0) as usize;
                 self.const_array(*typeidx, type_base, vec![Value::Null; n])
@@ -5102,14 +5475,66 @@ impl VM {
                 value,
                 len,
             } => {
-                let v = self.eval_const_expr_with_type_base(value, type_base);
+                let v = self.eval_const_expr_with_context(value, type_base, function_base)?;
                 let n = self
-                    .eval_const_expr_with_type_base(len, type_base)
+                    .eval_const_expr_with_context(len, type_base, function_base)?
                     .as_i32()
                     .max(0) as usize;
                 self.const_array(*typeidx, type_base, vec![v; n])
             }
+        })
+    }
+
+    fn const_struct_type(&self, typeidx: u16, type_base: usize) -> Result<usize, VMError> {
+        let index = usize::from(typeidx).checked_sub(1)
+            .and_then(|index| index.checked_add(type_base))
+            .ok_or_else(|| VMError::new("constant struct type index out of bounds"))?;
+        let type_id = *self.module_type_ids.get(index)
+            .ok_or_else(|| VMError::new("constant struct type index out of bounds"))?;
+        let ty = self.type_registry.get(type_id)
+            .filter(|ty| ty.kind == crate::chunk::CompositeKind::Struct)
+            .ok_or_else(|| VMError::new("constant struct type is not a struct"))?;
+        if ty.native_identity.as_ref().is_some_and(|identity| identity.definition().descriptor.is_some()) {
+            return Err(VMError::new("struct.new cannot allocate a type with a descriptor"));
         }
+        Ok(type_id)
+    }
+
+    fn const_struct(&self, typeidx: u16, type_base: usize, fields: Vec<Value>) -> Result<Value, VMError> {
+        let type_id = self.const_struct_type(typeidx, type_base)?;
+        self.const_struct_fields(type_id, fields)
+    }
+
+    fn const_struct_fields(&self, type_id: usize, fields: Vec<Value>) -> Result<Value, VMError> {
+        let arity = self.type_registry.get(type_id).unwrap().field_defs.len();
+        if fields.len() != arity {
+            return Err(VMError::new("constant struct initializer field count mismatch"));
+        }
+        let mut object = Object::new();
+        object.type_id = type_id;
+        object.fields = fields;
+        Ok(Value::Object(crate::heap::alloc(object)))
+    }
+
+    pub(crate) fn default_gc_struct_fields(&self, type_id: usize) -> Result<Vec<Value>, VMError> {
+        use crate::native_gc::{CompositeType, StorageType, ValueType};
+        let ty = self.type_registry.get(type_id)
+            .ok_or_else(|| VMError::new("default struct type is not defined"))?;
+        let Some(identity) = &ty.native_identity else {
+            return Ok(vec![Value::Null; ty.field_defs.len()]);
+        };
+        let CompositeType::Struct(fields) = &identity.definition().composite else {
+            return Err(VMError::new("default struct type is not a struct"));
+        };
+        fields.iter().map(|field| Ok(match &field.storage {
+            StorageType::I8 | StorageType::I16 | StorageType::Value(ValueType::Scalar(0x7f)) => Value::I32(0),
+            StorageType::Value(ValueType::Scalar(0x7e)) => Value::I64(0),
+            StorageType::Value(ValueType::Scalar(0x7d)) => Value::F32(0.0),
+            StorageType::Value(ValueType::Scalar(0x7c)) => Value::F64(0.0),
+            StorageType::Value(ValueType::Scalar(0x7b)) => Value::V128([0; 16]),
+            StorageType::Value(ValueType::Ref { nullable: true, .. }) => Value::Null,
+            _ => return Err(VMError::new("struct.new_default field is not defaultable")),
+        })).collect()
     }
 
     /// A GC array built by a constant expression, stamped with the rtt its
@@ -5167,12 +5592,13 @@ impl VM {
             } else {
                 let extra_idx = idx - 1;
                 if self.extra_memories.len() <= extra_idx {
-                    self.extra_memories.resize_with(extra_idx + 1, Vec::new);
+                    self.extra_memories.resize_with(extra_idx + 1, || crate::shared_memory::SharedMemory::new(0));
                 }
                 if self.extra_memory_max_pages.len() <= extra_idx {
                     self.extra_memory_max_pages.resize(extra_idx + 1, None);
                 }
                 self.extra_memory_max_pages[extra_idx] = max;
+                self.extra_memories[extra_idx].set_max_pages(max);
                 if self.extra_memories[extra_idx].len() < bytes {
                     self.extra_memories[extra_idx].resize(bytes, 0);
                 }
@@ -5207,60 +5633,20 @@ impl VM {
     /// Grow a memory by spec memory index. Returns old page count or `usize::MAX` on failure.
     pub(crate) fn mem_grow(&mut self, memidx: usize, pages: usize) -> usize {
         if memidx == 0 {
-            self.memory.grow(pages)
+            self.memory.grow_exclusive_or_shared(pages)
         } else {
             let idx = memidx - 1;
             if idx >= self.extra_memories.len() {
-                self.extra_memories.resize_with(idx + 1, Vec::new);
+                self.extra_memories.resize_with(idx + 1, || crate::shared_memory::SharedMemory::new(0));
             }
             if idx >= self.extra_memory_max_pages.len() {
                 self.extra_memory_max_pages.resize(idx + 1, None);
             }
-            let mem = &mut self.extra_memories[idx];
-            let old_pages = mem.len() / 65536;
-            let Some(new_pages) = old_pages.checked_add(pages) else {
-                return usize::MAX;
-            };
-            if let Some(max_pages) = self.extra_memory_max_pages[idx] {
-                if new_pages > max_pages {
-                    return usize::MAX;
-                }
-            }
-            if new_pages > 65536 {
-                return usize::MAX;
-            }
-            let Some(new_len) = new_pages.checked_mul(65536) else {
-                return usize::MAX;
-            };
-            mem.resize(new_len, 0);
-            old_pages
+            self.extra_memories[idx].set_max_pages(self.extra_memory_max_pages[idx]);
+            self.extra_memories[idx].grow_exclusive_or_shared(pages)
         }
     }
 
-    pub(crate) fn read_memory_bytes(
-        &mut self,
-        memidx: usize,
-        addr: usize,
-        size: usize,
-    ) -> Result<Vec<u8>, crate::VMError> {
-        if memidx == 0 {
-            if let Some(result) = self
-                .memory
-                .with_bytes_exclusive(addr, size, |bytes| bytes.to_vec())
-            {
-                result.map_err(|limit| Self::memory_oob(addr, size, limit))
-            } else {
-                self.memory.with_buffer(|buf| {
-                    let end = Self::checked_memory_end(addr, size, buf.len())?;
-                    Ok(buf[addr..end].to_vec())
-                })
-            }
-        } else {
-            let mem = self.extra_mem(memidx);
-            let end = Self::checked_memory_end(addr, size, mem.len())?;
-            Ok(mem[addr..end].to_vec())
-        }
-    }
 
     #[inline]
     pub(crate) fn with_memory_bytes<R>(
@@ -5284,9 +5670,10 @@ impl VM {
                 })
             }
         } else {
-            let mem = self.extra_mem(memidx);
-            let end = Self::checked_memory_end(addr, size, mem.len())?;
-            f(&mem[addr..end])
+            self.extra_mem(memidx).with_buffer(|mem| {
+                let end = Self::checked_memory_end(addr, size, mem.len())?;
+                f(&mem[addr..end])
+            })
         }
     }
 
@@ -5312,10 +5699,11 @@ impl VM {
                 })
             }
         } else {
-            let mem = self.extra_mem_mut(memidx);
-            let end = Self::checked_memory_end(addr, bytes.len(), mem.len())?;
-            mem[addr..end].copy_from_slice(bytes);
-            Ok(())
+            self.extra_mem_mut(memidx).with_buffer_mut(|mem| {
+                let end = Self::checked_memory_end(addr, bytes.len(), mem.len())?;
+                mem[addr..end].copy_from_slice(bytes);
+                Ok(())
+            })
         }
     }
 
@@ -5342,9 +5730,10 @@ impl VM {
                 })
             }
         } else {
-            let mem = self.extra_mem_mut(memidx);
-            let end = Self::checked_memory_end(addr, size, mem.len())?;
-            f(&mut mem[addr..end])
+            self.extra_mem_mut(memidx).with_buffer_mut(|mem| {
+                let end = Self::checked_memory_end(addr, size, mem.len())?;
+                f(&mut mem[addr..end])
+            })
         }
     }
 
@@ -5372,11 +5761,12 @@ impl VM {
         if memidx == 0 {
             self.read_memory0_array::<N>(addr)
         } else {
-            let mem = self.extra_mem(memidx);
-            let end = Self::checked_memory_end(addr, N, mem.len())?;
-            let mut out = [0u8; N];
-            out.copy_from_slice(&mem[addr..end]);
-            Ok(out)
+            self.extra_mem(memidx).with_buffer(|mem| {
+                let end = Self::checked_memory_end(addr, N, mem.len())?;
+                let mut out = [0u8; N];
+                out.copy_from_slice(&mem[addr..end]);
+                Ok(out)
+            })
         }
     }
 
@@ -5417,9 +5807,10 @@ impl VM {
         if memidx == 0 {
             self.read_memory0_u8(addr)
         } else {
-            let mem = self.extra_mem(memidx);
-            Self::checked_memory_end(addr, 1, mem.len())?;
-            Ok(mem[addr])
+            self.extra_mem(memidx).with_buffer(|mem| {
+                Self::checked_memory_end(addr, 1, mem.len())?;
+                Ok(mem[addr])
+            })
         }
     }
 
@@ -5432,6 +5823,38 @@ impl VM {
                 .read_u8_checked(addr)
                 .map_err(|limit| Self::memory_oob(addr, 1, limit))
         }
+    }
+
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn read_memory0_u8_unhinted_reference(&mut self, addr: usize) -> Result<u8, crate::VMError> {
+        if let Some(result) = self.memory.read_u8_checked_exclusive_unhinted(addr) {
+            result.map_err(|limit| Self::memory_oob(addr, 1, limit))
+        } else {
+            self.memory.read_u8_checked(addr).map_err(|limit| Self::memory_oob(addr, 1, limit))
+        }
+    }
+
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn write_memory0_u8_unhinted_reference(&mut self, addr: usize, value: u8) -> Result<(), crate::VMError> {
+        if let Some(result) = self.memory.write_u8_checked_exclusive_unhinted(addr, value) {
+            result.map_err(|limit| Self::memory_oob(addr, 1, limit))
+        } else {
+            self.memory.write_u8_checked(addr, value).map_err(|limit| Self::memory_oob(addr, 1, limit))
+        }
+    }
+
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn read_memory0_u8_locked_reference(&mut self, addr: usize) -> Result<u8, crate::VMError> {
+        self.memory.read_u8_checked(addr).map_err(|limit| Self::memory_oob(addr, 1, limit))
+    }
+
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn write_memory0_u8_locked_reference(&mut self, addr: usize, value: u8) -> Result<(), crate::VMError> {
+        self.memory.write_u8_checked(addr, value).map_err(|limit| Self::memory_oob(addr, 1, limit))
     }
 
     #[inline(always)]
@@ -5458,10 +5881,11 @@ impl VM {
         if memidx == 0 {
             self.write_memory0_array(addr, bytes)
         } else {
-            let mem = self.extra_mem_mut(memidx);
-            let end = Self::checked_memory_end(addr, N, mem.len())?;
-            mem[addr..end].copy_from_slice(bytes);
-            Ok(())
+            self.extra_mem_mut(memidx).with_buffer_mut(|mem| {
+                let end = Self::checked_memory_end(addr, N, mem.len())?;
+                mem[addr..end].copy_from_slice(bytes);
+                Ok(())
+            })
         }
     }
 
@@ -5505,10 +5929,11 @@ impl VM {
         if memidx == 0 {
             self.write_memory0_u8(addr, value)
         } else {
-            let mem = self.extra_mem_mut(memidx);
-            Self::checked_memory_end(addr, 1, mem.len())?;
-            mem[addr] = value;
-            Ok(())
+            self.extra_mem_mut(memidx).with_buffer_mut(|mem| {
+                Self::checked_memory_end(addr, 1, mem.len())?;
+                mem[addr] = value;
+                Ok(())
+            })
         }
     }
 
@@ -5542,53 +5967,131 @@ impl VM {
         }
     }
 
-    pub(crate) fn write_memory_array_slice(
+
+
+    /// Bulk instructions consume three operands together, with independent
+    /// address types. Keep guest unsigned widths before converting to usize.
+    #[inline(always)]
+    pub(crate) fn pop_bulk_memory_operands(
         &mut self,
+        dst64: bool,
+        middle64: bool,
+        count64: bool,
+    ) -> Result<(usize, usize, usize), crate::VMError> {
+        let len = self.stack.len();
+        assert!(len >= 3, "stack underflow");
+        let index = |value: &Value, is64: bool| -> u64 {
+            if is64 {
+                match value {
+                    Value::I64(value) => *value as u64,
+                    other => other.as_i64() as u64,
+                }
+            } else {
+                match value {
+                    Value::I32(value) => *value as u32 as u64,
+                    other => other.as_i32() as u32 as u64,
+                }
+            }
+        };
+        let dst = index(&self.stack[len - 3], dst64);
+        let middle = index(&self.stack[len - 2], middle64);
+        let count = index(&self.stack[len - 1], count64);
+        self.stack.truncate(len - 3);
+        let host_index = |value| usize::try_from(value).map_err(|_| {
+            crate::VMError::new("trap: out of bounds memory access (host address range)")
+        });
+        Ok((host_index(dst)?, host_index(middle)?, host_index(count)?))
+    }
+
+    /// Copy passive data with destination validation under the mutation guard.
+    /// No staging allocation or separate destination-length lock is required.
+    #[inline(always)]
+    pub(crate) fn init_memory_bytes(
+        &mut self,
+        data_idx: u32,
         memidx: usize,
-        addr: usize,
-        bytes: &[u8],
+        dst: usize,
+        src: usize,
+        count: usize,
     ) -> Result<(), crate::VMError> {
+        // Zero-sized operations validate offsets directly. Avoid constructing
+        // slices, checked-add results, or mutable/exclusive access guards.
+        if count == 0 {
+            let source_limit = if self.dropped_data.contains(&data_idx) {
+                0
+            } else {
+                self.data_segments.get(data_idx as usize).map(Vec::len).unwrap_or(0)
+            };
+            if src > source_limit {
+                return Err(Self::memory_oob(src, 0, source_limit));
+            }
+            let limit = if memidx == 0 {
+                self.memory.len()
+            } else {
+                self.extra_memories.get(memidx - 1)
+                    .ok_or_else(|| crate::VMError::new("trap: out of bounds memory access (unknown memory)"))?
+                    .len()
+            };
+            if dst > limit {
+                return Err(Self::memory_oob(dst, 0, limit));
+            }
+            return Ok(());
+        }
+        let segment = if self.dropped_data.contains(&data_idx) {
+            &[][..]
+        } else {
+            self.data_segments.get(data_idx as usize).map(Vec::as_slice).unwrap_or(&[])
+        };
+        let src_end = Self::checked_memory_end(src, count, segment.len())?;
+        let source = &segment[src..src_end];
         if memidx == 0 {
             if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
-                let end = Self::checked_memory_end(addr, bytes.len(), memory.len())?;
-                memory[addr..end].copy_from_slice(bytes);
+                let end = Self::checked_memory_end(dst, count, memory.len())?;
+                memory[dst..end].copy_from_slice(source);
                 Ok(())
             }) {
                 return result;
             }
             return self.memory.with_buffer_mut(|memory| {
-                let end = Self::checked_memory_end(addr, bytes.len(), memory.len())?;
-                memory[addr..end].copy_from_slice(bytes);
+                let end = Self::checked_memory_end(dst, count, memory.len())?;
+                memory[dst..end].copy_from_slice(source);
                 Ok(())
             });
         }
-        let mem = self.extra_mem_mut(memidx);
-        let end = Self::checked_memory_end(addr, bytes.len(), mem.len())?;
-        mem[addr..end].copy_from_slice(bytes);
-        Ok(())
+        let destination = self.extra_memories.get(memidx - 1)
+            .ok_or_else(|| crate::VMError::new("trap: out of bounds memory access (unknown memory)"))?;
+        destination.with_buffer_mut(|memory| {
+            let end = Self::checked_memory_end(dst, count, memory.len())?;
+            memory[dst..end].copy_from_slice(source);
+            Ok(())
+        })
     }
 
-    pub(crate) fn read_memory_array_slice(
-        &mut self,
-        memidx: usize,
-        addr: usize,
-        len: usize,
-    ) -> Result<Vec<u8>, crate::VMError> {
-        if memidx == 0 {
-            if let Some(result) = self
-                .memory
-                .with_bytes_exclusive(addr, len, |bytes| bytes.to_vec())
-            {
-                return result.map_err(|limit| Self::memory_oob(addr, len, limit));
-            }
-            return self.memory.with_buffer(|memory| {
-                let end = Self::checked_memory_end(addr, len, memory.len())?;
-                Ok(memory[addr..end].to_vec())
-            });
+    /// Validate both ranges before mutating. The common path needs only one
+    /// overflow check; retain source-first diagnostics on the cold trap path.
+    #[inline(always)]
+    fn copy_memory_range(
+        memory: &mut [u8],
+        dst: usize,
+        src: usize,
+        count: usize,
+    ) -> Result<(), crate::VMError> {
+        if src.max(dst).checked_add(count).filter(|&end| end <= memory.len()).is_none() {
+            Self::checked_memory_end(src, count, memory.len())?;
+            Self::checked_memory_end(dst, count, memory.len())?;
+            unreachable!("the maximum range endpoint failed validation");
         }
-        let mem = self.extra_mem(memidx);
-        let end = Self::checked_memory_end(addr, len, mem.len())?;
-        Ok(mem[addr..end].to_vec())
+        if count != 0 && dst != src {
+            // SAFETY: the combined check proves both byte ranges lie inside
+            // this same exclusively borrowed slice, without address overflow.
+            // u8 has alignment 1. ptr::copy permits overlap (memmove semantics).
+            // No pointer survives this call or escapes a shared-memory guard.
+            unsafe {
+                let base = memory.as_mut_ptr();
+                std::ptr::copy(base.add(src), base.add(dst), count);
+            }
+        }
+        Ok(())
     }
 
     #[inline(always)]
@@ -5602,88 +6105,55 @@ impl VM {
     ) -> Result<(), crate::VMError> {
         if dst_mem == 0 && src_mem == 0 {
             if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
-                let src_end = Self::checked_memory_end(src, count, memory.len())?;
-                Self::checked_memory_end(dst, count, memory.len())?;
-                memory.copy_within(src..src_end, dst);
-                Ok(())
+                Self::copy_memory_range(memory, dst, src, count)
             }) {
                 return result;
             }
             return self.memory.with_buffer_mut(|memory| {
-                let src_end = Self::checked_memory_end(src, count, memory.len())?;
-                Self::checked_memory_end(dst, count, memory.len())?;
-                memory.copy_within(src..src_end, dst);
-                Ok(())
+                Self::copy_memory_range(memory, dst, src, count)
             });
         }
-        if src_mem == 0 {
-            let extra_memories = &mut self.extra_memories;
-            if let Some(result) = self.memory.with_bytes_exclusive(src, count, |source| {
-                let Some(destination) = extra_memories.get_mut(dst_mem - 1) else {
-                    return Err(crate::VMError::new(format!(
-                        "trap: out of bounds memory access: addr={dst} size={count} limit=0"
-                    )));
-                };
-                let dst_limit = destination.len();
-                let dst_end = Self::checked_memory_end(dst, count, dst_limit)?;
-                destination[dst..dst_end].copy_from_slice(source);
-                Ok(())
-            }) {
-                return result.map_err(|limit| Self::memory_oob(src, count, limit))?;
-            }
-            return self.memory.with_buffer(|source| {
-                let src_end = Self::checked_memory_end(src, count, source.len())?;
-                let Some(destination) = extra_memories.get_mut(dst_mem - 1) else {
-                    return Err(crate::VMError::new(format!(
-                        "trap: out of bounds memory access: addr={dst} size={count} limit=0"
-                    )));
-                };
-                let dst_limit = destination.len();
-                let dst_end = Self::checked_memory_end(dst, count, dst_limit)?;
-                destination[dst..dst_end].copy_from_slice(&source[src..src_end]);
-                Ok(())
-            });
-        }
-        if dst_mem == 0 {
-            let extra_memories = &self.extra_memories;
-            let source_mem = extra_memories
-                .get(src_mem - 1)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            let src_limit = source_mem.len();
-            let src_end = Self::checked_memory_end(src, count, src_limit)?;
-            let source = &source_mem[src..src_end];
-            if let Some(result) = self.memory.with_buffer_mut_exclusive(|dest| {
-                let dst_end = Self::checked_memory_end(dst, count, dest.len())?;
-                dest[dst..dst_end].copy_from_slice(source);
-                Ok(())
+        if dst_mem == src_mem {
+            let memory = self.extra_mem_mut(dst_mem);
+            if let Some(result) = memory.with_buffer_mut_exclusive(|memory| {
+                Self::copy_memory_range(memory, dst, src, count)
             }) {
                 return result;
             }
-            return self.memory.with_buffer_mut(|dest| {
-                let dst_end = Self::checked_memory_end(dst, count, dest.len())?;
-                dest[dst..dst_end].copy_from_slice(source);
-                Ok(())
+            return memory.with_buffer_mut(|memory| {
+                Self::copy_memory_range(memory, dst, src, count)
             });
         }
-        let src_limit = self.mem_len(src_mem);
-        let dst_limit = self.mem_len(dst_mem);
-        let src_end = Self::checked_memory_end(src, count, src_limit)?;
-        let dst_end = Self::checked_memory_end(dst, count, dst_limit)?;
-        if dst_mem == src_mem {
-            self.extra_mem_mut(dst_mem).copy_within(src..src_end, dst);
-        } else {
-            let src_idx = src_mem - 1;
-            let dst_idx = dst_mem - 1;
-            if src_idx < dst_idx {
-                let (left, right) = self.extra_memories.split_at_mut(dst_idx);
-                right[0][dst..dst_end].copy_from_slice(&left[src_idx][src..src_end]);
-            } else {
-                let (left, right) = self.extra_memories.split_at_mut(src_idx);
-                left[dst_idx][dst..dst_end].copy_from_slice(&right[0][src..src_end]);
-            }
+        let source = if src_mem == 0 { &self.memory } else { self.extra_mem(src_mem) };
+        let destination = if dst_mem == 0 { &self.memory } else { self.extra_mem(dst_mem) };
+        // Memory indices are module-local: distinct indices can alias, and
+        // different modules can number the same imported backings differently.
+        // Lock a shared backing once; otherwise use a global backing order.
+        let backing_order = source.backing_order(destination);
+        if backing_order == std::cmp::Ordering::Equal {
+            return destination.with_buffer_mut(|memory| {
+                Self::copy_memory_range(memory, dst, src, count)
+            });
         }
-        Ok(())
+        if backing_order == std::cmp::Ordering::Less {
+            source.with_buffer(|source| {
+                let src_end = Self::checked_memory_end(src, count, source.len())?;
+                destination.with_buffer_mut(|destination| {
+                    let dst_end = Self::checked_memory_end(dst, count, destination.len())?;
+                    destination[dst..dst_end].copy_from_slice(&source[src..src_end]);
+                    Ok(())
+                })
+            })
+        } else {
+            destination.with_buffer_mut(|destination| {
+                let dst_end = Self::checked_memory_end(dst, count, destination.len())?;
+                source.with_buffer(|source| {
+                    let src_end = Self::checked_memory_end(src, count, source.len())?;
+                    destination[dst..dst_end].copy_from_slice(&source[src..src_end]);
+                    Ok(())
+                })
+            })
+        }
     }
 
     #[inline(always)]
@@ -5708,10 +6178,19 @@ impl VM {
                 Ok(())
             });
         }
-        let limit = self.mem_len(memidx);
-        let end = Self::checked_memory_end(dst, count, limit)?;
-        self.extra_mem_mut(memidx)[dst..end].fill(value);
-        Ok(())
+        let memory = self.extra_mem_mut(memidx);
+        if let Some(result) = memory.with_buffer_mut_exclusive(|memory| {
+            let end = Self::checked_memory_end(dst, count, memory.len())?;
+            memory[dst..end].fill(value);
+            Ok(())
+        }) {
+            return result;
+        }
+        memory.with_buffer_mut(|memory| {
+            let end = Self::checked_memory_end(dst, count, memory.len())?;
+            memory[dst..end].fill(value);
+            Ok(())
+        })
     }
 
     #[inline(always)]
@@ -5745,9 +6224,15 @@ impl VM {
             self.push_fast(b);
         } else {
             let split = self.stack.len().saturating_sub(arity);
-            let keep = self.stack.split_off(split);
-            self.stack.truncate(entry.stack_height);
-            self.stack.extend(keep);
+            // The carried values often already occupy their destination.
+            // Keep them in place rather than allocating and copying a tail
+            // vector. Do not return: label and try-handler cleanup below is
+            // still required even when no value needs to move.
+            if split != entry.stack_height {
+                let keep = self.stack.split_off(split);
+                self.stack.truncate(entry.stack_height);
+                self.stack.extend(keep);
+            }
         }
 
         let len = self.label_stack.len();
@@ -5779,20 +6264,18 @@ impl VM {
 
     /// Get a reference to a specific extra memory by index (index > 0 only).
     #[inline(always)]
-    pub(crate) fn extra_mem(&self, idx: usize) -> &[u8] {
-        if idx == 0 || idx - 1 >= self.extra_memories.len() {
-            &[]
-        } else {
-            &self.extra_memories[idx - 1]
-        }
+    pub(crate) fn extra_mem(&self, idx: usize) -> &crate::shared_memory::SharedMemory {
+        static EMPTY: std::sync::OnceLock<crate::shared_memory::SharedMemory> = std::sync::OnceLock::new();
+        self.extra_memories.get(idx.wrapping_sub(1))
+            .unwrap_or_else(|| EMPTY.get_or_init(|| crate::shared_memory::SharedMemory::new(0)))
     }
 
     /// Get a mutable reference to a specific extra memory by index (index > 0 only).
     #[inline(always)]
-    pub(crate) fn extra_mem_mut(&mut self, idx: usize) -> &mut Vec<u8> {
+    pub(crate) fn extra_mem_mut(&mut self, idx: usize) -> &mut crate::shared_memory::SharedMemory {
         let i = idx - 1;
         if i >= self.extra_memories.len() {
-            self.extra_memories.resize_with(i + 1, Vec::new);
+            self.extra_memories.resize_with(i + 1, || crate::shared_memory::SharedMemory::new(0));
         }
         &mut self.extra_memories[i]
     }
@@ -5920,11 +6403,9 @@ impl VM {
             debug_name: format!("canon[{key}]"),
             params,
             results,
-            signature: signature.to_string(),
             // "For canonical call tags, the answer is simply that the program
             // traps" — a canonical tag has no fall-back, by definition.
             fallback: None,
-            canonical: true,
         });
         self.canonical_call_tags.insert(key, idx);
         idx
@@ -5942,17 +6423,14 @@ impl VM {
         debug_name: &str,
         params: u8,
         results: u8,
-        signature: &str,
         fallback: Option<Value>,
     ) -> u32 {
         let idx = self.call_tags.len() as u32;
         self.call_tags.push(CallTagDef {
             debug_name: debug_name.to_string(),
-            signature: signature.to_string(),
             params,
             results,
             fallback,
-            canonical: false,
         });
         idx
     }
@@ -6175,6 +6653,7 @@ impl VM {
         let el = self.event_loop.clone();
         // Raw pointer to last_exception — safe: valid for host call duration.
         let exc_ptr = &mut self.last_exception as *mut Option<Value>;
+        let trap_ptr = &mut self.pending_host_trap as *mut Option<crate::error::VMError>;
         let exit_ptr = &mut self.pending_exit as *mut bool;
         let exit_code_ptr = &mut self.pending_exit_code as *mut i32;
         let host_receiver_ptr = &mut self.host_receiver as *mut Value;
@@ -6206,7 +6685,7 @@ impl VM {
                 c.module_receiver_abi
             });
         let globals_ptr = &mut self.globals as *mut Vec<Value>;
-        let global_index_ptr = &mut self.global_index as *mut HashMap<String, u32>;
+        let global_index_ptr = &mut self.global_index as *mut crate::global_name_index::GlobalNameIndex;
         HostContext {
             invoker: Some(unsafe {
                 // SAFETY: vm_ptr is valid for the duration of the host function call.
@@ -6216,6 +6695,7 @@ impl VM {
             memory: None,
             event_loop: Some(el),
             last_exception_slot: exc_ptr,
+            pending_host_trap_slot: trap_ptr,
             exit_slot: exit_ptr,
             exit_code_slot: exit_code_ptr,
             host_receiver_slot: host_receiver_ptr,
@@ -6299,12 +6779,6 @@ impl VM {
             .is_some_and(|c| c.module_instance_fields_are_own_properties)
     }
 
-    pub(crate) fn calling_module_members_on_prototype(&self) -> bool {
-        self.frames
-            .last()
-            .and_then(|f| self.chunks.get(f.chunk_index))
-            .is_some_and(|c| c.module_members_on_prototype)
-    }
 
     /// This module's receiver ABI, read off the module chunk.
     /// The receiver ABI of the code making the CALL — the currently executing
@@ -6324,16 +6798,6 @@ impl VM {
             })
     }
 
-    /// Is this value a host function? Asked separately from
-    /// [`Self::callee_takes_receiver`], which can only answer for callees that
-    /// resolve to a chunk.
-    fn is_host_function(func_ref: &Value) -> bool {
-        let Value::Object(obj) = func_ref else {
-            return false;
-        };
-        let Ok(o) = obj.lock() else { return false };
-        matches!(o.kind, crate::value::ObjectKind::HostFunction(_))
-    }
 
     fn callee_takes_receiver(&self, func_ref: &Value) -> bool {
         let Value::Object(obj) = func_ref else {
@@ -6539,7 +7003,7 @@ impl VM {
         chunks: Vec<Chunk>,
         resolved_imports: Vec<ImportTarget>,
     ) -> Result<Value, VMError> {
-        self.run_linked_impl(chunks, resolved_imports, false)
+        self.run_linked_impl(chunks, resolved_imports, false, None)
     }
 
     /// Re-entrant variant of [`run_linked`] for running dynamically-compiled
@@ -6554,7 +7018,29 @@ impl VM {
         chunks: Vec<Chunk>,
         resolved_imports: Vec<ImportTarget>,
     ) -> Result<Value, VMError> {
-        self.run_linked_impl(chunks, resolved_imports, true)
+        self.run_linked_impl(chunks, resolved_imports, true, None)
+    }
+
+    /// Consume immutable compiler-worker preparation at the ordinary linked
+    /// loader boundary. Import/global bindings remain the caller's live work.
+    pub fn run_linked_prepared(
+        &mut self,
+        prepared: crate::PreparedLinkedCode,
+        resolved_imports: Vec<ImportTarget>,
+    ) -> Result<Value, VMError> {
+        let (chunks, metadata) = prepared.into_parts();
+        self.run_linked_impl(chunks, resolved_imports, false, Some(metadata))
+    }
+
+    /// Re-entrant prepared variant; validation errors remain at the same VM
+    /// load phase as `run_linked_nested`, after the caller resolves imports.
+    pub fn run_linked_nested_prepared(
+        &mut self,
+        prepared: crate::PreparedLinkedCode,
+        resolved_imports: Vec<ImportTarget>,
+    ) -> Result<Value, VMError> {
+        let (chunks, metadata) = prepared.into_parts();
+        self.run_linked_impl(chunks, resolved_imports, true, Some(metadata))
     }
 
     /// Instantiate globals for either loader path. Dynamic modules use
@@ -6585,15 +7071,8 @@ impl VM {
                 None => true,
             };
             if unwritten {
-                // Bytecode REF_FUNC operands are rebased during linking, but
-                // constant expressions are stored outside the bytecode.
-                let init = match &gi.init {
-                    crate::chunk::ConstExpr::RefFunc(index) => {
-                        crate::chunk::ConstExpr::RefFunc((*index as usize + script_idx) as _)
-                    }
-                    _ => gi.init.clone(),
-                };
-                let val = self.eval_const_expr(&init);
+                let type_base = self.chunk_type_base.get(script_idx).copied().unwrap_or(0);
+                let val = self.eval_const_expr_with_context(&gi.init, type_base, script_idx)?;
                 self.set_global(&gi.name, val);
             }
             if self.debugger.is_some() {
@@ -6619,11 +7098,47 @@ impl VM {
     /// rejected here having run nothing. And an op that somehow escaped this
     /// pass still lands in the dispatch match's final `Unhandled opcode`
     /// arm: an error, never undefined behaviour.
+    pub(crate) fn validate_direct_defined_calls(chunk: &Chunk, chunks: &[Chunk]) -> Result<(), VMError> {
+        for (&at, edge) in &chunk.direct_defined_calls {
+            let target = chunks.get(edge.target as usize).ok_or_else(||VMError::new("direct defined target out of module bounds"))?;
+            if (target.direct_entry_has_captures == Some(true) || (target.capture_count != 0 && target.direct_entry_has_captures != Some(false))) || target.is_async || target.is_generator {
+                return Err(VMError::new("direct defined target requires environment/continuation"));
+            }
+            let signature = target.func_sig.clone().unwrap_or_else(||(
+                vec!["externref";target.arity as usize].join(","),
+                vec!["externref";target.result_arity as usize].join(",")));
+            if signature != (edge.params.clone(),edge.results.clone()) || edge.source != target.func_sig.is_none() {
+                return Err(VMError::new("direct defined signature metadata mismatch"));
+            }
+            let code = &chunk.code;
+            if at.checked_add(6).is_none_or(|n|n>code.len()) {
+                return Err(VMError::new("direct defined offset out of bounds"));
+            }
+            let op = Op::from_code_at(code,at);
+            let argc = if op == Op::CALL {
+                if at+7>code.len() {return Err(VMError::new("direct call truncated"));}
+                code[at+6]
+            } else if op == Op::RETURN_CALL {code[at+4]}
+            else {return Err(VMError::new("direct defined metadata on unsupported opcode"));};
+            if argc as usize != edge.params.split(',').filter(|s|!s.is_empty()).count() {return Err(VMError::new("direct defined argument count mismatch"));}
+            if op == Op::RETURN_CALL {
+                let own=chunk.func_sig.as_ref().map(|(_,r)|r.clone()).unwrap_or_else(||vec!["externref";chunk.result_arity as usize].join(","));
+                if own != edge.results || code[at+5] as usize != edge.results.split(',').filter(|s|!s.is_empty()).count() {return Err(VMError::new("return_call result mismatch"));}
+            }
+        }
+        Ok(())
+    }
+
     fn validate_chunk_code(chunks: &[Chunk]) -> Result<(), VMError> {
         for chunk in chunks {
+            Self::validate_direct_defined_calls(chunk, chunks)?;
             let code = &chunk.code;
             let mut ip = 0usize;
+            let mut direct_starts = 0usize;
             while ip + 3 < code.len() {
+                if chunk.direct_defined_calls.contains_key(&ip) {
+                    direct_starts += 1;
+                }
                 let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
                 let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
                 let Some(op) = Op::decode(group, sub) else {
@@ -6646,18 +7161,21 @@ impl VM {
                 let fmt = op.operand_format();
                 ip += fmt.size_in(code, ip);
             }
+            if direct_starts != chunk.direct_defined_calls.len() {
+                return Err(VMError::new("direct defined metadata is not on an instruction boundary"));
+            }
         }
         Ok(())
     }
 
     fn build_decoded_ops_for_chunk(chunk: &Chunk) -> Vec<Op> {
         let code = &chunk.code;
-        let mut decoded = vec![Op::NOP; code.len()];
+        let mut decoded = vec![Op::NOP; code.len().div_ceil(4)];
         let mut ip = 0usize;
         while ip + 3 < code.len() {
             let opcode_start = ip;
             let op = Op::from_code_at(code, opcode_start);
-            decoded[opcode_start] = op;
+            decoded[opcode_start / 4] = op;
             if op == Op::REF_FUNC {
                 ip += 4 + 2 + 1;
                 if ip - 1 < code.len() {
@@ -6674,13 +7192,49 @@ impl VM {
 
     fn build_decoded_operands_for_chunk(chunk: &Chunk) -> Vec<u32> {
         let code = &chunk.code;
-        let mut decoded = vec![0u32; code.len()];
+        let mut decoded = vec![0u32; code.len().div_ceil(4)];
+        let mut wide_index = 0u32;
         let mut ip = 0usize;
         while ip + 3 < code.len() {
             let opcode_start = ip;
             let op = Op::from_code_at(code, opcode_start);
-            let operand_start = opcode_start + 4;
-            decoded[opcode_start] = match op {
+            decoded[opcode_start / 4] = Self::decode_cached_operand32(chunk, op, opcode_start);
+            if op == Op::F64_CONST || op == Op::REF_FUNC {
+                decoded[opcode_start / 4] = wide_index;
+                wide_index = wide_index.checked_add(1).expect("wide operand pool exceeds u32 indices");
+            }
+            if op == Op::REF_FUNC {
+                ip += 4 + 2 + 1;
+                if ip - 1 < code.len() {
+                    let uv_count = (code[ip - 1] & 0x7f) as usize;
+                    ip += uv_count * 3;
+                }
+                continue;
+            }
+            ip += 4;
+            ip += op.operand_format().size_in(code, ip);
+        }
+        decoded
+    }
+
+    #[inline(always)]
+    pub(crate) fn mark_direct_call_operand(op: Op, operand: u32, direct: bool) -> u32 {
+        if direct && (op == Op::CALL || op == Op::RETURN_CALL) {
+            debug_assert_eq!(operand & DECODED_DEFINED_CALL, 0);
+            operand | DECODED_DEFINED_CALL
+        } else { operand }
+    }
+    #[inline(always)]
+    fn decode_cached_operand32(chunk: &Chunk, op: Op, start: usize) -> u32 {
+        let operand = Self::decode_operand32(&chunk.code, op, start + 4);
+        let direct = (op == Op::CALL || op == Op::RETURN_CALL)
+            && chunk.direct_defined_calls.contains_key(&start);
+        Self::mark_direct_call_operand(op, operand, direct)
+    }
+
+    #[inline]
+    pub(crate) fn decode_operand32(code: &[u8], op: Op, operand_start: usize) -> u32 {
+        match op {
                 Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE if operand_start + 1 < code.len() => {
                     ((code[operand_start] as u32) << 8) | code[operand_start + 1] as u32
                 }
@@ -6712,36 +7266,17 @@ impl VM {
                         | ((code[operand_start + 2] as u32) << 8)
                         | code[operand_start + 3] as u32
                 }
-                Op::I32_LOAD
-                | Op::I64_LOAD
-                | Op::F32_LOAD
-                | Op::F64_LOAD
-                | Op::I32_LOAD8_S
-                | Op::I32_LOAD8_U
-                | Op::I32_LOAD16_S
-                | Op::I32_LOAD16_U
-                | Op::I64_LOAD8_S
-                | Op::I64_LOAD8_U
-                | Op::I64_LOAD16_S
-                | Op::I64_LOAD16_U
-                | Op::I64_LOAD32_S
-                | Op::I64_LOAD32_U
-                | Op::I32_STORE
-                | Op::I64_STORE
-                | Op::F32_STORE
-                | Op::F64_STORE
-                | Op::I32_STORE8
-                | Op::I32_STORE16
-                | Op::I64_STORE8
-                | Op::I64_STORE16
-                | Op::I64_STORE32
-                    if operand_start < code.len() =>
+                op if operand_start < code.len()
+                    && op.operand_format() == crate::opcode::OperandFormat::SimdMemArg =>
                 {
                     if code[operand_start] & 0x80 == 0 {
                         0
                     } else {
                         let mut mem_ip = operand_start;
                         let align = crate::opcode::read_leb_u32(code, &mut mem_ip);
+                        if align & 0x80 == 0 {
+                            return DECODED_MEMARG_FALLBACK;
+                        }
                         let memory64_offset = align & 0x100 != 0;
                         let offset = if memory64_offset {
                             crate::opcode::read_leb_u64(code, &mut mem_ip)
@@ -6885,19 +7420,102 @@ impl VM {
                     code[operand_start + 3],
                 ]),
                 _ => 0,
-            };
+            }
+    }
+
+    /// Read only instruction-owned metadata, never the memory backing.
+    #[inline(always)]
+    pub(crate) fn cached_optional_memory_arg(
+        &self,
+        chunk: usize,
+        operand_start: usize,
+    ) -> Option<(u64, usize)> {
+        let start = operand_start.checked_sub(4)?;
+        let op = self.decoded_ops.get(chunk)?.get(start / 4)?;
+        if op.operand_format() != crate::opcode::OperandFormat::SimdMemArg {
+            return None;
+        }
+        let packed = *self.decoded_operands.get(chunk)?.get(start / 4)?;
+        if packed == DECODED_MEMARG_FALLBACK || packed & DECODED_MEMARG_PRESENT == 0 {
+            return None;
+        }
+        Some((
+            (packed & DECODED_MEMARG_OFFSET_MASK) as u64,
+            ((packed & !DECODED_MEMARG_PRESENT) >> DECODED_MEMARG_LEN_SHIFT) as usize,
+        ))
+    }
+
+    /// Decode the three execution caches in one instruction traversal.
+    /// Cache layout and module-relative ref.func relocation stay unchanged.
+    #[cfg(test)]
+    fn build_decoded_caches_for_chunk(chunk: &Chunk, ref_base: usize) -> (Vec<Op>, Vec<u32>, Vec<u64>) {
+        let (ops, operands, wide, _) = Self::build_decoded_caches_with_branch_presence(chunk, ref_base);
+        (ops, operands, wide)
+    }
+
+    pub(crate) fn finish_void_block_run(operands: &mut [u32], start: usize, len: usize) {
+        if len > 1 {
+            for offset in 0..len {
+                let count = (len - offset).min(32);
+                if count > 1 {
+                    operands[(start + offset * 6) / 4] |= (count as u32) << 16;
+                }
+            }
+        }
+    }
+
+    fn build_decoded_caches_with_branch_presence(
+        chunk: &Chunk,
+        ref_base: usize,
+    ) -> (Vec<Op>, Vec<u32>, Vec<u64>, bool) {
+        let code = &chunk.code;
+        let mut ops = vec![Op::NOP; code.len().div_ceil(4)];
+        let mut operands = vec![0u32; code.len().div_ceil(4)];
+        let mut wide = Vec::new();
+        let mut has_br_table = false;
+        // Upper operand bits are private cache metadata, never guest bytes.
+        // A void BLOCK is six encoded bytes; consecutive runs share the same
+        // stack height. Record bounded suffix lengths in this existing cache.
+        let mut void_start = 0;
+        let mut void_len = 0;
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let start = ip;
+            let op = Op::from_code_at(code, start);
+            has_br_table |= op == Op::BR_TABLE;
+            let operand_start = start + 4;
+            ops[start / 4] = op;
+            operands[start / 4] = Self::decode_cached_operand32(chunk, op, start);
+            if op == Op::BLOCK && operand_start + 2 <= code.len() && operands[start / 4] == 0 {
+                if void_len == 0 { void_start = start; }
+                void_len += 1;
+            } else if void_len != 0 {
+                Self::finish_void_block_run(&mut operands, void_start, void_len);
+                void_len = 0;
+            }
+            // Wide readers use their otherwise-unused u32 operand slot as a
+            // pool index. Preserve a zero payload for truncated raw F64 input;
+            // validation still determines whether the module can execute.
+            if op == Op::F64_CONST || op == Op::REF_FUNC {
+                operands[start / 4] = u32::try_from(wide.len()).expect("wide operand pool exceeds u32 indices");
+                let bits = if op == Op::F64_CONST && operand_start + 7 < code.len() {
+                    u64::from_le_bytes(code[operand_start..operand_start + 8].try_into().unwrap())
+                } else { 0 };
+                wide.push(bits);
+            }
             if op == Op::REF_FUNC {
+                let relative = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]) as usize;
+                wide[operands[start / 4] as usize] = ref_base.checked_add(relative).expect("ref.func chunk index exceeds usize") as u64;
                 ip += 4 + 2 + 1;
                 if ip - 1 < code.len() {
-                    let uv_count = (code[ip - 1] & 0x7f) as usize;
-                    ip += uv_count * 3;
+                    ip += (code[ip - 1] & 0x7f) as usize * 3;
                 }
                 continue;
             }
-            ip += 4;
-            ip += op.operand_format().size_in(code, ip);
+            ip = operand_start + op.operand_format().size_in(code, operand_start);
         }
-        decoded
+        Self::finish_void_block_run(&mut operands, void_start, void_len);
+        (ops, operands, wide, has_br_table)
     }
 
     fn build_decoded_operands64_for_chunk(chunk: &Chunk) -> Vec<u64> {
@@ -6906,14 +7524,20 @@ impl VM {
 
     fn build_decoded_operands64_with_ref_base(chunk: &Chunk, ref_base: usize) -> Vec<u64> {
         let code = &chunk.code;
-        let mut decoded = vec![0u64; code.len()];
+        // Pool order matches the indices in build_decoded_operands_for_chunk.
+        // These are raw F64 bits or resolved ref.func targets, never a tagged
+        // payload; identical bit patterns intentionally remain separate slots.
+        let mut decoded = Vec::new();
         let mut ip = 0usize;
         while ip + 3 < code.len() {
             let opcode_start = ip;
             let op = Op::from_code_at(code, opcode_start);
             let operand_start = opcode_start + 4;
+            if op == Op::F64_CONST || op == Op::REF_FUNC {
+                decoded.push(0);
+            }
             if op == Op::F64_CONST && operand_start + 7 < code.len() {
-                decoded[opcode_start] = u64::from_le_bytes([
+                *decoded.last_mut().unwrap() = u64::from_le_bytes([
                     code[operand_start],
                     code[operand_start + 1],
                     code[operand_start + 2],
@@ -6929,7 +7553,7 @@ impl VM {
                 // the existing wide cache, never truncate the VM chunk index.
                 let relative =
                     u16::from_be_bytes([code[operand_start], code[operand_start + 1]]) as usize;
-                decoded[opcode_start] = ref_base
+                *decoded.last_mut().unwrap() = ref_base
                     .checked_add(relative)
                     .expect("ref.func chunk index exceeds usize")
                     as u64;
@@ -6946,8 +7570,8 @@ impl VM {
         decoded
     }
 
-    fn build_native_call_sites_for_chunk(chunk: &Chunk) -> Vec<Option<NativeCallSiteTarget>> {
-        vec![None; chunk.code.len()]
+    fn build_native_call_sites_for_chunk(_chunk: &Chunk) -> Vec<Option<NativeCallSiteTarget>> {
+        Vec::new()
     }
 
     fn build_native_result_fast_path_at(
@@ -6958,17 +7582,19 @@ impl VM {
         let code = &chunk.code;
         let call_native_matches =
             |ip: usize, argc: u8, matches_target: fn(NativeCallSiteTarget) -> bool| -> bool {
-                if ip + 6 >= code.len() || Op::from_code_at(code, ip) != Op::CALL {
+                if ip + 6 >= code.len() || Op::from_code_at(code, ip) != Op::CALL
+                    || chunk.direct_defined_calls.contains_key(&ip) {
                     return false;
                 }
                 code[ip + 6] == argc
                     && native_call_sites
-                        .get(ip)
+                        .get(ip / 4)
                         .copied()
                         .flatten()
                         .is_some_and(matches_target)
             };
-        if opcode_start + 3 >= code.len() || Op::from_code_at(code, opcode_start) != Op::CALL {
+        if opcode_start + 3 >= code.len() || Op::from_code_at(code, opcode_start) != Op::CALL
+            || chunk.direct_defined_calls.contains_key(&opcode_start) {
             return NativeResultFastPath::None;
         }
         let after_call_ip = opcode_start + 7;
@@ -7028,14 +7654,19 @@ impl VM {
         let code = &chunk.code;
         let empty_sites: &[Option<NativeCallSiteTarget>] = &[];
         let native_call_sites = native_call_sites.unwrap_or(empty_sites);
-        let mut fast_paths = vec![NativeResultFastPath::None; code.len()];
+        let mut fast_paths = Vec::new();
         let mut ip = 0usize;
         while ip + 3 < code.len() {
             let opcode_start = ip;
             let op = Op::from_code_at(code, opcode_start);
             if op == Op::CALL {
-                fast_paths[opcode_start] =
-                    Self::build_native_result_fast_path_at(chunk, native_call_sites, opcode_start);
+                let path = Self::build_native_result_fast_path_at(chunk, native_call_sites, opcode_start);
+                if !matches!(path, NativeResultFastPath::None) {
+                    if fast_paths.is_empty() {
+                        fast_paths.resize(code.len().div_ceil(4), NativeResultFastPath::None);
+                    }
+                    fast_paths[opcode_start / 4] = path;
+                }
             }
             if op == Op::REF_FUNC {
                 ip += 4 + 2 + 1;
@@ -7055,9 +7686,26 @@ impl VM {
         chunk: &Chunk,
         native_call_sites: Option<&[Option<NativeCallSiteTarget>]>,
     ) -> Vec<LocalFastPath> {
+        Self::build_local_fast_paths_with_results(chunk, native_call_sites, None)
+    }
+
+    fn build_execution_fast_paths_for_chunk(
+        chunk: &Chunk,
+        native_call_sites: Option<&[Option<NativeCallSiteTarget>]>,
+    ) -> (Vec<LocalFastPath>, Vec<NativeResultFastPath>) {
+        let mut results = Vec::new();
+        let locals = Self::build_local_fast_paths_with_results(chunk, native_call_sites, Some(&mut results));
+        (locals, results)
+    }
+
+    fn build_local_fast_paths_with_results(
+        chunk: &Chunk,
+        native_call_sites: Option<&[Option<NativeCallSiteTarget>]>,
+        mut results: Option<&mut Vec<NativeResultFastPath>>,
+    ) -> Vec<LocalFastPath> {
         let code = &chunk.code;
         let native_call_sites = native_call_sites.unwrap_or(&[]);
-        let mut fast_paths = vec![LocalFastPath::None; code.len()];
+        let mut fast_paths = vec![LocalFastPath::None; code.len().div_ceil(4)];
         let call_matches = |ip: usize,
                             argc: u8,
                             matches_target: fn(NativeCallSiteTarget) -> bool,
@@ -7067,11 +7715,14 @@ impl VM {
             if ip + 6 >= code.len()
                 || Op::from_code_at(code, ip) != Op::CALL
                 || code[ip + 6] != argc
+                // Direct calls carry a placeholder import operand. It is not
+                // an import index, even when it aliases a fusible builtin.
+                || chunk.direct_defined_calls.contains_key(&ip)
             {
                 return false;
             }
             if native_call_sites
-                .get(ip)
+                .get(ip / 4)
                 .copied()
                 .flatten()
                 .is_some_and(matches_target)
@@ -7114,6 +7765,17 @@ impl VM {
         while ip + 3 < code.len() {
             let opcode_start = ip;
             let op = Op::from_code_at(code, opcode_start);
+            if op == Op::CALL {
+                if let Some(paths) = results.as_deref_mut() {
+                    let path = Self::build_native_result_fast_path_at(chunk, native_call_sites, opcode_start);
+                    if !matches!(path, NativeResultFastPath::None) {
+                        if paths.is_empty() {
+                            paths.resize(code.len().div_ceil(4), NativeResultFastPath::None);
+                        }
+                        paths[opcode_start / 4] = path;
+                    }
+                }
+            }
             if op == Op::LOCAL_GET {
                 let next_ip = opcode_start + 6;
                 if next_ip + 7 < code.len() && Op::from_code_at(code, next_ip) == Op::GLOBAL_GET {
@@ -7130,7 +7792,7 @@ impl VM {
                     } else {
                         after_global_ip
                     };
-                    fast_paths[opcode_start] = LocalFastPath::LocalGetGlobalGet {
+                    fast_paths[opcode_start / 4] = LocalFastPath::LocalGetGlobalGet {
                         global_idx,
                         next_ip: next_dispatch_ip as u32,
                     };
@@ -7141,7 +7803,7 @@ impl VM {
                     let test_op = Op::from_code_at(code, test_ip);
                     if matches!(test_op, Op::REF_TEST | Op::REF_TEST_NULL) {
                         if let Some((heap_type, after_test_ip)) = decode_sleb_i32(test_ip + 4) {
-                            fast_paths[opcode_start] = LocalFastPath::LocalGetAnyConvertRefTest {
+                            fast_paths[opcode_start / 4] = LocalFastPath::LocalGetAnyConvertRefTest {
                                 heap_type,
                                 nullable: test_op == Op::REF_TEST_NULL,
                                 next_ip: after_test_ip as u32,
@@ -7158,7 +7820,7 @@ impl VM {
                         "wasm:js-number",
                         "toF64",
                     ) {
-                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsNumberToF64 {
+                        fast_paths[opcode_start / 4] = LocalFastPath::LocalGetJsNumberToF64 {
                             next_ip: (next_ip + 7) as u32,
                         };
                     } else if call_matches(
@@ -7170,7 +7832,7 @@ impl VM {
                         "wasm:js-number",
                         "toI32",
                     ) {
-                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsNumberToI32 {
+                        fast_paths[opcode_start / 4] = LocalFastPath::LocalGetJsNumberToI32 {
                             next_ip: (next_ip + 7) as u32,
                         };
                     } else if call_matches(
@@ -7182,7 +7844,7 @@ impl VM {
                         "wasm:js-number",
                         "test",
                     ) {
-                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsNumberTest {
+                        fast_paths[opcode_start / 4] = LocalFastPath::LocalGetJsNumberTest {
                             next_ip: (next_ip + 7) as u32,
                         };
                     } else if call_matches(
@@ -7194,7 +7856,7 @@ impl VM {
                         "wasm:js-string",
                         "test",
                     ) {
-                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsStringTest {
+                        fast_paths[opcode_start / 4] = LocalFastPath::LocalGetJsStringTest {
                             next_ip: (next_ip + 7) as u32,
                         };
                     } else if call_matches(
@@ -7209,7 +7871,7 @@ impl VM {
                         "wasm:js-undefined",
                         "test",
                     ) {
-                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsUndefinedTest {
+                        fast_paths[opcode_start / 4] = LocalFastPath::LocalGetJsUndefinedTest {
                             next_ip: (next_ip + 7) as u32,
                         };
                     }
@@ -7217,7 +7879,7 @@ impl VM {
                     && Op::from_code_at(code, next_ip) == Op::LOCAL_SET
                 {
                     let target_slot = ((code[next_ip + 4] as u16) << 8) | code[next_ip + 5] as u16;
-                    fast_paths[opcode_start] = LocalFastPath::LocalGetLocalSet {
+                    fast_paths[opcode_start / 4] = LocalFastPath::LocalGetLocalSet {
                         target_slot,
                         next_ip: (next_ip + 6) as u32,
                     };
@@ -7228,7 +7890,7 @@ impl VM {
                     let second_slot = ((code[next_ip + 4] as u16) << 8) | code[next_ip + 5] as u16;
                     let target_slot =
                         ((code[next_ip + 10] as u16) << 8) | code[next_ip + 11] as u16;
-                    fast_paths[opcode_start] = LocalFastPath::LocalGetLocalGetSet {
+                    fast_paths[opcode_start / 4] = LocalFastPath::LocalGetLocalGetSet {
                         second_slot,
                         target_slot,
                         next_ip: (next_ip + 12) as u32,
@@ -7264,18 +7926,37 @@ impl VM {
             let Some(decoded_operands) = self.decoded_operands.get(chunk_index) else {
                 continue;
             };
-            let len = decoded_ops.len().min(decoded_operands.len());
-            for opcode_start in 0..len {
-                if decoded_ops[opcode_start] == Op::CALL {
-                    calls.push((
-                        chunk_index,
-                        opcode_start,
-                        (decoded_operands[opcode_start] & 0xffff) as usize,
-                    ));
+            // Visit actual instruction boundaries. A bucket identifies the
+            // opcode but cannot recover its low offset bits from the index.
+            let code = &self.chunks[chunk_index].code;
+            let mut opcode_start = 0usize;
+            while opcode_start + 3 < code.len() {
+                let Some(&op) = decoded_ops.get(opcode_start / 4) else { break; };
+                if op == Op::CALL
+                    && !self.chunks[chunk_index].direct_defined_calls.contains_key(&opcode_start) {
+                    if let Some(&operand) = decoded_operands.get(opcode_start / 4) {
+                        calls.push((chunk_index, opcode_start, (operand & 0xffff) as usize));
+                    }
+                }
+                if op == Op::REF_FUNC {
+                    opcode_start += 4 + 2 + 1;
+                    if opcode_start - 1 < code.len() {
+                        opcode_start += (code[opcode_start - 1] & 0x7f) as usize * 3;
+                    }
+                } else {
+                    let operand_start = opcode_start + 4;
+                    opcode_start = operand_start + op.operand_format().size_in(code, operand_start);
                 }
             }
         }
 
+        self.prefill_native_call_sites(calls)
+    }
+
+    fn prefill_native_call_sites(
+        &mut self,
+        calls: Vec<(usize, usize, usize)>,
+    ) -> Result<(), VMError> {
         for (chunk_index, opcode_start, import_idx) in calls {
             let target = match self.resolve_chunk_call_target(chunk_index, import_idx)? {
                 Some(target) => target,
@@ -7287,27 +7968,52 @@ impl VM {
                 }
             };
             if let Some(native_target) = NativeCallSiteTarget::from_resolved(&target) {
-                self.cache_native_call_site(chunk_index, opcode_start, native_target);
+                // Keep link-time resolution/error checking, but do not allocate
+                // dense metadata for bodies this request may never enter.
+                // First entry installs all sites before fusion classification.
+                if self.local_fast_paths.get(chunk_index).is_none_or(Vec::is_empty) {
+                    self.pending_native_call_sites.entry(chunk_index).or_default()
+                        .push((opcode_start, native_target));
+                    continue;
+                }
+                // Build consumers once after all call targets are available.
+                // The lazy setter also reclassifies neighbouring consumers,
+                // which is redundant during this bulk installation pass.
+                let sites = &mut self.native_call_sites[chunk_index];
+                if sites.is_empty() {
+                    sites.resize(self.chunks[chunk_index].code.len().div_ceil(4), None);
+                }
+                sites[opcode_start / 4] = Some(native_target);
             }
         }
-        for chunk_index in first_new_chunk..self.chunks.len() {
-            if self.native_result_fast_paths.len() <= chunk_index {
-                self.native_result_fast_paths
-                    .resize_with(chunk_index + 1, Vec::new);
-            }
-            self.native_result_fast_paths[chunk_index] =
-                Self::build_native_result_fast_paths_for_chunk(
-                    &self.chunks[chunk_index],
-                    self.native_call_sites.get(chunk_index).map(Vec::as_slice),
-                );
-        }
+        // Function bodies may never be called by this request. The parallel
+        // cache rows already exist; prepare consumers on frame entry instead
+        // of scanning and allocating metadata for every included body.
         Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn ensure_execution_fast_paths(&mut self, chunk_index: usize) {
+        let expected = self.chunks[chunk_index].code.len().div_ceil(4);
+        // Local rows are always dense and are installed together with result
+        // rows. Their length therefore marks preparation complete even when
+        // the optional result row has no applicable consumer.
+        if self.local_fast_paths[chunk_index].len() == expected {
+            return;
+        }
+        self.prepare_native_call_sites_for_entry(chunk_index);
+        let (locals, results) = Self::build_execution_fast_paths_for_chunk(
+            &self.chunks[chunk_index],
+            self.native_call_sites.get(chunk_index).map(Vec::as_slice),
+        );
+        self.local_fast_paths[chunk_index] = locals;
+        self.native_result_fast_paths[chunk_index] = results;
     }
 
     fn build_block_targets_for_chunk(chunk: &Chunk) -> std::sync::Arc<BlockTargetCache> {
         std::sync::Arc::new(BlockTargetCache::from_entries(
             chunk.code.len(),
-            crate::dispatch::build_block_table(&chunk.code),
+            crate::dispatch::build_block_entries(&chunk.code),
         ))
     }
 
@@ -7317,7 +8023,7 @@ impl VM {
         Vec::new()
     }
 
-    fn build_br_table_targets_for_chunk(chunk: &Chunk) -> Vec<Option<BrTableTargets>> {
+    pub(crate) fn build_br_table_targets_for_chunk(chunk: &Chunk) -> Vec<Option<BrTableTargets>> {
         let code = &chunk.code;
         let mut targets = Vec::new();
         let mut ip = 0usize;
@@ -7362,37 +8068,35 @@ impl VM {
         targets
     }
 
+    #[cfg(test)]
     fn extend_decoded_ops_for_chunks(&mut self, chunks: &[Chunk]) {
         Self::extend_decoded_ops_with_ref_base(self, chunks, 0);
     }
 
     fn extend_decoded_ops_with_ref_base(&mut self, chunks: &[Chunk], ref_base: usize) {
-        let first_new_chunk = self.native_call_sites.len();
-        self.decoded_ops
-            .extend(chunks.iter().map(Self::build_decoded_ops_for_chunk));
-        self.decoded_operands
-            .extend(chunks.iter().map(Self::build_decoded_operands_for_chunk));
-        self.decoded_operands64.extend(
-            chunks
-                .iter()
-                .map(|chunk| Self::build_decoded_operands64_with_ref_base(chunk, ref_base)),
-        );
+        for chunk in chunks {
+            let (ops, operands, wide, has_br_table) = Self::build_decoded_caches_with_branch_presence(chunk, ref_base);
+            self.decoded_ops.push(ops);
+            self.decoded_operands.push(operands);
+            self.decoded_operands64.push(wide);
+            // Most compiled bodies contain no branch table. Presence was
+            // established at actual instruction starts during decoding, so
+            // their empty cache needs no second variable-length code scan.
+            self.br_table_targets.push(if has_br_table {
+                Self::build_br_table_targets_for_chunk(chunk)
+            } else {
+                Vec::new()
+            });
+        }
         self.native_call_sites
             .extend(chunks.iter().map(Self::build_native_call_sites_for_chunk));
         self.native_result_fast_paths.extend(
             chunks
                 .iter()
-                .map(|chunk| Self::build_native_result_fast_paths_for_chunk(chunk, None)),
+                .map(|_| Vec::new()),
         );
         self.local_fast_paths
-            .extend(chunks.iter().enumerate().map(|(index, chunk)| {
-                Self::build_local_fast_paths_for_chunk(
-                    chunk,
-                    self.native_call_sites
-                        .get(first_new_chunk + index)
-                        .map(Vec::as_slice),
-                )
-            }));
+            .extend(chunks.iter().map(|_| Vec::new()));
     }
 
     fn extend_block_targets_for_chunks(&mut self, chunks: &[Chunk]) {
@@ -7405,25 +8109,40 @@ impl VM {
             .extend(chunks.iter().map(Self::build_loop_superops_for_chunk));
     }
 
-    fn extend_br_table_targets_for_chunks(&mut self, chunks: &[Chunk]) {
-        self.br_table_targets
-            .extend(chunks.iter().map(Self::build_br_table_targets_for_chunk));
-    }
-
     fn run_linked_impl(
         &mut self,
         chunks: Vec<Chunk>,
         resolved_imports: Vec<ImportTarget>,
         nested: bool,
+        prepared: Option<Result<Vec<crate::link_preparation::CodeMetadata>, VMError>>,
     ) -> Result<Value, VMError> {
+        self.run_linked_impl_recorded(chunks,resolved_imports,nested,prepared,None)
+    }
+
+    fn run_linked_impl_recorded(
+        &mut self,
+        chunks: Vec<Chunk>,
+        resolved_imports: Vec<ImportTarget>,
+        nested: bool,
+        prepared: Option<Result<Vec<crate::link_preparation::CodeMetadata>, VMError>>,
+        record:Option<&mut Option<LoadedRequestUnit>>,
+    ) -> Result<Value, VMError> {
+        let recorded_epoch=record.as_ref().map(|_|std::sync::Arc::clone(&self.request_code_epoch));
+        let record_admitted=record.is_some()&&LoadedRequestUnit::accepts(&chunks);
+        let incoming_count=chunks.len();
         if chunks.is_empty() {
             return Ok(Value::Null);
         }
+        let mut link_timing = crate::link_timing::LinkTiming::start(self.chunks.len(), &chunks);
         let link_phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm link");
         {
             let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm validate");
-            Self::validate_chunk_code(&chunks)?;
+            let _stage = link_timing.as_ref().map(|timing| timing.stage("validate"));
+            if prepared.is_none() { Self::validate_chunk_code(&chunks)?; }
         }
+        // Observe staged failures before the first VM global relocation, at
+        // exactly the original validation boundary, never on the worker.
+        let mut metadata = prepared.transpose()?;
         let script_idx = self.chunks.len();
         // Keep ref.func bytecode module-relative; the wide decode cache
         // resolves its target with script_idx below.
@@ -7433,20 +8152,58 @@ impl VM {
         // its own table.
         {
             let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm globals");
-            self.merge_global_table(&mut adjusted);
+            let _stage = link_timing.as_ref().map(|timing| timing.stage("globals"));
+            if metadata.is_some() {
+                self.merge_global_table_with_preparation::<true>(&mut adjusted, &mut metadata);
+            } else {
+                self.merge_global_table(&mut adjusted);
+            }
         }
-        self.merge_canon_section(&adjusted)?;
-        self.merge_canon_types(&adjusted)?;
+        {
+            let _stage = link_timing.as_ref().map(|timing| timing.stage("canon"));
+            self.merge_canon_section(&adjusted)?;
+            self.merge_canon_types(&adjusted)?;
+        }
         {
             let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm decode");
-            self.extend_decoded_ops_with_ref_base(&adjusted, script_idx);
+            let _stage = link_timing.as_ref().map(|timing| timing.stage("decode"));
+            if let Some(rows) = metadata.as_mut() {
+                for (chunk, row) in adjusted.iter().zip(rows.iter_mut()) {
+                    // Relocation keeps the raw global walk unchanged. Read
+                    // sparse actual operands after it, using THIS VM's base.
+                    for &(start, _) in &row.globals {
+                        row.operands[start / 4] = Self::decode_operand32(&chunk.code, row.ops[start / 4], start + 4);
+                    }
+                    for &(start, _) in &row.refs {
+                        let relative = u16::from_be_bytes([chunk.code[start + 4], chunk.code[start + 5]]) as usize;
+                        let pool_index = row.operands[start / 4] as usize;
+                        row.wide[pool_index] = script_idx.checked_add(relative).expect("ref.func chunk index exceeds usize") as u64;
+                    }
+                    self.decoded_ops.push(std::mem::take(&mut row.ops));
+                    self.decoded_operands.push(std::mem::take(&mut row.operands));
+                    self.decoded_operands64.push(std::mem::take(&mut row.wide));
+                    self.br_table_targets.push(std::mem::take(&mut row.br_tables));
+                }
+                self.native_call_sites.extend(adjusted.iter().map(Self::build_native_call_sites_for_chunk));
+                self.native_result_fast_paths.extend(adjusted.iter().map(|_| Vec::new()));
+                self.local_fast_paths.extend(adjusted.iter().map(|_| Vec::new()));
+            } else {
+                self.extend_decoded_ops_with_ref_base(&adjusted, script_idx);
+            }
         }
         {
             let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm blocks");
-            self.extend_block_targets_for_chunks(&adjusted);
+            let _stage = link_timing.as_ref().map(|timing| timing.stage("blocks"));
+            if let Some(rows) = metadata.as_mut() {
+                for (chunk, row) in adjusted.iter().zip(rows.iter_mut()) {
+                    self.block_targets.push(std::sync::Arc::new(BlockTargetCache::from_entries(chunk.code.len(), std::mem::take(&mut row.blocks))));
+                }
+            } else {
+                self.extend_block_targets_for_chunks(&adjusted);
+            }
             self.extend_loop_superops_for_chunks(&adjusted);
-            self.extend_br_table_targets_for_chunks(&adjusted);
         }
+        let publish_stage = link_timing.as_ref().map(|timing| timing.stage("publish"));
         self.chunks.extend(adjusted);
         // ⛔ EVERY CHUNK OF THIS UNIT POINTS AT THIS UNIT'S TABLE. `link.rs`
         // remapped their `CALL` operands into `chunks[script_idx].imports`, so
@@ -7468,7 +8225,7 @@ impl VM {
             None
         };
         let saved_resolved_import_table = if nested {
-            Some(self.resolved_import_table.clone())
+            Some(std::mem::take(&mut self.resolved_import_table))
         } else {
             None
         };
@@ -7476,86 +8233,33 @@ impl VM {
         self.resolved_import_table.clear();
         self.chunk_import_cache.clear();
         self.chunk_call_target_cache.clear();
+        drop(publish_stage);
         let imports_phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm imports");
-        for target in resolved_imports {
-            match target {
-                ImportTarget::ChunkFn { chunk_index, arity } => {
-                    self.import_table.push(ImportTarget::ChunkFn {
-                        chunk_index: chunk_index + script_idx,
-                        arity,
-                    });
-                }
-                ImportTarget::Host(idx) => {
-                    self.import_table.push(ImportTarget::Host(idx));
-                }
-                ImportTarget::StdlibRedirect(name) => {
-                    // Try to resolve against host registry first
-                    let key_candidates = [("wasi:cli".to_string(), name.clone())];
-                    let mut resolved = false;
-                    for key in &key_candidates {
-                        if let Some(idx) = self.resolve_host_function_index(&key.0, &key.1) {
-                            self.import_table.push(ImportTarget::Host(idx));
-                            resolved = true;
-                            break;
-                        }
-                    }
-                    if !resolved {
-                        self.import_table.push(ImportTarget::StdlibRedirect(name));
-                    }
-                }
-                ImportTarget::JspiSuspend => {
-                    self.import_table.push(ImportTarget::JspiSuspend);
-                }
-                ImportTarget::JspiSuspendEager => {
-                    self.import_table.push(ImportTarget::JspiSuspendEager);
-                }
-                ImportTarget::WasiThreadSpawn => {
-                    self.import_table.push(ImportTarget::WasiThreadSpawn);
-                }
-                ImportTarget::JsNumber(builtin) => {
-                    self.import_table.push(ImportTarget::JsNumber(builtin));
-                }
-                ImportTarget::JsBoolean(builtin) => {
-                    self.import_table.push(ImportTarget::JsBoolean(builtin));
-                }
-                ImportTarget::JsUndefined(builtin) => {
-                    self.import_table.push(ImportTarget::JsUndefined(builtin));
-                }
-                ImportTarget::JsString(builtin) => {
-                    self.import_table.push(ImportTarget::JsString(builtin));
-                }
-                ImportTarget::EcmaNumber(builtin, host_idx) => {
-                    self.import_table
-                        .push(ImportTarget::EcmaNumber(builtin, host_idx));
-                }
-                ImportTarget::EcmaBoolean(builtin, host_idx) => {
-                    self.import_table
-                        .push(ImportTarget::EcmaBoolean(builtin, host_idx));
-                }
-                ImportTarget::EcmaObject(builtin, host_idx) => {
-                    self.import_table
-                        .push(ImportTarget::EcmaObject(builtin, host_idx));
-                }
-                ImportTarget::EcmaArray(builtin, host_idx) => {
-                    self.import_table
-                        .push(ImportTarget::EcmaArray(builtin, host_idx));
-                }
-                ImportTarget::JspiYield => {
-                    self.import_table.push(ImportTarget::JspiYield);
-                }
-                ImportTarget::StringConst(s) => {
-                    self.import_table.push(ImportTarget::StringConst(s));
-                }
-                ImportTarget::Canon(b, t) => {
-                    self.import_table.push(ImportTarget::Canon(b, t));
-                }
-            }
-        }
-        self.rebuild_resolved_import_table();
+        let imports_stage = link_timing.as_ref().map(|timing| timing.stage("imports"));
+        self.install_linked_import_context(script_idx,resolved_imports);
         drop(imports_phase);
+        drop(imports_stage);
         {
             let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm callsites");
-            self.prefill_native_call_sites_for_current_imports(script_idx)?;
+            let _stage = link_timing.as_ref().map(|timing| timing.stage("callsites"));
+            if let Some(rows) = metadata.take() {
+                let calls = rows.into_iter().enumerate().flat_map(|(relative, row)| {
+                    row.calls.into_iter().map(move |(start, import)| (script_idx + relative, start, import))
+                }).collect();
+                if let Err(error)=self.prefill_native_call_sites(calls) { self.restore_linked_import_context(saved_import_table,saved_resolved_import_table); return Err(error); }
+            } else {
+                if let Err(error)=self.prefill_native_call_sites_for_current_imports(script_idx) { self.restore_linked_import_context(saved_import_table,saved_resolved_import_table); return Err(error); }
+            }
+        }
+        self.record_import_cache_peak(script_idx);
+
+        let native_module = self.chunks[script_idx].native_global_import_count.is_some();
+        let saved_storage = if native_module && nested {
+            Some(module_storage::Snapshot::take(self))
+        } else { None };
+        let result = (|| {
+        if native_module {
+            self.initialize_module_storage(script_idx)?;
         }
 
         // Load type table. This program is its OWN module — a dynamically
@@ -7563,80 +8267,64 @@ impl VM {
         // so it gets its own base rather than continuing the caller's space.
         {
             let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm types");
+            let _stage = link_timing.as_ref().map(|timing| timing.stage("types"));
             let type_base = self.module_type_ids.len();
             self.set_chunk_type_base(script_idx, type_base);
-            let types = self.chunks[script_idx].types.clone();
-            if !types.is_empty() {
+            let mut adjusted_types = self.chunks[script_idx].types.clone();
+            if !adjusted_types.is_empty() {
                 // `array.new` immediates index the module's own types in this
                 // order; `bind_module_type_ids` turns that order into registry
                 // ids once, below, so no name is resolved at run time.
-                let adjusted_types: Vec<_> = types
-                    .iter()
-                    .map(|t| {
-                        let mut entry = t.clone();
-                        entry.methods = t
-                            .methods
-                            .iter()
-                            .map(|(name, idx)| (name.clone(), idx + script_idx))
-                            .collect();
-                        if let Some(ci) = entry.constructor_chunk {
-                            entry.constructor_chunk = Some(ci + script_idx);
-                        }
-                        entry
-                    })
-                    .collect();
+                for entry in &mut adjusted_types {
+                    for (_, idx) in &mut entry.methods {
+                        *idx += script_idx;
+                    }
+                    if let Some(ci) = entry.constructor_chunk {
+                        entry.constructor_chunk = Some(ci + script_idx);
+                    }
+                }
                 self.type_registry.load_type_table(&adjusted_types);
-                self.bind_module_type_ids(&adjusted_types);
+                self.bind_module_type_ids(&adjusted_types, script_idx);
             }
         }
 
         {
             let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm init globals");
+            let _stage = link_timing.as_ref().map(|timing| timing.stage("init"));
             self.initialize_global_inits(script_idx)?;
+        }
+        if native_module {
+            self.initialize_module_segments(script_idx)?;
         }
 
         drop(link_phase);
-
-        // Execute
-        let saved_frame_depth = self.frames.len();
-        let saved_stack_len = self.stack.len();
-        self.frames.push(CallFrame {
-            chunk_index: script_idx,
-            ip: 0,
-            base: self.stack.len(),
-            local_frame_size: self.chunks[script_idx].local_count as usize,
-            label_base: self.label_stack.len(),
-            upvalues: Vec::new(),
-        });
-        self.stack.resize(
-            self.stack.len() + self.chunks[script_idx].local_count as usize,
-            Value::Null,
-        );
-        if nested {
-            // Run only the script frame we just pushed; leave the caller's
-            // frames untouched, then restore its value stack (WASM call-frame
-            // semantics — see `invoke_callback`).
-            let result = self.execute_until(saved_frame_depth + 1);
-            self.stack.truncate(saved_stack_len);
-            if let Some(import_table) = saved_import_table {
-                self.import_table = import_table;
-                self.chunk_import_cache.clear();
-                self.chunk_call_target_cache.clear();
-            }
-            if let Some(resolved_import_table) = saved_resolved_import_table {
-                self.resolved_import_table = resolved_import_table;
-            }
-            result
-        } else {
-            let result = self.execute();
-            self.pending_exit = false;
-            result
+        if let Some(timing) = link_timing.as_mut() {
+            timing.complete();
         }
+        drop(link_timing);
+
+        if record_admitted {
+            if let Some(record)=record {
+                *record=recorded_epoch.filter(|epoch|Arc::ptr_eq(epoch,&self.request_code_epoch))
+                    .and_then(|_|script_idx.checked_add(incoming_count))
+                    .and_then(|end|self.seal_request_unit(script_idx,end));
+            }
+        }
+        self.execute_linked_script_entry(script_idx,nested)
+        })();
+        if let Some(storage) = saved_storage {
+            storage.restore(self);
+        }
+        self.restore_linked_import_context(saved_import_table,saved_resolved_import_table);
+        result
     }
 
     pub fn run(&mut self, chunks: Vec<Chunk>) -> Result<Value, VMError> {
         if chunks.is_empty() {
             return Ok(Value::Null);
+        }
+        if chunks.iter().any(|chunk| !chunk.direct_defined_calls.is_empty()) {
+            Self::validate_chunk_code(&chunks)?;
         }
         // `VYBE_VERIFY=1` — check the structural invariants before running:
         // every instruction on the 4-byte opcode grid, every jump landing on an
@@ -7693,7 +8381,6 @@ impl VM {
         self.extend_decoded_ops_with_ref_base(&adjusted, script_idx);
         self.extend_block_targets_for_chunks(&adjusted);
         self.extend_loop_superops_for_chunks(&adjusted);
-        self.extend_br_table_targets_for_chunks(&adjusted);
         self.chunks.extend(adjusted);
         // ⛔ EVERY CHUNK OF THIS UNIT POINTS AT THIS UNIT'S TABLE. `link.rs`
         // remapped their `CALL` operands into `chunks[script_idx].imports`, so
@@ -7716,111 +8403,7 @@ impl VM {
         self.resolve_chunk_call_tags();
         self.bind_imported_globals();
 
-        let declared_memories = self.chunks[script_idx].memory_min_pages.clone();
-        let declared_memory_maxes = self.chunks[script_idx].memory_max_pages.clone();
-        self.memory_is_64 = self.chunks[script_idx].memory_is_64.clone();
-        self.memory0_is_64 = self.memory_is_64.first().copied().unwrap_or(false);
-        self.instantiate_declared_memories(&declared_memories, &declared_memory_maxes)?;
-        self.table_is_64 = self.chunks[script_idx].table_is_64.clone();
-        self.table0_is_64 = self.table_is_64.first().copied().unwrap_or(false);
-        let declared_tables = self.chunks[script_idx].table_min_sizes.clone();
-        self.wasm_table_maxes = self.chunks[script_idx]
-            .table_max_sizes
-            .iter()
-            .map(|m| m.map(|v| v as usize))
-            .collect();
-        self.instantiate_declared_tables(&declared_tables)?;
-        let data_segments = self.chunks[script_idx].data_segments.clone();
-        if !data_segments.is_empty() {
-            self.data_segments = data_segments;
-            self.dropped_data.clear();
-        }
-        let elem_segments = self.chunks[script_idx].elem_segments.clone();
-        if !elem_segments.is_empty() {
-            self.elem_segments = elem_segments
-                .into_iter()
-                .map(|segment| {
-                    segment
-                        .into_iter()
-                        .map(|value| match value {
-                            Value::I32(func_idx) if func_idx >= 0 => {
-                                let defined_func_base = if self.chunks[script_idx].name
-                                    == "<script>"
-                                    && self.chunks.len() > script_idx + 1
-                                {
-                                    script_idx + 1
-                                } else {
-                                    script_idx
-                                };
-                                let chunk_idx = defined_func_base + func_idx as usize;
-                                if chunk_idx < self.chunks.len() {
-                                    self.make_funcref(chunk_idx)
-                                } else {
-                                    Value::Null
-                                }
-                            }
-                            other => other,
-                        })
-                        .collect()
-                })
-                .collect();
-            self.dropped_elems.clear();
-        }
-        let active_data_segments = self.chunks[script_idx].active_data_segments.clone();
-        for init in active_data_segments {
-            let bytes = self
-                .data_segments
-                .get(init.data_index as usize)
-                .ok_or_else(|| crate::VMError::new("active data segment payload missing"))?;
-            let offset = usize::try_from(init.offset)
-                .map_err(|_| crate::VMError::new("active data segment offset out of range"))?;
-            let memidx = init.memory_index as usize;
-            if memidx == 0 {
-                self.memory.with_buffer_mut(|memory| {
-                    if offset.saturating_add(bytes.len()) > memory.len() {
-                        Err(crate::VMError::new(format!(
-                            "trap: out of bounds memory access: addr={} size={} limit={}",
-                            offset,
-                            bytes.len(),
-                            memory.len()
-                        )))
-                    } else {
-                        memory[offset..offset + bytes.len()].copy_from_slice(bytes);
-                        Ok(())
-                    }
-                })?;
-            } else {
-                let mem = &mut self.extra_memories[memidx - 1];
-                if offset.saturating_add(bytes.len()) > mem.len() {
-                    return Err(crate::VMError::new(format!(
-                        "trap: out of bounds memory access: addr={} size={} limit={}",
-                        offset,
-                        bytes.len(),
-                        mem.len()
-                    )));
-                }
-                mem[offset..offset + bytes.len()].copy_from_slice(bytes);
-            }
-        }
-        let active_elem_segments = self.chunks[script_idx].active_elem_segments.clone();
-        for init in active_elem_segments {
-            let values = self
-                .elem_segments
-                .get(init.elem_index as usize)
-                .ok_or_else(|| crate::VMError::new("active element segment payload missing"))?;
-            let offset = usize::try_from(init.offset)
-                .map_err(|_| crate::VMError::new("active element segment offset out of range"))?;
-            let table = self
-                .wasm_tables
-                .get_mut(init.table_index as usize)
-                .ok_or_else(|| crate::VMError::new("active element segment table missing"))?;
-            if offset.saturating_add(values.len()) > table.len() {
-                return Err(crate::VMError::new(
-                    "trap: active element segment out of bounds",
-                ));
-            }
-            table[offset..offset + values.len()].clone_from_slice(&values);
-        }
+        self.initialize_module_storage(script_idx)?;
         // Resolve imports for ALL new chunks (not just script chunk).
         // Each chunk has its own import list. We build one unified import table
         // by scanning all chunks and mapping their import indices to host functions.
@@ -7831,13 +8414,13 @@ impl VM {
         self.resolved_import_table.clear();
         self.chunk_import_cache.clear();
         self.chunk_call_target_cache.clear();
-        let script_imports = self.chunks[script_idx].imports.clone();
-        for import in &script_imports {
+        for import in &self.chunks[script_idx].imports {
             let target = self.resolve_import_target(&import.module, &import.name)?;
             self.import_table.push(target);
         }
         self.rebuild_resolved_import_table();
         self.prefill_native_call_sites_for_current_imports(script_idx)?;
+        self.record_import_cache_peak(script_idx);
 
         // Load type table from the script chunk (WASM GC type section).
         // Registers user-defined class types and their vtable methods.
@@ -7847,26 +8430,22 @@ impl VM {
             // are numbered from 1 against the table loaded just below.
             let type_base = self.module_type_ids.len();
             self.set_chunk_type_base(script_idx, type_base);
-            let types = self.chunks[script_idx].types.clone();
-            if !types.is_empty() {
+            let mut adjusted_types = self.chunks[script_idx].types.clone();
+            if !adjusted_types.is_empty() {
                 // `array.new` immediates index the module's own types in this
                 // order; `bind_module_type_ids` turns that order into registry
                 // ids once, below, so no name is resolved at run time.
                 // Adjust chunk indices in methods (same offset as ref_func)
-                let adjusted_types: Vec<_> = types
-                    .iter()
-                    .map(|t| {
-                        let mut entry = t.clone();
-                        entry.methods = t
-                            .methods
-                            .iter()
-                            .map(|(name, idx)| (name.clone(), idx + script_idx))
-                            .collect();
-                        entry
-                    })
-                    .collect();
+                for entry in &mut adjusted_types {
+                    for (_, idx) in &mut entry.methods {
+                        *idx += script_idx;
+                    }
+                    if let Some(ci) = entry.constructor_chunk {
+                        entry.constructor_chunk = Some(ci + script_idx);
+                    }
+                }
                 self.type_registry.load_type_table(&adjusted_types);
-                self.bind_module_type_ids(&adjusted_types);
+                self.bind_module_type_ids(&adjusted_types, script_idx);
                 // The `__tid_<name>` globals that used to be written here are
                 // gone: they existed so a constructor could GLOBAL_GET a
                 // registry id and stamp it after allocating. Allocation
@@ -7888,40 +8467,9 @@ impl VM {
         // to the optimized native version.
         self.initialize_global_inits(script_idx)?;
 
-        // ⚠ ELEMENT SEGMENTS INSTANTIATE **AFTER** GLOBALS AND THE TYPE TABLE.
-        //
-        // WASM 3.0 §4.5.4 fixes the order of module instantiation: globals are
-        // evaluated, THEN element segments, THEN data segments, and only then
-        // are tables filled and `start` run. This block used to sit ~90 lines
-        // earlier — before imports, before the GC type table, and before the
-        // global initializers — which was survivable only for as long as a
-        // segment could hold nothing but `ref.func`. It cannot: an element
-        // expression is a CONSTANT EXPRESSION, and `(item (array.new_default
-        // $t …))` needs the type table while `(item (global.get $g))` needs
-        // the globals. Running first is what made both of those unreachable.
-        //
-        // The rtt base is taken from the SCRIPT CHUNK rather than the executing
-        // frame, because at instantiation there is no frame yet — `resolve_gc_rtt`
-        // would fall back to base 0 and name another module's type.
-        let elem_items = self.chunks[script_idx].passive_elem_items.clone();
-        let type_base = self.chunk_type_base.get(script_idx).copied().unwrap_or(0);
-        for (seg_idx, items) in elem_items.iter().enumerate() {
-            // ⛔ AN EMPTY SEGMENT IS STILL A SEGMENT. Skipping it left its index
-            // unoccupied, so `table.init $e` on a dropped or empty segment
-            // reported "missing element segment" instead of the out-of-bounds
-            // SOURCE trap the spec asks for (`elem.wast`, implicitly-dropped
-            // active segments).
-            if items.is_empty() {
-                self.set_elem_segment(seg_idx, Vec::new());
-                continue;
-            }
-            let vals: Vec<crate::value::Value> = items
-                .iter()
-                .map(|e| self.eval_const_expr_with_type_base(e, type_base))
-                .collect();
-            self.set_elem_segment(seg_idx, vals);
-        }
+        self.initialize_module_segments(script_idx)?;
 
+        self.ensure_execution_fast_paths(script_idx);
         self.frames.push(CallFrame {
             chunk_index: script_idx,
             ip: 0,
@@ -8039,12 +8587,20 @@ impl VM {
         self.stack.push(value);
     }
 
-    pub(crate) fn stack_floor(&self) -> usize {
-        self.frames
-            .last()
-            .map(|frame| frame.base + frame.local_frame_size)
-            .unwrap_or(0)
+    /// Decode an installed cache entry for a known regular SIMD memory opcode.
+    /// A zero entry denotes an omitted immediate. Unsupported forms must use
+    /// the original decoder; callers must establish the opcode kind first.
+    #[inline(always)]
+    pub(crate) fn unpack_cached_simd_memarg(packed: u32) -> Option<(u64, usize)> {
+        if packed == DECODED_MEMARG_FALLBACK {
+            return None;
+        }
+        Some((
+            (packed & DECODED_MEMARG_OFFSET_MASK) as u64,
+            ((packed & !DECODED_MEMARG_PRESENT) >> DECODED_MEMARG_LEN_SHIFT) as usize,
+        ))
     }
+
 
     #[inline(always)]
     pub(crate) fn pop(&mut self) -> Value {
@@ -8118,7 +8674,8 @@ impl VM {
         }
         let is_null = {
             let value = unsafe { self.stack.get_unchecked(len - 1) };
-            value.is_null_ref() || matches!(value, Value::Undefined)
+            // An externref containing JavaScript undefined is non-null in Wasm.
+            value.is_null_ref()
         };
         unsafe {
             *self.stack.get_unchecked_mut(len - 1) = Value::I32(if is_null { 1 } else { 0 });
@@ -8303,24 +8860,6 @@ impl VM {
         }
     }
 
-    #[inline(always)]
-    pub(crate) fn pop_i32_pair_fast(&mut self) -> (i32, i32) {
-        let len = self.stack.len();
-        if len < 2 {
-            panic!("stack underflow");
-        }
-        let (a, b) = match unsafe {
-            (
-                self.stack.get_unchecked(len - 2),
-                self.stack.get_unchecked(len - 1),
-            )
-        } {
-            (Value::I32(a), Value::I32(b)) => (*a, *b),
-            (a, b) => (a.as_i32(), b.as_i32()),
-        };
-        self.stack.truncate(len - 2);
-        (a, b)
-    }
 
     #[inline(always)]
     pub(crate) fn replace_i32_pair_fast(&mut self, f: impl FnOnce(i32, i32) -> i32) {
@@ -8441,24 +8980,6 @@ impl VM {
         }
     }
 
-    #[inline(always)]
-    pub(crate) fn pop_i64_pair_fast(&mut self) -> (i64, i64) {
-        let len = self.stack.len();
-        if len < 2 {
-            panic!("stack underflow");
-        }
-        let (a, b) = match unsafe {
-            (
-                self.stack.get_unchecked(len - 2),
-                self.stack.get_unchecked(len - 1),
-            )
-        } {
-            (Value::I64(a), Value::I64(b)) => (*a, *b),
-            (a, b) => (a.as_i64(), b.as_i64()),
-        };
-        self.stack.truncate(len - 2);
-        (a, b)
-    }
 
     #[inline(always)]
     pub(crate) fn replace_i64_pair_fast(&mut self, f: impl FnOnce(i64, i64) -> i64) {
@@ -8600,24 +9121,6 @@ impl VM {
         }
     }
 
-    #[inline(always)]
-    pub(crate) fn pop_f32_pair_fast(&mut self) -> (f32, f32) {
-        let len = self.stack.len();
-        if len < 2 {
-            panic!("stack underflow");
-        }
-        let (a, b) = match unsafe {
-            (
-                self.stack.get_unchecked(len - 2),
-                self.stack.get_unchecked(len - 1),
-            )
-        } {
-            (Value::F32(a), Value::F32(b)) => (*a, *b),
-            (a, b) => (a.as_f32(), b.as_f32()),
-        };
-        self.stack.truncate(len - 2);
-        (a, b)
-    }
 
     #[inline(always)]
     pub(crate) fn replace_f32_pair_fast(&mut self, f: impl FnOnce(f32, f32) -> f32) {
@@ -8733,24 +9236,6 @@ impl VM {
         }
     }
 
-    #[inline(always)]
-    pub(crate) fn pop_f64_pair_fast(&mut self) -> (f64, f64) {
-        let len = self.stack.len();
-        if len < 2 {
-            panic!("stack underflow");
-        }
-        let (a, b) = match unsafe {
-            (
-                self.stack.get_unchecked(len - 2),
-                self.stack.get_unchecked(len - 1),
-            )
-        } {
-            (Value::F64(a), Value::F64(b)) => (*a, *b),
-            (a, b) => (a.as_f64(), b.as_f64()),
-        };
-        self.stack.truncate(len - 2);
-        (a, b)
-    }
 
     #[inline(always)]
     pub(crate) fn replace_f64_pair_fast(&mut self, f: impl FnOnce(f64, f64) -> f64) {
@@ -8794,53 +9279,8 @@ impl VM {
         self.stack.truncate(len - 1);
     }
 
-    #[inline(always)]
-    pub(crate) fn pop_ecma_i32_fast(&mut self) -> i32 {
-        match self.stack.pop().expect("stack underflow") {
-            Value::I32(n) => n,
-            other => other.to_ecma_int32(),
-        }
-    }
 
-    #[inline(always)]
-    pub(crate) fn pop_ecma_i32_pair_fast(&mut self) -> (i32, i32) {
-        let len = self.stack.len();
-        if len < 2 {
-            panic!("stack underflow");
-        }
-        let (a, b) = match unsafe {
-            (
-                self.stack.get_unchecked(len - 2),
-                self.stack.get_unchecked(len - 1),
-            )
-        } {
-            (Value::I32(a), Value::I32(b)) => (*a, *b),
-            (a, b) => (a.to_ecma_int32(), b.to_ecma_int32()),
-        };
-        self.stack.truncate(len - 2);
-        (a, b)
-    }
 
-    #[inline(always)]
-    pub(crate) fn replace_ecma_i32_pair_fast(&mut self, f: impl FnOnce(i32, i32) -> i32) {
-        let len = self.stack.len();
-        if len < 2 {
-            panic!("stack underflow");
-        }
-        let (a, b) = match unsafe {
-            (
-                self.stack.get_unchecked(len - 2),
-                self.stack.get_unchecked(len - 1),
-            )
-        } {
-            (Value::I32(a), Value::I32(b)) => (*a, *b),
-            (a, b) => (a.to_ecma_int32(), b.to_ecma_int32()),
-        };
-        unsafe {
-            *self.stack.get_unchecked_mut(len - 2) = Value::I32(f(a, b));
-        }
-        self.stack.truncate(len - 1);
-    }
 
     #[inline(always)]
     pub(crate) fn peek(&self, distance: usize) -> &Value {
@@ -8969,18 +9409,6 @@ impl VM {
     }
 
     /// Read a fixed-width big-endian `u32` immediate, advancing `ip`.
-    #[inline(always)]
-    pub(crate) fn read_u32(&mut self) -> u32 {
-        let frame = self.frames.last_mut().expect("no frame");
-        let chunk_index = frame.chunk_index;
-        let ip = frame.ip;
-        let code = &self.chunks[chunk_index].code;
-        frame.ip = ip + 4;
-        ((code[ip] as u32) << 24)
-            | ((code[ip + 1] as u32) << 16)
-            | ((code[ip + 2] as u32) << 8)
-            | code[ip + 3] as u32
-    }
 
     /// Read an unsigned LEB128 `u32` immediate, advancing `ip`.
     ///
@@ -9048,70 +9476,8 @@ impl VM {
         result as i32
     }
 
-    #[inline(always)]
-    pub(crate) fn read_leb_i64(&mut self) -> i64 {
-        let frame = self.frames.last_mut().expect("no frame");
-        let chunk_index = frame.chunk_index;
-        let mut ip = frame.ip;
-        let code = &self.chunks[chunk_index].code;
-        let byte = code[ip];
-        if byte & 0x80 == 0 {
-            frame.ip = ip + 1;
-            return if byte & 0x40 == 0 {
-                byte as i64
-            } else {
-                ((byte as u64) | !0x7f) as i64
-            };
-        }
-        ip += 1;
-        let mut result: u64 = (byte & 0x7f) as u64;
-        let mut shift = 7u32;
-        loop {
-            let byte = code[ip];
-            ip += 1;
-            result |= ((byte & 0x7f) as u64) << shift;
-            shift += 7;
-            if byte & 0x80 == 0 {
-                if shift < 64 && (byte & 0x40) != 0 {
-                    result |= !0u64 << shift;
-                }
-                break;
-            }
-        }
-        frame.ip = ip;
-        result as i64
-    }
 
-    #[inline(always)]
-    pub(crate) fn read_f32(&mut self) -> f32 {
-        let frame = self.frames.last_mut().expect("no frame");
-        let chunk_index = frame.chunk_index;
-        let ip = frame.ip;
-        let code = &self.chunks[chunk_index].code;
-        let bytes = [code[ip], code[ip + 1], code[ip + 2], code[ip + 3]];
-        frame.ip = ip + 4;
-        f32::from_le_bytes(bytes)
-    }
 
-    #[inline(always)]
-    pub(crate) fn read_f64(&mut self) -> f64 {
-        let frame = self.frames.last_mut().expect("no frame");
-        let chunk_index = frame.chunk_index;
-        let ip = frame.ip;
-        let code = &self.chunks[chunk_index].code;
-        let bytes = [
-            code[ip],
-            code[ip + 1],
-            code[ip + 2],
-            code[ip + 3],
-            code[ip + 4],
-            code[ip + 5],
-            code[ip + 6],
-            code[ip + 7],
-        ];
-        frame.ip = ip + 8;
-        f64::from_le_bytes(bytes)
-    }
 
     /// Resolve a global BY NAME — instantiation, host binding, the debugger.
     /// WASM resolves imported globals by name at instantiate time too; what it
@@ -9155,6 +9521,7 @@ impl VM {
     /// for the module's lifetime, as in WASM); the binding is dropped.
     pub fn remove_global(&mut self, name: &str) -> Option<Value> {
         let idx = self.global_index.remove(name)? as usize;
+        self.invalidate_request_units();
         let old = self.globals.get(idx).cloned();
         if let Some(slot) = self.globals.get_mut(idx) {
             *slot = Value::Undefined;
@@ -9323,7 +9690,6 @@ impl VM {
                         &decl.debug_name,
                         decl.params,
                         decl.results,
-                        &decl.signature,
                         fallback,
                     )
                 };
@@ -9366,7 +9732,7 @@ impl VM {
                         match self.call_tag_registry.get(t).copied() {
                             Some(id) if (id as usize) < self.call_tags.len() => id,
                             _ => {
-                                let id = self.call_tag_new(t, 2, 1, "", None);
+                                let id = self.call_tag_new(t, 2, 1, None);
                                 self.call_tag_registry.insert(t.clone(), id);
                                 id
                             }
@@ -9464,18 +9830,25 @@ impl VM {
         }
     }
 
-    /// Append `types` to the module's type index space, resolving each name to
-    /// its registry id **once, at load**.
+    /// Append `types` to the module's index space using native structural
+    /// identity or the existing named language-type binding, once at load.
     ///
     /// Must run AFTER `load_type_table`, or the lookup finds nothing and the
     /// slot silently becomes rtt `0`. The registry id is not the compile-time
     /// table position — the host pre-registers its builtin types ahead of the
     /// module's — so the mapping is what the index space is FOR.
-    pub(crate) fn bind_module_type_ids(&mut self, types: &[crate::chunk::TypeEntry]) {
+    pub(crate) fn bind_module_type_ids(&mut self, types: &[crate::chunk::TypeEntry], first_chunk: usize) {
         for entry in types {
-            let id = self.type_registry.get_id(&entry.name).unwrap_or(0);
+            let id = self.type_registry.get_entry_id(entry).unwrap_or(0);
             self.module_type_names.push(entry.name.clone());
             self.module_type_ids.push(id);
+        }
+        for chunk in &mut self.chunks[first_chunk..] {
+            if let Some(identity) = &chunk.native_func_type {
+                if let Some(interned) = self.type_registry.interned_native_identity(identity) {
+                    chunk.native_func_type = Some(interned.clone());
+                }
+            }
         }
     }
 
@@ -9539,10 +9912,11 @@ impl VM {
     /// record its completion (top-level await surfaces the program's final
     /// value through this).
     pub fn resume_scheduled_fiber(&mut self, fiber: crate::fiber::Fiber) -> Result<(), VMError> {
+        let scheduled = fiber.cm_exit_on_completion;
         let completion = self.resume_fiber(fiber)?;
         // A fiber that re-parked inside a synchronous copy ran no code, so it
         // has no completion to record (see `VM::resume_reparked`).
-        if !self.resume_reparked {
+        if !self.resume_reparked && !scheduled {
             self.last_fiber_completion = Some(completion);
         }
         Ok(())
@@ -9687,7 +10061,33 @@ impl VM {
         };
         let (fts, vts) = (first.canon_functypes.clone(), first.canon_valtypes.clone());
         if fts.is_empty() && vts.is_empty() {
+            if first.component_instance_links.as_ref().is_some_and(|metadata| !metadata.imports.is_empty()) {
+                return Err(VMError::new("component instance bindings require a declared component type space"));
+            }
             return Ok(());
+        }
+        for (index, ty) in vts.iter().enumerate() {
+            if let Some(ty) = ty {
+                crate::canon_layout::validate_value_type_size(ty).map_err(|reason| {
+                    VMError::new(format!("component value type {index} {reason}"))
+                })?;
+            }
+        }
+        for (index, sig) in fts.iter().enumerate() {
+            if let Some(sig) = sig {
+                for (param, ty) in sig.params.iter().enumerate() {
+                    crate::canon_layout::validate_value_type_size(ty).map_err(|reason| {
+                        VMError::new(format!(
+                            "component function type {index} parameter {param} {reason}"
+                        ))
+                    })?;
+                }
+                if let Some(ty) = &sig.result {
+                    crate::canon_layout::validate_value_type_size(ty).map_err(|reason| {
+                        VMError::new(format!("component function type {index} result {reason}"))
+                    })?;
+                }
+            }
         }
         // Same rule as the canon section: two declared spaces each number from
         // zero, so a second DIFFERENT one cannot be merged into the first.
@@ -9699,21 +10099,204 @@ impl VM {
                  each numbers its typeidx from zero, so they cannot be merged",
             ));
         }
+        let links = crate::component_instance_link::bind_instance_function_imports(
+            &first.component_func_links,
+            first.component_instance_links.as_deref(),
+        )?;
+        let resolved_funcs = if first.component_funcs.is_empty() && links.is_empty() {
+            None
+        } else {
+            Some(Self::resolve_component_func_links(
+                &first.component_funcs,
+                &links,
+                &fts,
+            )?)
+        };
         self.canon_functypes = fts.to_vec();
         self.canon_call_shapes.clear();
         self.canon_type_refs.clear();
         self.canon_mem_layouts.clear();
         self.canon_inline_layouts.clear();
         self.canon_types = vts.to_vec();
-        if let Some(fs) = incoming.first().map(|c| c.component_funcs.clone()) {
-            if !fs.is_empty() {
-                self.component_funcs = fs.to_vec();
-            }
+        if let Some(resolved) = resolved_funcs {
+            self.component_funcs = first.component_funcs.to_vec();
+            self.component_func_resolved = resolved;
         }
         Ok(())
     }
 
+    fn resolve_component_func_links(
+        funcs: &[Option<u32>],
+        links: &[crate::canon_def::ComponentFuncLink],
+        types: &[Option<crate::canon_def::CanonFuncType>],
+    ) -> Result<Vec<Option<u32>>, VMError> {
+        let mut targets = vec![None; funcs.len()];
+        for link in links {
+            let import = link.import as usize;
+            let supplied = link.supplied as usize;
+            if import >= funcs.len() || supplied >= funcs.len() {
+                return Err(VMError::new(format!(
+                    "component link: function index out of range ({import} <- {supplied}, have {})",
+                    funcs.len()
+                )));
+            }
+            if funcs[import].is_some() {
+                return Err(VMError::new(format!(
+                    "component link: function {import} is locally defined, not imported"
+                )));
+            }
+            let expected = types
+                .get(link.expected_type as usize)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| VMError::new("component link: missing imported function type"))?;
+            let actual = types
+                .get(link.supplied_type as usize)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| VMError::new("component link: missing supplied function type"))?;
+            if expected != actual {
+                return Err(VMError::new(format!(
+                    "component link: function {import} type does not match supplied function {supplied}"
+                )));
+            }
+            if targets[import].replace(link.supplied).is_some() {
+                return Err(VMError::new(format!(
+                    "component link: function {import} has multiple bindings"
+                )));
+            }
+        }
+
+        fn visit(
+            index: usize,
+            funcs: &[Option<u32>],
+            targets: &[Option<u32>],
+            states: &mut [u8],
+            resolved: &mut [Option<u32>],
+        ) -> Result<Option<u32>, VMError> {
+            if states[index] == 2 {
+                return Ok(resolved[index]);
+            }
+            if states[index] == 1 {
+                return Err(VMError::new("component link: cyclic function imports"));
+            }
+            states[index] = 1;
+            let row = match (funcs[index], targets[index]) {
+                (Some(row), _) => Some(row),
+                (None, Some(target)) => {
+                    visit(target as usize, funcs, targets, states, resolved)?
+                }
+                (None, None) => None,
+            };
+            resolved[index] = row;
+            states[index] = 2;
+            Ok(row)
+        }
+
+        let mut resolved = vec![None; funcs.len()];
+        let mut states = vec![0; funcs.len()];
+        for index in 0..funcs.len() {
+            visit(index, funcs, &targets, &mut states, &mut resolved)?;
+        }
+        Ok(resolved)
+    }
+
     pub(crate) fn merge_global_table(&mut self, incoming: &mut [Chunk]) {
+        self.merge_global_table_with_preparation::<false>(incoming, &mut None);
+    }
+
+    fn instantiate_native_global_names(&self, incoming: &mut [Chunk]) {
+        let Some(script) = incoming.first() else { return; };
+        let Some(imported) = script.native_global_import_count else { return; };
+        let imported = imported as usize;
+        if imported >= script.globals.len() { return; }
+        let mut names: Vec<String> = script.globals.iter().cloned().collect();
+        let mut renamed = HashMap::with_capacity(names.len() - imported);
+        for (index, name) in names.iter_mut().enumerate().skip(imported) {
+            let instance_name = format!("__wasm_instance_{}_global_{index}", self.chunks.len());
+            renamed.insert(std::mem::replace(name, instance_name.clone()), instance_name);
+        }
+        fn needs_rewrite(expression: &crate::chunk::ConstExpr, names: &HashMap<String, String>) -> bool {
+                use crate::chunk::ConstExpr;
+                match expression {
+                    ConstExpr::GlobalGet(name) => names.contains_key(name),
+                    ConstExpr::Add(left, right) | ConstExpr::Mul(left, right) =>
+                        needs_rewrite(left, names) || needs_rewrite(right, names),
+                    ConstExpr::RefI31(value) => needs_rewrite(value, names),
+                    ConstExpr::StructNew { fields, .. } => fields.iter().any(|field| needs_rewrite(field, names)),
+                    ConstExpr::ArrayNewDefault { len, .. } => needs_rewrite(len, names),
+                    ConstExpr::ArrayNew { value, len, .. } =>
+                        needs_rewrite(value, names) || needs_rewrite(len, names),
+                    ConstExpr::Value(_) | ConstExpr::RefFunc(_) | ConstExpr::ImportedRefFunc(_) | ConstExpr::StructNewDefault { .. } => false,
+                }
+        }
+        fn rewrite(expression: &mut crate::chunk::ConstExpr, names: &HashMap<String, String>) {
+            use crate::chunk::ConstExpr;
+            match expression {
+                ConstExpr::GlobalGet(name) => {
+                    if let Some(instance_name) = names.get(name) { *name = instance_name.clone(); }
+                }
+                ConstExpr::Add(left, right) | ConstExpr::Mul(left, right) => {
+                    rewrite(left, names);
+                    rewrite(right, names);
+                }
+                ConstExpr::RefI31(value) => rewrite(value, names),
+                ConstExpr::StructNew { fields, .. } => {
+                    if fields.iter().any(|field| needs_rewrite(field, names)) {
+                        for field in std::sync::Arc::make_mut(fields) { rewrite(field, names); }
+                    }
+                }
+                ConstExpr::StructNewDefault { .. } => {}
+                ConstExpr::ArrayNewDefault { len, .. } => rewrite(len, names),
+                ConstExpr::ArrayNew { value, len, .. } => {
+                    rewrite(value, names);
+                    rewrite(len, names);
+                }
+                ConstExpr::Value(_) | ConstExpr::RefFunc(_) | ConstExpr::ImportedRefFunc(_) => {}
+            }
+        }
+        let names: std::sync::Arc<crate::segmented_global_names::SegmentedGlobalNames> =
+            std::sync::Arc::new(names.into());
+        for chunk in incoming {
+            chunk.globals = names.clone();
+            for initializer in &mut chunk.global_inits {
+                if let Some(name) = renamed.get(&initializer.name) {
+                    initializer.name = name.clone();
+                }
+                rewrite(&mut initializer.init, &renamed);
+            }
+            for segment in &mut chunk.passive_elem_items {
+                for expression in segment { rewrite(expression, &renamed); }
+            }
+            if let Some(segments) = &mut chunk.native_segments {
+                use crate::chunk::NativeSegmentMode;
+                let mode_needs_rewrite = |mode: &NativeSegmentMode| match mode {
+                    NativeSegmentMode::Active { offset, .. } => needs_rewrite(offset, &renamed),
+                    _ => false,
+                };
+                if segments.data_modes.iter().any(mode_needs_rewrite)
+                    || segments.elements.iter().any(|segment| mode_needs_rewrite(&segment.mode)
+                        || segment.items.iter().any(|item| needs_rewrite(item, &renamed)))
+                {
+                    let segments = std::sync::Arc::make_mut(segments);
+                    for mode in &mut segments.data_modes {
+                        if let NativeSegmentMode::Active { offset, .. } = mode { rewrite(offset, &renamed); }
+                    }
+                    for segment in &mut segments.elements {
+                        if let NativeSegmentMode::Active { offset, .. } = &mut segment.mode { rewrite(offset, &renamed); }
+                        if segment.items.iter().any(|item| needs_rewrite(item, &renamed)) {
+                            for item in std::sync::Arc::make_mut(&mut segment.items) { rewrite(item, &renamed); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn merge_global_table_with_preparation<const PREPARED: bool>(
+        &mut self,
+        incoming: &mut [Chunk],
+        metadata: &mut Option<Vec<crate::link_preparation::CodeMetadata>>,
+    ) {
+        self.instantiate_native_global_names(incoming);
         let Some(table) = incoming.first().map(|c| c.globals.clone()) else {
             return;
         };
@@ -9734,6 +10317,11 @@ impl VM {
             remap.push(self.global_slot_for(name));
         }
 
+        if PREPARED && table.is_empty() {
+            // Preserve legacy constant-name table discovery and its exact slot
+            // order; this additive path does not optimize that encoding yet.
+            *metadata = None;
+        }
         let legacy: Vec<std::collections::HashMap<u32, u32>> = if table.is_empty() {
             incoming
                 .iter()
@@ -9754,7 +10342,33 @@ impl VM {
                 .iter()
                 .enumerate()
                 .any(|(old, &new)| new != old as u32);
-        if needs_remap {
+        let mut used_preparation = false;
+        if PREPARED && needs_remap {
+            if let Some(rows) = metadata.as_ref() {
+                let mut invalidate = false;
+                for (chunk, row) in incoming.iter_mut().zip(rows) {
+                    // These are the ORIGINAL raw walk's sites and order. A
+                    // specialized decode cursor can share them only after
+                    // preparation certifies identical advancement.
+                    let sites = row.raw_globals.as_ref().unwrap_or(&row.globals);
+                    for &(start, old) in sites {
+                        if let Some(&new_idx) = remap.get(old as usize) {
+                            if new_idx != old && row.ops.get(start / 4).copied().is_none_or(|op| {
+                                op != Op::GLOBAL_GET && op != Op::GLOBAL_SET
+                            }) {
+                                // Preserve payload/phantom writes if a future
+                                // raw cursor sees them, then use raw decoding.
+                                invalidate = true;
+                            }
+                            chunk.code[start + 4..start + 8].copy_from_slice(&new_idx.to_be_bytes());
+                        }
+                    }
+                }
+                used_preparation = true;
+                if invalidate { *metadata = None; }
+            }
+        }
+        if needs_remap && !used_preparation {
             for (ci, chunk) in incoming.iter_mut().enumerate() {
                 let code = &mut chunk.code;
                 let mut ip = 0usize;
@@ -9799,9 +10413,57 @@ impl VM {
         //
         // The invariant is `chunk.globals` describes `chunk.code`'s operands.
         // Anything that rewrites those operands owns re-stating it here.
-        let authoritative = std::sync::Arc::new(self.global_operand_table());
+        let authoritative = std::sync::Arc::new(self.global_index.cached_segmented_table(
+            self.globals.len(), || self.global_operand_table(),
+        ));
+        // The accumulated module's first chunk is also the writer's canonical
+        // global header. Refresh just this compatible view, never every body.
+        if let Some(header) = self.chunks.first_mut() {
+            if header.globals.is_prefix_of(&authoritative) {
+                header.globals = authoritative.clone();
+            }
+        }
+        // Existing chunks retain immutable prefix views. Complete name blocks
+        // and string payloads are shared, so neither flattening the table nor
+        // refreshing every historical function is necessary on include growth.
         for chunk in incoming.iter_mut() {
             chunk.globals = authoritative.clone();
+        }
+    }
+
+    // A linked chunk's operands retain their VM indices. When the current
+    // description only extends its old prefix, retaining a separate cumulative
+    // name snapshot buys nothing. Share the latest snapshot instead. Preserve
+    // old tables on alias changes, filled holes, or a shorter index space.
+    #[cfg(test)]
+    fn share_extended_global_operand_table(
+        chunks: &mut [Chunk],
+        authoritative: &std::sync::Arc<crate::segmented_global_names::SegmentedGlobalNames>,
+    ) {
+        // Many chunks share one module snapshot. Compare each distinct Arc
+        // once, not the entire name table once per function in that module.
+        let mut compatible = std::collections::HashMap::<usize, bool>::new();
+        let mut previous = None;
+        for chunk in chunks {
+            let identity = std::sync::Arc::as_ptr(&chunk.globals) as usize;
+            // Function bodies are grouped by module, and a previous merge
+            // usually consolidated every compatible table into one Arc. Avoid
+            // hashing that same pointer once per accumulated function.
+            let extends = match previous {
+                Some((prior, extends)) if prior == identity => extends,
+                _ => {
+                    let extends = *compatible.entry(identity).or_insert_with(|| {
+                        chunk.globals.len() <= authoritative.len()
+                            && chunk.globals.iter().zip(authoritative.iter())
+                                .all(|(old, new)| old == new)
+                    });
+                    previous = Some((identity, extends));
+                    extends
+                }
+            };
+            if extends {
+                chunk.globals = authoritative.clone();
+            }
         }
     }
 
@@ -9818,12 +10480,11 @@ impl VM {
     }
 
     pub(crate) fn bind_imported_globals(&mut self) {
-        // The last chunk belongs to the unit just linked. Earlier units were
-        // bound when they entered the VM; revisiting every accumulated chunk
-        // on each PHP include makes this work quadratic in the include count.
-        let first_new_chunk = self.chunk_import_owner.last().copied().unwrap_or(0);
-        let linked_chunks = &self.chunks[first_new_chunk..];
-        let string_bindings: Vec<(String, Arc<str>)> = self.chunks[first_new_chunk..]
+        let first=self.chunk_import_owner.last().copied().unwrap_or(0);
+        self.bind_imported_globals_in_range(first..self.chunks.len());
+    }
+    fn bind_imported_globals_in_range(&mut self,range:std::ops::Range<usize>) {
+        let string_bindings: Vec<(String, Arc<str>)> = self.chunks[range.clone()]
             .iter()
             .flat_map(|chunk| chunk.global_imports.iter())
             .filter(|import| import.module == crate::chunk::STRING_CONSTANTS_MODULE)
@@ -9837,7 +10498,7 @@ impl VM {
         for (key, value) in string_bindings {
             self.set_global(&key, Value::String(value));
         }
-        let primitive_bindings: Vec<(String, Value)> = self.chunks[first_new_chunk..]
+        let primitive_bindings: Vec<(String, Value)> = self.chunks[range]
             .iter()
             .flat_map(|chunk| chunk.global_imports.iter())
             .filter_map(|import| {
@@ -9945,8 +10606,17 @@ impl VM {
             // capture (`Store.lift`/`Store.lower`): it is what makes two
             // instantiations of one built-in distinct core funcs.
             let (bare, canon_idx) = CanonBuiltin::split_type_immediate(name);
-            if let Some(b) = CanonBuiltin::by_name(bare) {
-                return Ok(ImportTarget::Canon(b, canon_idx));
+            let component_result = bare == "component-lift";
+            if let Some(builtin) = if component_result {
+                Some(CanonBuiltin::Lift)
+            } else {
+                CanonBuiltin::by_name(bare)
+            } {
+                return Ok(ImportTarget::Canon {
+                    builtin,
+                    type_idx: canon_idx,
+                    component_result,
+                });
             }
         }
         if let Some(idx) = self.resolve_host_function_index(module, name) {
@@ -10127,11 +10797,14 @@ impl VM {
             self.native_call_sites
                 .resize_with(chunk_index + 1, Vec::new);
         }
+        let bucket = opcode_start / 4;
+        let required_len = self.chunks.get(chunk_index)
+            .map_or(bucket + 1, |chunk| chunk.code.len().div_ceil(4).max(bucket + 1));
         let row = &mut self.native_call_sites[chunk_index];
-        if row.len() <= opcode_start {
-            row.resize_with(opcode_start + 1, || None);
+        if row.len() <= bucket {
+            row.resize_with(required_len, || None);
         }
-        row[opcode_start] = Some(target);
+        row[bucket] = Some(target);
         let Some(chunk) = self.chunks.get(chunk_index) else {
             return;
         };
@@ -10142,10 +10815,6 @@ impl VM {
             self.native_result_fast_paths
                 .resize_with(chunk_index + 1, Vec::new);
         }
-        if self.native_result_fast_paths[chunk_index].len() < chunk.code.len() {
-            self.native_result_fast_paths[chunk_index]
-                .resize(chunk.code.len(), NativeResultFastPath::None);
-        }
         for candidate in [
             Some(opcode_start),
             opcode_start.checked_sub(7),
@@ -10154,9 +10823,15 @@ impl VM {
         .into_iter()
         .flatten()
         {
-            if candidate < chunk.code.len() {
-                self.native_result_fast_paths[chunk_index][candidate] =
-                    Self::build_native_result_fast_path_at(chunk, native_sites, candidate);
+            if self.decoded_ops.get(chunk_index).and_then(|ops| ops.get(candidate / 4)) == Some(&Op::CALL) {
+                let path = Self::build_native_result_fast_path_at(chunk, native_sites, candidate);
+                let results = &mut self.native_result_fast_paths[chunk_index];
+                if results.is_empty() && !matches!(path, NativeResultFastPath::None) {
+                    results.resize(chunk.code.len().div_ceil(4), NativeResultFastPath::None);
+                }
+                if !results.is_empty() {
+                    results[candidate / 4] = path;
+                }
             }
         }
     }
@@ -10233,6 +10908,310 @@ impl VM {
 }
 
 #[cfg(test)]
+mod type_table_load_tests {
+    use super::*;
+    use crate::chunk::TypeEntry;
+    use crate::typedef::Method;
+
+    fn typed_chunks() -> Vec<Chunk> {
+        let mut script = Chunk::new("<typed-script>");
+        script.types.push(TypeEntry {
+            name: "LoadedWidget".into(),
+            fields: vec!["value".into()],
+            methods: vec![("run".into(), 1)],
+            constructor_chunk: Some(1),
+            ..Default::default()
+        });
+        script.emit_op(Op::RETURN, 0);
+        let mut method = Chunk::new("<widget-method>");
+        method.emit_op(Op::RETURN, 0);
+        vec![script, method]
+    }
+
+    #[test]
+    fn all_load_paths_rebase_methods_and_constructors_without_mutating_source_types() {
+        for load_path in 0..3 {
+            let mut vm = VM::new();
+            let mut previous = Chunk::new("<previous>");
+            previous.emit_op(Op::RETURN, 0);
+            vm.run(vec![previous]).expect("previous module");
+            let base = vm.chunks.len();
+            let chunks = typed_chunks();
+            match load_path {
+                0 => {
+                    vm.run(chunks).expect("typed module");
+                }
+                1 => {
+                    vm.run_linked(chunks, vec![]).expect("linked typed module");
+                }
+                _ => {
+                    vm.run_linked_nested(chunks, vec![])
+                        .expect("nested linked typed module");
+                }
+            }
+
+            let id = vm.get_type_id("LoadedWidget");
+            let ty = vm.type_registry.get(id).expect("registered type");
+            assert!(matches!(ty.methods.get("run"), Some(Method::ChunkFn(idx)) if *idx == base + 1));
+            assert!(matches!(ty.constructor, Some(Method::ChunkFn(idx)) if idx == base + 1));
+            assert_eq!(vm.chunks[base].types[0].methods[0].1, 1);
+            assert_eq!(vm.chunks[base].types[0].constructor_chunk, Some(1));
+        }
+    }
+}
+
+#[cfg(test)]
+mod component_function_link_tests {
+    use super::*;
+    use crate::canon_def::{CanonFuncType, ComponentFuncLink};
+
+    fn signature(result: Option<crate::component::ValType>) -> Option<CanonFuncType> {
+        Some(CanonFuncType {
+            params: Vec::new(),
+            result,
+            is_async: false,
+        })
+    }
+
+    fn link(import: u32, supplied: u32, expected_type: u32, supplied_type: u32) -> ComponentFuncLink {
+        ComponentFuncLink { import, supplied, expected_type, supplied_type }
+    }
+
+    #[test]
+    fn resolves_import_alias_chain_once() {
+        let funcs = [Some(7), None, None];
+        let types = [signature(Some(crate::component::ValType::U32))];
+        let links = [link(1, 0, 0, 0), link(2, 1, 0, 0)];
+        assert_eq!(
+            VM::resolve_component_func_links(&funcs, &links, &types).unwrap(),
+            vec![Some(7), Some(7), Some(7)]
+        );
+    }
+
+    #[test]
+    fn rejects_mismatch_duplicate_and_cycle() {
+        let funcs = [Some(7), None, None];
+        let types = [
+            signature(Some(crate::component::ValType::U32)),
+            signature(Some(crate::component::ValType::String)),
+        ];
+        let mismatch = VM::resolve_component_func_links(
+            &funcs,
+            &[link(1, 0, 0, 1)],
+            &types,
+        )
+        .unwrap_err();
+        assert!(mismatch.message.contains("type does not match"));
+
+        let duplicate = VM::resolve_component_func_links(
+            &funcs,
+            &[link(1, 0, 0, 0), link(1, 0, 0, 0)],
+            &types,
+        )
+        .unwrap_err();
+        assert!(duplicate.message.contains("multiple bindings"));
+
+        let cycle = VM::resolve_component_func_links(
+            &funcs,
+            &[link(1, 2, 0, 0), link(2, 1, 0, 0)],
+            &types,
+        )
+        .unwrap_err();
+        assert!(cycle.message.contains("cyclic"));
+    }
+
+    #[test]
+    fn warm_reset_restores_component_function_bindings() {
+        let mut vm = VM::new();
+        let baseline = vm.snapshot();
+        vm.component_funcs = vec![Some(7), None];
+        vm.component_func_resolved = vec![Some(7), Some(7)];
+        vm.reset_to(&baseline);
+        assert!(vm.component_funcs.is_empty());
+        assert!(vm.component_func_resolved.is_empty());
+    }
+
+    #[test]
+    fn rejected_link_does_not_install_partial_type_state() {
+        let mut vm = VM::new();
+        let original_types = vm.canon_types.clone();
+        let mut chunk = Chunk::new("<script>");
+        chunk.canon_functypes = std::sync::Arc::new(vec![signature(None)]);
+        chunk.component_funcs = std::sync::Arc::new(vec![None, Some(7)]);
+        chunk.component_func_links = std::sync::Arc::new(vec![link(0, 1, 1, 0)]);
+
+        assert!(vm.merge_canon_types(&[chunk]).is_err());
+        assert!(vm.canon_functypes.is_empty());
+        assert_eq!(vm.canon_types, original_types);
+        assert!(vm.component_funcs.is_empty());
+        assert!(vm.component_func_resolved.is_empty());
+    }
+
+    fn instance_binding_chunk(expected_type: u32) -> Chunk {
+        use crate::component_instance_link::{InstanceExport, InstanceExports,
+            InstanceFunctionImport, InstanceLinkMetadata};
+        let mut chunk = Chunk::new("<script>");
+        chunk.canon_functypes = Arc::new(vec![signature(Some(crate::component::ValType::U32)),
+            signature(Some(crate::component::ValType::String))]);
+        chunk.component_funcs = Arc::new(vec![Some(7), None]);
+        chunk.component_instance_links = Some(Arc::new(InstanceLinkMetadata {
+            instances: vec![InstanceExports::new(vec![InstanceExport {
+                name: Arc::from("value"), kind: vybe_ast::canon::ComponentItemKind::Func,
+                index: 0, function_type: Some(0),
+            }]).unwrap()],
+            imports: vec![InstanceFunctionImport { instance: 0, name: Arc::from("value"),
+                import: 1, expected_type }],
+        }));
+        chunk
+    }
+
+    #[test]
+    fn instance_function_exports_use_existing_canonical_link_validation() {
+        let mut vm = VM::new();
+        vm.merge_canon_types(&[instance_binding_chunk(0)]).unwrap();
+        assert_eq!(vm.component_func_resolved, vec![Some(7), Some(7)]);
+    }
+
+    #[test]
+    fn rejected_instance_binding_does_not_install_partial_state() {
+        let mut vm = VM::new();
+        let original_types = vm.canon_types.clone();
+        assert!(vm.merge_canon_types(&[instance_binding_chunk(1)]).unwrap_err()
+            .message.contains("type does not match"));
+        assert!(vm.canon_functypes.is_empty());
+        assert_eq!(vm.canon_types, original_types);
+        assert!(vm.component_func_resolved.is_empty());
+        let mut missing_types = instance_binding_chunk(0);
+        missing_types.canon_functypes = Arc::new(Vec::new());
+        assert!(vm.merge_canon_types(&[missing_types]).unwrap_err()
+            .message.contains("require a declared component type space"));
+    }
+
+    fn instance_call_chunks(value: i32) -> Vec<Chunk> {
+        use crate::canon_def::{CalleeRef, CanonDef};
+        let mut script = instance_binding_chunk(0);
+        script.component_funcs = Arc::new(vec![Some(0), None]);
+        script.canon_section = Arc::new(vec![
+            CanonDef { callee: Some(CalleeRef::Core(1)), functype: Some(0),
+                ..Default::default() },
+            CanonDef { callee: Some(CalleeRef::Component(1)), functype: Some(0),
+                ..Default::default() },
+        ]);
+        let import = script.add_import("canon", "lower@1");
+        script.emit_call(import, 0, 0);
+        script.emit_op(Op::RETURN, 0);
+        let mut function = Chunk::new("value");
+        function.emit_i32_const(value, 0);
+        function.emit_op(Op::RETURN, 0);
+        vec![script, function]
+    }
+
+    #[test]
+    fn instance_function_executes_through_both_loaders() {
+        assert_eq!(VM::new().run(instance_call_chunks(42)).unwrap(), Value::I32(42));
+        let imports = vec![ImportTarget::Canon {
+            builtin: CanonBuiltin::Lower, type_idx: Some(1), component_result: false,
+        }];
+        assert_eq!(VM::new().run_linked(instance_call_chunks(99), imports).unwrap(),
+            Value::I32(99));
+    }
+
+    #[test]
+    fn reset_preserves_instance_call_isolation() {
+        let mut vm = VM::new();
+        let baseline = vm.snapshot();
+        assert_eq!(vm.run(instance_call_chunks(42)).unwrap(), Value::I32(42));
+        vm.reset_to(&baseline);
+        assert_eq!(vm.run(instance_call_chunks(99)).unwrap(), Value::I32(99));
+    }
+}
+
+#[cfg(test)]
+mod component_value_validation_tests {
+    use super::*;
+    use crate::component::ValType;
+
+    #[test]
+    fn largest_valid_component_value_type_is_installed() {
+        let mut vm = VM::new();
+        let mut chunk = Chunk::new("<script>");
+        let ty = ValType::ListFixed(Box::new(ValType::U8), 268_435_455);
+        chunk.canon_valtypes = std::sync::Arc::new(vec![Some(ty.clone())]);
+
+        vm.merge_canon_types(&[chunk]).unwrap();
+        assert_eq!(vm.canon_types, vec![Some(ty)]);
+    }
+
+    #[test]
+    fn map_with_large_inline_value_is_valid() {
+        let mut vm = VM::new();
+        let mut chunk = Chunk::new("<script>");
+        let ty = ValType::List(Box::new(ValType::Record(vec![
+            ("0".into(), ValType::U8),
+            (
+                "1".into(),
+                ValType::ListFixed(Box::new(ValType::U8), 268_435_455),
+            ),
+        ])));
+        chunk.canon_valtypes = std::sync::Arc::new(vec![Some(ty.clone())]);
+
+        vm.merge_canon_types(&[chunk]).unwrap();
+        assert_eq!(vm.canon_types, vec![Some(ty)]);
+    }
+
+    #[test]
+    fn oversized_component_value_type_is_rejected_before_installation() {
+        let mut vm = VM::new();
+        let original_types = vm.canon_types.clone();
+        let mut chunk = Chunk::new("<script>");
+        chunk.canon_valtypes = std::sync::Arc::new(vec![Some(ValType::ListFixed(
+            Box::new(ValType::U8),
+            268_435_456,
+        ))]);
+
+        let error = vm.merge_canon_types(&[chunk]).unwrap_err();
+        assert!(error.to_string().contains("exceeds maximum byte size"));
+        assert_eq!(vm.canon_types, original_types);
+    }
+
+    #[test]
+    fn oversized_inline_function_type_is_rejected() {
+        let mut vm = VM::new();
+        let mut chunk = Chunk::new("<script>");
+        chunk.canon_functypes = std::sync::Arc::new(vec![Some(crate::canon_def::CanonFuncType {
+            params: vec![ValType::ListFixed(Box::new(ValType::String), 16_777_216)],
+            result: None,
+            is_async: false,
+        })]);
+
+        let error = vm.merge_canon_types(&[chunk]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("parameter 0 exceeds maximum byte size")
+        );
+    }
+
+    #[test]
+    fn oversized_inline_function_result_is_rejected() {
+        let mut vm = VM::new();
+        let mut chunk = Chunk::new("<script>");
+        chunk.canon_functypes = std::sync::Arc::new(vec![Some(crate::canon_def::CanonFuncType {
+            params: vec![],
+            result: Some(ValType::ListFixed(Box::new(ValType::String), 16_777_216)),
+            is_async: false,
+        })]);
+
+        let error = vm.merge_canon_types(&[chunk]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("result exceeds maximum byte size")
+        );
+    }
+}
+
+#[cfg(test)]
 mod invoker_tests {
     use super::*;
 
@@ -10283,9 +11262,232 @@ mod invoker_tests {
 }
 
 #[cfg(test)]
+#[path = "simd_memarg_cache_tests.rs"]
+mod simd_memarg_cache_tests;
+
+#[cfg(test)]
 mod reset_tests {
     use super::*;
+
+    #[test]
+    fn wide_operand_rows_are_retained_only_for_wide_readers() {
+        let mut narrow = Chunk::new("narrow");
+        narrow.emit_op_u16(Op::LOCAL_GET, 17, 0);
+        narrow.emit_op(Op::RETURN, 0);
+        let (_, _, wide, _) = VM::build_decoded_caches_with_branch_presence(&narrow, 100_000);
+        assert_eq!(wide.capacity(), 0);
+        assert_eq!(VM::build_decoded_operands64_with_ref_base(&narrow, 100_000).capacity(), 0);
+
+        let mut floating = narrow.clone();
+        let at = floating.code.len();
+        floating.emit_f64_const(f64::from_bits(0xfff8_0000_0000_0123), 0);
+        let (_, operands, wide, _) = VM::build_decoded_caches_with_branch_presence(&floating, 100_000);
+        assert_eq!(wide.len(), 1);
+        assert_eq!(wide[operands[at / 4] as usize], 0xfff8_0000_0000_0123);
+
+        let mut reference = narrow.clone();
+        let at = reference.code.len();
+        reference.emit_op_u16(Op::REF_FUNC, u16::MAX, 0);
+        reference.code.push(0);
+        let (_, operands, wide, _) = VM::build_decoded_caches_with_branch_presence(&reference, 100_000);
+        assert_eq!(wide[operands[at / 4] as usize], 165_535);
+        assert_eq!(wide, VM::build_decoded_operands64_with_ref_base(&reference, 100_000));
+
+        let mut truncated = Chunk::new("truncated-float");
+        truncated.emit_op(Op::F64_CONST, 0);
+        assert_eq!(VM::build_decoded_operands64_with_ref_base(&truncated, 0), vec![0]);
+    }
+
+    #[test]
+    fn linked_function_fast_paths_prepare_once_on_first_frame() {
+        let mut script = Chunk::new("<script>");
+        script.emit_op_u16(Op::REF_FUNC, 1, 0);
+        script.code.push(0);
+        script.lines.push(0);
+        script.emit_op(Op::RETURN, 0);
+        let mut body = Chunk::new("answer");
+        body.emit_f64_const(41.0, 0);
+        body.emit_op(Op::RETURN, 0);
+        let expected = body.code.len().div_ceil(4);
+        let mut vm = VM::new();
+        let callable = vm.run_linked_nested(vec![script, body], vec![]).unwrap();
+        assert!(vm.local_fast_paths[1].is_empty());
+        assert!(vm.native_result_fast_paths[1].is_empty());
+        assert_eq!(vm.invoke(&callable, &[]).unwrap(), Value::F64(41.0));
+        assert_eq!(vm.local_fast_paths[1].len(), expected);
+        assert!(vm.native_result_fast_paths[1].is_empty());
+        let locals = vm.local_fast_paths[1].as_ptr();
+        let results = vm.native_result_fast_paths[1].as_ptr();
+        assert_eq!(vm.invoke(&callable, &[]).unwrap(), Value::F64(41.0));
+        assert_eq!(vm.local_fast_paths[1].as_ptr(), locals);
+        assert_eq!(vm.native_result_fast_paths[1].as_ptr(), results);
+    }
+
+    #[test]
+    fn restoring_a_cold_fiber_prepares_execution_metadata() {
+        let mut script = Chunk::new("<script>");
+        script.emit_op(Op::RETURN, 0);
+        let mut body = Chunk::new("answer");
+        body.emit_f64_const(41.0, 0);
+        body.emit_op(Op::RETURN, 0);
+        let mut vm = VM::new();
+        vm.run_linked_nested(vec![script, body], vec![]).unwrap();
+        let fiber = || crate::fiber::Fiber::new(Vec::new(), vec![crate::fiber::SavedFrame {
+            chunk_index: 1, ip: 0, base: 0, local_frame_size: 0, label_base: 0,
+            upvalues: Vec::new(),
+        }], Vec::new());
+        assert!(vm.local_fast_paths[1].is_empty());
+        vm.resume_fiber_with(fiber(), None).unwrap();
+        assert!(!vm.local_fast_paths[1].is_empty());
+        assert_eq!(vm.execute_until(0).unwrap(), Value::F64(41.0));
+        vm.local_fast_paths[1].clear();
+        vm.native_result_fast_paths[1].clear();
+        assert_eq!(vm.resume_fiber(fiber()).unwrap(), Value::F64(41.0));
+        assert!(!vm.local_fast_paths[1].is_empty());
+        assert!(vm.native_result_fast_paths[1].is_empty());
+    }
     use crate::value::Object;
+
+    #[test]
+    fn fused_execution_fast_paths_match_separate_visitors() {
+        let compare = |chunk: &Chunk, sites: Option<&[Option<NativeCallSiteTarget>]>| {
+            let (locals, results) = VM::build_execution_fast_paths_for_chunk(chunk, sites);
+            assert_eq!(locals, VM::build_local_fast_paths_for_chunk(chunk, sites));
+            assert_eq!(results, VM::build_native_result_fast_paths_for_chunk(chunk, sites));
+        };
+        let mut chunk = Chunk::new("mixed");
+        chunk.emit_op_u16(Op::LOCAL_GET, 7, 1);
+        let call = chunk.code.len();
+        chunk.emit_call(0, 1, 1);
+        chunk.emit_op(Op::I32_EQZ, 1);
+        chunk.emit_call(1, 1, 1);
+        chunk.emit_op(Op::END, 1);
+        chunk.emit_op_u16(Op::LOCAL_SET, 11, 1);
+        chunk.emit_op_u16(Op::LOCAL_GET, 9, 1);
+        chunk.emit_op_u32(Op::GLOBAL_GET, 70_000, 1);
+        chunk.emit_op(Op::REF_FUNC, 1);
+        chunk.code.extend_from_slice(&[0, 1, 1, 0, 3, 4]);
+        chunk.emit_op_u16(Op::LOCAL_GET, 5, 1);
+        chunk.emit_op_u16(Op::LOCAL_SET, 6, 1);
+        let mut sites = vec![None; chunk.code.len().div_ceil(4)];
+        sites[call / 4] = Some(NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32));
+        compare(&chunk, None);
+        compare(&chunk, Some(&sites));
+        let (locals, results) = VM::build_execution_fast_paths_for_chunk(&chunk, Some(&sites));
+        assert!(matches!(locals[0], LocalFastPath::LocalGetJsNumberToI32 { .. }));
+        assert!(matches!(results[call / 4], NativeResultFastPath::I32Eqz { .. }));
+        for group in 0..256 {
+            for sub in 0..2048 {
+                if let Some(op) = Op::decode(group, sub) {
+                    let mut chunk = Chunk::new("catalog");
+                    chunk.emit_op(op, 1);
+                    chunk.code.resize(chunk.code.len() + 256, 0);
+                    compare(&chunk, None);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fused_decode_preserves_separate_caches_and_wide_relocation() {
+        let compare = |chunk: &Chunk, base| {
+            let (ops, operands, wide, has_br_table) = VM::build_decoded_caches_with_branch_presence(chunk, base);
+            assert_eq!(ops, VM::build_decoded_ops_for_chunk(chunk));
+            let reference = VM::build_decoded_operands_for_chunk(chunk);
+            for (slot, (&actual, &expected)) in operands.iter().zip(&reference).enumerate() {
+                if ops[slot] == Op::BLOCK {
+                    assert_eq!(actual & 0xffff, expected);
+                } else {
+                    assert_eq!(actual, expected);
+                }
+            }
+            assert_eq!(wide, VM::build_decoded_operands64_with_ref_base(chunk, base));
+            assert_eq!(has_br_table, !VM::build_br_table_targets_for_chunk(chunk).is_empty());
+        };
+        for group in 0..256 {
+            for sub in 0..2048 {
+                if let Some(op) = Op::decode(group, sub) {
+                    let mut chunk = Chunk::new("catalog");
+                    chunk.emit_op(op, 1);
+                    chunk.code.resize(chunk.code.len() + 256, 0);
+                    compare(&chunk, 100_000);
+                }
+            }
+        }
+        let mut chunk = Chunk::new("unaligned");
+        chunk.emit_op_u16(Op::LOCAL_GET, u16::MAX, 1);
+        chunk.emit_op(Op::F64_CONST, 1);
+        chunk.code.extend_from_slice(&0xfff8_0000_0000_0123u64.to_le_bytes());
+        chunk.emit_op(Op::REF_FUNC, 1);
+        chunk.code.extend_from_slice(&[0xff, 0xfe, 2, 0, 1, 2, 3, 4, 5]);
+        chunk.emit_op_u32(Op::GLOBAL_GET, u32::MAX, 1);
+        compare(&chunk, 100_000);
+        for tail in 0..4 {
+            let mut chunk = Chunk::new("short");
+            chunk.code.resize(tail, 0xa5);
+            compare(&chunk, 0);
+        }
+    }
+
+    #[test]
+    fn decoded_void_block_runs_are_bounded_and_stop_at_typed_blocks() {
+        let mut chunk = Chunk::new("void-run-metadata");
+        let mut starts = Vec::new();
+        for _ in 0..65 {
+            starts.push(chunk.code.len());
+            chunk.emit_block(0);
+        }
+        let typed = chunk.code.len();
+        chunk.emit_block_params(0, 1, 1);
+        let single = chunk.code.len();
+        chunk.emit_block(0);
+        chunk.emit_op(Op::NOP, 0);
+        let (_, operands, _) = VM::build_decoded_caches_for_chunk(&chunk, 0);
+        for (i, start) in starts.into_iter().enumerate() {
+            let count = (65 - i).min(32);
+            let expected = if count > 1 { (count as u32) << 16 } else { 0 };
+            assert_eq!(operands[start / 4], expected);
+        }
+        assert_eq!(operands[typed / 4], 0x0101);
+        assert_eq!(operands[single / 4], 0);
+    }
+
+    #[test]
+    fn fused_decode_installs_branch_cache_once_with_actual_instruction_offsets() {
+        let mut chunk = Chunk::new("unaligned-branch-table");
+        chunk.emit_op_u16(Op::LOCAL_GET, 7, 1);
+        chunk.emit_op(Op::BR_TABLE, 1);
+        chunk.code.extend_from_slice(&[2, 0x80, 1, 0x81, 1, 0x82, 1]);
+        chunk.emit_op(Op::NOP, 1);
+        let expected = VM::build_br_table_targets_for_chunk(&chunk);
+        let mut vm = VM::new();
+        vm.extend_decoded_ops_for_chunks(&[Chunk::new("empty"), chunk]);
+        assert_eq!(vm.br_table_targets.len(), 2);
+        assert!(vm.br_table_targets[0].is_empty());
+        assert_eq!(format!("{:?}", vm.br_table_targets[1]), format!("{expected:?}"));
+        vm.extend_decoded_ops_for_chunks(&[Chunk::new("later")]);
+        assert_eq!(vm.br_table_targets.len(), 3);
+        assert!(vm.br_table_targets[2].is_empty());
+    }
+
+    #[test]
+    fn instruction_metadata_uses_four_byte_buckets() {
+        let mut chunk = Chunk::new("<script>");
+        chunk.emit_op(Op::I32_CONST, 0);
+        chunk.code.push(0);
+        chunk.lines.push(0);
+        chunk.emit_op(Op::DROP, 0);
+        chunk.emit_f64_const(-123.25, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        let expected = chunk.code.len().div_ceil(4);
+        let mut vm = VM::new();
+        assert_eq!(vm.run_linked_nested(vec![chunk], vec![]).unwrap(), Value::F64(-123.25));
+        assert_eq!(vm.decoded_ops[0].len(), expected);
+        assert!(vm.native_call_sites[0].is_empty());
+        assert_eq!(vm.decoded_operands64[0].len(), 1);
+        assert_eq!(vm.local_fast_paths[0].len(), expected);
+        assert!(vm.native_result_fast_paths[0].is_empty());
+    }
 
     #[test]
     fn reset_keeps_decoded_caches_parallel_after_reload() {
@@ -10409,6 +11611,10 @@ mod reset_tests {
 }
 
 // Proposed new #[cfg(test)] internal vm.rs module. Not compiled or applied.
+#[cfg(test)]
+#[path = "native_global_identity_tests.rs"]
+mod native_global_identity_tests;
+
 #[cfg(test)]
 mod cumulative_ref_func_tests {
     use super::*;
@@ -10591,3 +11797,707 @@ mod cumulative_ref_func_tests {
         assert_eq!(vm.invoke_callback(&new_result, &[]), Value::Null);
     }
 }
+
+#[cfg(test)]
+#[path = "bulk_memory_tests.rs"]
+mod bulk_memory_speedup_tests;
+
+#[cfg(test)]
+#[path = "operand_decode_perf_tests.rs"]
+mod operand_decode_perf_tests;
+
+#[cfg(test)]
+#[path = "simd_memory_execution_tests.rs"]
+mod simd_memory_execution_tests;
+
+#[cfg(test)]
+#[path = "local_self_copy_tests.rs"]
+mod local_self_copy_tests;
+
+#[cfg(test)]
+mod compact_operand_bucket_tests {
+    use super::*;
+
+    #[test]
+    fn unaligned_instruction_starts_keep_independent_operands() {
+        let mut chunk = Chunk::new("operand-buckets");
+        let mut starts = Vec::new();
+        let mut references = Vec::new();
+        for index in 0u16..32 {
+            starts.push((chunk.code.len(), Op::I32_CONST));
+            chunk.emit_i32_const(i32::from(index) * 127, 0);
+            starts.push((chunk.code.len(), Op::LOCAL_GET));
+            chunk.emit_op(Op::LOCAL_GET, 0);
+            chunk.code.extend_from_slice(&index.to_be_bytes());
+            let start = chunk.code.len();
+            starts.push((start, Op::REF_FUNC));
+            references.push((start, index));
+            chunk.emit_op(Op::REF_FUNC, 0);
+            chunk.code.extend_from_slice(&index.to_be_bytes());
+            chunk.code.push(0);
+        }
+        let (ops, operands, wide) = VM::build_decoded_caches_for_chunk(&chunk, 70000);
+        assert_eq!(ops.len(), chunk.code.len().div_ceil(4));
+        assert_eq!(operands.len(), chunk.code.len().div_ceil(4));
+        assert_eq!(operands, VM::build_decoded_operands_for_chunk(&chunk));
+        assert!(starts.iter().any(|(start, _)| start % 4 != 0));
+        let mut buckets = std::collections::HashSet::new();
+        for (start, op) in starts {
+            assert!(buckets.insert(start / 4), "instruction bucket collision at {start}");
+            assert_eq!(ops[start / 4], op);
+            if op != Op::REF_FUNC {
+                assert_eq!(operands[start / 4], VM::decode_operand32(&chunk.code, op, start + 4));
+            }
+        }
+        for (start, index) in references {
+            assert_eq!(wide[operands[start / 4] as usize], 70000 + u64::from(index));
+        }
+    }
+}
+
+#[cfg(test)]
+mod operand_stack_push_regression_tests {
+    use super::VM;
+    use crate::value::{Object, Value};
+    use std::hint::black_box;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    #[inline(never)]
+    fn standard_push_sample(vm: &mut VM, value: &Value) -> Duration {
+        let started = Instant::now();
+        for _ in 0..512 {
+            vm.stack.clear();
+            for _ in 0..1024 {
+                vm.stack.push(black_box(value).clone());
+            }
+            black_box(&vm.stack);
+        }
+        started.elapsed()
+    }
+
+    #[inline(never)]
+    fn direct_push_sample(vm: &mut VM, value: &Value) -> Duration {
+        let started = Instant::now();
+        for _ in 0..512 {
+            vm.stack.clear();
+            for _ in 0..1024 {
+                vm.push_fast(black_box(value).clone());
+            }
+            black_box(&vm.stack);
+        }
+        started.elapsed()
+    }
+
+    #[test]
+    #[ignore = "paired within-process push kernel comparison; not whole-VM or Doom timing"]
+    fn paired_spare_capacity_push_benchmark() {
+        let mut vm = VM::new();
+        vm.stack = Vec::with_capacity(1024);
+        for (name, value) in [
+            ("i32", Value::I32(7)),
+            ("v128", Value::V128([0xa5; 16])),
+            ("object", Value::Object(Arc::new(Mutex::new(Object::new())))),
+        ] {
+            standard_push_sample(&mut vm, &value);
+            direct_push_sample(&mut vm, &value);
+            let capacity = vm.stack.capacity();
+            let allocation = vm.stack.as_ptr();
+            let mut ratios = Vec::with_capacity(15);
+            for pair in 0..15 {
+                let (standard, direct) = if pair % 2 == 0 {
+                    let standard = standard_push_sample(&mut vm, &value);
+                    (standard, direct_push_sample(&mut vm, &value))
+                } else {
+                    let direct = direct_push_sample(&mut vm, &value);
+                    (standard_push_sample(&mut vm, &value), direct)
+                };
+                ratios.push(direct.as_secs_f64() / standard.as_secs_f64());
+                assert_eq!(vm.stack.len(), 1024);
+                assert_eq!(vm.stack.capacity(), capacity);
+                assert_eq!(vm.stack.as_ptr(), allocation);
+            }
+            ratios.sort_by(f64::total_cmp);
+            eprintln!(
+                "stack-push name={name} helper/standard median={:.6} pairs={ratios:?}; includes equal clone/clear work",
+                ratios[7],
+            );
+        }
+    }
+
+    #[test]
+    fn spare_capacity_push_preserves_payload_bits_and_allocation() {
+        let mut vm = VM::new();
+        vm.stack = Vec::with_capacity(8);
+        let allocation = vm.stack.as_ptr();
+        let f32_bits = 0x7fc0_1234;
+        let f64_bits = 0x8000_0000_0000_0000;
+        let vector = [0xa5; 16];
+        vm.push_fast(Value::F32(f32::from_bits(f32_bits)));
+        vm.push_fast(Value::F64(f64::from_bits(f64_bits)));
+        vm.push_fast(Value::V128(vector));
+        vm.push_fast(Value::I32(i32::MIN));
+        vm.push_fast(Value::I64(i64::MIN));
+        assert_eq!(vm.stack.as_ptr(), allocation);
+        assert!(matches!(vm.pop(), Value::I64(i64::MIN)));
+        assert!(matches!(vm.pop(), Value::I32(i32::MIN)));
+        assert!(matches!(vm.pop(), Value::V128(v) if v == vector));
+        assert!(matches!(vm.pop(), Value::F64(v) if v.to_bits() == f64_bits));
+        assert!(matches!(vm.pop(), Value::F32(v) if v.to_bits() == f32_bits));
+        assert!(vm.stack.is_empty());
+    }
+
+    #[test]
+    fn empty_capacity_push_grows_and_retains_stack_order() {
+        let mut vm = VM::new();
+        vm.stack = Vec::new();
+        for value in 0..128 {
+            vm.push_fast(Value::I32(value));
+        }
+        assert_eq!(vm.stack.len(), 128);
+        for value in (0..128).rev() {
+            assert!(matches!(vm.pop(), Value::I32(v) if v == value));
+        }
+        assert!(vm.stack.is_empty());
+    }
+
+    #[test]
+    fn references_survive_growth_and_are_released_on_drop() {
+        let mut vm = VM::new();
+        vm.stack = Vec::with_capacity(1);
+        let object = Arc::new(Mutex::new(Object::new()));
+        let weak = Arc::downgrade(&object);
+        vm.push_fast(Value::Object(object));
+        assert_eq!(weak.strong_count(), 1);
+        vm.push_fast(Value::Null);
+        assert_eq!(weak.strong_count(), 1);
+        assert!(matches!(vm.pop(), Value::Null));
+        let retained = vm.pop();
+        assert!(matches!(&retained, Value::Object(v) if Arc::ptr_eq(v, &weak.upgrade().unwrap())));
+        drop(retained);
+        assert!(weak.upgrade().is_none());
+    }
+}
+
+#[cfg(test)]
+mod simd_memarg_kind_fast_path_tests {
+    use super::{VM, DECODED_MEMARG_PRESENT};
+    use crate::opcode::{Op, OperandFormat};
+
+    #[test]
+    fn cached_kind_check_matches_standard_prefix_opcode_window() {
+        let mut vm = VM::new();
+        vm.decoded_ops = vec![vec![Op::NOP]];
+        vm.decoded_operands = vec![vec![DECODED_MEMARG_PRESENT]];
+        for group in 0..256 {
+            for sub in 0..2048 {
+                let Some(op) = Op::decode(group, sub) else {
+                    continue;
+                };
+                vm.decoded_ops[0][0] = op;
+                let expected = (op.operand_format() == OperandFormat::SimdMemArg)
+                    .then_some((0, 0));
+                assert_eq!(
+                    vm.cached_optional_memory_arg(0, 4),
+                    expected,
+                    "opcode group={group} sub={sub}",
+                );
+            }
+        }
+        assert_eq!(vm.cached_optional_memory_arg(0, 3), None);
+        assert_eq!(vm.cached_optional_memory_arg(1, 4), None);
+        assert_eq!(vm.cached_optional_memory_arg(0, 8), None);
+    }
+}
+
+#[cfg(test)]
+mod direct_simd_memarg_unpack_tests {
+    use super::{VM, DECODED_MEMARG_FALLBACK, DECODED_MEMARG_PRESENT,
+        DECODED_MEMARG_OFFSET_MASK, DECODED_MEMARG_LEN_SHIFT};
+    use crate::opcode::Op;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    #[inline(never)]
+    fn lookup_sample(vm: &VM) -> Duration {
+        let started = Instant::now();
+        for _ in 0..1_000_000 {
+            black_box(vm.cached_optional_memory_arg(black_box(0), black_box(4)));
+        }
+        started.elapsed()
+    }
+
+    #[inline(never)]
+    fn unpack_sample(packed: u32) -> Duration {
+        let started = Instant::now();
+        for _ in 0..1_000_000 {
+            black_box(VM::unpack_cached_simd_memarg(black_box(packed)));
+        }
+        started.elapsed()
+    }
+
+    #[test]
+    #[ignore = "paired decoder-only timing; excludes addresses, cursors, memory, and VM execution"]
+    fn paired_known_opcode_unpack_benchmark() {
+        let packed = DECODED_MEMARG_PRESENT | (2 << DECODED_MEMARG_LEN_SHIFT) | 31;
+        let mut vm = VM::new();
+        vm.decoded_ops = vec![vec![Op::V128_LOAD]];
+        vm.decoded_operands = vec![vec![packed]];
+        for op in [Op::V128_LOAD, Op::V128_STORE] {
+            vm.decoded_ops[0][0] = op;
+            assert_eq!(VM::unpack_cached_simd_memarg(packed), vm.cached_optional_memory_arg(0, 4));
+            lookup_sample(&vm);
+            unpack_sample(packed);
+            let mut ratios = Vec::with_capacity(15);
+            for pair in 0..15 {
+                let (lookup, unpack) = if pair % 2 == 0 {
+                    let lookup = lookup_sample(&vm);
+                    (lookup, unpack_sample(packed))
+                } else {
+                    let unpack = unpack_sample(packed);
+                    (lookup_sample(&vm), unpack)
+                };
+                ratios.push(unpack.as_secs_f64() / lookup.as_secs_f64());
+            }
+            ratios.sort_by(f64::total_cmp);
+            eprintln!("SIMD memarg op={op:?} unpack/lookup median={:.6} pairs={ratios:?}; decoder only", ratios[7]);
+        }
+    }
+
+    #[test]
+    fn known_opcode_unpack_matches_existing_marked_cache_results() {
+        let mut vm = VM::new();
+        vm.decoded_ops = vec![vec![Op::V128_LOAD]];
+        vm.decoded_operands = vec![vec![0]];
+        assert_eq!(VM::unpack_cached_simd_memarg(0), Some((0, 0)));
+        assert_eq!(VM::unpack_cached_simd_memarg(DECODED_MEMARG_FALLBACK), None);
+        for op in [
+            Op::V128_LOAD, Op::V128_STORE,
+            Op::V128_LOAD8X8_S, Op::V128_LOAD8X8_U,
+            Op::V128_LOAD16X4_S, Op::V128_LOAD16X4_U,
+            Op::V128_LOAD32X2_S, Op::V128_LOAD32X2_U,
+            Op::V128_LOAD8_SPLAT, Op::V128_LOAD16_SPLAT,
+            Op::V128_LOAD32_SPLAT, Op::V128_LOAD64_SPLAT,
+            Op::V128_LOAD32_ZERO, Op::V128_LOAD64_ZERO,
+        ] {
+            assert_eq!(op.operand_format(), crate::opcode::OperandFormat::SimdMemArg);
+            vm.decoded_ops[0][0] = op;
+            for offset in [0, 1, 127, DECODED_MEMARG_OFFSET_MASK] {
+                for len in 1..=5 {
+                    let packed = DECODED_MEMARG_PRESENT
+                        | offset
+                        | (len << DECODED_MEMARG_LEN_SHIFT);
+                    vm.decoded_operands[0][0] = packed;
+                    assert_eq!(
+                        VM::unpack_cached_simd_memarg(packed),
+                        vm.cached_optional_memory_arg(0, 4),
+                    );
+                    assert_eq!(
+                        VM::unpack_cached_simd_memarg(packed),
+                        Some((offset as u64, len as usize)),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_cache_initialization_tests {
+    use super::*;
+
+    #[test]
+    fn result_consumer_rows_allocate_only_for_applicable_paths() {
+        let mut chunk = Chunk::new("result cache");
+        chunk.emit_call(0, 1, 0);
+        chunk.emit_op(Op::I32_EQZ, 0);
+        let expected = chunk.code.len().div_ceil(4);
+        assert!(VM::build_native_result_fast_paths_for_chunk(&chunk, None).is_empty());
+        let mut sites = vec![None; expected];
+        sites[0] = Some(NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32));
+        let results = VM::build_native_result_fast_paths_for_chunk(&chunk, Some(&sites));
+        assert_eq!(results.len(), expected);
+        assert!(matches!(results[0], NativeResultFastPath::I32Eqz { .. }));
+        let (_, fused) = VM::build_execution_fast_paths_for_chunk(&chunk, Some(&sites));
+        assert_eq!(results, fused);
+    }
+
+    #[test]
+    fn native_cache_rows_remain_unallocated_without_targets() {
+        for code_len in [0, 1, 3, 4, 5, 7, 8, 63, 64, 65, 262_144] {
+            let mut chunk = Chunk::new("native cache initialization");
+            chunk.code.resize(code_len, 0);
+            let sites = VM::build_native_call_sites_for_chunk(&chunk);
+            assert!(sites.is_empty());
+            assert_eq!(sites.capacity(), 0);
+        }
+    }
+
+    #[test]
+    fn first_native_target_allocates_a_full_stable_row() {
+        let mut chunk = Chunk::new("lazy native cache");
+        for _ in 0..16 { chunk.emit_op(Op::NOP, 0); }
+        let expected = chunk.code.len().div_ceil(4);
+        let mut vm = VM::new();
+        vm.extend_decoded_ops_for_chunks(std::slice::from_ref(&chunk));
+        vm.chunks.push(chunk);
+        assert!(vm.native_call_sites[0].is_empty());
+        vm.cache_native_call_site(0, 0, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32));
+        assert_eq!(vm.native_call_sites[0].len(), expected);
+        let pointer = vm.native_call_sites[0].as_ptr();
+        vm.cache_native_call_site(0, 28, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::FromI32));
+        assert_eq!(vm.native_call_sites[0].as_ptr(), pointer);
+        assert!(matches!(vm.native_call_sites[0][0], Some(NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32))));
+        assert!(matches!(vm.native_call_sites[0][7], Some(NativeCallSiteTarget::JsNumber(JsNumberBuiltin::FromI32))));
+    }
+
+    #[test]
+    #[ignore = "paired native-call metadata initialization measurement"]
+    fn paired_native_cache_initialization_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        const PAIRS: usize = 31;
+        const BATCH: usize = 32;
+
+        #[inline(never)]
+        fn previous(chunk: &Chunk) -> Vec<Option<NativeCallSiteTarget>> {
+            vec![None; chunk.code.len().div_ceil(4)]
+        }
+        #[inline(never)]
+        fn candidate(chunk: &Chunk) -> Vec<Option<NativeCallSiteTarget>> {
+            VM::build_native_call_sites_for_chunk(chunk)
+        }
+        type Builder = fn(&Chunk) -> Vec<Option<NativeCallSiteTarget>>;
+        fn sample(builder: Builder, chunk: &Chunk) -> f64 {
+            let check = black_box(builder)(black_box(chunk));
+            assert!(check.iter().all(Option::is_none));
+            drop(check);
+            let start = Instant::now();
+            for _ in 0..BATCH {
+                // Keep only one row live so batching does not amplify memory
+                // pressure; report construction plus release, not just init.
+                drop(black_box(black_box(builder)(black_box(chunk))));
+            }
+            start.elapsed().as_secs_f64() / BATCH as f64
+        }
+        for code_len in [4096, 262_144, 1_048_576, 4_194_304] {
+            let mut chunk = Chunk::new("native cache initialization benchmark");
+            chunk.code.resize(code_len, 0);
+            sample(previous, &chunk);
+            sample(candidate, &chunk);
+            let mut ratios = Vec::with_capacity(PAIRS);
+            let mut old = Vec::with_capacity(PAIRS);
+            let mut new = Vec::with_capacity(PAIRS);
+            for pair in 0..PAIRS {
+                let mut times = [0.0; 2];
+                for is_new in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                    times[usize::from(is_new)] = sample(if is_new { candidate } else { previous }, &chunk);
+                }
+                assert!(times.iter().all(|time| time.is_finite() && *time > 0.0));
+                ratios.push(times[1] / times[0]);
+                old.push(times[0]);
+                new.push(times[1]);
+            }
+            ratios.sort_by(f64::total_cmp);
+            old.sort_by(f64::total_cmp);
+            new.sort_by(f64::total_cmp);
+            println!("native cache code_bytes={code_len} cache_bytes={} previous_us={:.3} candidate_us={:.3} paired_ratio={:.6}; construction+drop, batch=32, validation excluded",
+                code_len.div_ceil(4) * std::mem::size_of::<Option<NativeCallSiteTarget>>(),
+                old[PAIRS / 2] * 1e6, new[PAIRS / 2] * 1e6, ratios[PAIRS / 2]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod extra_bulk_memory_fastpath_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_memory_indices_alias_one_backing_without_double_locking() {
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            for (dst_mem, src_mem) in [(0, 1), (1, 0), (1, 2), (2, 1)] {
+                for (dst, src, count) in [
+                    (1, 0, 63), (0, 1, 63), (0, 0, 64), (64, 64, 0),
+                    (65, 64, 0), (0, 64, 1), (63, 0, 2),
+                    (usize::MAX, 0, 1), (0, usize::MAX, 1),
+                ] {
+                    let seed: Vec<u8> = (0..64).collect();
+                    let mut expected = seed.clone();
+                    let reference = VM::copy_memory_range(&mut expected, dst, src, count);
+                    let mut vm = VM::new();
+                    vm.memory = crate::shared_memory::SharedMemory::from_vec(seed);
+                    vm.extra_memories.push(vm.memory.clone());
+                    vm.extra_memories.push(vm.memory.clone());
+                    let actual = vm.copy_memory_bytes(dst_mem, dst, src_mem, src, count);
+                    assert_eq!(actual.map_err(|e| e.to_string()), reference.map_err(|e| e.to_string()));
+                    assert_eq!(vm.memory.with_buffer(|bytes| bytes.to_vec()), expected);
+                    for alias in &vm.extra_memories {
+                        assert_eq!(alias.with_buffer(|bytes| bytes.to_vec()), expected);
+                    }
+                }
+            }
+            send.send(()).unwrap();
+        });
+        // A regression must fail instead of hanging the entire test runner.
+        receive.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("aliased memory.copy stalled or worker failed");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn extra_memory_bulk_operations_preserve_overlap_bounds_and_aliases() {
+        for shared in [false, true] {
+            for (dst, src, count) in [
+                (1, 0, 63), (0, 1, 63), (0, 0, 64), (64, 64, 0),
+                (65, 64, 0), (0, 64, 1), (63, 0, 2),
+                (usize::MAX, 0, 1), (0, usize::MAX, 1),
+            ] {
+                let seed: Vec<u8> = (0..64).collect();
+                let mut expected = seed.clone();
+                let reference = VM::copy_memory_range(&mut expected, dst, src, count);
+                let mut vm = VM::new();
+                vm.extra_memories.push(crate::shared_memory::SharedMemory::from_vec(seed));
+                let alias = shared.then(|| vm.extra_memories[0].clone());
+                let actual = vm.copy_memory_bytes(1, dst, 1, src, count);
+                assert_eq!(actual.map_err(|e| e.to_string()), reference.map_err(|e| e.to_string()));
+                assert_eq!(vm.extra_memories[0].with_buffer(|m| m.to_vec()), expected);
+                if let Some(alias) = alias { assert_eq!(alias.with_buffer(|m| m.to_vec()), expected); }
+            }
+            for (dst, count) in [(0, 64), (3, 17), (64, 0), (65, 0), (63, 2), (usize::MAX, 1)] {
+                let seed: Vec<u8> = (0..64).collect();
+                let mut expected = seed.clone();
+                let reference = VM::checked_memory_end(dst, count, expected.len())
+                    .map(|end| expected[dst..end].fill(0xe7));
+                let mut vm = VM::new();
+                vm.extra_memories.push(crate::shared_memory::SharedMemory::from_vec(seed));
+                let alias = shared.then(|| vm.extra_memories[0].clone());
+                let actual = vm.fill_memory_bytes(1, dst, count, 0xe7);
+                assert_eq!(actual.map_err(|e| e.to_string()), reference.map_err(|e| e.to_string()));
+                assert_eq!(vm.extra_memories[0].with_buffer(|m| m.to_vec()), expected);
+                if let Some(alias) = alias { assert_eq!(alias.with_buffer(|m| m.to_vec()), expected); }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "multi-memory bulk helper comparison, excludes opcode dispatch"]
+    fn extra_memory_bulk_execution_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        for shared in [false, true] {
+            for copy in [false, true] {
+                let mut samples = [Vec::new(), Vec::new()];
+                for pair in 0..9 {
+                    for step in 0..2 {
+                        let index = (pair + step) % 2;
+                        let mut vm = VM::new();
+                        vm.extra_memories.push(crate::shared_memory::SharedMemory::from_vec(vec![0x37; 65536]));
+                        let _alias = shared.then(|| vm.extra_memories[0].clone());
+                        let clock = Instant::now();
+                        for iteration in 0..200_000 {
+                            let dst = black_box((iteration & 255) as usize);
+                            if copy {
+                                if index == 0 {
+                                    vm.copy_memory_bytes(1, dst, 1, 512, 16).unwrap();
+                                } else {
+                                    vm.extra_mem_mut(1).with_buffer_mut(|m|
+                                        VM::copy_memory_range(m, dst, 512, 16)).unwrap();
+                                }
+                            } else if index == 0 {
+                                vm.fill_memory_bytes(1, dst, 16, iteration as u8).unwrap();
+                            } else {
+                                let limit = vm.mem_len(1);
+                                let end = VM::checked_memory_end(dst, 16, limit).unwrap();
+                                vm.extra_mem_mut(1).with_buffer_mut(|m| m[dst..end].fill(iteration as u8));
+                            }
+                        }
+                        let elapsed = clock.elapsed().as_secs_f64();
+                        black_box(vm.extra_memories[0].read_array::<16>(0).unwrap());
+                        if pair >= 2 { samples[index].push(elapsed); }
+                    }
+                }
+                for sample in &mut samples { sample.sort_by(f64::total_cmp); }
+                eprintln!("extra-bulk shared={shared} copy={copy} current_ms={:.3} previous_ms={:.3} previous_over_current={:.2}",
+                    samples[0][3] * 1000.0, samples[1][3] * 1000.0, samples[1][3] / samples[0][3]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "gc_data_decode_experiment.rs"]
+mod gc_data_decode_experiment;
+
+#[cfg(test)]
+mod prepared_link_handoff_tests {
+    use super::*;
+
+    fn module() -> Vec<Chunk> {
+        let mut script = Chunk::new("<prepared-script>");
+        script.globals = Arc::new(vec!["answer".into()].into());
+        script.emit_op_u32(Op::GLOBAL_GET, 0, 7);
+        script.emit_op(Op::DROP, 7);
+        script.emit_op_u16(Op::REF_FUNC, 1, 7);
+        script.code.push(0);
+        script.lines.push(7);
+        script.emit_op(Op::RETURN, 7);
+        let mut body = Chunk::new("prepared-answer");
+        body.globals = script.globals.clone();
+        body.emit_f64_const(41.0, 8);
+        body.emit_op(Op::RETURN, 8);
+        vec![script, body]
+    }
+
+    #[test]
+    fn prepared_link_matches_raw_relocation_caches_and_callable_result() {
+        for nested in [false, true] {
+            let mut raw = VM::new();
+            let mut prepared = VM::new();
+            for vm in [&mut raw, &mut prepared] {
+                vm.set_global("prior", Value::F64(1.0));
+                vm.set_global("answer", Value::F64(2.0));
+                let mut prior = Chunk::new("prior-module");
+                prior.emit_op(Op::RETURN, 0);
+                vm.run_linked_nested(vec![prior], vec![]).unwrap();
+            }
+            let seal = crate::PreparedLinkedCode::prepare(module(), usize::MAX).ok().unwrap();
+            let (a, b) = if nested {
+                (raw.run_linked_nested(module(), vec![]).unwrap(),
+                 prepared.run_linked_nested_prepared(seal, vec![]).unwrap())
+            } else {
+                (raw.run_linked(module(), vec![]).unwrap(),
+                 prepared.run_linked_prepared(seal, vec![]).unwrap())
+            };
+            assert_eq!(raw.invoke(&a, &[]).unwrap(), Value::F64(41.0));
+            assert_eq!(prepared.invoke(&b, &[]).unwrap(), Value::F64(41.0));
+            assert_eq!(format!("{:?}", raw.chunks), format!("{:?}", prepared.chunks));
+            assert_eq!(raw.decoded_ops, prepared.decoded_ops);
+            assert_eq!(raw.decoded_operands, prepared.decoded_operands);
+            assert_eq!(raw.decoded_operands64, prepared.decoded_operands64);
+            assert_eq!(format!("{:?}", raw.block_targets), format!("{:?}", prepared.block_targets));
+            assert_eq!(format!("{:?}", raw.br_table_targets), format!("{:?}", prepared.br_table_targets));
+        }
+    }
+
+    #[test]
+    fn staged_validation_error_has_same_vm_boundary_and_fields() {
+        let mut bad = Chunk::new("bad-module");
+        bad.globals = Arc::new(vec!["not-installed".into()].into());
+        bad.code.extend_from_slice(&[255, 255, 255, 255]);
+        let mut raw = VM::new();
+        let mut prepared = VM::new();
+        let sealed = crate::PreparedLinkedCode::prepare(vec![bad.clone()], usize::MAX).ok().unwrap();
+        prepared.set_global("caller-binding", Value::F64(7.0));
+        raw.set_global("caller-binding", Value::F64(7.0));
+        let a = raw.run_linked_nested(vec![bad], vec![]).unwrap_err();
+        let b = prepared.run_linked_nested_prepared(sealed, vec![]).unwrap_err();
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        assert!(raw.chunks.is_empty() && prepared.chunks.is_empty());
+        assert_eq!(raw.globals.len(), prepared.globals.len());
+        assert_eq!(raw.globals, prepared.globals);
+    }
+}
+
+#[cfg(test)]
+#[path = "bulk_memory_alias_tests.rs"]
+mod bulk_memory_alias_tests;
+
+#[cfg(test)]
+#[path = "bulk_instruction_perf_tests.rs"]
+mod bulk_instruction_perf_tests;
+
+#[cfg(test)]
+mod linked_global_snapshot_sharing_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn chunk_with_names(name: &str, globals: &Arc<crate::segmented_global_names::SegmentedGlobalNames>) -> Chunk {
+        let mut chunk = Chunk::new(name);
+        chunk.globals = globals.clone();
+        chunk
+    }
+
+    #[test]
+    fn unchanged_prefixes_share_latest_without_mutating_external_snapshots() {
+        let old = Arc::new(vec!["first".to_owned()].into());
+        let latest = Arc::new(vec!["first".to_owned(), "second".to_owned()].into());
+        let mut chunks = vec![chunk_with_names("a", &old), chunk_with_names("b", &old)];
+        VM::share_extended_global_operand_table(&mut chunks, &latest);
+        assert!(chunks.iter().all(|chunk| Arc::ptr_eq(&chunk.globals, &latest)));
+        assert_eq!(old.as_slice(), &["first".to_owned()]);
+        assert_eq!(chunks[0].globals[0], "first");
+    }
+
+    #[test]
+    fn renamed_slots_and_filled_holes_preserve_historical_descriptions() {
+        let renamed = Arc::new(vec!["prior_alias".to_owned()].into());
+        let hole = Arc::new(vec![String::new()].into());
+        let latest = Arc::new(vec!["current_alias".to_owned(), "second".to_owned()].into());
+        let mut chunks = vec![chunk_with_names("alias", &renamed), chunk_with_names("hole", &hole)];
+        VM::share_extended_global_operand_table(&mut chunks, &latest);
+        assert!(Arc::ptr_eq(&chunks[0].globals, &renamed));
+        assert!(Arc::ptr_eq(&chunks[1].globals, &hole));
+    }
+
+    #[test]
+    fn shorter_tables_never_replace_existing_operand_spaces() {
+        let old = Arc::new(vec!["first".to_owned(), "second".to_owned()].into());
+        let shorter = Arc::new(vec!["first".to_owned()].into());
+        let mut chunks = vec![chunk_with_names("old", &old)];
+        VM::share_extended_global_operand_table(&mut chunks, &shorter);
+        assert!(Arc::ptr_eq(&chunks[0].globals, &old));
+        assert_eq!(chunks[0].globals[1], "second");
+    }
+}
+
+#[cfg(test)]
+mod host_import_counter_cache_tests {
+    use super::RuntimePerfCounters;
+
+    #[test]
+    fn lower_indices_do_not_discard_cached_higher_indices() {
+        let mut counters = RuntimePerfCounters::default();
+        counters.record_host_import_index(7, || Some("host:high".into()));
+        counters.record_host_import_index(1, || Some("host:low".into()));
+        counters.record_host_import_index(7, || panic!("cached host was resolved again"));
+        counters.record_host_import_index(1, || panic!("cached host was resolved again"));
+        assert_eq!(counters.host_imports, vec![("host:high".into(), 2), ("host:low".into(), 2)]);
+    }
+
+    #[test]
+    fn unnamed_hosts_and_existing_counter_rows_are_cached() {
+        let mut counters = RuntimePerfCounters::default();
+        counters.record_host_import_index(9, || None);
+        counters.record_host_import_index(9, || panic!("unnamed host was resolved again"));
+        counters.record_host_import("host:existing".into());
+        counters.record_host_import_index(2, || Some("host:existing".into()));
+        counters.host_imports[0].1 = u64::MAX;
+        counters.record_host_import_index(2, || panic!("cached host was resolved again"));
+        assert_eq!(counters.host_imports, vec![("host:existing".into(), u64::MAX)]);
+        assert_eq!(counters.host_import_indices.len(), 10);
+    }
+}
+
+#[cfg(test)]
+mod direct_call_cache_tests {
+    use super::*;
+    #[test]
+    fn direct_call_cache_bits_are_opcode_scoped() {
+        let mut c=Chunk::new("packing");c.emit_call(u16::MAX,u8::MAX,0);
+        let raw=VM::decode_operand32(&c.code,Op::CALL,4);assert_eq!(raw,0x00ff_ffff);assert_eq!(VM::mark_direct_call_operand(Op::CALL,raw,false),raw);assert_eq!(VM::mark_direct_call_operand(Op::CALL,raw,true),raw|DECODED_DEFINED_CALL);
+        let mut tail=Chunk::new("tail");tail.emit_op(Op::RETURN_CALL,0);tail.emit(255,0);tail.emit(255,0);let raw=VM::decode_operand32(&tail.code,Op::RETURN_CALL,4);assert_eq!(raw,0xffff);assert_eq!(VM::mark_direct_call_operand(Op::RETURN_CALL,raw,true),raw|DECODED_DEFINED_CALL);
+        for op in [Op::GLOBAL_GET,Op::I32_LOAD,Op::F64_CONST,Op::CALL_REF,Op::RETURN_CALL_REF]{assert_eq!(VM::mark_direct_call_operand(op,u32::MAX,true),u32::MAX);}
+    }
+    #[test]
+    fn direct_call_cache_all_builders_agree() {
+        let mut helper=Chunk::new("target");helper.func_sig=Some((String::new(),"externref".into()));helper.emit_i32_const(0,0);helper.emit_op(Op::RETURN,0);
+        for tail in [false,true]{let mut c=Chunk::new("caller");c.emit_direct_defined_call(1,&helper,tail,0).unwrap();if !tail{c.emit_op(Op::RETURN,0);}let code=c.code.clone();let one=VM::build_decoded_operands_for_chunk(&c);let (_,both,_)=VM::build_decoded_caches_for_chunk(&c,0);assert_eq!(one,both);assert_ne!(one[0]&DECODED_DEFINED_CALL,0);
+            let p=crate::PreparedLinkedCode::prepare(vec![c.clone(),helper.clone()],1024*1024).ok().unwrap();let(_,metadata)=p.into_parts();let metadata=metadata.unwrap();assert_eq!(one,metadata[0].operands);assert_eq!(c.code,code);
+            c.direct_defined_calls.clear();let one=VM::build_decoded_operands_for_chunk(&c);assert_eq!(one[0]&DECODED_DEFINED_CALL,0);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "branch_results_tests.rs"]
+mod branch_results_tests;

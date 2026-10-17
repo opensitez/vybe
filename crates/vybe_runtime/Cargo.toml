@@ -11,3 +11,7 @@ indexmap = { workspace = true }
 vybe_ast = { workspace = true }
 serde = { workspace = true }
 toml = "1.1"
+
+[features]
+# Explicit benchmark controls; no guest-visible APIs or instructions.
+primitive-benchmarks = []

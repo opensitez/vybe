@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 /// A universal VM value. Language-agnostic — no coercion rules here.
 /// The compiler is responsible for emitting type checks and conversions.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum Value {
     /// Explicitly empty — VB Nothing, JS null.
     Null,
@@ -41,6 +41,190 @@ pub enum Value {
     /// js-types JS-API converts wasm i64 ⇄ BigInt via ToBigInt64, the
     /// only place a 64-bit wrap is legal). Arc: clone = refcount bump.
     BigInt(crate::bigint::BigIntRef),
+}
+
+impl Clone for Value {
+    #[inline]
+    fn clone(&self) -> Self {
+        match self {
+            Self::Null => Self::Null,
+            Self::TypedNull(id) => Self::TypedNull(*id),
+            Self::Undefined => Self::Undefined,
+            Self::Bool(v) => Self::Bool(*v),
+            Self::I32(v) => Self::I32(*v),
+            Self::I64(v) => Self::I64(*v),
+            Self::F32(v) => Self::F32(*v),
+            Self::F64(v) => Self::F64(*v),
+            Self::String(v) => Self::String(v.clone()),
+            Self::Object(v) => Self::Object(v.clone()),
+            Self::WeakRef(v) => Self::WeakRef(v.clone()),
+            Self::V128(v) => Self::V128(*v),
+            Self::Symbol(v) => Self::Symbol(v.clone()),
+            Self::BigInt(v) => Self::BigInt(v.clone()),
+        }
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        // Same-reference assignment needs neither a refcount increment nor a
+        // decrement. Compare allocation identity, never guest equality: equal
+        // strings/symbol descriptions or equal object fields may be distinct.
+        match (self, source) {
+            (Self::Null, Self::Null) | (Self::Undefined, Self::Undefined) => {},
+            (Self::TypedNull(dst), Self::TypedNull(src)) => *dst = *src,
+            (Self::Bool(dst), Self::Bool(src)) => *dst = *src,
+            (Self::I32(dst), Self::I32(src)) => *dst = *src,
+            (Self::I64(dst), Self::I64(src)) => *dst = *src,
+            (Self::F32(dst), Self::F32(src)) => *dst = *src,
+            (Self::F64(dst), Self::F64(src)) => *dst = *src,
+            (Self::V128(dst), Self::V128(src)) => *dst = *src,
+            (Self::String(dst), Self::String(src))
+            | (Self::Symbol(dst), Self::Symbol(src)) => {
+                if !Arc::ptr_eq(dst, src) { dst.clone_from(src); }
+            },
+            (Self::Object(dst), Self::Object(src)) => {
+                if !Arc::ptr_eq(dst, src) { dst.clone_from(src); }
+            },
+            (Self::WeakRef(dst), Self::WeakRef(src)) => {
+                if !Weak::ptr_eq(dst, src) { dst.clone_from(src); }
+            },
+            (Self::BigInt(dst), Self::BigInt(src)) => {
+                if !Arc::ptr_eq(dst, src) { dst.clone_from(src); }
+            },
+            (dst, src) => *dst = src.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod assignment_clone_tests {
+    use super::*;
+
+    fn same_payload(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
+            (Value::TypedNull(a), Value::TypedNull(b)) => a == b,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::I32(a), Value::I32(b)) => a == b,
+            (Value::I64(a), Value::I64(b)) => a == b,
+            (Value::F32(a), Value::F32(b)) => a.to_bits() == b.to_bits(),
+            (Value::F64(a), Value::F64(b)) => a.to_bits() == b.to_bits(),
+            (Value::V128(a), Value::V128(b)) => a == b,
+            (Value::String(a), Value::String(b))
+            | (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
+            (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
+            (Value::WeakRef(a), Value::WeakRef(b)) => Weak::ptr_eq(a, b),
+            (Value::BigInt(a), Value::BigInt(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn cloning_and_assignment_preserve_variants_bits_and_reference_identity() {
+        let object = Arc::new(Mutex::new(Object::new()));
+        let text: Arc<str> = Arc::from("same description");
+        let values = vec![
+            Value::Null, Value::TypedNull(usize::MAX), Value::Undefined,
+            Value::Bool(true), Value::I32(i32::MIN), Value::I64(i64::MAX),
+            Value::F32(f32::from_bits(0xff80_0123)), Value::F32(-0.0),
+            Value::F64(f64::from_bits(0xfff0_0000_0000_0123)), Value::F64(-0.0),
+            Value::String(text.clone()), Value::Symbol(text),
+            Value::Object(object.clone()), Value::WeakRef(Arc::downgrade(&object)),
+            Value::V128(std::array::from_fn(|i| (i * 17) as u8)),
+            Value::bigint_i64(i64::MIN),
+        ];
+        for source in &values {
+            assert!(same_payload(source, &source.clone()));
+            for initial in &values {
+                let mut target = initial.clone();
+                target.clone_from(source);
+                assert!(same_payload(&target, source));
+                target.clone_from(source);
+                assert!(same_payload(&target, source));
+            }
+        }
+        let mut target = Vec::new();
+        target.clone_from(&values);
+        let allocation = target.as_ptr();
+        target.clone_from(&values);
+        assert_eq!(allocation, target.as_ptr());
+        assert!(target.iter().zip(&values).all(|(a, b)| same_payload(a, b)));
+    }
+
+    #[test]
+    fn different_equal_references_are_replaced_and_old_objects_are_released() {
+        for make in [Value::String as fn(Arc<str>) -> Value, Value::Symbol] {
+            let old: Arc<str> = Arc::from("equal");
+            let new: Arc<str> = Arc::from("equal");
+            assert!(!Arc::ptr_eq(&old, &new));
+            let mut target = make(old.clone());
+            let source = make(new.clone());
+            target.clone_from(&source);
+            assert_eq!(Arc::strong_count(&old), 1);
+            assert!(same_payload(&target, &source));
+        }
+        let old = Arc::new(Mutex::new(Object::new()));
+        let weak = Arc::downgrade(&old);
+        let mut target = Value::Object(old);
+        let source = Value::Object(Arc::new(Mutex::new(Object::new())));
+        target.clone_from(&source);
+        assert!(weak.upgrade().is_none());
+        assert!(same_payload(&target, &source));
+
+        let mut expired = Value::WeakRef(weak.clone());
+        expired.clone_from(&Value::WeakRef(weak.clone()));
+        assert!(matches!(&expired, Value::WeakRef(w) if Weak::ptr_eq(w, &weak)));
+        expired.clone_from(&source);
+        assert!(same_payload(&expired, &source));
+    }
+
+    #[test]
+    #[ignore = "paired Value assignment benchmark; excludes whole VM execution"]
+    fn repeated_reference_assignment_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        fn previous(dst: &mut [Value], src: &[Value]) {
+            for (dst, src) in dst.iter_mut().zip(src) { *dst = src.clone(); }
+        }
+        fn current(dst: &mut [Value], src: &[Value]) {
+            for (dst, src) in dst.iter_mut().zip(src) { dst.clone_from(src); }
+        }
+        type Assign = fn(&mut [Value], &[Value]);
+        fn time(assign: Assign, dst: &mut [Value], a: &[Value], b: &[Value]) -> f64 {
+            let start = Instant::now();
+            for i in 0..1024 {
+                let src = if i & 1 == 0 { a } else { b };
+                black_box(assign)(black_box(dst), black_box(src));
+            }
+            start.elapsed().as_secs_f64()
+        }
+        let object = Value::Object(Arc::new(Mutex::new(Object::new())));
+        let other = Value::Object(Arc::new(Mutex::new(Object::new())));
+        for (name, a, b) in [
+            ("same-object", vec![object.clone(); 1024], vec![object.clone(); 1024]),
+            ("changing-object", vec![object; 1024], vec![other; 1024]),
+            ("same-string", vec![Value::String(Arc::from("reference")); 1024], Vec::new()),
+            ("numeric", vec![Value::I32(7); 1024], vec![Value::I32(9); 1024]),
+        ] {
+            let b = if b.is_empty() { a.clone() } else { b };
+            let mut old_dst = a.clone();
+            let mut new_dst = a.clone();
+            let mut ratios = Vec::new();
+            for pair in 0..9 {
+                let (old, new) = if pair & 1 == 0 {
+                    (time(previous, &mut old_dst, &a, &b), time(current, &mut new_dst, &a, &b))
+                } else {
+                    let new = time(current, &mut new_dst, &a, &b);
+                    (time(previous, &mut old_dst, &a, &b), new)
+                };
+                assert!(old_dst.iter().zip(&new_dst).all(|(a, b)| same_payload(a, b)));
+                if pair != 0 { ratios.push(old / new); }
+            }
+            ratios.sort_by(f64::total_cmp);
+            eprintln!("assignment {name}: previous/current median {:.3}x; pairs {ratios:?}",
+                (ratios[3] + ratios[4]) / 2.0);
+        }
+    }
 }
 
 /// Compact tag identifying the `Value` variant — a small integer that
@@ -258,7 +442,7 @@ impl Value {
             Value::Object(o) => {
                 let obj = o.lock().unwrap();
                 match &obj.kind {
-                    ObjectKind::Ordinary => "object",
+                    ObjectKind::Ordinary | ObjectKind::StringViewIter { .. } => "object",
                     ObjectKind::Array(_) => "array",
                     ObjectKind::Map(_) => "map",
                     ObjectKind::Set(_) => "set",
@@ -658,7 +842,7 @@ impl fmt::Display for Value {
                     ObjectKind::Continuation(_) => write!(f, "[continuation]"),
                     ObjectKind::Future { id } => write!(f, "[future {}]", id),
                     ObjectKind::Stream { id } => write!(f, "[stream {}]", id),
-                    ObjectKind::Ordinary => write!(f, "[object]"),
+                    ObjectKind::Ordinary | ObjectKind::StringViewIter { .. } => write!(f, "[object]"),
                 }
             }
             Value::WeakRef(weak) => {
@@ -708,6 +892,11 @@ pub struct Object {
     pub kind: ObjectKind,
     /// WASM GC-style type reference. 0 = Object (untyped), >0 = specific type.
     pub type_id: usize,
+    /// Engine-managed Custom Descriptors reference, never a source property.
+    /// A descriptor is a GC struct reference. Store its shared reference
+    /// directly: the optional header stays pointer-sized without a per-instance
+    /// Box<Value> allocation, and object clones retain descriptor identity.
+    pub descriptor: Option<Arc<Mutex<Object>>>,
     /// Indexed fields — fixed-layout storage for typed objects (WASM GC struct fields).
     /// Field i is accessed by index when the type's field layout is known.
     /// Dynamic properties spill into `properties` HashMap.
@@ -873,6 +1062,13 @@ pub enum ObjectKind {
     Stream {
         id: u64,
     },
+    /// Standard stringref iterator cursor. The legacy properties remain for
+    /// compatibility; offsets apply only while those properties match.
+    StringViewIter {
+        source: Arc<str>,
+        byte_offset: usize,
+        scalar_offset: usize,
+    },
 }
 
 /// Runtime state for an `ObjectKind::Continuation`. Tracks the entry
@@ -884,7 +1080,7 @@ pub struct ContinuationState {
     pub entry: Value,
     /// Mid-suspend fiber — stack + frames + open upvalues. `None` when
     /// the continuation has never run or has finished.
-    pub saved: std::sync::Mutex<Option<crate::fiber::Fiber>>,
+    pub saved: Box<std::sync::Mutex<Option<crate::fiber::Fiber>>>,
     /// Lifecycle. `ready` = never resumed; `suspended` = paused
     /// mid-execution; `done` = entry returned normally, no further
     /// resumes allowed.
@@ -907,7 +1103,7 @@ impl Clone for ContinuationState {
     fn clone(&self) -> Self {
         ContinuationState {
             entry: self.entry.clone(),
-            saved: std::sync::Mutex::new(None),
+            saved: Box::new(std::sync::Mutex::new(None)),
             state: std::sync::Mutex::new(ContinuationPhase::Ready),
         }
     }
@@ -916,6 +1112,7 @@ impl Clone for ContinuationState {
 impl Object {
     pub fn new() -> Self {
         Object {
+            descriptor: None,
             properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Ordinary,
             type_id: 0,
@@ -925,6 +1122,7 @@ impl Object {
 
     pub fn new_typed(type_id: usize) -> Self {
         Object {
+            descriptor: None,
             properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Ordinary,
             type_id,
@@ -935,6 +1133,7 @@ impl Object {
     /// Create a typed object with pre-allocated indexed fields.
     pub fn new_typed_with_fields(type_id: usize, field_count: usize) -> Self {
         Object {
+            descriptor: None,
             properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Ordinary,
             type_id,
@@ -945,7 +1144,8 @@ impl Object {
     pub fn new_array(elements: Vec<Value>) -> Self {
         let len = elements.len();
         let mut obj = Object {
-            properties: indexmap::IndexMap::new(),
+            descriptor: None,
+            properties: indexmap::IndexMap::with_capacity(3),
             kind: ObjectKind::Array(elements),
             type_id: 0,
             fields: Vec::new(),

@@ -112,7 +112,7 @@ impl Drop for DebugReportScope {
 pub struct DebugPhase {
     report: Option<SharedDebugReport>,
     label: String,
-    start: Instant,
+    start: Option<Instant>,
 }
 
 /// Shows a blocking host call to `report` without retaining a timing entry
@@ -186,28 +186,95 @@ impl DebugPhase {
     }
     pub fn current_lazy(label: impl FnOnce() -> String) -> Self {
         let report = CURRENT_REPORT.with(|slot| slot.borrow().clone());
-        let label = if report.is_some() { label() } else { String::new() };
-        Self::new(report, label)
+        Self::new_lazy(report, label)
+    }
+    /// Build an explicit report's diagnostic label only when it is observed.
+    /// Callers with formatted labels must defer the formatting in this closure.
+    pub fn new_lazy(report: Option<SharedDebugReport>, label: impl FnOnce() -> String) -> Self {
+        if report.is_some() {
+            Self::new(report, label())
+        } else {
+            Self::new(None, String::new())
+        }
     }
     pub fn new(report: Option<SharedDebugReport>, label: impl Into<String>) -> Self {
-        let label = label.into();
-        let start = Instant::now();
-        if let Some(report) = &report {
+        if let Some(report) = report {
+            let label = label.into();
+            let start = Instant::now();
             report.lock().unwrap().active.push((label.clone(), start));
+            Self { report: Some(report), label, start: Some(start) }
+        } else {
+            Self { report: None, label: String::new(), start: None }
         }
-        Self { report, label, start }
     }
 }
 
 impl Drop for DebugPhase {
     fn drop(&mut self) {
-        if let Some(report) = &self.report {
+        if let (Some(report), Some(start)) = (&self.report, self.start) {
             let mut report = report.lock().unwrap();
             if let Some(index) = report.active.iter().rposition(|(label, _)| label == &self.label) {
                 report.active.remove(index);
             }
-            report.completed.push((self.label.clone(), self.start.elapsed()));
+            report.completed.push((std::mem::take(&mut self.label), start.elapsed()));
         }
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+
+    #[test]
+    fn disabled_phase_skips_label_conversion_and_clock_state() {
+        struct UnusedLabel;
+        impl From<UnusedLabel> for String {
+            fn from(_: UnusedLabel) -> Self { panic!("disabled phase converted its label") }
+        }
+        let _scope = DebugReportScope::enter(None);
+        let phase = DebugPhase::current(UnusedLabel);
+        assert!(phase.start.is_none());
+        assert!(phase.label.is_empty());
+        drop(phase);
+        let _phase = DebugPhase::current_lazy(|| panic!("disabled phase evaluated its label"));
+        let phase = DebugPhase::new_lazy(None, || panic!("disabled explicit phase evaluated its label"));
+        assert!(phase.start.is_none());
+        assert!(phase.label.is_empty());
+    }
+
+    #[test]
+    fn explicit_lazy_phase_evaluates_once_and_retains_completed_label() {
+        let report = Arc::new(Mutex::new(DebugReport::default()));
+        let evaluations = std::cell::Cell::new(0);
+        let phase = DebugPhase::new_lazy(Some(report.clone()), || {
+            evaluations.set(evaluations.get() + 1);
+            "explicit report".to_string()
+        });
+        assert_eq!(evaluations.get(), 1);
+        assert_eq!(report.lock().unwrap().active[0].0, "explicit report");
+        drop(phase);
+        let report = report.lock().unwrap();
+        assert!(report.active.is_empty());
+        assert_eq!(report.completed.len(), 1);
+        assert_eq!(report.completed[0].0, "explicit report");
+        assert_eq!(evaluations.get(), 1);
+    }
+
+    #[test]
+    fn attached_phases_preserve_nested_active_and_completed_reports() {
+        let report = Arc::new(Mutex::new(DebugReport::default()));
+        let _scope = DebugReportScope::enter(Some(report.clone()));
+        let outer = DebugPhase::current("outer");
+        let inner = DebugPhase::current_lazy(|| "inner".to_string());
+        assert_eq!(report.lock().unwrap().active.iter().map(|(label, _)| label.as_str())
+            .collect::<Vec<_>>(), ["outer", "inner"]);
+        drop(inner);
+        assert_eq!(report.lock().unwrap().active.len(), 1);
+        drop(outer);
+        let report = report.lock().unwrap();
+        assert!(report.active.is_empty());
+        assert_eq!(report.completed.iter().map(|(label, _)| label.as_str())
+            .collect::<Vec<_>>(), ["inner", "outer"]);
     }
 }
 
@@ -321,6 +388,12 @@ pub enum DebugCommand {
         frame: usize,
     },
     OperandStack,
+    /// Bounded, read-only snapshot of the selected live linear memory.
+    ReadMemory {
+        memory: u32,
+        address: u64,
+        length: u32,
+    },
     Globals {
         prefix: Option<String>,
     },
@@ -410,6 +483,11 @@ pub enum DebugResponse {
     Backtrace(Vec<FrameInfo>),
     Locals(Vec<SlotInfo>),
     OperandStack(Vec<String>),
+    Memory {
+        memory: u32,
+        address: u64,
+        bytes: Vec<u8>,
+    },
     Globals(Vec<(String, String)>),
     Disasm {
         current_ip: usize,
@@ -1435,6 +1513,9 @@ impl Debugger {
                 }
             }
 
+            ReadMemory { memory, address, length } => {
+                Control::stay(read_memory(vm, memory, address, length))
+            }
             Print { path } => {
                 // Fast structural read for a plain name/path (no compile); fall
                 // back to the compiler-faithful evaluator for compound
@@ -2052,7 +2133,7 @@ fn frame_storage(value: &crate::Value) -> String {
         return "Object (locked)".into();
     };
     let kind = match &object.kind {
-        ObjectKind::Ordinary => "Ordinary",
+        ObjectKind::Ordinary | ObjectKind::StringViewIter { .. } => "Ordinary",
         ObjectKind::Array(_) => "Array",
         ObjectKind::Map(_) => "Map",
         ObjectKind::Set(_) => "Set",
@@ -2541,6 +2622,82 @@ fn navigate(vm: &VM, val: &crate::Value, acc: &Access) -> Result<crate::Value, S
                 .cloned()
                 .ok_or_else(|| format!("index {i} out of range")),
         },
+    }
+}
+
+/// Maximum bytes copied by a single debugger inspection request.
+pub const MAX_DEBUG_MEMORY_READ: u32 = 65536;
+
+fn read_memory(vm: &mut VM, memory: u32, address: u64, length: u32) -> DebugResponse {
+    let result = (|| -> Result<Vec<u8>, String> {
+        if length > MAX_DEBUG_MEMORY_READ {
+            return Err(format!("debug memory read exceeds {MAX_DEBUG_MEMORY_READ} bytes"));
+        }
+        let index = usize::try_from(memory).map_err(|_| "memory index out of range")?;
+        if index != 0 && index - 1 >= vm.extra_memories.len() {
+            return Err(format!("unknown memory index {memory}"));
+        }
+        let addr = usize::try_from(address).map_err(|_| "memory address out of range")?;
+        let size = usize::try_from(length).map_err(|_| "memory length out of range")?;
+        // Existing access validates overflow, bounds and shared memory under
+        // the backing lock. The closure neither executes guest code nor writes.
+        vm.with_memory_bytes(index, addr, size, |source| {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(source.len())
+                .map_err(|_| VMError::new("debug memory snapshot allocation failed"))?;
+            bytes.extend_from_slice(source);
+            Ok(bytes)
+        }).map_err(|error| error.to_string())
+    })();
+    match result {
+        Ok(bytes) => DebugResponse::Memory { memory, address, bytes },
+        Err(error) => DebugResponse::Error(error),
+    }
+}
+
+#[cfg(test)]
+mod memory_inspection_tests {
+    use super::*;
+    use crate::shared_memory::SharedMemory;
+
+    #[test]
+    fn snapshots_select_live_memory_without_mutation_or_execution() {
+        let mut vm = VM::new();
+        vm.memory = SharedMemory::from_vec(vec![10, 11, 12, 13]);
+        let extra = SharedMemory::from_vec(vec![20, 21, 22, 23]);
+        let alias = extra.clone();
+        vm.extra_memories.push(extra);
+        alias.with_buffer_mut(|bytes| bytes[1] = 99);
+        for (memory, expected) in [(0, vec![11, 12]), (1, vec![99, 22])] {
+            let response = read_memory(&mut vm, memory, 1, 2);
+            match response {
+                DebugResponse::Memory { memory: selected, address, bytes } => {
+                    assert_eq!(selected, memory);
+                    assert_eq!(address, 1);
+                    assert_eq!(bytes, expected);
+                }
+                other => panic!("unexpected response: {other:?}"),
+            }
+        }
+        assert!(vm.frames.is_empty());
+        assert!(vm.stack.is_empty());
+        assert_eq!(vm.memory.with_buffer(|bytes| bytes.to_vec()), [10, 11, 12, 13]);
+        assert_eq!(alias.with_buffer(|bytes| bytes.to_vec()), [20, 99, 22, 23]);
+    }
+
+    #[test]
+    fn rejects_invalid_indices_overflow_and_oversized_requests() {
+        let mut vm = VM::new();
+        vm.memory = SharedMemory::from_vec(vec![1, 2, 3, 4]);
+        for (memory, address, length) in [
+            (1, 0, 0), (u32::MAX, 0, 0), (0, u64::MAX, 1),
+            (0, 3, 2), (0, 5, 0), (0, 0, MAX_DEBUG_MEMORY_READ + 1),
+        ] {
+            assert!(matches!(read_memory(&mut vm, memory, address, length), DebugResponse::Error(_)));
+        }
+        assert!(matches!(read_memory(&mut vm, 0, 4, 0),
+            DebugResponse::Memory { bytes, .. } if bytes.is_empty()));
+        assert_eq!(vm.memory.with_buffer(|bytes| bytes.to_vec()), [1, 2, 3, 4]);
     }
 }
 

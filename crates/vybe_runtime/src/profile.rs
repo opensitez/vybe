@@ -124,13 +124,6 @@ pub struct LanguageProfile {
     /// statically and need none of this.
     pub unified_array_map: bool,
 
-    /// The string-concatenation operator coerces BOTH operands to string
-    /// before joining, rather than leaning on the concat op's own coercion —
-    /// PHP `.` and Lua `..`. The spelling of that coercion can differ from the
-    /// shared one, in which case the language also registers a
-    /// `LanguageHooks::concat_stringify`.
-    pub concat_stringifies_operands: bool,
-
     /// Entry point function name to auto-call if defined (e.g. "main").
     pub entry_point: Option<String>,
 
@@ -143,23 +136,12 @@ pub struct LanguageProfile {
 
     /// JS: `var` declarations are hoisted to function scope.
 
-    /// JS: `+` operator uses dynamic add (string concat if either operand is string).
-    pub dynamic_add: bool,
-
     /// The language has first-class function references (WASM `ref.func` /
     /// funcref). When set, referencing a function/static-method as a VALUE
     /// (not calling it) tears it off into a `REF_FUNC` funcref instead of
     /// invoking it or reading a bound-method property. Only WASM-level
     /// frontends (wast) that model real funcrefs enable this.
     pub function_references: bool,
-
-    /// Arithmetic operands may be of a type not known until runtime
-    /// (dynamically-typed languages: JS, PHP, Python, Ruby). When set,
-    /// `-`/`*`/`/`/`%` whose operand types aren't statically resolved emit
-    /// the runtime-polymorphic `emit_dyn_*` sequences (which dispatch
-    /// BigInt → `i64.*`, else Number → `f64.*`). Statically-typed languages
-    /// leave this off and keep direct typed opcodes.
-    pub dynamic_numeric_dispatch: bool,
 
     /// JS: support `require()` for CommonJS module loading.
     pub commonjs_require: bool,
@@ -403,12 +385,6 @@ pub struct LanguageProfile {
     /// `len`/`size` canonical mappings — recognized as runtime globals.
     pub has_ecma_globals: bool,
 
-    /// Operators apply ECMAScript coercion: `+`/relational operators run
-    /// `ToPrimitive`/`ToNumber` on their operands, `===` is strict equality,
-    /// `>>>` yields an unsigned 32-bit Number, and compound assignments coerce
-    /// likewise. Off for languages with their own operator typing.
-    pub ecma_operator_coercion: bool,
-
     /// `==`/`!=` use abstract (loose) equality with cross-type coercion via the
     /// host `ecma:value.abstractEq` (ECMAScript §7.2.15; PHP `==` shares this).
     /// Off for languages whose `==` is strict/typed.
@@ -512,6 +488,11 @@ pub struct LanguageProfile {
     /// can never be overridden and so keep their direct bind.
     pub methods_virtual_by_default: bool,
 
+    /// Opt-in lexical binding for private instance methods. Kept false by
+    /// default so frontends with dynamically dispatched private methods retain
+    /// their existing semantics.
+    pub private_methods_bind_lexically: bool,
+
     /// Properties and methods occupy SEPARATE member namespaces (PHP:
     /// `$o->foo` the property and `$o->foo()` the method coexist). A property
     /// whose name collides with a method is stored under a mangled slot so
@@ -529,12 +510,6 @@ pub struct LanguageProfile {
     /// force-flattened e.g. PHP's sibling `Error`/`Exception` into .NET's
     /// single `System.Exception` root — the bug this replaces.
     pub reflection_type_naming: ReflectionTypeNaming,
-
-    /// PHP: relational operators (`<`/`>`/`<=`/`>=`/`<=>`) compare two
-    /// strings lexicographically and otherwise fall back to numeric/dynamic
-    /// comparison (DateTime operands are unboxed first). When false, the
-    /// generic dynamic comparison is used.
-    pub string_aware_relational: bool,
 
     /// Some frontends want boolean-valued operators to materialize as actual
     /// Bool values in expression position, not raw WASM i32 conditions. Go
@@ -587,34 +562,14 @@ pub struct LanguageProfile {
     /// inheritance). Off by default: single-inheritance languages ignore
     /// `bases[1..]`, so their bytecode is unchanged. Python opts in.
 
-    /// The `/` operator performs integer (truncating) division when BOTH
-    /// operands are integers (C#, Java, C, Go). Languages where `/` is always
-    /// real division (VB uses `\` for integer division; Python `/` is float)
-    /// leave this false. Gates the integral-division lowering in
-    /// `compile_binary`.
-    pub integer_division_on_slash: bool,
-
-    /// `xor` is ONE token with two meanings, resolved by operand type: bitwise
-    /// when both operands are integers, logical otherwise (Pascal, and the same
-    /// rule Delphi documents). The bitwise op is emitted either way; this only
-    /// says whether a non-integer result is materialized as a Boolean.
-    ///
-    /// A property rather than a `(BuiltinType, ProtocolSlot)` binding, because
-    /// it is not a question of WHICH emit target `xor` uses — both branches
-    /// emit the same opcode — but of how the RESULT is typed. Recorded in
-    /// builtinslotplan.md §3i: §3c mapped this site to "`BitXor` on `int`",
-    /// which the code does not bear out.
-    pub xor_is_logical_for_non_integers: bool,
-
     /// `and`/`or`/`not` are ONE token with two meanings, resolved by operand
     /// type: BITWISE when the operands are integers, logical otherwise (Pascal,
     /// Delphi, and VB's `And`/`Or`/`Not`).
     ///
-    /// The sibling of [`Self::xor_is_logical_for_non_integers`], which covers
+    /// The sibling of the AST directive `xor_is_logical_for_non_integers`, which covers
     /// `xor` alone. A property rather than a slot because `Int` is not
     /// resolvable as a `BuiltinType` (builtinslotplan.md `unresolvable_reason`),
     /// so there is nothing to bind a `(BuiltinType, ProtocolSlot)` pair to yet.
-    pub logical_ops_bitwise_for_integers: bool,
 
     /// `+`, `*` and `-` on two SETS mean union, intersection and difference
     /// (Pascal). Languages where sets exist but arithmetic operators do not
@@ -657,11 +612,6 @@ pub struct LanguageProfile {
 
     /// `s[i]` indexes a string from ONE, not zero (pascal, lua).
     pub string_index_is_one_based: bool,
-
-    /// A cast to an integer TYPE truncates toward zero — pascal `Integer(9.7)`
-    /// is `9`. Which names are integer types comes from `[builtin_types] int`,
-    /// so no spelling list lives in shared code.
-    pub integer_cast_truncates: bool,
 
     /// `value.Helper(args)` resolves to a free function named by convention
     /// from the receiver's static type — pascal's TYPE HELPERS.
@@ -733,6 +683,9 @@ pub struct LanguageProfile {
     /// Defaults `false` (block scoping), which is what every language got
     /// before this property existed.
     pub function_scoped_variables: bool,
+    /// Taking a reference to an undeclared variable in a function creates a
+    /// local binding. Opt-in language semantics; defaults to false.
+    pub reference_creates_local: bool,
 
     /// ECMA-262 §9.1.1.4.6 GetValue: reading an *unresolvable* reference (a
     /// name bound nowhere in the scope chain or on the global object) is a
@@ -1044,6 +997,9 @@ pub enum ReflectionTypeNaming {
 #[derive(Debug, Clone)]
 pub struct BuiltinDef {
     pub emit: BuiltinEmit,
+    /// Same argument evaluation and side effects, with unused result work omitted.
+    /// Only selected when the compiler proves this call result is discarded.
+    pub discarded_emit: Option<BuiltinEmit>,
     pub min_args: u8,
     pub max_args: u8,
     /// The emitted call leaves a raw WASM i32 usable directly as a condition.
@@ -1167,6 +1123,7 @@ impl LanguageProfile {
         }
         Some(BuiltinDef {
             emit: BuiltinEmit::HostCall(module.to_string(), func.to_string()),
+            discarded_emit: None,
             min_args: 0,
             max_args: u8::MAX,
             i32_condition: false,
@@ -1310,22 +1267,24 @@ pub fn parse_emit_target(s: &str) -> Option<BuiltinEmit> {
 }
 
 pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
+    parse_profile_shared(src).map(|profile| (*profile).clone())
+}
+
+/// Share an immutable parsed definition. Callers requiring per-compilation
+/// overrides can use `Arc::make_mut`; the owned API remains independent.
+pub fn parse_profile_shared(src: &str) -> Result<std::sync::Arc<LanguageProfile>, String> {
     use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     // Keyed by CONTENT (not pointer): correct even if a caller passes a
     // dynamically-built profile string. Hashing ~900 chars is still far
     // cheaper than re-parsing the TOML and rebuilding the profile's tables.
-    static CACHE: OnceLock<Mutex<HashMap<String, LanguageProfile>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<LanguageProfile>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(p) = cache.lock().unwrap().get(src) {
         return Ok(p.clone());
     }
-    let parsed = parse_profile_uncached(src)?;
-    cache
-        .lock()
-        .unwrap()
-        .insert(src.to_string(), parsed.clone());
-    Ok(parsed)
+    let parsed = Arc::new(parse_profile_uncached(src)?);
+    Ok(cache.lock().unwrap().entry(src.to_string()).or_insert(parsed).clone())
 }
 
 fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
@@ -1393,10 +1352,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("instance")
         .to_string();
-    let dynamic_numeric_dispatch = compiler
-        .get("dynamic_numeric_dispatch")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let enum_as_ordinals = compiler
         .get("enum_as_ordinals")
         .and_then(|v| v.as_bool())
@@ -1444,10 +1399,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("unified_array_map")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let concat_stringifies_operands = compiler
-        .get("concat_stringifies_operands")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let entry_point = compiler
         .get("entry_point")
         .and_then(|v| v.as_str())
@@ -1461,10 +1412,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                 .collect()
         })
         .unwrap_or_default();
-    let dynamic_add = compiler
-        .get("dynamic_add")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let function_references = compiler
         .get("function_references")
         .and_then(|v| v.as_bool())
@@ -1622,6 +1569,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("methods_virtual_by_default")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let private_methods_bind_lexically = compiler
+        .get("private_methods_bind_lexically")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let separate_property_method_namespace = compiler
         .get("separate_property_method_namespace")
         .and_then(|v| v.as_bool())
@@ -1674,10 +1625,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let has_ecma_globals = compiler
         .get("has_ecma_globals")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let ecma_operator_coercion = compiler
-        .get("ecma_operator_coercion")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let abstract_equality = compiler
@@ -1756,12 +1703,12 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("function_invocation_members")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let string_aware_relational = compiler
-        .get("string_aware_relational")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let function_scoped_variables = compiler
         .get("function_scoped_variables")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let reference_creates_local = compiler
+        .get("reference_creates_local")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let lexical_block_scope = compiler
@@ -1806,14 +1753,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("for_in_object_yields_keys")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let integer_division_on_slash = compiler
-        .get("integer_division_on_slash")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let xor_is_logical_for_non_integers = compiler
-        .get("xor_is_logical_for_non_integers")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let set_bitwise_operators = compiler
         .get("set_bitwise_operators")
         .and_then(|v| v.as_bool())
@@ -1824,10 +1763,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let slice_assignment_splices = compiler
         .get("slice_assignment_splices")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let logical_ops_bitwise_for_integers = compiler
-        .get("logical_ops_bitwise_for_integers")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let set_arithmetic_operators = compiler
@@ -1844,10 +1779,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let string_index_is_one_based = compiler
         .get("string_index_is_one_based")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let integer_cast_truncates = compiler
-        .get("integer_cast_truncates")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let type_helper_methods = compiler
@@ -1912,6 +1843,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                             name.clone(),
                             BuiltinDef {
                                 emit,
+                                discarded_emit: t.get("discarded_emit").and_then(|v|v.as_str()).and_then(parse_emit),
                                 min_args,
                                 max_args,
                                 i32_condition: t.get("i32_condition").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -2189,6 +2121,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                             if let Some(emit) = parse_emit(emit_str) {
                                 map.entry(name.clone()).or_default().push(BuiltinDef {
                                     emit,
+                                    discarded_emit: t.get("discarded_emit").and_then(|v|v.as_str()).and_then(parse_emit),
                                     min_args,
                                     max_args,
                                     i32_condition: t.get("i32_condition").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -2212,6 +2145,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     if let Some(emit) = parse_emit(emit_str) {
                         map.entry(name.clone()).or_default().push(BuiltinDef {
                             emit,
+                            discarded_emit: t.get("discarded_emit").and_then(|v|v.as_str()).and_then(parse_emit),
                             min_args,
                             max_args,
                             i32_condition: t.get("i32_condition").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -2488,7 +2422,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         base_keyword,
         constructor_name,
         class_method_dispatch,
-        dynamic_numeric_dispatch,
         enum_as_ordinals,
         case_sensitive,
         fold_callable_names,
@@ -2499,10 +2432,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         tuple_literals_tagged,
         parens_for_index,
         unified_array_map,
-        concat_stringifies_operands,
         entry_point,
         gated_namespace_roots,
-        dynamic_add,
         function_references,
         commonjs_require,
         multi_value_tuple_returns,
@@ -2537,9 +2468,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         switch_fallthrough,
         throwable_is_root,
         methods_virtual_by_default,
-        integer_division_on_slash,
-        xor_is_logical_for_non_integers,
-        logical_ops_bitwise_for_integers,
+        private_methods_bind_lexically,
         set_arithmetic_operators,
         set_bitwise_operators,
         generator_send_throw_close,
@@ -2547,7 +2476,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         member_invokes_parameterless_method,
         const_without_init_is_type_alias,
         string_index_is_one_based,
-        integer_cast_truncates,
         type_helper_methods,
         bare_class_field_is_callable,
         echo_concatenates_operands,
@@ -2570,7 +2498,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         ecma_switch_strict_equality,
         ecma_lexical_declarations,
         has_ecma_globals,
-        ecma_operator_coercion,
         abstract_equality,
         has_arguments_object,
         relaxed_call_arity,
@@ -2589,9 +2516,9 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         member_call_on_null_error,
         numeric_cast_invalid_error,
         numeric_cast_invalid_message,
-        string_aware_relational,
         lexical_block_scope,
         function_scoped_variables,
+        reference_creates_local,
         unresolved_reference_throws,
         unresolved_reference_error,
         unresolved_reference_message,

@@ -51,6 +51,9 @@ pub struct CMTask {
     /// operand stack instead both loses it and leaves a value the spec says is
     /// not there.
     pub result: Option<Value>,
+    /// The lifted function signature and options used to validate task.return.
+    pub result_type: Option<crate::component::ValType>,
+    pub opts: crate::canon_def::CanonOpts,
     /// Outstanding borrowed handles lent to this task; must reach 0 before task.return.
     pub num_borrows: u32,
     /// Outstanding borrows this task has lent to subtasks.
@@ -59,6 +62,33 @@ pub struct CMTask {
     /// resists new incoming calls while > 0. The old boolean
     /// `backpressure.set` (canon 0x08) was dropped from the spec.
     pub backpressure: u32,
+}
+
+/// Stackless async lifts retain their implicit thread between callback turns.
+/// The core callee's packed result selects when the next turn may run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackWait {
+    Yield,
+    Wait(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingCallback {
+    pub task_id: u32,
+    pub thread_index: u32,
+    pub callback: u32,
+    pub waiting: CallbackWait,
+}
+
+/// `CanonicalABI.md` packs the callback code into the low four bits and the
+/// waitable-set index into the remaining 28 bits.
+pub fn unpack_callback_result(packed: u32) -> Result<Option<CallbackWait>, &'static str> {
+    match packed & 0xF {
+        0 => Ok(None),
+        1 => Ok(Some(CallbackWait::Yield)),
+        2 => Ok(Some(CallbackWait::Wait(packed >> 4))),
+        _ => Err("invalid callback result code"),
+    }
 }
 
 /// Why a resolve attempt was refused. Each maps to one spec `trap_if`, so the
@@ -95,6 +125,8 @@ impl CMTask {
             id,
             phase: TaskPhase::Initial,
             result: None,
+            result_type: None,
+            opts: crate::canon_def::CanonOpts::default(),
             num_borrows: 0,
             num_lends: 0,
             backpressure: 0,
@@ -212,6 +244,17 @@ impl CMTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_result_uses_four_code_bits() {
+        assert_eq!(unpack_callback_result(0), Ok(None));
+        assert_eq!(unpack_callback_result(1), Ok(Some(CallbackWait::Yield)));
+        assert_eq!(
+            unpack_callback_result((0x0fff_ffff << 4) | 2),
+            Ok(Some(CallbackWait::Wait(0x0fff_ffff)))
+        );
+        assert!(unpack_callback_result(3).is_err());
+    }
 
     /// A non-cancellable caller must NOT consume the pending request. If it
     /// did, the request would be marked delivered against a caller that never

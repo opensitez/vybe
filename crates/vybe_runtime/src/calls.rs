@@ -417,6 +417,9 @@ impl VM {
             let depth = handler.catch_label as usize;
             match self.label_stack.iter().rev().nth(depth).copied() {
                 Some(entry) => {
+                    // A deferred exception has now reached its accepting
+                    // handler; do not deliver it again on the next host call.
+                    self.last_exception = None;
                     self.branch_to_label(depth, entry);
                     Ok(())
                 }
@@ -1034,6 +1037,32 @@ impl VM {
                             self.push(result)?;
                             return Ok(());
                         }
+                        if bound_args.is_none() && param_abi && pass_count < 4 {
+                            let count = pass_count + 1;
+                            let mut args = [const { Value::Undefined }; 4];
+                            let first_stack_arg = if receiver_on_stack { 0 } else { 1 };
+                            for i in (first_stack_arg..count).rev() {
+                                args[i] = self.pop_fast();
+                            }
+                            if !receiver_on_stack {
+                                args[0] = self.host_receiver.clone();
+                            }
+                            self.pop_fast(); // callee; receiver is already in args[0]
+                            // Keep the host function alive across callback reentry,
+                            // even if the callback changes the host table.
+                            let host_fn = self.host_fns[idx].clone();
+                            let result = {
+                                let mut ctx = self.make_host_context();
+                                host_fn(&mut ctx, &args[..count])
+                            };
+                            drop(args);
+                            if let Some(exc) = self.last_exception.take() {
+                                self.raise_exception_value(exc)?;
+                                return Ok(());
+                            }
+                            self.push(result)?;
+                            return Ok(());
+                        }
                         let mut args = std::mem::take(&mut self.host_call_args);
                         args.clear();
                         args.reserve(argc + 1);
@@ -1047,7 +1076,7 @@ impl VM {
                             // exactly once, here, and nothing downstream has to
                             // ask which kind of call it was.
                             args.push(if receiver_on_stack {
-                                self.stack[arg_start].clone()
+                                std::mem::replace(&mut self.stack[arg_start], Value::Undefined)
                             } else {
                                 self.host_receiver.clone()
                             });
@@ -1059,7 +1088,12 @@ impl VM {
                                 args.extend_from_slice(elems);
                             }
                         }
-                        args.extend_from_slice(&self.stack[arg_start + usize::from(receiver_on_stack)..],);
+                        // Stack arguments are consumed by this call. Move them
+                        // into owned scratch storage instead of cloning their
+                        // references and immediately dropping the originals.
+                        // Bound captures above remain cloned: the callable
+                        // owns and reuses those values on subsequent calls.
+                        args.extend(self.stack.drain(arg_start + usize::from(receiver_on_stack)..));
                         self.stack.truncate(arg_start - 1);
                         // Constant under a given module ABI, because the
                         // layout above is now invariant. Kept only so the
@@ -1085,19 +1119,50 @@ impl VM {
                         self.push(result)?;
                     }
                     ObjectKind::Array(elems) => {
-                        let handlers = elems.clone();
+                        if elems.is_empty() {
+                            // No callback can observe arguments or mutate the
+                            // list. Consume the call directly instead of
+                            // materializing an owned argument snapshot.
+                            drop(o);
+                            self.stack.truncate(callee_idx);
+                            self.push(Value::Null)?;
+                            return Ok(());
+                        }
+                        // Keep an owned snapshot across callback mutation,
+                        // without allocating a Vec for the common short list.
+                let mut inline_handlers = [const { None }; 4];
+                let heap_handlers = if elems.len() <= inline_handlers.len() {
+                    for (target, handler) in inline_handlers.iter_mut().zip(elems.iter()) {
+                        *target = Some(handler.clone());
+                    }
+                    Vec::new()
+                } else {
+                    elems.clone()
+                };
                         drop(o);
 
-                        let args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
-                        for _ in 0..argc {
-                            self.pop_fast();
-                        }
+                        // Own arguments outside the VM stack so callbacks can
+                        // reenter safely. Short calls need no argument Vec.
+                        let mut inline_args;
+                        let heap_args;
+                        let args: &[Value] = if argc == 0 {
+                            &[]
+                        } else if argc <= 4 {
+                            inline_args = [const { Value::Undefined }; 4];
+                            for argument in inline_args[..argc].iter_mut().rev() {
+                                *argument = self.pop_fast();
+                            }
+                            &inline_args[..argc]
+                        } else {
+                            heap_args = self.stack.split_off(self.stack.len() - argc);
+                            &heap_args
+                        };
                         self.pop_fast();
 
                         let mut last = Value::Null;
-                        for handler in handlers {
+                for handler in inline_handlers.into_iter().flatten().chain(heap_handlers) {
                             self.push(handler)?;
-                            for arg in &args {
+                            for arg in args {
                                 self.push(arg.clone())?;
                             }
                             let depth = self.frames.len();
@@ -1205,7 +1270,7 @@ impl VM {
 
         if argc == arity {
             if self.stack.len() < final_len {
-                self.stack.resize(final_len, Value::Null);
+                crate::stack_values::resize_null_values(&mut self.stack, final_len);
             }
             return Ok((base, total));
         }
@@ -1215,10 +1280,10 @@ impl VM {
         }
         let args_end = base + arity;
         if self.stack.len() < args_end {
-            self.stack.resize(args_end, Value::Undefined);
+            crate::stack_values::resize_undefined_values(&mut self.stack, args_end);
         }
         if self.stack.len() < final_len {
-            self.stack.resize(final_len, Value::Null);
+            crate::stack_values::resize_null_values(&mut self.stack, final_len);
         }
         Ok((base, total))
     }
@@ -1231,6 +1296,21 @@ impl VM {
         local_frame_size: usize,
         upvalues: Vec<Arc<Mutex<crate::value::Upvalue>>>,
     ) {
+        if self.jit_enabled
+            && !self.instrumented
+            && self.type_recorder.is_none()
+            && self.perf_counters.is_none()
+            && upvalues.is_empty()
+        {
+            let chunk = &self.chunks[chunk_index];
+            let end = base + usize::from(chunk.arity);
+            if let Some(result) = self.jit.invoke(chunk_index, chunk, &self.stack[base..end]) {
+                self.stack.truncate(base);
+                self.push_fast(Value::I32(result));
+                return;
+            }
+        }
+        self.ensure_execution_fast_paths(chunk_index);
         if let Some(counters) = self.perf_counters.as_mut() {
             counters.function_call = counters.function_call.saturating_add(1);
         }
@@ -1313,8 +1393,7 @@ impl VM {
             // Async GENERATORS fall through to the continuation branch —
             // calling one builds the generator object; the async surface
             // is its promise-returning `next()` (§27.6.1.2).
-            let func = func.clone();
-            return self.call_async(&func, argc);
+            return self.call_async(func, argc);
         }
         // Generator intercept: if the target chunk is flagged as a
         // generator, calling it doesn't enter the body — we build a
@@ -1332,7 +1411,8 @@ impl VM {
             args.resize(args.len().max((func.arity as usize).saturating_sub(1)), Value::Undefined,);
             // Re-wrap the Function value so entry can re-call it later.
             let fn_obj = Object {
-                properties: indexmap::IndexMap::new(),
+                descriptor: None,
+            properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Function(func.clone()),
                 type_id: 0,
                 fields: Vec::new(),
@@ -1340,11 +1420,12 @@ impl VM {
             let entry = Value::Object(crate::heap::alloc(fn_obj));
             let state = ContinuationState {
                 entry,
-                saved: std::sync::Mutex::new(None),
+                saved: Box::new(std::sync::Mutex::new(None)),
                 state: std::sync::Mutex::new(ContinuationPhase::Ready),
             };
             let mut cont = Object {
-                properties: indexmap::IndexMap::new(),
+                descriptor: None,
+            properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Continuation(state),
                 type_id: 0,
                 fields: Vec::new(),
@@ -1355,7 +1436,8 @@ impl VM {
             if !args.is_empty() {
                 // Stash bound args so the first RESUME can re-push them.
                 let bound = Object {
-                    properties: indexmap::IndexMap::new(),
+                    descriptor: None,
+            properties: indexmap::IndexMap::new(),
                     kind: ObjectKind::Array(args),
                     type_id: 0,
                     fields: Vec::new(),
@@ -1471,15 +1553,21 @@ impl VM {
                 // lowercase key is the canonical .NET wrapper storage;
                 // falling back finds it without forcing every host
                 // write-path to duplicate the value under two keys.
-                let name_lc = name.to_lowercase();
-                if name_lc != name {
-                    if let Some(v) = ob.properties.get(&name_lc) {
-                        return Ok(v.clone());
-                    }
-                    if let ObjectKind::Array(ref elems) = ob.kind {
-                        if let Ok(idx) = name_lc.parse::<usize>() {
-                            if idx < elems.len() {
-                                return Ok(elems[idx].clone());
+                // Canonical ASCII member names cannot change under lowercase
+                // conversion. Avoid allocating a temporary String and probing
+                // the same key again on that common class-member miss path.
+                // Non-ASCII names retain the full Unicode fallback below.
+                if !name.bytes().all(|byte| byte.is_ascii() && !byte.is_ascii_uppercase()) {
+                    let name_lc = name.to_lowercase();
+                    if name_lc != name {
+                        if let Some(v) = ob.properties.get(&name_lc) {
+                            return Ok(v.clone());
+                        }
+                        if let ObjectKind::Array(ref elems) = ob.kind {
+                            if let Ok(idx) = name_lc.parse::<usize>() {
+                                if idx < elems.len() {
+                                    return Ok(elems[idx].clone());
+                                }
                             }
                         }
                     }
@@ -1529,31 +1617,19 @@ impl VM {
                     }
                 }
 
-                // Also try inferring type from ObjectKind or __type property
-                let ob = o.lock().unwrap();
-                // ⛔ Whether the type was STAMPED or INFERRED decides whether
-                // the vtable may answer. A user class carries an explicit
-                // `__type`, and under ECMA its members are prototype
-                // properties the chain has already declined — so the vtable
-                // must stay silent. An ARRAY has no `__type`; `"list"` is
-                // inferred from its kind, and its methods legitimately live
-                // here. Gating both would take `[].map` with it.
-                let explicit_type = ob.properties.contains_key("__type");
-                let inferred_type = ob
-                    .properties
-                    .get("__type")
-                    .map(|v| format!("{}", v).to_lowercase())
-                    .unwrap_or_else(|| match &ob.kind {
-                        ObjectKind::Array(_) => "list".into(),
-                        _ => String::new(),
-                    });
-                drop(ob);
-
-                let _ = explicit_type;
-                if !inferred_type.is_empty() {
-                    if let Some(tid) = self.type_registry.get_id(&inferred_type) {
-                        if let Some(method) = self.type_registry.resolve_method(tid, name) {
-                            return Ok(self.method_to_value(method));
+                // Class identity comes from the runtime type reference, not
+                // writable source properties. Never reinterpret a vtable miss
+                // through __type: doing so permits an object to borrow another
+                // class's methods and repeats normalization/name lookup.
+                // Untyped native arrays still use their builtin kind; this is
+                // not a source-class identity inferred from string metadata.
+                if type_id == 0 {
+                    let is_array = matches!(o.lock().unwrap().kind, ObjectKind::Array(_));
+                    if is_array {
+                        if let Some(tid) = self.type_registry.get_lowercase_id("list") {
+                            if let Some(method) = self.type_registry.resolve_method(tid, name) {
+                                return Ok(self.method_to_value(method));
+                            }
                         }
                     }
                 }
@@ -1576,7 +1652,12 @@ impl VM {
             }
             Value::String(s) => {
                 if name == "length" {
-                    return Ok(Value::F64(s.encode_utf16().count() as f64));
+                    #[cfg(feature = "primitive-benchmarks")]
+                    if !self.cache_string_lengths {
+                        // Exact original expression; explicit benchmark mode only.
+                        return Ok(Value::F64(s.encode_utf16().count() as f64));
+                    }
+                    return Ok(Value::F64(self.string_lengths.borrow_mut().count(s) as f64));
                 }
                 if let Some(tid) = self.type_registry.get_id("string") {
                     if let Some(method) = self.type_registry.resolve_method(tid, name) {
@@ -1635,7 +1716,8 @@ impl VM {
                 let mut properties = indexmap::IndexMap::new();
                 properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
                 let obj = Object {
-                    properties,
+                    descriptor: None,
+            properties,
                     kind: ObjectKind::Function(func),
                     type_id: 0,
                     fields: Vec::new(),
@@ -1645,3 +1727,158 @@ impl VM {
         }
     }
 }
+
+#[cfg(test)]
+mod caught_exception_state_tests {
+    use super::*;
+    use crate::vm::{ExceptionHandler, LabelEntry, CATCH_KIND_CATCH, CATCH_KIND_CATCH_ALL};
+
+    fn install_handler(vm: &mut VM, kind: u8, entity: usize) {
+        vm.label_stack.push(LabelEntry {
+            target: 0, is_loop: false, is_try: false, try_group: 0,
+            result_arity: 1, stack_height: 0,
+        });
+        vm.exception_handlers.push(ExceptionHandler {
+            catch_label: 0, _chunk_index: 0, stack_depth: 0,
+            frame_depth: 0, label_depth: 1, kind, tag_entity: entity, group: 1,
+        });
+    }
+
+    #[test]
+    fn deferred_trap_is_cleared_only_when_a_host_handler_accepts_it() {
+        let mut vm = VM::new();
+        install_handler(&mut vm, CATCH_KIND_CATCH, 0);
+        vm.exec_floors.push(1);
+        assert!(vm.raise_trap("trap: unreachable executed").is_err());
+        assert!(vm.last_exception.is_some());
+        assert_eq!(vm.exception_handlers.len(), 1);
+        vm.exec_floors.pop();
+        vm.raise_trap("trap: unreachable executed").unwrap();
+        assert!(vm.last_exception.is_none());
+        assert!(vm.exception_handlers.is_empty());
+        assert_eq!(vm.stack.len(), 1);
+    }
+
+    #[test]
+    fn core_catch_all_and_foreign_tag_cannot_accept_a_trap() {
+        for (kind, entity) in [(CATCH_KIND_CATCH_ALL, 0), (CATCH_KIND_CATCH, 7)] {
+            let mut vm = VM::new();
+            install_handler(&mut vm, kind, entity);
+            assert!(vm.raise_trap("trap: unreachable executed").is_err());
+            assert!(vm.last_exception.is_some());
+            assert_eq!(vm.exception_handlers.len(), 1);
+        }
+    }
+
+    #[test]
+    fn accepted_language_exception_is_not_left_pending() {
+        let mut vm = VM::new();
+        install_handler(&mut vm, CATCH_KIND_CATCH, 0);
+        let exception = Value::String(Arc::from("caught once"));
+        vm.last_exception = Some(exception.clone());
+        vm.raise_exception_value(exception.clone()).unwrap();
+        assert!(vm.last_exception.is_none());
+        assert_eq!(vm.pop(), exception);
+    }
+}
+
+#[cfg(test)]
+mod inline_receiver_argument_tests {
+    use super::*;
+    use crate::chunk::ReceiverAbi;
+
+    fn run_probe(user_count: usize, bound: bool) -> Vec<Value> {
+        let arguments: Vec<_> = (0..user_count)
+            .map(|i| Value::I32(i as i32 + 1))
+            .collect();
+        run_value_probe(Value::I32(700), &arguments, bound)
+    }
+
+    fn run_value_probe(receiver: Value, arguments: &[Value], bound: bool) -> Vec<Value> {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let mut vm = VM::new();
+        vm.register_host_fn("ecma:array", "join", Box::new(move |_, args| {
+            *captured.lock().unwrap() = args.to_vec();
+            Value::I32(123)
+        }));
+        let idx = vm.host_registry[&("ecma:array".to_string(), "join".to_string())];
+        assert!(vm.host_fn_declares_receiver(idx));
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(idx);
+        if bound {
+            function.properties.insert("__bound_args".into(), Value::Object(crate::heap::alloc(
+                Object::new_array(vec![Value::I32(41), Value::I32(42)]),
+            )));
+        }
+        vm.set_global("__receiver_probe", Value::Object(crate::heap::alloc(function)));
+        let mut chunk = crate::Chunk::new("<receiver-argument-probe>");
+        chunk.module_receiver_abi = ReceiverAbi::Parameter;
+        let key = chunk.add_constant(Value::String(Arc::from("__receiver_probe")));
+        chunk.emit_op_u32(crate::Op::GLOBAL_GET, key, 0);
+        vm.set_global("__probe_receiver", receiver);
+        let receiver_key = chunk.add_constant(Value::String(Arc::from("__probe_receiver")));
+        chunk.emit_op_u32(crate::Op::GLOBAL_GET, receiver_key, 0);
+        for (i, argument) in arguments.iter().enumerate() {
+            let name = format!("__probe_argument_{i}");
+            vm.set_global(&name, argument.clone());
+            let argument_key = chunk.add_constant(Value::String(Arc::from(name)));
+            chunk.emit_op_u32(crate::Op::GLOBAL_GET, argument_key, 0);
+        }
+        chunk.emit_op_u8_u8(crate::Op::CALL_REF, arguments.len() as u8 + 1, 1, 0);
+        chunk.emit_op(crate::Op::RETURN, 0);
+        assert_eq!(vm.run(vec![chunk]).unwrap(), Value::I32(123));
+        let values = observed.lock().unwrap().clone();
+        values
+    }
+
+    #[test]
+    fn receiver_and_user_argument_order_match_across_inline_boundary() {
+        for user_count in 0..=5 {
+            let mut expected = vec![Value::I32(700)];
+            expected.extend((0..user_count).map(|i| Value::I32(i as i32 + 1)));
+            assert_eq!(run_probe(user_count, false), expected);
+        }
+    }
+
+    #[test]
+    fn bound_captures_keep_receiver_first_and_stay_on_general_path() {
+        for user_count in 0..=5 {
+            let mut expected = vec![Value::I32(700), Value::I32(41), Value::I32(42)];
+            expected.extend((0..user_count).map(|i| Value::I32(i as i32 + 1)));
+            assert_eq!(run_probe(user_count, true), expected);
+        }
+    }
+
+    #[test]
+    fn managed_array_identity_survives_inline_and_fallback_calls() {
+        let receiver = crate::heap::alloc(Object::new_array(vec![Value::I32(700)]));
+        let argument = crate::heap::alloc(Object::new_array(vec![Value::I32(1)]));
+        for bound in [false, true] {
+            for user_count in 0..=5 {
+                let arguments = vec![Value::Object(argument.clone()); user_count];
+                let observed = run_value_probe(Value::Object(receiver.clone()), &arguments, bound);
+                let Value::Object(actual_receiver) = &observed[0] else {
+                    panic!("receiver lost its object representation");
+                };
+                assert!(Arc::ptr_eq(actual_receiver, &receiver));
+                let argument_start = if bound { 3 } else { 1 };
+                assert_eq!(observed.len(), argument_start + user_count);
+                for value in &observed[argument_start..] {
+                    let Value::Object(actual_argument) = value else {
+                        panic!("argument lost its object representation");
+                    };
+                    assert!(Arc::ptr_eq(actual_argument, &argument));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "receiver_argument_perf_tests.rs"]
+mod receiver_argument_perf_tests;
+
+#[cfg(test)]
+#[path = "multicast_argument_tests.rs"]
+mod multicast_argument_tests;

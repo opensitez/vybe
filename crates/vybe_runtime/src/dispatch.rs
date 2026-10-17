@@ -17,7 +17,7 @@ use crate::vm::{
     ActiveContinuation, BlockTargets, EcmaArrayBuiltin, EcmaBooleanBuiltin, EcmaNumberBuiltin,
     EcmaObjectBuiltin, ExceptionHandler, ImportTarget, JsBooleanBuiltin, JsNumberBuiltin,
     JsStringBuiltin, JsUndefinedBuiltin, LabelEntry, LocalFastPath, LoopSuperop,
-    NativeCallSiteTarget, NativeResultFastPath, ResolvedCallTarget, ResumeMode, VM,
+    NativeCallSiteTarget, NativeResultFastPath, ResolvedCallTarget, ResumeMode, VM, DECODED_DEFINED_CALL,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,6 +25,1173 @@ use std::sync::Arc;
 #[inline(always)]
 fn js_number_is_neg_zero(n: f64) -> bool {
     n == 0.0 && n.is_sign_negative()
+}
+
+#[cfg(test)]
+mod canon_zero_stream_buffer_tests {
+    use super::*;
+    use crate::canon_def::{CanonDef, CanonOpts};
+    use crate::canon_copy::BLOCKED;
+    use crate::component::ValType;
+    use crate::handle_table::HandleEntry;
+    use crate::vm::CanonBuiltin;
+    use crate::waitable::Waitable;
+
+    #[test]
+    fn zero_length_stream_buffers_ignore_the_guest_pointer() {
+        let mut vm = VM::new();
+        vm.canon_defs.push(CanonDef {
+            opts: CanonOpts { is_async: true, ..CanonOpts::default() },
+            ..CanonDef::default()
+        });
+        vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+        let pair = vm.pop().as_i64() as u64;
+        let readable = pair as u32;
+        let writable = (pair >> 32) as u32;
+        vm.canon_type_immediate = Some(0);
+
+        for (builtin, handle) in [
+            (CanonBuiltin::StreamWrite, writable),
+            (CanonBuiltin::StreamRead, readable),
+        ] {
+            vm.push(Value::I32(handle as i32)).unwrap();
+            vm.push(Value::I32(0xdeadbeefu32 as i32)).unwrap();
+            vm.push(Value::I32(0)).unwrap();
+            vm.exec_canon_builtin(builtin).unwrap();
+            assert_eq!(vm.pop().as_i32() as u32, BLOCKED);
+        }
+    }
+
+    #[test]
+    fn joined_stream_allows_async_read_but_rejects_sync_read() {
+        for is_async in [false, true] {
+            let mut vm = VM::new();
+            vm.canon_defs.push(CanonDef {
+                opts: CanonOpts { is_async, ..CanonOpts::default() },
+                ..CanonDef::default()
+            });
+            vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+            let readable = vm.pop().as_i64() as u32;
+            let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get(readable) else {
+                panic!("missing readable stream end");
+            };
+            let stream_id = end.id;
+            let set = vm.waitable_sets.create();
+            vm.waitable_sets.get_mut(set).unwrap()
+                .join_handle(readable, Waitable::Stream(stream_id));
+            let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get_mut(readable) else {
+                panic!("missing readable stream end");
+            };
+            end.in_waitable_set = true;
+            vm.canon_type_immediate = Some(0);
+            for value in [readable as i32, 0, 0] {
+                vm.push(Value::I32(value)).unwrap();
+            }
+            let result = vm.exec_canon_builtin(CanonBuiltin::StreamRead);
+            if is_async {
+                result.unwrap();
+                assert_eq!(vm.pop().as_i32() as u32, BLOCKED);
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.is_trap());
+                assert!(error.message.contains("synchronous read"));
+            }
+        }
+    }
+
+    #[test]
+    fn joined_future_allows_async_read_but_rejects_sync_read() {
+        for is_async in [false, true] {
+            let mut vm = VM::new();
+            vm.memory.grow(1);
+            vm.canon_types = vec![Some(ValType::Future(Box::new(ValType::U8)))];
+            vm.canon_defs.push(CanonDef {
+                ty: Some(0),
+                opts: CanonOpts { is_async, ..CanonOpts::default() },
+                ..CanonDef::default()
+            });
+            vm.canon_type_immediate = Some(0);
+            vm.exec_canon_builtin(CanonBuiltin::FutureNew).unwrap();
+            let readable = vm.pop().as_i64() as u32;
+            let Some(HandleEntry::ReadableFutureEnd(end)) = vm.handle_table.get(readable) else {
+                panic!("missing readable future end");
+            };
+            let future_id = end.id;
+            let set = vm.waitable_sets.create();
+            vm.waitable_sets.get_mut(set).unwrap()
+                .join_handle(readable, Waitable::Future(future_id));
+            let Some(HandleEntry::ReadableFutureEnd(end)) = vm.handle_table.get_mut(readable) else {
+                panic!("missing readable future end");
+            };
+            end.in_waitable_set = true;
+            vm.push(Value::I32(readable as i32)).unwrap();
+            vm.push(Value::I32(0)).unwrap();
+            let result = vm.exec_canon_builtin(CanonBuiltin::FutureRead);
+            if is_async {
+                result.unwrap();
+                assert_eq!(vm.pop().as_i32() as u32, BLOCKED);
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.is_trap());
+                assert!(error.message.contains("synchronous read"));
+            }
+        }
+    }
+
+    #[test]
+    fn joined_stream_and_future_writes_reject_only_synchronous_copies() {
+        for future in [false, true] {
+            for is_async in [false, true] {
+                let ty = if future { ValType::Future(Box::new(ValType::U8)) }
+                    else { ValType::Stream(Box::new(ValType::U8)) };
+                let mut vm = copy_vm(ty, 0);
+                vm.canon_defs[0].opts.is_async = is_async;
+                vm.exec_canon_builtin(if future { CanonBuiltin::FutureNew }
+                    else { CanonBuiltin::StreamNew }).unwrap();
+                let writable = (vm.pop().as_i64() as u64 >> 32) as u32;
+                let end = match vm.handle_table.get_mut(writable).unwrap() {
+                    HandleEntry::WritableStreamEnd(end) | HandleEntry::WritableFutureEnd(end) => end,
+                    _ => unreachable!(),
+                };
+                end.in_waitable_set = true;
+                let id = end.id;
+                let set = vm.waitable_sets.create();
+                vm.waitable_sets.get_mut(set).unwrap().join_handle(writable,
+                    if future { Waitable::FutureWrite(id) } else { Waitable::StreamWrite(id) });
+                let result = if future {
+                    call_copy(&mut vm, CanonBuiltin::FutureWrite, &[writable as i32, 0])
+                } else {
+                    call_copy(&mut vm, CanonBuiltin::StreamWrite, &[writable as i32, 0, 1])
+                };
+                if is_async {
+                    result.unwrap();
+                } else {
+                    let error = result.unwrap_err();
+                    assert!(error.is_trap());
+                    assert!(error.message.contains("synchronous write"));
+                    assert_eq!(vm.event_loop.borrow().parked_sync_copies(), 0);
+                }
+            }
+        }
+    }
+
+    fn copy_vm(ty: ValType, memory_index: u32) -> VM {
+        let mut vm = VM::new();
+        configure_copy_vm(&mut vm, ty, memory_index);
+        vm
+    }
+
+    fn configure_copy_vm(vm: &mut VM, ty: ValType, memory_index: u32) {
+        vm.memory = crate::shared_memory::SharedMemory::new(64);
+        vm.extra_memories.clear();
+        vm.extra_memories.push(crate::shared_memory::SharedMemory::new(64));
+        vm.canon_types = vec![Some(ty)];
+        vm.canon_defs.clear();
+        vm.canon_defs.push(CanonDef {
+            ty: Some(0),
+            opts: CanonOpts { memory: Some(memory_index), ..CanonOpts::default() },
+            ..CanonDef::default()
+        });
+        vm.canon_type_immediate = Some(0);
+    }
+
+    fn call_copy(vm: &mut VM, builtin: CanonBuiltin, args: &[i32]) -> Result<i32, VMError> {
+        for &arg in args {
+            vm.push(Value::I32(arg)).unwrap();
+        }
+        vm.exec_canon_builtin(builtin)?;
+        Ok(vm.pop().as_i32())
+    }
+
+    #[test]
+    fn canonical_stream_drop_rejects_busy_writer_without_removing_it() {
+        let (mut vm, _, writable, _, id) = async_stream_vm(ValType::U8);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+            &[writable as i32, 0, 0]).unwrap() as u32, BLOCKED);
+        vm.push(Value::I32(writable as i32)).unwrap();
+        let error = vm.exec_canon_builtin(CanonBuiltin::StreamDropWritable).unwrap_err();
+        assert!(error.is_trap());
+        assert!(error.message.contains("cannot drop busy stream"));
+        assert!(vm.handle_table.get(writable).is_some());
+        assert!(vm.event_loop.borrow().stream_zero_write_pending(id));
+    }
+
+    #[test]
+    fn canonical_stream_drop_checks_resolved_type_before_removal() {
+        for readable in [true, false] {
+            for equivalent in [true, false] {
+                let mut vm = copy_vm(ValType::Stream(Box::new(ValType::U8)), 1);
+                vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+                let pair = vm.pop().as_i64() as u64;
+                let handle = if readable { pair as u32 } else { (pair >> 32) as u32 };
+                vm.canon_types.push(Some(ValType::Stream(Box::new(
+                    if equivalent { ValType::U8 } else { ValType::U32 }))));
+                vm.canon_defs.push(CanonDef { ty: Some(1), ..CanonDef::default() });
+                vm.canon_type_immediate = Some(1);
+                vm.push(Value::I32(handle as i32)).unwrap();
+                let result = vm.exec_canon_builtin(if readable {
+                    CanonBuiltin::StreamDropReadable
+                } else { CanonBuiltin::StreamDropWritable });
+                if equivalent {
+                    result.unwrap();
+                    assert!(vm.handle_table.get(handle).is_none());
+                } else {
+                    let error = result.unwrap_err();
+                    assert!(error.is_trap());
+                    assert!(error.message.contains("stream of a different type"));
+                    assert!(vm.handle_table.get(handle).is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_stream_drop_detaches_membership_before_handle_reuse() {
+        for readable in [true, false] {
+            let mut vm = copy_vm(ValType::Stream(Box::new(ValType::U8)), 1);
+            vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+            let pair = vm.pop().as_i64() as u64;
+            let handle = if readable { pair as u32 } else { (pair >> 32) as u32 };
+            let set = vm.waitable_sets.create();
+            vm.push(Value::I32(handle as i32)).unwrap();
+            vm.push(Value::I32(set as i32)).unwrap();
+            vm.exec_canon_builtin(CanonBuiltin::WaitableJoin).unwrap();
+            assert!(vm.waitable_sets.contains_handle(handle));
+            vm.push(Value::I32(handle as i32)).unwrap();
+            vm.exec_canon_builtin(if readable { CanonBuiltin::StreamDropReadable }
+                else { CanonBuiltin::StreamDropWritable }).unwrap();
+            assert!(!vm.waitable_sets.contains_handle(handle));
+            assert!(vm.waitable_sets.get(set).unwrap().members.is_empty());
+            vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+            let recycled = vm.pop().as_i64() as u32;
+            assert_eq!(recycled, handle);
+            let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get(recycled)
+                else { panic!("new readable end missing") };
+            assert!(!end.in_waitable_set);
+        }
+    }
+
+    #[test]
+    fn canonical_failed_stream_drop_preserves_waitable_membership() {
+        let (mut vm, _, writable, set, _) = async_stream_vm(ValType::U8);
+        vm.push(Value::I32(writable as i32)).unwrap();
+        vm.push(Value::I32(set as i32)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::WaitableJoin).unwrap();
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+            &[writable as i32, 0, 0]).unwrap() as u32, BLOCKED);
+        vm.push(Value::I32(writable as i32)).unwrap();
+        assert!(vm.exec_canon_builtin(CanonBuiltin::StreamDropWritable).unwrap_err().is_trap());
+        assert!(vm.waitable_sets.contains_handle(writable));
+        assert_eq!(vm.waitable_sets.get(set).unwrap().members.len(), 2);
+    }
+
+    #[test]
+    fn canonical_waitable_join_moves_unjoins_and_validates_before_mutation() {
+        let (mut vm, readable, _, first, _) = async_stream_vm(ValType::U8);
+        let second = vm.waitable_sets.create();
+        for _ in 0..2 {
+            vm.push(Value::I32(readable as i32)).unwrap();
+            vm.push(Value::I32(second as i32)).unwrap();
+            vm.exec_canon_builtin(CanonBuiltin::WaitableJoin).unwrap();
+            assert!(vm.waitable_sets.get(first).unwrap().members.is_empty());
+            assert_eq!(vm.waitable_sets.get(second).unwrap().member_handles, [readable]);
+        }
+        vm.push(Value::I32(readable as i32)).unwrap();
+        vm.push(Value::I32(-1)).unwrap();
+        assert!(vm.exec_canon_builtin(CanonBuiltin::WaitableJoin).unwrap_err().is_trap());
+        assert_eq!(vm.waitable_sets.get(second).unwrap().member_handles, [readable]);
+        vm.push(Value::I32(readable as i32)).unwrap();
+        vm.push(Value::I32(0)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::WaitableJoin).unwrap();
+        assert!(!vm.waitable_sets.contains_handle(readable));
+        let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get(readable)
+            else { unreachable!() };
+        assert!(!end.in_waitable_set);
+        vm.push(Value::I32(-1)).unwrap();
+        vm.push(Value::I32(0)).unwrap();
+        assert!(vm.exec_canon_builtin(CanonBuiltin::WaitableJoin).unwrap_err().is_trap());
+    }
+
+    #[test]
+    fn canonical_waitable_set_drop_rejects_children_and_waiting_callbacks() {
+        let (mut vm, readable, _, set, _) = async_stream_vm(ValType::U8);
+        vm.push(Value::I32(set as i32)).unwrap();
+        let error = vm.exec_canon_builtin(CanonBuiltin::WaitableSetDrop).unwrap_err();
+        assert!(error.is_trap());
+        assert!(error.message.contains("resource has children"));
+        assert!(vm.waitable_sets.get(set).is_some());
+        vm.push(Value::I32(readable as i32)).unwrap();
+        vm.push(Value::I32(0)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::WaitableJoin).unwrap();
+        let mut thread = crate::cm_thread::Thread::new(1, Value::Undefined);
+        thread.resume_later().unwrap();
+        let index = vm.cm_instance.threads.register(thread);
+        vm.pending_cm_callbacks.push(crate::cm_task::PendingCallback {
+            task_id: 1, thread_index: index, callback: 0,
+            waiting: crate::cm_task::CallbackWait::Wait(set),
+        });
+        vm.push(Value::I32(set as i32)).unwrap();
+        assert!(vm.exec_canon_builtin(CanonBuiltin::WaitableSetDrop).unwrap_err().is_trap());
+        let thread = vm.cm_instance.threads.get_mut(index).unwrap();
+        thread.stop_waiting_internal(false).unwrap();
+        thread.take_cont();
+        vm.push(Value::I32(set as i32)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::WaitableSetDrop).unwrap();
+        assert!(vm.waitable_sets.get(set).is_none());
+        vm.push(Value::I32(set as i32)).unwrap();
+        assert!(vm.exec_canon_builtin(CanonBuiltin::WaitableSetDrop).unwrap_err().is_trap());
+    }
+
+    #[test]
+    fn canonical_waitable_join_rejects_parked_and_ready_synchronous_copies() {
+        for future in [false, true] {
+            let ty = if future { ValType::Future(Box::new(ValType::U8)) }
+                else { ValType::Stream(Box::new(ValType::U8)) };
+            let mut vm = copy_vm(ty, 1);
+            vm.exec_canon_builtin(if future { CanonBuiltin::FutureNew }
+                else { CanonBuiltin::StreamNew }).unwrap();
+            let readable = vm.pop().as_i64() as u32;
+            let id = match vm.handle_table.get(readable).unwrap() {
+                HandleEntry::ReadableStreamEnd(end) | HandleEntry::ReadableFutureEnd(end) => end.id,
+                _ => unreachable!(),
+            };
+            let result = if future {
+                call_copy(&mut vm, CanonBuiltin::FutureRead, &[readable as i32, 0])
+            } else {
+                call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 0, 1])
+            };
+            result.unwrap_err();
+            assert_eq!(vm.event_loop.borrow().parked_sync_copies(), 1);
+            let set = vm.waitable_sets.create();
+            for ready in [false, true] {
+                if ready {
+                    if future { vm.event_loop.borrow_mut().resolve_future(id, Value::I32(42)); }
+                    else { vm.event_loop.borrow_mut().stream_push_bytes(id, vec![42]); }
+                    assert_eq!(vm.event_loop.borrow().parked_sync_copies(), 0);
+                }
+                vm.push(Value::I32(readable as i32)).unwrap();
+                vm.push(Value::I32(set as i32)).unwrap();
+                assert!(vm.exec_canon_builtin(CanonBuiltin::WaitableJoin).unwrap_err().is_trap());
+                assert!(vm.waitable_sets.get(set).unwrap().members.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_write_to_host_consumer_transfers_ownership_and_finishes_at_eof() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        for fail in [false, true] {
+            let mut vm = copy_vm(ValType::Stream(Box::new(ValType::U8)), 1);
+            vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+            let packed = vm.pop().as_i64() as u64;
+            let (readable, writable) = (packed as u32, (packed >> 32) as u32);
+            let future = vm.event_loop.borrow_mut().create_future();
+            let output = Rc::new(RefCell::new(Vec::new()));
+            let captured = output.clone();
+            vm.make_host_context().consume_byte_stream(&Value::I32(readable as i32), future,
+                Box::new(move |bytes| {
+                    if let Some(bytes) = bytes {
+                        captured.borrow_mut().extend_from_slice(bytes);
+                        if fail { return Err(Value::I32(42)); }
+                    }
+                    Ok(())
+                })).unwrap();
+            assert!(vm.handle_table.get(readable).is_none());
+            vm.extra_memories[0].write_bytes(8, &[0, 128, 255]);
+            let result = call_copy(&mut vm, CanonBuiltin::StreamWrite,
+                &[writable as i32, 8, 3]).unwrap();
+            assert_eq!(result, if fail { 49 } else { 48 });
+            assert_eq!(&*output.borrow(), &[0, 128, 255]);
+            assert_eq!(vm.event_loop.borrow().future_states[&future].phase,
+                if fail { crate::event_loop::FuturePhase::Resolved }
+                else { crate::event_loop::FuturePhase::Pending });
+            vm.push(Value::I32(writable as i32)).unwrap();
+            vm.exec_canon_builtin(CanonBuiltin::StreamDropWritable).unwrap();
+            let events = vm.event_loop.borrow();
+            assert_eq!(events.future_states[&future].phase, crate::event_loop::FuturePhase::Resolved);
+            if fail { assert!(matches!(events.future_states[&future].value, Some(Value::I32(42)))); }
+            else { assert!(matches!(events.future_states[&future].value, Some(Value::Null))); }
+        }
+    }
+
+    #[test]
+    fn host_consumer_rejects_transfer_of_lent_read_buffer() {
+        let (mut vm, readable, _, _, _) = async_stream_vm(ValType::U8);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamRead,
+            &[readable as i32, 8, 3]).unwrap(), crate::canon_copy::BLOCKED as i32);
+        let future = vm.event_loop.borrow_mut().create_future();
+        assert!(vm.make_host_context().consume_byte_stream(&Value::I32(readable as i32),
+            future, Box::new(|_| Ok(()))).is_err());
+        assert!(vm.handle_table.get(readable).is_some());
+    }
+
+    #[test]
+    fn waitable_events_use_the_selected_canonical_memory() {
+        for memory_index in [0, 1] {
+            for builtin in [CanonBuiltin::WaitableSetPoll, CanonBuiltin::WaitableSetWait] {
+                let mut vm = copy_vm(ValType::U8, memory_index);
+                let selected = vm.canon_memory(Some(memory_index)).unwrap();
+                let other = vm.canon_memory(Some(1 - memory_index)).unwrap();
+                other.store_i32(8, 12345).unwrap();
+                vm.canon_types[0] = Some(ValType::Stream(Box::new(ValType::U8)));
+                vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+                let writable = (vm.pop().as_i64() as u64 >> 32) as u32;
+                let Some(HandleEntry::WritableStreamEnd(end)) = vm.handle_table.get_mut(writable) else {
+                    panic!("missing writable stream end");
+                };
+                let id = end.id;
+                end.state = crate::handle_table::CopyState::Copying;
+                let set = vm.waitable_sets.create();
+                vm.waitable_sets.get_mut(set).unwrap()
+                    .join_handle(writable, Waitable::StreamWrite(id));
+                assert_eq!(vm.event_loop.borrow_mut().stream_zero_write(id), None);
+                assert_eq!(vm.event_loop.borrow_mut().stream_zero_read(id), None);
+                assert_eq!(call_copy(&mut vm, builtin, &[set as i32, 8]).unwrap(), 3);
+                assert_eq!(selected.load_i32(8).unwrap(), writable as i32);
+                assert_eq!(selected.load_i32(12).unwrap(), 0);
+                assert_eq!(other.load_i32(8).unwrap(), 12345);
+                let Some(HandleEntry::WritableStreamEnd(end)) = vm.handle_table.get(writable) else {
+                    panic!("missing writable stream end");
+                };
+                assert_eq!(end.state, crate::handle_table::CopyState::Idle);
+                assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                    &[set as i32, 8]).unwrap(), 0);
+                assert_eq!(selected.load_i32(8).unwrap(), 0);
+                assert_eq!(selected.load_i32(12).unwrap(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn waitable_event_buffer_traps_before_writing_either_field() {
+        let mut vm = copy_vm(ValType::U8, 1);
+        let selected = vm.canon_memory(Some(1)).unwrap();
+        selected.store_i32(60, 12345).unwrap();
+        let event = (crate::waitable::EventCode::StreamWrite, 17, 0);
+        for ptr in [60, usize::MAX] {
+            assert!(vm.unpack_event(ptr, event).unwrap_err().is_trap());
+            assert_eq!(selected.load_i32(60).unwrap(), 12345);
+        }
+    }
+
+    fn async_stream_vm(elem: ValType) -> (VM, u32, u32, u32, u64) {
+        let mut vm = copy_vm(ValType::Stream(Box::new(elem)), 1);
+        vm.canon_defs[0].opts.is_async = true;
+        vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+        let pair = vm.pop().as_i64() as u64;
+        let (readable, writable) = (pair as u32, (pair >> 32) as u32);
+        let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get_mut(readable) else {
+            unreachable!();
+        };
+        let id = end.id;
+        end.in_waitable_set = true;
+        let set = vm.waitable_sets.create();
+        vm.waitable_sets.get_mut(set).unwrap().join_handle(readable, Waitable::Stream(id));
+        (vm, readable, writable, set, id)
+    }
+
+    #[test]
+    fn guest_write_without_reader_retains_selected_memory_until_copy() {
+        for elem in [ValType::U8, ValType::U32] {
+            let (mut vm, readable, writable, _set, id) = async_stream_vm(elem.clone());
+            let source = vm.canon_memory(Some(1)).unwrap();
+            source.store_i32(16, 41).unwrap();
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+                &[writable as i32, 16, 1]).unwrap() as u32, BLOCKED);
+            assert!(!vm.event_loop.borrow().stream_has_item(id));
+            assert!(vm.guest_stream_writes.contains_key(&id));
+            // The proposal permits racy access; a retained buffer must not be
+            // eagerly snapshotted or rebound to the next active memory.
+            source.store_i32(16, 43).unwrap();
+            vm.canon_defs[0].opts.memory = Some(0);
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamRead,
+                &[readable as i32, 32, 1]).unwrap(), 16);
+            assert_eq!(vm.memory.load_i32(32).unwrap(), 43);
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamCancelWrite,
+                &[writable as i32]).unwrap(), 18);
+            assert!(!vm.guest_stream_writes.contains_key(&id));
+        }
+    }
+
+    #[test]
+    fn guest_pending_write_zero_read_makes_no_progress_and_cancel_reclaims_buffer() {
+        let (mut vm, readable, writable, _set, id) = async_stream_vm(ValType::U8);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+            &[writable as i32, 16, 2]).unwrap() as u32, BLOCKED);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamRead,
+            &[readable as i32, -1, 0]).unwrap(), 0);
+        assert_eq!(vm.event_loop.borrow().stream_zero_completion(id, false), None);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamCancelWrite,
+            &[writable as i32]).unwrap(), 2);
+        assert!(!vm.guest_stream_writes.contains_key(&id));
+        assert!(!vm.event_loop.borrow().stream_has_item(id));
+    }
+
+    #[test]
+    fn guest_pending_read_zero_write_completes_only_the_writer() {
+        for elem in [ValType::U8, ValType::U32] {
+            let (mut vm, readable, writable, set, id) = async_stream_vm(elem);
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamRead,
+                &[readable as i32, 16, 2]).unwrap() as u32, BLOCKED);
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+                &[writable as i32, -1, 0]).unwrap(), 0);
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                &[set as i32, 0]).unwrap(), 0);
+            assert!(vm.async_stream_reads.contains_key(&id));
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamCancelRead,
+                &[readable as i32]).unwrap(), 2);
+        }
+    }
+
+    #[test]
+    fn host_sink_attaching_after_guest_write_completes_the_retained_buffer() {
+        let mut vm = copy_vm(ValType::Stream(Box::new(ValType::U8)), 1);
+        vm.canon_defs[0].opts.is_async = true;
+        vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+        let pair = vm.pop().as_i64() as u64;
+        let (readable, writable) = (pair as u32, (pair >> 32) as u32);
+        let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get(readable) else {
+            unreachable!()
+        };
+        let id = end.id;
+        vm.extra_memories[0].write_bytes(16, &[41, 43]);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+            &[writable as i32, 16, 2]).unwrap() as u32, BLOCKED);
+        assert!(!vm.event_loop.borrow().stream_has_item(id));
+        let output = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = output.clone();
+        let future = vm.event_loop.borrow_mut().create_future();
+        vm.make_host_context().consume_byte_stream(&Value::I32(readable as i32), future,
+            Box::new(move |bytes| {
+                if let Some(bytes) = bytes { captured.borrow_mut().extend_from_slice(bytes); }
+                Ok(())
+            })).unwrap();
+        vm.tick_component_threads().unwrap();
+        assert_eq!(*output.borrow(), [41, 43]);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamCancelWrite,
+            &[writable as i32]).unwrap(), 34);
+        vm.push(Value::I32(writable as i32)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::StreamDropWritable).unwrap();
+        assert_eq!(vm.event_loop.borrow().future_states[&future].phase,
+            crate::event_loop::FuturePhase::Resolved);
+    }
+
+    #[test]
+    fn native_future_is_readable_through_the_canonical_abi_and_droppable() {
+        let mut vm = copy_vm(ValType::Future(Box::new(ValType::U32)), 1);
+        let (value, id) = vm.make_host_context().create_future();
+        let Value::I32(handle) = value else { panic!("native future needs a canonical handle") };
+        assert!(matches!(vm.handle_table.get(handle as u32),
+            Some(HandleEntry::ReadableFutureEnd(end)) if end.id == id));
+        vm.make_host_context().resolve_future(id, Value::I32(42));
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::FutureRead, &[handle, 16]).unwrap(), 16);
+        assert_eq!(vm.extra_memories[0].load_i32(16).unwrap(), 42);
+        assert_eq!(vm.memory.load_i32(16).unwrap(), 0);
+        vm.push(Value::I32(handle)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::FutureDropReadable).unwrap();
+        assert!(vm.handle_table.get(handle as u32).is_none());
+        assert!(call_copy(&mut vm, CanonBuiltin::FutureRead, &[handle, 16]).is_err());
+    }
+
+    #[test]
+    fn native_future_async_pending_and_cancel_preserve_host_completion() {
+        let mut vm = copy_vm(ValType::Future(Box::new(ValType::U32)), 1);
+        vm.canon_defs[0].opts.is_async = true;
+        let (value, id) = vm.make_host_context().create_future();
+        let handle = value.as_i32();
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::FutureRead, &[handle, 16]).unwrap() as u32, BLOCKED);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::FutureCancelRead, &[handle]).unwrap(), 2);
+        vm.make_host_context().resolve_future(id, Value::I32(43));
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::FutureRead, &[handle, 16]).unwrap(), 16);
+        assert_eq!(vm.extra_memories[0].load_i32(16).unwrap(), 43);
+    }
+
+    #[test]
+    fn native_future_rejection_and_warm_reset_preserve_handle_isolation() {
+        let mut vm = copy_vm(ValType::Future(Box::new(ValType::U32)), 1);
+        let baseline = vm.snapshot();
+        let (value, id) = vm.make_host_context().create_future();
+        let handle = value.as_i32();
+        vm.event_loop.borrow_mut().reject_future(id, Value::Null);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::FutureRead, &[handle, 16]).unwrap(), 1);
+        vm.reset_to(&baseline);
+        assert!(vm.handle_table.get(handle as u32).is_none());
+        assert!(!vm.event_loop.borrow().future_states.contains_key(&id));
+    }
+
+    #[test]
+    fn native_future_drop_reclaims_settled_and_pending_completions() {
+        for pending in [false, true] {
+            for rejected in [false, true] {
+                let mut vm = copy_vm(ValType::Future(Box::new(ValType::U32)), 1);
+                let (value, id) = vm.make_host_context().create_future();
+                if !pending {
+                    if rejected { vm.event_loop.borrow_mut().reject_future(id, Value::Null); }
+                    else { vm.make_host_context().resolve_future(id, Value::I32(42)); }
+                }
+                vm.push(value).unwrap();
+                vm.exec_canon_builtin(CanonBuiltin::FutureDropReadable).unwrap();
+                assert_eq!(vm.event_loop.borrow().future_states.contains_key(&id), pending);
+                if pending {
+                    if rejected { vm.event_loop.borrow_mut().reject_future(id, Value::Null); }
+                    else { vm.make_host_context().resolve_future(id, Value::I32(42)); }
+                    assert!(!vm.event_loop.borrow().future_states.contains_key(&id));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_future_copy_must_be_cancelled_before_drop() {
+        let mut vm = copy_vm(ValType::Future(Box::new(ValType::U32)), 1);
+        vm.canon_defs[0].opts.is_async = true;
+        let (value, id) = vm.make_host_context().create_future();
+        let handle = value.as_i32();
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::FutureRead, &[handle, 16]).unwrap() as u32, BLOCKED);
+        vm.push(value.clone()).unwrap();
+        assert!(vm.exec_canon_builtin(CanonBuiltin::FutureDropReadable).is_err());
+        assert!(vm.handle_table.get(handle as u32).is_some());
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::FutureCancelRead, &[handle]).unwrap(), 2);
+        vm.push(value).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::FutureDropReadable).unwrap();
+        vm.make_host_context().resolve_future(id, Value::I32(43));
+        assert!(!vm.event_loop.borrow().future_states.contains_key(&id));
+    }
+
+    #[test]
+    fn native_future_cleanup_preserves_another_end_and_ignores_stream_id_collisions() {
+        use crate::handle_table::{HandleEntry, StreamEnd};
+        let mut vm = copy_vm(ValType::Future(Box::new(ValType::U32)), 1);
+        let (value, id) = vm.make_host_context().create_future();
+        let writer = vm.handle_table.insert(HandleEntry::WritableFutureEnd(StreamEnd::new(id))).unwrap();
+        let stream = vm.handle_table.insert(HandleEntry::ReadableStreamEnd(StreamEnd::new(id))).unwrap();
+        vm.make_host_context().resolve_future(id, Value::I32(42));
+        vm.push(value).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::FutureDropReadable).unwrap();
+        assert!(vm.event_loop.borrow().future_states.contains_key(&id));
+        if let Some(HandleEntry::WritableFutureEnd(end)) = vm.handle_table.get_mut(writer) {
+            end.state = crate::handle_table::CopyState::Done;
+        }
+        vm.push(Value::I32(writer as i32)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::FutureDropWritable).unwrap();
+        assert!(!vm.event_loop.borrow().future_states.contains_key(&id));
+        assert!(vm.handle_table.get(stream).is_some());
+    }
+
+    #[test]
+    fn native_future_reset_discards_abandoned_producer_markers() {
+        let mut vm = copy_vm(ValType::Future(Box::new(ValType::U32)), 1);
+        let baseline = vm.snapshot();
+        let (old, old_id) = vm.make_host_context().create_future();
+        vm.push(old).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::FutureDropReadable).unwrap();
+        vm.reset_to(&baseline);
+        let (new, new_id) = vm.make_host_context().create_future();
+        assert_eq!(old_id, new_id, "reset should restart the future ID space");
+        vm.make_host_context().resolve_future(new_id, Value::I32(45));
+        assert!(vm.event_loop.borrow().future_states.contains_key(&new_id));
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::FutureRead, &[new.as_i32(), 16]).unwrap(), 16);
+        assert_eq!(vm.extra_memories[0].load_i32(16).unwrap(), 45);
+    }
+
+    #[test]
+    fn async_stream_read_retains_buffer_and_completes_before_event_delivery() {
+        for elem in [ValType::U8, ValType::U32] {
+            let (mut vm, readable, writable, set, id) = async_stream_vm(elem.clone());
+            let target = vm.canon_memory(Some(1)).unwrap();
+            vm.memory.store_i32(16, 12345).unwrap();
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamRead,
+                &[readable as i32, 16, 2]).unwrap() as u32, BLOCKED);
+            assert!(vm.async_stream_reads.contains_key(&id));
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                &[set as i32, 0]).unwrap(), 0);
+            vm.canon_defs[0].opts.memory = Some(0);
+            if matches!(elem, ValType::U8) {
+                vm.memory.write_bytes(8, &[41, 43]);
+            } else {
+                vm.memory.store_i32(8, 41).unwrap();
+                vm.memory.store_i32(12, 43).unwrap();
+            }
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+                &[writable as i32, 8, 2]).unwrap(), 32);
+            assert!(!vm.async_stream_reads.contains_key(&id));
+            let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get(readable) else {
+                unreachable!();
+            };
+            assert_eq!(end.state, crate::handle_table::CopyState::Copying);
+            assert_eq!(vm.memory.load_i32(16).unwrap(), 12345);
+            assert_eq!(target.load_i32(16).unwrap(), if matches!(elem, ValType::U8) {
+                41 | (43 << 8)
+            } else { 41 });
+            if matches!(elem, ValType::U32) { assert_eq!(target.load_i32(20).unwrap(), 43); }
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                &[set as i32, 0]).unwrap(), 2);
+            assert_eq!(vm.memory.load_i32(0).unwrap(), readable as i32);
+            assert_eq!(vm.memory.load_i32(4).unwrap(), 32);
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                &[set as i32, 0]).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn guest_short_write_leaves_suffix_unconsumed_and_retries_in_selected_memory() {
+        for elem in [ValType::U8, ValType::U32] {
+            let (mut vm, readable, writable, set, id) = async_stream_vm(elem.clone());
+            let target = vm.canon_memory(Some(1)).unwrap();
+            let stride = if matches!(elem, ValType::U8) { 1 } else { 4 };
+            target.write_bytes(16, &[0xaa; 12]);
+            call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 16, 2]).unwrap();
+            vm.canon_defs[0].opts.memory = Some(0);
+            if stride == 1 {
+                vm.memory.write_bytes(8, &[41, 43, 47]);
+            } else {
+                for (offset, value) in [(8, 41), (12, 43), (16, 47)] {
+                    vm.memory.store_i32(offset, value).unwrap();
+                }
+            }
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+                &[writable as i32, 8, 3]).unwrap(), 32);
+            assert!(!vm.event_loop.borrow().stream_has_item(id), "suffix was queued");
+            let mut guard = [0; 4];
+            target.read_bytes(16 + 2 * stride, &mut guard);
+            assert_eq!(guard, [0xaa; 4]);
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                &[set as i32, 0]).unwrap(), 2);
+            assert_eq!(vm.memory.load_i32(4).unwrap(), 32);
+            vm.canon_defs[0].opts.memory = Some(1);
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamRead,
+                &[readable as i32, 32, 1]).unwrap() as u32, BLOCKED);
+            vm.canon_defs[0].opts.memory = Some(0);
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+                &[writable as i32, (8 + 2 * stride) as i32, 1]).unwrap(), 16);
+            assert_eq!(target.load_i32(32).unwrap(), 47);
+            assert!(!vm.event_loop.borrow().stream_has_item(id));
+        }
+    }
+
+    #[test]
+    fn guest_short_write_validates_the_full_original_range() {
+        for elem in [ValType::U8, ValType::U32] {
+            let (mut vm, readable, writable, _, id) = async_stream_vm(elem.clone());
+            call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 16, 1]).unwrap();
+            vm.canon_defs[0].opts.memory = Some(0);
+            let stride = if matches!(elem, ValType::U8) { 1 } else { 4 };
+            let ptr = (vm.memory.len() - stride) as i32;
+            assert!(call_copy(&mut vm, CanonBuiltin::StreamWrite,
+                &[writable as i32, ptr, 2]).unwrap_err().is_trap());
+            assert!(vm.async_stream_reads.contains_key(&id));
+            assert!(!vm.event_loop.borrow().stream_has_item(id));
+        }
+    }
+
+    #[test]
+    fn async_stream_cancel_reclaims_buffer_and_preserves_completed_progress() {
+        for completed in [false, true] {
+            let (mut vm, readable, writable, set, id) = async_stream_vm(ValType::U8);
+            let target = vm.canon_memory(Some(1)).unwrap();
+            target.write_bytes(8, &[41, 43]);
+            call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 16, 2]).unwrap();
+            if completed {
+                call_copy(&mut vm, CanonBuiltin::StreamWrite, &[writable as i32, 8, 2]).unwrap();
+            }
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamCancelRead,
+                &[readable as i32]).unwrap(), if completed { 34 } else { 2 });
+            assert!(!vm.async_stream_reads.contains_key(&id));
+            if !completed {
+                call_copy(&mut vm, CanonBuiltin::StreamWrite, &[writable as i32, 8, 2]).unwrap();
+                assert_eq!(target.load_i32(16).unwrap(), 0);
+            }
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                &[set as i32, 0]).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn async_stream_host_completion_and_eof_use_retained_buffer() {
+        for eof in [false, true] {
+            let (mut vm, readable, _, set, id) = async_stream_vm(ValType::U8);
+            call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 16, 2]).unwrap();
+            if eof { vm.event_loop.borrow_mut().stream_close(id); }
+            else { vm.event_loop.borrow_mut().stream_push_bytes(id, vec![41, 43]); }
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                &[set as i32, 0]).unwrap(), 2);
+            let target = vm.canon_memory(Some(1)).unwrap();
+            assert_eq!(target.load_i32(4).unwrap(), if eof { 1 } else { 32 });
+            assert_eq!(target.load_i32(16).unwrap(), if eof { 0 } else { 41 | (43 << 8) });
+            let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get(readable) else {
+                unreachable!();
+            };
+            assert_eq!(end.state, if eof { crate::handle_table::CopyState::Done }
+                else { crate::handle_table::CopyState::Idle });
+            assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                &[set as i32, 0]).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn async_stream_drop_requires_buffer_reclamation_and_eof_overrides_cancel() {
+        let (mut vm, readable, _, _, id) = async_stream_vm(ValType::U8);
+        call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 16, 2]).unwrap();
+        assert!(call_copy(&mut vm, CanonBuiltin::StreamDropReadable,
+            &[readable as i32]).unwrap_err().is_trap());
+        assert!(vm.async_stream_reads.contains_key(&id));
+        vm.event_loop.borrow_mut().stream_close(id);
+        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamCancelRead,
+            &[readable as i32]).unwrap(), 1);
+        assert!(!vm.async_stream_reads.contains_key(&id));
+        let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get(readable) else {
+            unreachable!();
+        };
+        assert_eq!(end.state, crate::handle_table::CopyState::Done);
+        vm.push(Value::I32(readable as i32)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::StreamDropReadable).unwrap();
+    }
+
+    #[test]
+    fn async_stream_warm_reset_discards_request_buffers() {
+        let (mut vm, readable, _, _, _) = async_stream_vm(ValType::U8);
+        let baseline = vm.snapshot();
+        call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 16, 2]).unwrap();
+        assert_eq!(vm.async_stream_reads.len(), 1);
+        vm.reset_to(&baseline);
+        assert!(vm.async_stream_reads.is_empty());
+        let (mut vm, _, writable, _, _) = async_stream_vm(ValType::U8);
+        let baseline = vm.snapshot();
+        call_copy(&mut vm, CanonBuiltin::StreamWrite, &[writable as i32, 16, 2]).unwrap();
+        assert_eq!(vm.guest_stream_writes.len(), 1);
+        vm.reset_to(&baseline);
+        assert!(vm.guest_stream_writes.is_empty());
+    }
+
+    #[test]
+    fn async_stream_callback_receives_completed_count_after_memory_copy() {
+        let (mut vm, readable, _, set, id) = async_stream_vm(ValType::U8);
+        let mut setup = crate::Chunk::new("setup");
+        setup.emit_op(Op::RETURN, 0);
+        let mut callback = crate::Chunk::new("stream callback");
+        callback.arity = 3;
+        callback.local_count = 3;
+        for (slot, name) in [(0, "event-code"), (1, "event-handle"), (2, "event-count")] {
+            vm.set_global(name, Value::Undefined);
+            let key = callback.add_constant(Value::String(Arc::from(name)));
+            callback.emit_op_u16(Op::LOCAL_GET, slot, 0);
+            callback.emit_op_u32(Op::GLOBAL_SET, key, 0);
+        }
+        callback.emit_i32_const(0, 0);
+        callback.emit_op(Op::RETURN, 0);
+        vm.run(vec![setup, callback]).unwrap();
+        vm.canon_type_immediate = Some(0);
+        call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 16, 2]).unwrap();
+        vm.event_loop.borrow_mut().stream_push_bytes(id, vec![41, 43]);
+        let mut task = crate::cm_task::CMTask::new(1);
+        task.return_(Value::Undefined).unwrap();
+        vm.cm_tasks.push(task);
+        let thread = crate::cm_thread::Thread::new(1, Value::Undefined);
+        let thread_index = vm.cm_instance.threads.register(thread);
+        vm.pending_cm_callbacks.push(crate::cm_task::PendingCallback {
+            task_id: 1, thread_index, callback: 1,
+            waiting: crate::cm_task::CallbackWait::Wait(set),
+        });
+        vm.run_cm_callback_turn("test", thread_index, None).unwrap();
+        assert_eq!(vm.globals[vm.global_index["event-code"] as usize].as_i32(), 2);
+        assert_eq!(vm.globals[vm.global_index["event-handle"] as usize].as_i32(), readable as i32);
+        assert_eq!(vm.globals[vm.global_index["event-count"] as usize].as_i32(), 32);
+        assert_eq!(vm.canon_memory(Some(1)).unwrap().load_i32(16).unwrap(), 41 | (43 << 8));
+        assert!(vm.pending_cm_callbacks.is_empty());
+        assert!(vm.async_stream_reads.is_empty());
+    }
+
+    #[test]
+    #[ignore = "bulk async byte-copy cost diagnostic, not an application speedup"]
+    fn bench_async_stream_bulk_completion() {
+        const SIZE: usize = 256 * 1024;
+        const CALLS: usize = 32;
+        let source: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
+        let mut samples = Vec::new();
+        for round in 0..9 {
+            let (mut vm, _, _, set, _) = async_stream_vm(ValType::U8);
+            vm.extra_memories[0] = crate::shared_memory::SharedMemory::new(SIZE + 32);
+            let mut reads = Vec::with_capacity(CALLS);
+            for _ in 0..CALLS {
+                vm.exec_canon_builtin(CanonBuiltin::StreamNew).unwrap();
+                let readable = vm.pop().as_i64() as u32;
+                let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get_mut(readable) else {
+                    unreachable!();
+                };
+                end.in_waitable_set = true;
+                let id = end.id;
+                vm.waitable_sets.get_mut(set).unwrap().join_handle(readable, Waitable::Stream(id));
+                call_copy(&mut vm, CanonBuiltin::StreamRead,
+                    &[readable as i32, 16, SIZE as i32]).unwrap();
+                reads.push((readable, id));
+            }
+            let start = std::time::Instant::now();
+            for &(readable, id) in &reads {
+                vm.event_loop.borrow_mut().stream_push_bytes(id, source.clone());
+                assert_eq!(call_copy(&mut vm, CanonBuiltin::WaitableSetPoll,
+                    &[set as i32, 0]).unwrap(), 2);
+                let target = vm.canon_memory(Some(1)).unwrap();
+                assert_eq!(target.load_i32(0).unwrap(), readable as i32);
+                assert_eq!(target.load_i32(4).unwrap(), (SIZE << 4) as i32);
+            }
+            if round > 1 { samples.push(start.elapsed().as_nanos() / CALLS as u128); }
+            let mut result = vec![0; SIZE];
+            vm.canon_memory(Some(1)).unwrap().read_bytes(16, &mut result);
+            assert_eq!(result, source);
+        }
+        samples.sort_unstable();
+        eprintln!("async 256 KiB host-buffer -> canonical memory -> event: {} ns/copy",
+            samples[samples.len() / 2]);
+    }
+
+    #[test]
+    fn stream_and_future_copies_use_the_selected_memory() {
+        for memory_index in [0, 1] {
+            for element in [ValType::U8, ValType::U32] {
+                for future in [false, true] {
+                    let ty = if future { ValType::Future(Box::new(element.clone())) }
+                        else { ValType::Stream(Box::new(element.clone())) };
+                    let mut vm = copy_vm(ty, memory_index);
+                    let selected = vm.canon_memory(Some(memory_index)).unwrap();
+                    let other = vm.canon_memory(Some(1 - memory_index)).unwrap();
+                    selected.write_bytes(8, &[0x78, 0x56, 0x34, 0x12]);
+                    other.write_bytes(8, &[0xaa; 4]);
+                    other.write_bytes(16, &[0xbb; 4]);
+                    vm.exec_canon_builtin(if future { CanonBuiltin::FutureNew }
+                        else { CanonBuiltin::StreamNew }).unwrap();
+                    let pair = vm.pop().as_i64() as u64;
+                    let readable = pair as u32 as i32;
+                    let writable = (pair >> 32) as u32 as i32;
+                    let count = if matches!(element, ValType::U8) { 4 } else { 1 };
+                    let result = if future {
+                        call_copy(&mut vm, CanonBuiltin::FutureWrite, &[writable, 8]).unwrap()
+                    } else {
+                        vm.canon_defs[0].opts.is_async = true;
+                        call_copy(&mut vm, CanonBuiltin::StreamWrite, &[writable, 8, count]).unwrap()
+                    };
+                    assert_eq!(result, if future { 16 } else { BLOCKED as i32 });
+                    if future {
+                        assert_eq!(call_copy(&mut vm, CanonBuiltin::FutureRead, &[readable, 16]).unwrap(), 16);
+                    } else {
+                        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable, 16, count]).unwrap(), count << 4);
+                        assert_eq!(call_copy(&mut vm, CanonBuiltin::StreamCancelWrite,
+                            &[writable]).unwrap(), (count << 4) | 2);
+                    }
+                    let mut actual = [0; 4];
+                    selected.read_bytes(16, &mut actual);
+                    let expected = if future && matches!(element, ValType::U8) {
+                        [0x78, 0, 0, 0]
+                    } else { [0x78, 0x56, 0x34, 0x12] };
+                    assert_eq!(actual, expected);
+                    other.read_bytes(16, &mut actual);
+                    assert_eq!(actual, [0xbb; 4]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parked_copies_retain_the_selected_memory_after_another_canon_call() {
+        for element in [ValType::U8, ValType::U32] {
+            for future in [false, true] {
+                let ty = if future { ValType::Future(Box::new(element.clone())) }
+                    else { ValType::Stream(Box::new(element.clone())) };
+                let mut vm = copy_vm(ty, 1);
+                vm.memory.write_bytes(16, &[0xbb; 4]);
+                vm.exec_canon_builtin(if future { CanonBuiltin::FutureNew }
+                    else { CanonBuiltin::StreamNew }).unwrap();
+                let readable = vm.pop().as_i64() as u32;
+                let end_id = match vm.handle_table.get(readable).unwrap() {
+                    HandleEntry::ReadableStreamEnd(end) | HandleEntry::ReadableFutureEnd(end) => end.id,
+                    _ => unreachable!(),
+                };
+                let result = if future {
+                    call_copy(&mut vm, CanonBuiltin::FutureRead, &[readable as i32, 16])
+                } else {
+                    call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 16, 1])
+                };
+                assert!(result.unwrap_err().message.starts_with("__stream_read__:"));
+                vm.canon_type_immediate = None;
+                if future {
+                    vm.event_loop.borrow_mut().resolve_future(end_id, Value::I32(42));
+                } else if matches!(element, ValType::U8) {
+                    vm.event_loop.borrow_mut().stream_push_bytes(end_id, vec![42]);
+                } else {
+                    vm.event_loop.borrow_mut().stream_push(end_id, Value::I32(42)).unwrap();
+                }
+                let crate::event_loop::Task::ResumeFiber(fiber) =
+                    vm.event_loop.borrow_mut().immediate.pop_front().unwrap() else {
+                    panic!("copy reader was not woken");
+                };
+                let pending = fiber.pending_copy.unwrap();
+                assert_eq!(pending.memory, 1);
+                assert_eq!(vm.perform_pending_copy(&pending).unwrap(), Some(16));
+                let mut actual = [0; 4];
+                vm.extra_memories[0].read_bytes(16, &mut actual);
+                assert_eq!(actual, [42, 0, 0, 0]);
+                vm.memory.read_bytes(16, &mut actual);
+                assert_eq!(actual, [0xbb; 4]);
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_copy_bounds_use_the_selected_memory_before_suspending() {
+        for future in [false, true] {
+            let ty = if future { ValType::Future(Box::new(ValType::U32)) }
+                else { ValType::Stream(Box::new(ValType::U32)) };
+            let mut vm = copy_vm(ty, 1);
+            vm.extra_memories[0] = crate::shared_memory::SharedMemory::new(8);
+            vm.exec_canon_builtin(if future { CanonBuiltin::FutureNew }
+                else { CanonBuiltin::StreamNew }).unwrap();
+            let readable = vm.pop().as_i64() as u32 as i32;
+            let error = if future {
+                call_copy(&mut vm, CanonBuiltin::FutureRead, &[readable, 8])
+            } else {
+                call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable, 8, 1])
+            }.unwrap_err();
+            assert!(error.is_trap());
+            assert!(error.message.contains("out of bounds"), "{}", error.message);
+            assert_eq!(vm.event_loop.borrow().parked_sync_copies(), 0);
+        }
+    }
+
+    #[test]
+    fn typed_copy_uses_its_guest_allocator_in_the_selected_memory() {
+        for future in [false, true] {
+            let ty = if future { ValType::Future(Box::new(ValType::String)) }
+                else { ValType::Stream(Box::new(ValType::String)) };
+            let mut vm = VM::new();
+            let mut allocator = crate::chunk::Chunk::new("copy realloc");
+            allocator.arity = 4;
+            allocator.local_count = 4;
+            allocator.emit_i32_const(32, 0);
+            allocator.emit_op(Op::RETURN, 0);
+            vm.run(vec![crate::chunk::Chunk::new("script"), allocator]).unwrap();
+            configure_copy_vm(&mut vm, ty, 1);
+            vm.canon_defs[0].opts.realloc = Some(1);
+            vm.memory.write_bytes(16, &[0xaa; 24]);
+            vm.exec_canon_builtin(if future { CanonBuiltin::FutureNew }
+                else { CanonBuiltin::StreamNew }).unwrap();
+            let readable = vm.pop().as_i64() as u32;
+            let end_id = match vm.handle_table.get(readable).unwrap() {
+                HandleEntry::ReadableStreamEnd(end) | HandleEntry::ReadableFutureEnd(end) => end.id,
+                _ => unreachable!(),
+            };
+            let result = if future {
+                call_copy(&mut vm, CanonBuiltin::FutureRead, &[readable as i32, 16])
+            } else {
+                call_copy(&mut vm, CanonBuiltin::StreamRead, &[readable as i32, 16, 1])
+            };
+            assert!(result.unwrap_err().message.starts_with("__stream_read__:"));
+            vm.canon_type_immediate = None;
+            if future {
+                vm.event_loop.borrow_mut().resolve_future(end_id, Value::String("hello".into()));
+            } else {
+                vm.event_loop.borrow_mut().stream_push(end_id, Value::String("hello".into())).unwrap();
+            }
+            let crate::event_loop::Task::ResumeFiber(fiber) =
+                vm.event_loop.borrow_mut().immediate.pop_front().unwrap() else {
+                panic!("copy reader was not woken");
+            };
+            assert_eq!(vm.perform_pending_copy(&fiber.pending_copy.unwrap()).unwrap(), Some(16));
+            let mut pair = [0; 8];
+            vm.extra_memories[0].read_bytes(16, &mut pair);
+            assert_eq!(u32::from_le_bytes(pair[..4].try_into().unwrap()), 32);
+            assert_eq!(u32::from_le_bytes(pair[4..].try_into().unwrap()), 5);
+            let mut bytes = [0; 5];
+            vm.extra_memories[0].read_bytes(32, &mut bytes);
+            assert_eq!(&bytes, b"hello");
+            let mut sentinel = [0; 24];
+            vm.memory.read_bytes(16, &mut sentinel);
+            assert_eq!(sentinel, [0xaa; 24]);
+        }
+    }
+
+    #[test]
+    #[ignore = "paired scalar canonical allocator bookkeeping benchmark"]
+    fn bench_scalar_canonical_allocator_bookkeeping() {
+        use crate::canon_def::{CalleeRef, CanonFuncType};
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let mut vm = copy_vm(ValType::U32, 0);
+        vm.canon_functypes = vec![Some(CanonFuncType {
+            result: Some(ValType::U32), ..CanonFuncType::default()
+        })];
+        vm.canon_defs[0].callee = Some(CalleeRef::Core(0));
+        vm.canon_defs[0].functype = Some(0);
+        let shape = vm.canon_call_shape("scalar benchmark").unwrap();
+        let layout = crate::canon_layout::MemLayout::new(&ValType::U32);
+        let values = [Value::I32(42)];
+        let mut copies = Vec::new();
+        let mut lowers = Vec::new();
+        const CALLS: usize = 100_000;
+        for round in 0..9 {
+            for lower in if round % 2 == 0 { [false, true] } else { [true, false] } {
+                let start = Instant::now();
+                for _ in 0..CALLS {
+                    if lower {
+                        let result = vm.lower_canon_values(
+                            &shape, 1, black_box(&values), &[ValType::U32], false, None,
+                            "scalar benchmark",
+                        ).unwrap();
+                        assert!(matches!(result.as_slice(), [crate::canon_flat_values::CoreValue::I32(42)]));
+                        black_box(result);
+                    } else {
+                        vm.store_canon_copy_values(
+                            0, None, 16, black_box(&values), &ValType::U32, &layout,
+                            "scalar benchmark",
+                        ).unwrap();
+                    }
+                }
+                if round > 1 {
+                    (if lower { &mut lowers } else { &mut copies })
+                        .push(start.elapsed().as_nanos() / CALLS as u128);
+                }
+            }
+        }
+        let mut actual = [0; 4];
+        vm.memory.read_bytes(16, &mut actual);
+        assert_eq!(u32::from_le_bytes(actual), 42);
+        copies.sort_unstable();
+        lowers.sort_unstable();
+        eprintln!("scalar canonical copy={} ns/call, lower={} ns/call",
+            copies[copies.len() / 2], lowers[lowers.len() / 2]);
+    }
+
+    #[test]
+    fn mixed_scalar_and_allocating_copies_preserve_allocator_progress() {
+        use crate::canon_def::{CalleeRef, CanonFuncType};
+        let mut vm = copy_vm(ValType::U32, 0);
+        vm.set_global_owned(canon_marshal_bump().to_string(), Value::I32(32));
+        vm.canon_functypes = vec![Some(CanonFuncType {
+            result: Some(ValType::U32), ..CanonFuncType::default()
+        })];
+        vm.canon_defs[0].callee = Some(CalleeRef::Core(0));
+        vm.canon_defs[0].functype = Some(0);
+        let shape = vm.canon_call_shape("mixed allocation test").unwrap();
+        let scalar_layout = crate::canon_layout::MemLayout::new(&ValType::U32);
+        let string_layout = crate::canon_layout::MemLayout::new(&ValType::String);
+        for address in [32_u32, 40] {
+            vm.store_canon_copy_values(0, None, 8, &[Value::I32(42)],
+                &ValType::U32, &scalar_layout, "scalar copy").unwrap();
+            let lowered = vm.lower_canon_values(&shape, 1, &[Value::I32(42)],
+                &[ValType::U32], false, None, "scalar lower").unwrap();
+            assert!(matches!(lowered.as_slice(), [crate::canon_flat_values::CoreValue::I32(42)]));
+            assert_eq!(vm.canon_bump_start(), address);
+            vm.store_canon_copy_values(0, None, 16, &[Value::String("abc".into())],
+                &ValType::String, &string_layout, "string copy").unwrap();
+            let mut ptr = [0; 4];
+            vm.memory.read_bytes(16, &mut ptr);
+            assert_eq!(u32::from_le_bytes(ptr), address);
+            let mut bytes = [0; 3];
+            vm.memory.read_bytes(address as usize, &mut bytes);
+            assert_eq!(&bytes, b"abc");
+            assert_eq!(vm.canon_bump_start(), address + 8);
+        }
+    }
 }
 
 #[inline(always)]
@@ -208,12 +1375,23 @@ fn copy_power2_masked_values_to_bytes(
         };
         *slot = value_to_i32_byte(value);
     }
-    let mut filled = period;
-    while filled < dst.len() {
-        let n = (dst.len() - filled).min(filled);
-        let (copied, tail) = dst.split_at_mut(filled);
-        tail[..n].copy_from_slice(&copied[..n]);
-        filled += n;
+    // Small patterns can make the cache-seed copies slower than doubling.
+    // Keep doubling for those cases and short destinations; a one-byte
+    // pattern instead benefits from the existing uniform-fill path.
+    if period == 1 || ((256..=4096).contains(&period) && dst.len() >= 1_048_576) {
+        let (pattern, tail) = dst.split_at_mut(period);
+        let complete_len = tail.len() / period * period;
+        let (complete, remainder) = tail.split_at_mut(complete_len);
+        VM::fill_linear_memory_pattern(complete, pattern);
+        remainder.copy_from_slice(&pattern[..remainder.len()]);
+    } else {
+        let mut filled = period;
+        while filled < dst.len() {
+            let n = (dst.len() - filled).min(filled);
+            let (copied, tail) = dst.split_at_mut(filled);
+            tail[..n].copy_from_slice(&copied[..n]);
+            filled += n;
+        }
     }
 
     let last_idx = (start_i.wrapping_add((dst.len() - 1) as u32) & mask) as usize;
@@ -367,6 +1545,9 @@ pub(crate) const TASK_FUTEX: &str = "__futex";
 /// The cancellation token a task carries, and the flag the VM reads off it.
 pub(crate) const TASK_CANCEL_TOKEN: &str = "__cancel_token";
 pub(crate) const TASK_CANCELLED: &str = "__cancelled";
+
+#[path = "property_accessor_key.rs"]
+mod property_accessor_key;
 
 impl VM {
     #[inline(always)]
@@ -578,7 +1759,19 @@ impl VM {
             },
             JsStringBuiltin::Length => match arg {
                 Value::String(s) => {
-                    self.push_fast(Value::I32(s.encode_utf16().count() as i32));
+                    #[cfg(feature = "primitive-benchmarks")]
+                    let cached = self.cache_string_lengths;
+                    #[cfg(not(feature = "primitive-benchmarks"))]
+                    let cached = true;
+                    // Share the bounded weak-identity cache used by ordinary
+                    // string properties. Oversized strings use its uncached
+                    // bulk counter; tiny inputs keep the prior scan.
+                    let count = if cached && s.len() >= 8 {
+                        self.string_lengths.borrow_mut().count(&s)
+                    } else {
+                        s.encode_utf16().count()
+                    };
+                    self.push_fast(Value::I32(count as i32));
                 }
                 _ => {
                     self.raise_js_type_error("TypeError: wasm:js-string.length — not a string")?;
@@ -865,6 +2058,9 @@ impl VM {
             let mut ctx = self.make_host_context();
             unsafe { (&*host_fn)(&mut ctx, args) }
         };
+        if let Some(trap) = self.pending_host_trap.take() {
+            return Err(trap);
+        }
         if let Some(exc) = self.last_exception.take() {
             self.raise_exception_value(exc)?;
         } else {
@@ -970,7 +2166,7 @@ impl VM {
             update_cache(&mut self.object_get_cache, key_string.as_ref(), index);
             return Ok(value.clone());
         }
-        let getter_key = format!("__get_{}", key_string);
+        let getter_key = property_accessor_key::AccessorKey::getter(key_string.as_ref());
         if guard.properties.contains_key(getter_key.as_str()) {
             return Err("getter");
         }
@@ -999,8 +2195,8 @@ impl VM {
             if let Some(value) = guard.properties.get(key_string) {
                 return Ok(value.clone());
             }
-            let getter_key = format!("__get_{}", key_string);
-            if guard.properties.contains_key(&getter_key) {
+            let getter_key = property_accessor_key::AccessorKey::getter(key_string);
+            if guard.properties.contains_key(getter_key.as_str()) {
                 saw_getter = true;
             }
             let Some(next) = guard.properties.get("__proto__").cloned() else {
@@ -1563,6 +2759,47 @@ impl VM {
     }
 
     #[inline(always)]
+    fn copy_local_value_fast(
+        &mut self,
+        frame_index: usize,
+        chunk_idx: usize,
+        source_slot: usize,
+        target_slot: usize,
+    ) -> Result<(), VMError> {
+        let base = self.frames[frame_index].base;
+        let source = base + source_slot;
+        if source >= self.stack.len() {
+            return Err(VMError::new("trap: local index out of bounds"));
+        }
+        if let Some(rec) = self.type_recorder.as_mut() {
+            let value = &self.stack[source];
+            rec.record(chunk_idx, source_slot, value);
+            rec.record(chunk_idx, target_slot, value);
+        }
+        let target = base + target_slot;
+        if target >= self.stack.len() {
+            let need = base + self.frames[frame_index].local_frame_size;
+            if self.stack.len() < need {
+                self.stack.resize(need, Value::Null);
+            }
+            if target >= self.stack.len() {
+                return Err(VMError::new("trap: local index out of bounds"));
+            }
+        }
+        // Borrow disjoint slots through the existing overlap-safe value-copy
+        // helper. A one-element copy reuses Clone::clone_from, avoiding an
+        // intermediate owned Value and redundant reference-count updates.
+        if target < source {
+            let (locals, operand) = self.stack.split_at_mut(source);
+            locals[target].clone_from(&operand[0]);
+        } else if target > source {
+            let (locals, destination) = self.stack.split_at_mut(target);
+            destination[0].clone_from(&locals[source]);
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
     fn skip_immediate_js_number_i32_wrappers(
         &mut self,
         frame_index: usize,
@@ -1572,12 +2809,12 @@ impl VM {
         native_call_sites_ptr: *const Option<NativeCallSiteTarget>,
     ) {
         let next_ip = self.frames[frame_index].ip;
-        if next_ip >= code_len || unsafe { *decoded_ops_ptr.add(next_ip) } != Op::CALL {
+        if next_ip >= code_len || unsafe { *decoded_ops_ptr.add((next_ip) / 4) } != Op::CALL {
             return;
         }
-        let next_operand = unsafe { *decoded_operands_ptr.add(next_ip) };
+        let next_operand = unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
         let next_argc = ((next_operand >> 16) & 0xff) as usize;
-        let next_native = unsafe { *native_call_sites_ptr.add(next_ip) };
+        let next_native = unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
         if next_argc != 1
             || !matches!(
                 next_native,
@@ -1588,10 +2825,10 @@ impl VM {
         }
 
         let mut fused_ip = next_ip + 7;
-        if fused_ip < code_len && unsafe { *decoded_ops_ptr.add(fused_ip) } == Op::CALL {
-            let next2_operand = unsafe { *decoded_operands_ptr.add(fused_ip) };
+        if fused_ip < code_len && unsafe { *decoded_ops_ptr.add((fused_ip) / 4) } == Op::CALL {
+            let next2_operand = unsafe { *decoded_operands_ptr.add((fused_ip) / 4) };
             let next2_argc = ((next2_operand >> 16) & 0xff) as usize;
-            let next2_native = unsafe { *native_call_sites_ptr.add(fused_ip) };
+            let next2_native = unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((fused_ip) / 4) } };
             if next2_argc == 1
                 && matches!(
                     next2_native,
@@ -1973,7 +3210,7 @@ impl VM {
             return None;
         }
         let len_slot = Self::decode_u16_at(code, &mut ip)?;
-        if Self::decode_op_at(code, &mut ip)? != Op::I32_GE_S
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_GE_U
             || Self::decode_op_at(code, &mut ip)? != Op::BR_IF
             || Self::decode_leb_u32_at(code, &mut ip)? != 1
             || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
@@ -2018,21 +3255,23 @@ impl VM {
         code: &[u8],
         imports: &[crate::chunk::Import],
         mut ip: usize,
-    ) -> Option<(u16, u16, u16, u16)> {
-        const BATCH: i32 = 254;
+    ) -> Option<(u16, u16, u16, u16, u16)> {
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+            return None;
+        }
+        let len_slot = Self::decode_u16_at(code, &mut ip)?;
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
         }
         let i_slot = Self::decode_u16_at(code, &mut ip)?;
-        if Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
-            || Self::decode_leb_i32_at(code, &mut ip)? != BATCH
-            || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
-            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_SUB
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
         {
             return None;
         }
-        let len_slot = Self::decode_u16_at(code, &mut ip)?;
-        if Self::decode_op_at(code, &mut ip)? != Op::I32_GT_S
+        let batch = Self::decode_leb_i32_at(code, &mut ip)?;
+        if !matches!(batch, 64 | 254)
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_LT_U
             || Self::decode_op_at(code, &mut ip)? != Op::BR_IF
             || Self::decode_leb_u32_at(code, &mut ip)? != 1
             || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
@@ -2041,7 +3280,7 @@ impl VM {
         }
         let arr_slot = Self::decode_u16_at(code, &mut ip)?;
         let mut cursor_slot = None;
-        for offset in 0..BATCH {
+        for offset in 0..batch {
             if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
                 return None;
             }
@@ -2064,19 +3303,26 @@ impl VM {
             }
         }
         let cursor_slot = cursor_slot?;
-        Self::decode_call_import_named_at(code, imports, &mut ip, "ecma:array", "push", 255)?;
+        Self::decode_call_import_named_at(
+            code,
+            imports,
+            &mut ip,
+            "ecma:array",
+            "push",
+            (batch + 1) as u8,
+        )?;
         if Self::decode_op_at(code, &mut ip)? != Op::DROP
             || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
             || Self::decode_u16_at(code, &mut ip)? != i_slot
             || Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
-            || Self::decode_leb_i32_at(code, &mut ip)? != BATCH
+            || Self::decode_leb_i32_at(code, &mut ip)? != batch
             || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
             || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_SET
             || Self::decode_u16_at(code, &mut ip)? != i_slot
             || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
             || Self::decode_u16_at(code, &mut ip)? != cursor_slot
             || Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
-            || Self::decode_leb_i32_at(code, &mut ip)? != BATCH
+            || Self::decode_leb_i32_at(code, &mut ip)? != batch
             || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
             || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_SET
             || Self::decode_u16_at(code, &mut ip)? != cursor_slot
@@ -2086,7 +3332,120 @@ impl VM {
         {
             return None;
         }
-        Some((arr_slot, cursor_slot, len_slot, i_slot))
+        Some((arr_slot, cursor_slot, len_slot, i_slot, batch as u16))
+    }
+
+    fn match_boxed_linear_to_byte_array_batch(
+        code: &[u8],
+        imports: &[crate::chunk::Import],
+        mut ip: usize,
+    ) -> Option<(u16, u16, u16, u16, u16, u16)> {
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+            return None;
+        }
+        let len_slot = Self::decode_u16_at(code, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+            return None;
+        }
+        let i_slot = Self::decode_u16_at(code, &mut ip)?;
+        let scratch_slot = Self::decode_spilled_i32_at(code, imports, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_SUB {
+            return None;
+        }
+        Self::decode_js_number_from_i32_at(code, imports, &mut ip)?;
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_CONST {
+            return None;
+        }
+        let batch = Self::decode_leb_i32_at(code, &mut ip)?;
+        if !matches!(batch, 64 | 254) {
+            return None;
+        }
+        Self::decode_js_number_from_i32_at(code, imports, &mut ip)?;
+        if Self::decode_spilled_i32_at(code, imports, &mut ip)? != scratch_slot
+            || Self::decode_op_at(code, &mut ip)? != Op::I32_LT_U
+            || Self::decode_op_at(code, &mut ip)? != Op::BR_IF
+            || Self::decode_leb_u32_at(code, &mut ip)? != 1
+            || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+        {
+            return None;
+        }
+        let arr_slot = Self::decode_u16_at(code, &mut ip)?;
+        let mut cursor_slot = None;
+        for offset in 0..batch {
+            if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
+                return None;
+            }
+            let slot = Self::decode_u16_at(code, &mut ip)?;
+            if cursor_slot.is_some_and(|existing| existing != slot) {
+                return None;
+            }
+            cursor_slot = Some(slot);
+            Self::decode_js_number_to_i32_at(code, imports, &mut ip)?;
+            if Self::decode_op_at(code, &mut ip)? != Op::I32_LOAD8_U
+                || Self::decode_leb_u32_at(code, &mut ip)? != 0x80
+                || Self::decode_leb_u32_at(code, &mut ip)? != offset as u32
+            {
+                return None;
+            }
+            Self::decode_js_number_from_i32_at(code, imports, &mut ip)?;
+        }
+        let cursor_slot = cursor_slot?;
+        if [arr_slot, cursor_slot, len_slot, i_slot].contains(&scratch_slot) {
+            return None;
+        }
+        Self::decode_call_import_named_at(
+            code, imports, &mut ip, "ecma:array", "push", (batch + 1) as u8,
+        )?;
+        if Self::decode_op_at(code, &mut ip)? != Op::DROP {
+            return None;
+        }
+        for slot in [i_slot, cursor_slot] {
+            if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
+                || Self::decode_u16_at(code, &mut ip)? != slot
+                || Self::decode_op_at(code, &mut ip)? != Op::I32_CONST
+                || Self::decode_leb_i32_at(code, &mut ip)? != batch
+            {
+                return None;
+            }
+            Self::decode_js_number_from_i32_at(code, imports, &mut ip)?;
+            if Self::decode_spilled_i32_at(code, imports, &mut ip)? != scratch_slot
+                || Self::decode_op_at(code, &mut ip)? != Op::I32_ADD
+            {
+                return None;
+            }
+            Self::decode_js_number_from_i32_at(code, imports, &mut ip)?;
+            if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_SET
+                || Self::decode_u16_at(code, &mut ip)? != slot
+            {
+                return None;
+            }
+        }
+        if Self::decode_op_at(code, &mut ip)? != Op::BR
+            || Self::decode_leb_u32_at(code, &mut ip)? != 0
+            || Self::decode_op_at(code, &mut ip)? != Op::END
+        {
+            return None;
+        }
+        Some((arr_slot, cursor_slot, len_slot, i_slot, batch as u16, scratch_slot))
+    }
+
+    fn decode_spilled_i32_at(
+        code: &[u8],
+        imports: &[crate::chunk::Import],
+        ip: &mut usize,
+    ) -> Option<u16> {
+        if Self::decode_op_at(code, ip)? != Op::LOCAL_SET {
+            return None;
+        }
+        let slot = Self::decode_u16_at(code, ip)?;
+        Self::decode_js_number_to_i32_at(code, imports, ip)?;
+        if Self::decode_op_at(code, ip)? != Op::LOCAL_GET
+            || Self::decode_u16_at(code, ip)? != slot
+        {
+            return None;
+        }
+        Self::decode_js_number_to_i32_at(code, imports, ip)?;
+        Some(slot)
     }
 
     fn match_canonical_linear_to_byte_array_tail(
@@ -2102,7 +3461,7 @@ impl VM {
             return None;
         }
         let len_slot = Self::decode_u16_at(code, &mut ip)?;
-        if Self::decode_op_at(code, &mut ip)? != Op::I32_GE_S
+        if Self::decode_op_at(code, &mut ip)? != Op::I32_GE_U
             || Self::decode_op_at(code, &mut ip)? != Op::BR_IF
             || Self::decode_leb_u32_at(code, &mut ip)? != 1
             || Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET
@@ -2993,10 +4352,23 @@ impl VM {
 
     fn match_linear_memory_typed_copy_loop(
         code: &[u8],
+        ip: usize,
+        load_op: Op,
+        store_op: Op,
+        stride: i32,
+    ) -> Option<(u16, Option<u16>, u16, Option<u16>, u16, u16, u16)> {
+        Self::match_linear_memory_typed_copy_loop_with_memarg(
+            code, ip, load_op, store_op, stride, |_| Some(()),
+        )
+    }
+
+    fn match_linear_memory_typed_copy_loop_with_memarg(
+        code: &[u8],
         mut ip: usize,
         load_op: Op,
         store_op: Op,
         stride: i32,
+        mut advance_memarg: impl FnMut(&mut usize) -> Option<()>,
     ) -> Option<(u16, Option<u16>, u16, Option<u16>, u16, u16, u16)> {
         fn decode_base_offset_i(
             code: &[u8],
@@ -3067,6 +4439,7 @@ impl VM {
         if Self::decode_op_at(code, &mut ip)? != load_op {
             return None;
         }
+        advance_memarg(&mut ip)?;
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_SET {
             return None;
         }
@@ -3081,6 +4454,7 @@ impl VM {
         if Self::decode_op_at(code, &mut ip)? != store_op {
             return None;
         }
+        advance_memarg(&mut ip)?;
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
         }
@@ -3124,9 +4498,21 @@ impl VM {
 
     fn match_linear_memory_typed_fill_loop(
         code: &[u8],
+        ip: usize,
+        store_op: Op,
+        stride: i32,
+    ) -> Option<(u16, Option<u16>, u16, u16, u16)> {
+        Self::match_linear_memory_typed_fill_loop_with_memarg(
+            code, ip, store_op, stride, |_| Some(()),
+        )
+    }
+
+    fn match_linear_memory_typed_fill_loop_with_memarg(
+        code: &[u8],
         mut ip: usize,
         store_op: Op,
         stride: i32,
+        mut advance_memarg: impl FnMut(&mut usize) -> Option<()>,
     ) -> Option<(u16, Option<u16>, u16, u16, u16)> {
         fn decode_base_offset_i(
             code: &[u8],
@@ -3201,6 +4587,7 @@ impl VM {
         if Self::decode_op_at(code, &mut ip)? != store_op {
             return None;
         }
+        advance_memarg(&mut ip)?;
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
         }
@@ -5776,10 +7163,13 @@ impl VM {
     }
 
     fn classify_loop_superop(&mut self, chunk_index: usize, loop_body_start: usize) -> LoopSuperop {
+        // Internal opcodes occupy at least four bytes; distinct loop-body
+        // starts cannot share this bucket, including unaligned starts.
+        let cache_index = loop_body_start / 4;
         if let Some(cached) = self
             .loop_superops
             .get(chunk_index)
-            .and_then(|chunk| chunk.get(loop_body_start))
+            .and_then(|chunk| chunk.get(cache_index))
             .copied()
         {
             if cached != LoopSuperop::Unknown {
@@ -5788,7 +7178,54 @@ impl VM {
         }
 
         let code = &self.chunks[chunk_index].code;
-        let superop = if let Some((arr_slot, dst_slot, len_slot, i_slot)) =
+        let mut simd_offsets = [0u64; 2];
+        let mut simd_memarg_index = 0usize;
+        let superop = if let Some((
+            src_slot, src_offset_slot, dst_slot, dst_offset_slot,
+            len_slot, i_slot, value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop_with_memarg(
+            code, loop_body_start, Op::V128_LOAD, Op::V128_STORE, 16,
+            |ip| {
+                let displacement = simd_offsets.get_mut(simd_memarg_index)?;
+                if let Some((offset, size)) =
+                    self.cached_optional_memory_arg(chunk_index, *ip)
+                {
+                    *displacement = offset;
+                    *ip = ip.checked_add(size)?;
+                }
+                simd_memarg_index += 1;
+                // Missing cache entries retain the old no-memarg match.
+                // Encoded unsupported arguments then fail the next opcode
+                // match rather than being interpreted by a second decoder.
+                Some(())
+            },
+        ) {
+            LoopSuperop::LinearMemoryV128Copy {
+                src_slot, src_offset_slot, dst_slot, dst_offset_slot,
+                len_slot, i_slot, value_slot,
+                load_mem_offset: simd_offsets[0],
+                store_mem_offset: simd_offsets[1],
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_typed_fill_loop_with_memarg(
+                code, loop_body_start, Op::V128_STORE, 16,
+                |ip| {
+                    if let Some((offset, size)) =
+                        self.cached_optional_memory_arg(chunk_index, *ip)
+                    {
+                        if offset != 0 { return None; }
+                        *ip = ip.checked_add(size)?;
+                    }
+                    Some(())
+                },
+            )
+        {
+            LoopSuperop::LinearMemoryTypedFill {
+                dst_slot, dst_offset_slot, len_slot, i_slot, value_slot,
+                byte_width: 16,
+                value_kind: crate::vm::LinearMemoryTypedFillValue::V128,
+            }
+        } else if let Some((arr_slot, dst_slot, len_slot, i_slot)) =
             Self::match_canonical_byte_array_to_linear_loop(
                 code,
                 &self.chunks[chunk_index].imports,
@@ -5801,7 +7238,7 @@ impl VM {
                 len_slot,
                 i_slot,
             }
-        } else if let Some((arr_slot, cursor_slot, len_slot, i_slot)) =
+        } else if let Some((arr_slot, cursor_slot, len_slot, i_slot, batch)) =
             Self::match_canonical_linear_to_byte_array_batch(
                 code,
                 &self.chunks[chunk_index].imports,
@@ -5813,6 +7250,23 @@ impl VM {
                 cursor_slot,
                 len_slot,
                 i_slot,
+                batch,
+                scratch_slot: None,
+            }
+        } else if let Some((arr_slot, cursor_slot, len_slot, i_slot, batch, scratch_slot)) =
+            Self::match_boxed_linear_to_byte_array_batch(
+                code,
+                &self.chunks[chunk_index].imports,
+                loop_body_start,
+            )
+        {
+            LoopSuperop::CanonicalLinearToByteArrayBatch {
+                arr_slot,
+                cursor_slot,
+                len_slot,
+                i_slot,
+                batch,
+                scratch_slot: Some(scratch_slot),
             }
         } else if let Some((arr_slot, cursor_slot, base_slot, len_slot, i_slot)) =
             Self::match_canonical_linear_to_byte_array_tail(
@@ -6868,10 +8322,10 @@ impl VM {
             self.loop_superops.resize_with(chunk_index + 1, Vec::new);
         }
         let chunk_cache = &mut self.loop_superops[chunk_index];
-        if chunk_cache.len() <= loop_body_start {
-            chunk_cache.resize(loop_body_start + 1, LoopSuperop::Unknown);
+        if chunk_cache.len() <= cache_index {
+            chunk_cache.resize(cache_index + 1, LoopSuperop::Unknown);
         }
-        chunk_cache[loop_body_start] = superop;
+        chunk_cache[cache_index] = superop;
         superop
     }
 
@@ -6950,9 +8404,10 @@ impl VM {
         cursor_slot: u16,
         len_slot: u16,
         i_slot: u16,
+        batch: u16,
     ) -> Result<bool, VMError> {
         self.try_canonical_linear_to_byte_array_copy(
-            arr_slot, cursor_slot, None, len_slot, i_slot, 254,
+            arr_slot, cursor_slot, None, len_slot, i_slot, batch as usize,
         )
     }
 
@@ -8329,6 +9784,78 @@ impl VM {
         Ok(false)
     }
 
+    // Batch only identical/disjoint ranges. Shared buffers use the same
+    // mutex-backed access as scalar copies; invalid ranges retain trap order.
+    fn try_linear_memory_v128_copy_loop(
+        &mut self,
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        value_slot: u16,
+        load_mem_offset: u64,
+        store_mem_offset: u64,
+    ) -> Result<bool, VMError> {
+        if self.trace || self.debugger.is_some() || self.error_history.is_some()
+            || self.type_recorder.is_some() || self.perf_counters.is_some()
+        { return Ok(false); }
+        if i_slot == value_slot
+            || [src_slot, dst_slot, len_slot].into_iter()
+                .chain(src_offset_slot).chain(dst_offset_slot)
+                .any(|slot| slot == i_slot || slot == value_slot)
+        { return Ok(false); }
+        let Some(entry) = self.label_at_depth(1) else { return Ok(false); };
+        let base = self.frames[self.frames.len() - 1].base;
+        let len = self.stack_i32_at(base + len_slot as usize)? as u32;
+        let start = self.stack_i32_at(base + i_slot as usize)? as u32;
+        if start >= len {
+            self.branch_to_label(1, entry);
+            return Ok(true);
+        }
+        let bytes = ((u64::from(len - start) + 15) / 16) * 16;
+        let final_i = u64::from(start) + bytes;
+        if final_i > u64::from(u32::MAX) { return Ok(false); }
+        let address = |slot: u16, offset: Option<u16>| -> Result<usize, VMError> {
+            let addr = self.stack_i32_at(base + slot as usize)?;
+            let offset = match offset {
+                Some(slot) => self.stack_i32_at(base + slot as usize)?,
+                None => 0,
+            };
+            Ok(addr.wrapping_add(offset).wrapping_add(start as i32) as u32 as usize)
+        };
+        let src = address(src_slot, src_offset_slot)?;
+        let dst = address(dst_slot, dst_offset_slot)?;
+        // Unlike the guest i32 additions above, a memarg displacement must
+        // not wrap. Unrepresentable addresses retain ordinary trap ordering.
+        let Some(src) = (src as u64).checked_add(load_mem_offset)
+            .and_then(|addr| usize::try_from(addr).ok())
+        else { return Ok(false); };
+        let Some(dst) = (dst as u64).checked_add(store_mem_offset)
+            .and_then(|addr| usize::try_from(addr).ok())
+        else { return Ok(false); };
+        let Ok(bytes) = usize::try_from(bytes) else { return Ok(false); };
+        let Some(src_end) = src.checked_add(bytes) else { return Ok(false); };
+        let Some(dst_end) = dst.checked_add(bytes) else { return Ok(false); };
+        if src_end as u64 > (1u64 << 32) || dst_end as u64 > (1u64 << 32)
+        { return Ok(false); }
+        let copy_memory = |memory: &mut Vec<u8>| {
+            v128_copy::copy_forward_vectors(memory, src, dst, bytes)
+        };
+        let copied = match self.memory.with_buffer_mut_exclusive(copy_memory) {
+            Some(result) => result,
+            None => self.memory.with_buffer_mut(copy_memory),
+        };
+        let Some(last) = copied else { return Ok(false); };
+        let value_idx = base + value_slot as usize;
+        if value_idx >= self.stack.len() { self.stack.resize(value_idx + 1, Value::Null); }
+        self.stack[value_idx] = Value::V128(last);
+        self.stack[base + i_slot as usize] = Value::I32(final_i as i32);
+        self.branch_to_label(1, entry);
+        Ok(true)
+    }
+
     fn try_linear_memory_f64_copy_loop(
         &mut self,
         src_slot: u16,
@@ -8577,6 +10104,85 @@ impl VM {
         Ok(false)
     }
 
+    #[inline]
+    fn checked_gc_array_range(index: i32, count: i32, len: usize) -> Option<std::ops::Range<usize>> {
+        let start = index as u32 as usize;
+        let end = start.checked_add(count as u32 as usize)?;
+        (end <= len).then_some(start..end)
+    }
+
+    #[inline]
+    fn copy_array_values_within(values: &mut [Value], dst: usize, src: usize, count: usize) {
+        debug_assert!(src.checked_add(count).is_some_and(|end| end <= values.len()));
+        debug_assert!(dst.checked_add(count).is_some_and(|end| end <= values.len()));
+        if count == 0 || dst == src { return; }
+        if dst < src {
+            if dst + count <= src {
+                let (left, right) = values.split_at_mut(src);
+                left[dst..dst + count].clone_from_slice(&right[..count]);
+            } else {
+                // Forward traversal preserves unread source values on left overlap.
+                for i in 0..count {
+                    let (left, right) = values.split_at_mut(src + i);
+                    left[dst + i].clone_from(&right[0]);
+                }
+            }
+        } else if src + count <= dst {
+            let (left, right) = values.split_at_mut(dst);
+            right[..count].clone_from_slice(&left[src..src + count]);
+        } else {
+            // Reverse traversal preserves unread source values on right overlap.
+            for i in (0..count).rev() {
+                let (left, right) = values.split_at_mut(dst + i);
+                right[0].clone_from(&left[src + i]);
+            }
+        }
+    }
+
+    #[inline]
+    fn fill_linear_memory_pattern(dst: &mut [u8], pattern: &[u8]) {
+        if dst.is_empty() { return; }
+        let width = pattern.len();
+        debug_assert!(width != 0 && dst.len() % width == 0);
+        if width == 1 || pattern.iter().all(|&byte| byte == pattern[0]) {
+            dst.fill(pattern[0]);
+            return;
+        }
+        // Small ARM64 fills benefit from contiguous fixed-vector stores.
+        // Larger spans retain the cache-hot memcpy seed below: replacing it
+        // with vector-sized copies regresses memory bandwidth in measurements.
+        #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+        if (128..=256).contains(&dst.len()) && matches!(width, 2 | 4 | 8 | 16) {
+            let mut block = [0u8; 16];
+            block[..width].copy_from_slice(pattern);
+            let mut written = width;
+            while written < block.len() {
+                let (seed, tail) = block.split_at_mut(written);
+                tail[..written].copy_from_slice(seed);
+                written *= 2;
+            }
+            let mut chunks = dst.chunks_exact_mut(16);
+            for chunk in &mut chunks { chunk.copy_from_slice(&block); }
+            let tail = chunks.into_remainder();
+            tail.copy_from_slice(&block[..tail.len()]);
+            return;
+        }
+        dst[..width].copy_from_slice(pattern);
+        // Keep large-fill source reads in a small hot prefix, without the
+        // previous 4 KiB scratch allocation or its short-fill setup cost.
+        let seed_len = dst.len().min(4096);
+        let mut written = width;
+        while written < seed_len {
+            let n = written.min(seed_len - written);
+            dst.copy_within(0..n, written);
+            written += n;
+        }
+        let (seed, tail) = dst.split_at_mut(seed_len);
+        for chunk in tail.chunks_mut(seed_len) {
+            chunk.copy_from_slice(&seed[..chunk.len()]);
+        }
+    }
+
     fn try_linear_memory_typed_fill_loop(
         &mut self,
         dst_slot: u16,
@@ -8588,9 +10194,17 @@ impl VM {
         value_kind: crate::vm::LinearMemoryTypedFillValue,
     ) -> Result<bool, VMError> {
         let width = byte_width as usize;
-        if !matches!(width, 1 | 2 | 4 | 8) {
+        let is_v128 = matches!(value_kind, crate::vm::LinearMemoryTypedFillValue::V128);
+        if !matches!(width, 1 | 2 | 4 | 8 | 16) || (width == 16) != is_v128 {
             return Ok(false);
         }
+        if is_v128 && (self.trace || self.debugger.is_some() || self.error_history.is_some()
+            || self.type_recorder.is_some() || self.perf_counters.is_some()
+            || i_slot == value_slot
+            || [dst_slot, len_slot].into_iter().chain(dst_offset_slot)
+                .any(|slot| slot == i_slot))
+        { return Ok(false); }
+        if is_v128 && self.label_at_depth(1).is_none() { return Ok(false); }
         let frame_index = self.frames.len() - 1;
         let base = self.frames[frame_index].base;
         let len = self.stack_i32_at(base + len_slot as usize)? as u32;
@@ -8620,16 +10234,16 @@ impl VM {
         } else {
             dst
         };
-        let dst_addr = dst.wrapping_add(start_i as i32) as usize;
+        let dst_addr = dst.wrapping_add(start_i as i32) as u32 as usize;
 
-        let mut pattern = [0u8; 8];
+        let mut pattern = [0u8; 16];
         match value_kind {
             crate::vm::LinearMemoryTypedFillValue::I32 => {
                 pattern[..4]
                     .copy_from_slice(&self.stack_i32_at(base + value_slot as usize)?.to_le_bytes());
             }
             crate::vm::LinearMemoryTypedFillValue::I64 => {
-                pattern
+                pattern[..8]
                     .copy_from_slice(&self.stack_i64_at(base + value_slot as usize)?.to_le_bytes());
             }
             crate::vm::LinearMemoryTypedFillValue::F32 => {
@@ -8637,8 +10251,13 @@ impl VM {
                     .copy_from_slice(&self.stack_f32_at(base + value_slot as usize)?.to_le_bytes());
             }
             crate::vm::LinearMemoryTypedFillValue::F64 => {
-                pattern
+                pattern[..8]
                     .copy_from_slice(&self.stack_f64_at(base + value_slot as usize)?.to_le_bytes());
+            }
+            crate::vm::LinearMemoryTypedFillValue::V128 => {
+                let Some(Value::V128(bytes)) = self.stack.get(base + value_slot as usize)
+                else { return Ok(false); };
+                pattern = *bytes;
             }
         }
 
@@ -8648,29 +10267,7 @@ impl VM {
                 return None;
             }
             let dst = &mut memory[dst_addr..dst_end];
-            if width == 1 {
-                dst.fill(pattern[0]);
-                return Some(());
-            }
-            const BLOCK: usize = 4096;
-            let block_len = BLOCK - (BLOCK % width);
-            let mut block = [0u8; BLOCK];
-            block[..width].copy_from_slice(&pattern[..width]);
-            let mut written = width;
-            while written < block_len {
-                let n = std::cmp::min(written, block_len - written);
-                block.copy_within(0..n, written);
-                written += n;
-            }
-            let mut offset = 0;
-            while offset + block_len <= fill_bytes {
-                dst[offset..offset + block_len].copy_from_slice(&block[..block_len]);
-                offset += block_len;
-            }
-            if offset < fill_bytes {
-                let n = fill_bytes - offset;
-                dst[offset..].copy_from_slice(&block[..n]);
-            }
+            Self::fill_linear_memory_pattern(dst, &pattern[..width]);
             Some(())
         };
 
@@ -10643,7 +12240,7 @@ impl VM {
         if name == "result" {
             return Ok(false);
         }
-        let getter_key = format!("__get_{}", name);
+        let getter_key = property_accessor_key::AccessorKey::getter(name);
         let obj = match self.stack.get(base + obj_slot as usize) {
             Some(Value::Object(o)) => o,
             _ => return Ok(false),
@@ -10653,7 +12250,7 @@ impl VM {
                 counters.record_object_lock();
             }
             let o_ref = obj.lock().unwrap();
-            o_ref.properties.contains_key(name) && !o_ref.properties.contains_key(&getter_key)
+            o_ref.properties.contains_key(name) && !o_ref.properties.contains_key(getter_key.as_str())
         };
         if !can_skip_reads {
             return Ok(false);
@@ -10704,7 +12301,7 @@ impl VM {
         if name == "result" {
             return Ok(false);
         }
-        let getter_key = format!("__get_{}", name);
+        let getter_key = property_accessor_key::AccessorKey::getter(name);
         let obj = match self.stack.get(base + obj_slot as usize) {
             Some(Value::Object(o)) => o,
             _ => return Ok(false),
@@ -10714,7 +12311,7 @@ impl VM {
                 counters.record_object_lock();
             }
             let o_ref = obj.lock().unwrap();
-            if o_ref.properties.contains_key(&getter_key) {
+            if o_ref.properties.contains_key(getter_key.as_str()) {
                 return Ok(false);
             }
             match o_ref.properties.get(name) {
@@ -11389,6 +12986,7 @@ impl VM {
             upvalues: Vec::new(),
         };
         let mut obj = Object {
+            descriptor: None,
             properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Function(func),
             type_id: 0,
@@ -11463,6 +13061,7 @@ impl VM {
         let child_decoded_operands = self.decoded_operands.clone();
         let child_decoded_operands64 = self.decoded_operands64.clone();
         let child_native_call_sites = self.native_call_sites.clone();
+        let child_pending_native_call_sites = self.pending_native_call_sites.clone();
         let child_native_result_fast_paths = self.native_result_fast_paths.clone();
         let child_local_fast_paths = self.local_fast_paths.clone();
         let child_block_targets = self.block_targets.clone();
@@ -11483,6 +13082,8 @@ impl VM {
         // surfaced as a TIMEOUT rather than a crash.
         let child_globals_assigned = self.globals_assigned.clone();
         let child_type_registry = self.type_registry.clone();
+        let child_module_type_ids = self.module_type_ids.clone();
+        let child_chunk_type_base = self.chunk_type_base.clone();
         let child_func_table = self.func_table.clone();
         let child_wasm_tables = self.wasm_tables.clone();
         let child_case_aliases = self.case_aliases.clone();
@@ -11510,6 +13111,7 @@ impl VM {
             child_vm.decoded_operands = child_decoded_operands;
             child_vm.decoded_operands64 = child_decoded_operands64;
             child_vm.native_call_sites = child_native_call_sites;
+            child_vm.pending_native_call_sites = child_pending_native_call_sites;
             child_vm.native_result_fast_paths = child_native_result_fast_paths;
             child_vm.local_fast_paths = child_local_fast_paths;
             child_vm.block_targets = child_block_targets;
@@ -11526,6 +13128,8 @@ impl VM {
             child_vm.global_index = child_global_index;
             child_vm.globals_assigned = child_globals_assigned;
             child_vm.type_registry = child_type_registry;
+            child_vm.module_type_ids = child_module_type_ids;
+            child_vm.chunk_type_base = child_chunk_type_base;
             child_vm.func_table = child_func_table;
             child_vm.wasm_tables = child_wasm_tables;
             child_vm.case_aliases = child_case_aliases;
@@ -11621,6 +13225,58 @@ fn make_operation_cancelled_error() -> Value {
 /// Format (WASM-compliant): every BLOCK/LOOP/IF carries exactly 1 blocktype
 /// byte. ELSE and END carry no operands.
 pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
+    build_block_entries(code).into_iter().collect()
+}
+
+/// The VM installs entries directly into its immutable indexed cache. Keep
+/// open scopes and their pending ELSE positions on one stack, avoiding two
+/// temporary hash maps for every dynamically compiled unit.
+pub(crate) fn build_block_entries(code: &[u8]) -> Vec<(usize, BlockTargets)> {
+    let mut entries: Vec<(usize, BlockTargets)> = Vec::new();
+    let mut stack: Vec<(usize, Option<usize>, Option<usize>)> = Vec::new();
+    let mut ip = 0usize;
+    while ip + 3 < code.len() {
+        let opcode_start = ip;
+        let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+        let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+        let Some(op) = Op::decode(group, sub) else {
+            ip += 4;
+            continue;
+        };
+        ip += 4;
+        if op == Op::BLOCK || op == Op::LOOP || op == Op::IF || op == Op::TRY_TABLE {
+            ip += op.operand_format().size_in(code, ip);
+            stack.push((opcode_start, None, None));
+        } else if op == Op::ELSE {
+            if let Some((start, pending_else, entry)) = stack.last_mut() {
+                let index = *entry.get_or_insert_with(|| {
+                    let index = entries.len();
+                    entries.push((*start, BlockTargets { else_ip: None, end_ip: 0 }));
+                    index
+                });
+                entries[index].1.else_ip = Some(opcode_start);
+                *pending_else = Some(opcode_start);
+            }
+        } else if op == Op::END {
+            if let Some((start, pending_else, entry)) = stack.pop() {
+                let end_ip = opcode_start + 4;
+                match entry {
+                    Some(index) => entries[index].1.end_ip = end_ip,
+                    None => entries.push((start, BlockTargets { else_ip: None, end_ip })),
+                }
+                if let Some(else_start) = pending_else {
+                    entries.push((else_start, BlockTargets { else_ip: None, end_ip }));
+                }
+            }
+        } else {
+            ip += op.operand_format().size_in(code, ip);
+        }
+    }
+    entries
+}
+
+#[cfg(test)]
+fn build_block_table_reference(code: &[u8]) -> HashMap<usize, BlockTargets> {
     let mut table: HashMap<usize, BlockTargets> = HashMap::new();
     // Stack of opcode_starts for open BLOCK/LOOP/IF scopes.
     let mut stack: Vec<usize> = Vec::new();
@@ -11698,27 +13354,63 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
     table
 }
 
+#[cfg(test)]
+mod block_entry_tests {
+    use super::{build_block_entries, build_block_table_reference};
+    use crate::opcode::Op;
+    fn check(code: &[u8]) {
+        let reference = build_block_table_reference(code);
+        let entries = build_block_entries(code);
+        let actual: std::collections::HashMap<_, _> = entries.iter().copied().collect();
+        assert_eq!(entries.len(), actual.len(), "entries must have unique offsets");
+        assert_eq!(actual.len(), reference.len());
+        for (offset, expected) in reference {
+            let actual = actual.get(&offset).expect("missing block target");
+            assert_eq!((actual.else_ip, actual.end_ip), (expected.else_ip, expected.end_ip));
+        }
+    }
+    #[test]
+    fn compact_entries_preserve_structured_control_and_partial_code() {
+        check(&[]);
+        let choices = [Op::BLOCK, Op::LOOP, Op::IF, Op::TRY_TABLE, Op::ELSE, Op::END, Op::NOP];
+        let mut random = 17u64;
+        for _ in 0..2000 {
+            let mut code = Vec::new();
+            for _ in 0..40 {
+                random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let op = choices[(random >> 32) as usize % choices.len()];
+                code.extend_from_slice(&op.encode());
+                // Zero counts encode an empty TRY_TABLE and zero block results.
+                code.resize(code.len() + op.operand_format().size_in(&[0; 256], 0), 0);
+            }
+            check(&code);
+            code.extend_from_slice(&[255, 255, 255]);
+            check(&code);
+        }
+        for group in 0..256 {
+            for sub in 0..2048 {
+                if let Some(op) = Op::decode(group, sub) {
+                    let mut code = op.encode().to_vec();
+                    code.resize(code.len() + 256, 0);
+                    check(&code);
+                }
+            }
+        }
+    }
+}
+
 #[inline(always)]
 fn wasm_bool(value: bool) -> Value {
     Value::I32(if value { 1 } else { 0 })
 }
 
-/// Where a custom descriptor lives on an instance.
-///
-/// A reserved property key, not a user-reachable name: the descriptor is an
-/// engine-managed RTT reference in the proposal, so nothing in source may
-/// read or overwrite it. Kept as a single constant with one writer
-/// (`set_descriptor`) and one reader (`descriptor_of`) so the allocation and
-/// cast paths can never disagree about the location.
-///
-/// ⚠ This is a string-keyed property, which is the name-keyed representation
-/// `flexclassplan` §0-bis is driving to zero. It stays for now because moving
-/// it to a dedicated `Object` field changes a shared `vybe_runtime` struct.
-const DESCRIPTOR_SLOT: &str = "__descriptor";
-
 /// Attach a custom descriptor to a freshly allocated instance.
-fn set_descriptor(obj: &mut Object, descriptor: Value) {
-    obj.properties.insert(DESCRIPTOR_SLOT.into(), descriptor);
+fn set_descriptor(obj: &mut Object, descriptor: Value) -> Result<(), VMError> {
+    let Value::Object(descriptor) = descriptor else {
+        return Err(VMError::new("trap: descriptor is not a structure reference"));
+    };
+    obj.descriptor = Some(descriptor);
+    Ok(())
 }
 
 /// The custom descriptor attached to a reference, or `Null` when it has none.
@@ -11730,11 +13422,45 @@ fn descriptor_of(value: &Value) -> Value {
         Value::Object(o) => o
             .lock()
             .unwrap()
-            .properties
-            .get(DESCRIPTOR_SLOT)
-            .cloned()
+            .descriptor
+            .as_ref()
+            .map(|descriptor| Value::Object(descriptor.clone()))
             .unwrap_or(Value::Null),
         _ => Value::Null,
+    }
+}
+
+/// Compare the attached descriptor in place. Casts do not return the
+/// descriptor, so cloning either reference would only add atomic refcounts.
+#[inline]
+fn descriptor_matches(value: &Value, expected: &Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            let object = object.lock().unwrap();
+            match &object.descriptor {
+                Some(actual) => matches!(expected, Value::Object(expected) if Arc::ptr_eq(actual, expected)),
+                None => ref_eq(&Value::Null, expected),
+            }
+        }
+        _ => ref_eq(&Value::Null, expected),
+    }
+}
+
+#[cfg(test)]
+mod descriptor_identity_tests {
+    use super::*;
+
+    #[test]
+    fn casts_compare_identity_not_descriptor_contents() {
+        let descriptor = Value::Object(crate::heap::alloc(Object::new()));
+        let other = Value::Object(crate::heap::alloc(Object::new()));
+        let mut object = Object::new();
+        set_descriptor(&mut object, descriptor.clone()).unwrap();
+        let instance = Value::Object(crate::heap::alloc(object));
+        assert!(descriptor_matches(&instance, &descriptor));
+        assert!(!descriptor_matches(&instance, &other));
+        assert!(!descriptor_matches(&instance, &Value::Null));
+        assert!(ref_eq(&descriptor_of(&instance), &descriptor));
     }
 }
 
@@ -11883,7 +13609,51 @@ fn read_leb_u64(code: &[u8], ip: &mut usize) -> u64 {
 
 /// The element storage byte-width and decode `kind` of a GC array element
 /// storage type name. `kind` feeds `decode_le_numeric`: 0=i32, 1=i64, 2=f32,
-/// 3=f64, 4=i8 (packed), 5=i16 (packed). Ref element types return None.
+/// 3=f64, 4=i8 (packed), 5=i16 (packed), 6=v128. Ref element types return None.
+#[inline]
+pub(super) fn allocate_array_values(len: usize, value: Value) -> Result<Vec<Value>, VMError> {
+    let mut values = reserve_array_values(len)?;
+    // Construct inline numeric payloads without repeatedly dispatching Clone.
+    // References keep resize's existing clone/move/drop behavior unchanged.
+    match value {
+        Value::I32(v) => values.extend(std::iter::repeat_with(|| Value::I32(v)).take(len)),
+        Value::I64(v) => values.extend(std::iter::repeat_with(|| Value::I64(v)).take(len)),
+        Value::F32(v) => values.extend(std::iter::repeat_with(|| Value::F32(v)).take(len)),
+        Value::F64(v) => values.extend(std::iter::repeat_with(|| Value::F64(v)).take(len)),
+        Value::V128(v) => values.extend(std::iter::repeat_with(|| Value::V128(v)).take(len)),
+        Value::Null => values.extend(std::iter::repeat_with(|| Value::Null).take(len)),
+        Value::Undefined => values.extend(std::iter::repeat_with(|| Value::Undefined).take(len)),
+        Value::Bool(v) => values.extend(std::iter::repeat_with(|| Value::Bool(v)).take(len)),
+        Value::TypedNull(id) => values.extend(std::iter::repeat_with(|| Value::TypedNull(id)).take(len)),
+        value => values.resize(len, value),
+    }
+    Ok(values)
+}
+
+#[inline]
+fn reserve_array_values(len: usize) -> Result<Vec<Value>, VMError> {
+    // Use the existing Value-vector resource ceiling, not the architectural
+    // u32 bound. Reject excessive requests before an overcommitting allocator
+    // can turn initialization into a host OOM kill.
+    if len as u64 > crate::vm::TABLE_ALLOC_LIMIT {
+        return Err(VMError::new("trap: allocation failure (array resource limit)"));
+    }
+    let mut values = Vec::new();
+    values.try_reserve_exact(len)
+        .map_err(|_| VMError::new("trap: allocation failure (array allocation)"))?;
+    Ok(values)
+}
+
+pub(super) fn default_gc_array_element(name: &str) -> Value {
+    if name == "v128" {
+        return Value::V128([0; 16]);
+    }
+    match array_elem_storage_kind(name) {
+        Some((width, kind)) => decode_le_numeric(kind, &[0; 8][..width]),
+        None => Value::Null,
+    }
+}
+
 fn array_elem_storage_kind(name: &str) -> Option<(usize, u8)> {
     Some(match name {
         "i8" => (1, 4),
@@ -11892,13 +13662,14 @@ fn array_elem_storage_kind(name: &str) -> Option<(usize, u8)> {
         "i64" => (8, 1),
         "f32" => (4, 2),
         "f64" => (8, 3),
+        "v128" => (16, 6),
         _ => return None,
     })
 }
 
 /// Decode `bytes` (little-endian, exactly the element width) into the numeric
 /// Value for an untyped GC array element. `kind`: 0=i32, 1=i64, 2=f32, 3=f64,
-/// 4=i8, 5=i16 (packed lanes are read as their raw unsigned storage; a later
+/// 4=i8, 5=i16, 6=v128 (packed lanes are read as their raw unsigned storage; a later
 /// `array.get_s`/`get_u` performs the sign/zero extension).
 fn decode_le_numeric(kind: u8, bytes: &[u8]) -> Value {
     match kind {
@@ -11907,6 +13678,7 @@ fn decode_le_numeric(kind: u8, bytes: &[u8]) -> Value {
         3 => Value::F64(f64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))),
         4 => Value::I32(bytes.first().map(|b| *b as i32).unwrap_or(0)),
         5 => Value::I32(u16::from_le_bytes(bytes.try_into().unwrap_or([0; 2])) as i32),
+        6 => Value::V128(bytes.try_into().unwrap_or([0; 16])),
         _ => Value::I32(i32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]))),
     }
 }
@@ -12045,10 +13817,9 @@ impl VM {
         let frame_label_base = self.frame().label_base;
         self.label_stack.truncate(frame_label_base);
         self.frames.pop();
-        if !self.frames.is_empty() {
-            let live = self.frames.len();
-            self.prune_exception_handlers_to_live_frames(live);
-        }
+        // Standard tail calls remove the outgoing handler even at the outermost
+        // frame; retaining depth1 handlers after popping to0 catches callee throws.
+        self.prune_exception_handlers_to_live_frames(self.frames.len());
     }
 
     fn suspend_for_pending_promise(&mut self, promise_id: u64) -> VMError {
@@ -12084,12 +13855,12 @@ impl VM {
     /// (`EventLoop::set_stream_producer`) and called through the ordinary host
     /// registry, so the VM carries no knowledge of what any particular stream
     /// produces.
-    pub(crate) fn run_stream_producer(&mut self, stream_id: u64) -> bool {
+    pub(crate) fn run_stream_producer(&mut self, stream_id: u64) -> Result<bool, VMError> {
         let Some((module, name)) = self.event_loop.borrow().stream_producer(stream_id) else {
-            return false;
+            return Ok(false);
         };
         let Some(idx) = self.host_registry.get(&(module, name)).copied() else {
-            return false;
+            return Ok(false);
         };
         let host_fn = self.host_fns[idx].clone();
         let args = [Value::F64(stream_id as f64)];
@@ -12097,20 +13868,29 @@ impl VM {
             let mut ctx = self.make_host_context();
             host_fn(&mut ctx, &args);
         }
+        if let Some(trap) = self.pending_host_trap.take() {
+            return Err(trap);
+        }
         // Ask the buffer, not the producer's return value: a producer pushes
         // through `HostContext`, and a stream that reached EOF has an answer
         // too (`DROPPED`), which is equally a reason not to park.
         let el = self.event_loop.borrow();
-        el.stream_has_bytes(stream_id)
+        Ok(el.stream_has_bytes(stream_id)
             || el.stream_has_item(stream_id)
-            || el.stream_is_eof(stream_id)
+            || el.stream_is_eof(stream_id))
     }
 
-    fn park_sync_copy(&mut self, pending: crate::fiber::PendingCopy) -> VMError {
+    pub(crate) fn park_sync_copy(&mut self, pending: crate::fiber::PendingCopy) -> VMError {
         let end_id = pending.end_id;
         let is_future = matches!(pending.kind, crate::fiber::PendingCopyKind::Future(_));
         let mut fiber = self.save_fiber();
         fiber.pending_copy = Some(pending);
+        if let Some(thread) = self.current_thread
+            .and_then(|index| self.cm_instance.threads.get_mut(index))
+        {
+            thread.put_cont(Value::Undefined);
+            thread.ready_func = Some(crate::cm_thread::ReadyWhen::HostEvent);
+        }
         let mut el = self.event_loop.borrow_mut();
         if is_future {
             el.suspend_future_sync_reader(end_id, fiber);
@@ -12501,6 +14281,9 @@ impl VM {
         yields: bool,
         promotes: bool,
     ) -> Result<(), VMError> {
+        if promotes {
+            self.refresh_cm_callback_waiters()?;
+        }
         let who = b.spec_name();
         let cancellable = self.canon_cancellable();
         let target_idx = self.pop_i32_fast() as u32;
@@ -12594,6 +14377,12 @@ impl VM {
                 .map_err(|e| VMError::new(format!("canon {who}: {e} (trap)")))?;
         }
 
+        if self.pending_cm_callbacks.iter().any(|pending| pending.thread_index == target_idx) {
+            self.run_pending_cm_callback(who, me, target_idx)?;
+            self.push(Value::I32(0))?;
+            return Ok(());
+        }
+
         self.park_and_switch_to(who, me, target_idx)?;
         // Reached only when this thread is resumed again; it was not cancelled
         // on the way in (checked above), so `Cancelled.FALSE`.
@@ -12621,7 +14410,9 @@ impl VM {
                 table.len()
             )));
         }
-        Ok(table[fi as usize].clone())
+        let function = table[fi as usize].clone();
+        self.require_thread_func_type(who, &function)?;
+        Ok(function)
     }
 
     /// `canon_thread_resume_later(i)` — the second half of the spawn fusion.
@@ -12658,7 +14449,7 @@ impl VM {
     /// Absent immediates default to sync, which is the conservative answer:
     /// a sync copy suspends until it has a real payload, where an async one
     /// answers `BLOCKED` and obliges the caller to wait for the event.
-    fn canon_async_opt(&self) -> bool {
+    pub(crate) fn canon_async_opt(&self) -> bool {
         self.canon_type_immediate
             .and_then(|i| self.canon_defs.get(i as usize))
             .map(|d| d.opts.is_async)
@@ -12671,18 +14462,65 @@ impl VM {
     /// this FIRST — before parking, before switching — because a delivered
     /// cancellation means the call returns instead of blocking.
     fn deliver_pending_cancel_now(&mut self, cancellable: bool) -> bool {
-        match self.cm_tasks.last_mut() {
+        match self.current_cm_task_mut() {
             Some(task) => task.deliver_pending_cancel(cancellable),
             None => false,
         }
     }
 
-    /// `$ft` must be `(func (param $c T))` — one parameter, no result.
-    ///
-    /// The VM is untyped, so this checks param/result COUNTS off the callee's
-    /// chunk, which is exactly what `call_indirect` does for its `(type $sig)`
-    /// check. It is not a full structural type comparison and does not pretend
-    /// to be: `T` is `i32` in every non-🐘 profile, so the shape is determined.
+    fn current_cm_task_mut(&mut self) -> Option<&mut crate::cm_task::CMTask> {
+        let thread = self.current_thread?;
+        let task_id = self.cm_instance.threads.get(thread)?.task_id;
+        self.cm_tasks.iter_mut().find(|task| task.id == task_id)
+    }
+
+    pub(crate) fn retire_cm_thread(&mut self, index: u32, retain_task: Option<u32>) -> Result<(), VMError> {
+        let thread = self.cm_instance.threads.unregister(index)
+            .ok_or_else(|| VMError::new("trap: exiting CM thread is not registered"))?;
+        self.reclaim_cm_task(thread.task_id, retain_task)
+    }
+
+    fn reclaim_cm_task(&mut self, task_id: u32, retain_task: Option<u32>) -> Result<(), VMError> {
+        if !self.cm_instance.threads.has_task(task_id) {
+            let task_index = self.cm_tasks.iter().position(|task| task.id == task_id)
+                .ok_or_else(|| VMError::new("trap: exiting CM thread has no task"))?;
+            let task = &self.cm_tasks[task_index];
+            if !task.resolved() {
+                return Err(VMError::new("trap: last CM thread exited before task resolution"));
+            }
+            if task.num_borrows != 0 {
+                return Err(VMError::new("trap: last CM thread exited with outstanding borrows"));
+            }
+            if retain_task != Some(task_id) { self.cm_tasks.remove(task_index); }
+        }
+        Ok(())
+    }
+
+    /// Check the canonical worker type before registering its continuation.
+    fn require_thread_func_type(&self, who: &str, funcref: &Value) -> Result<(), VMError> {
+        let parameter = self.canon_def_required(who)?.worker_param
+            .ok_or_else(|| VMError::new(format!("trap: canon {who}: missing core worker signature")))?;
+        let expected = match parameter {
+            crate::canon_flat::CoreType::I32 => "i32",
+            crate::canon_flat::CoreType::I64 => "i64",
+            _ => return Err(VMError::new(format!("trap: canon {who}: invalid core worker signature"))),
+        };
+        if let Value::Object(object) = funcref {
+            let object = object.lock().unwrap();
+            if let ObjectKind::Function(function) = &object.kind {
+                let chunk = self.chunks.get(function.chunk_index)
+                    .ok_or_else(|| VMError::new(format!("trap: canon {who}: unknown worker function")))?;
+                if chunk.func_sig.as_ref().is_some_and(|(params, results)|
+                    params.trim() == expected && results.trim().is_empty())
+                {
+                    return Ok(());
+                }
+            }
+        }
+        Err(VMError::new(format!("trap: canon {who}: worker function type mismatch")))
+    }
+
+    /// Internal continuation shape. Canonical entry points also check `$ft`.
     fn require_thread_func_shape(&self, who: &str, funcref: &Value) -> Result<(), VMError> {
         if let Value::Object(o) = funcref {
             let ob = o.lock().unwrap();
@@ -12713,7 +14551,10 @@ impl VM {
             return Err(VMError::new(format!("canon {who}: null funcref (trap)")));
         }
         self.require_thread_func_shape(who, &funcref)?;
-        let task_id = self.cm_tasks.last().map(|t| t.id).ok_or_else(|| {
+        let task_id = self.current_thread
+            .and_then(|thread| self.cm_instance.threads.get(thread))
+            .map(|thread| thread.task_id)
+            .ok_or_else(|| {
             VMError::new(format!(
                 "canon {who}: no current task — a thread belongs to the task of a \
                  `canon lift`ed call (trap)"
@@ -12789,6 +14630,7 @@ impl VM {
     ///
     /// Pushes the `Cancelled` result on the paths that return.
     fn thread_block(&mut self, who: &str, me: u32) -> Result<(), VMError> {
+        self.refresh_cm_callback_waiters()?;
         let target = self
             .cm_instance
             .threads
@@ -12796,6 +14638,11 @@ impl VM {
             .into_iter()
             .find(|&i| i != me);
         if let Some(t) = target {
+            if self.pending_cm_callbacks.iter().any(|pending| pending.thread_index == t) {
+                self.run_pending_cm_callback(who, me, t)?;
+                self.push(Value::I32(0))?;
+                return Ok(());
+            }
             self.cm_instance
                 .threads
                 .get_mut(t)
@@ -12831,6 +14678,140 @@ impl VM {
         )))
     }
 
+    pub(crate) fn refresh_cm_callback_waiters(&mut self) -> Result<(), VMError> {
+        for index in 0..self.pending_cm_callbacks.len() {
+            let pending = self.pending_cm_callbacks[index];
+            if let crate::cm_task::CallbackWait::Wait(set) = pending.waiting {
+                let ready = self.poll_waitable_set("callback", set)?.0
+                    != crate::waitable::EventCode::None;
+                if ready {
+                    if let Some(thread) = self.cm_instance.threads.get_mut(pending.thread_index) {
+                        if thread.ready_func == Some(crate::cm_thread::ReadyWhen::HostEvent) {
+                            thread.ready_func = Some(crate::cm_thread::ReadyWhen::Always);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn run_cm_callback_turn(&mut self, who: &str, target: u32, retain_task: Option<u32>) -> Result<(), VMError> {
+        use crate::cm_task::CallbackWait;
+            let index = self.pending_cm_callbacks.iter()
+                .position(|pending| pending.thread_index == target)
+                .ok_or_else(|| VMError::new(format!("canon {who}: no pending callback thread {target} (trap)")))?;
+            let pending = self.pending_cm_callbacks[index];
+            let event = match pending.waiting {
+                CallbackWait::Yield => (crate::waitable::EventCode::None, 0, 0),
+                CallbackWait::Wait(set) => self.poll_waitable_set("callback", set)?,
+            };
+            if matches!(pending.waiting, CallbackWait::Wait(_))
+                && event.0 == crate::waitable::EventCode::None
+            {
+                return Err(VMError::new(format!(
+                    "canon {who}: callback waitable set is not ready (trap)"
+                )));
+            }
+            self.consume_stream_waitable_event(event.0, event.1);
+            let thread = self.cm_instance.threads.get_mut(target)
+                .expect("pending callback thread exists");
+            if thread.waiting() {
+                thread.stop_waiting_internal(false)
+                    .map_err(|e| VMError::new(format!("canon {who}: {e} (trap)")))?;
+            }
+            thread.take_cont();
+            let previous = self.current_thread.replace(target);
+            let call = (|| {
+                for arg in [event.0 as i32, event.1 as i32, event.2 as i32] {
+                    self.push(Value::I32(arg))?;
+                }
+                self.call_canon_callee(
+                    "lift callback",
+                    crate::canon_def::CalleeRef::Core(pending.callback),
+                    3,
+                )
+            })();
+            self.current_thread = previous;
+            let packed = call?.as_i32() as u32;
+            let next = crate::cm_task::unpack_callback_result(packed)
+                .map_err(|e| VMError::new(format!("canon lift callback: {e} (trap)")))?;
+            let index = self.pending_cm_callbacks.iter()
+                .position(|callback| callback.thread_index == target)
+                .ok_or_else(|| VMError::new(format!(
+                    "canon {who}: callback thread {target} disappeared during dispatch (trap)"
+                )))?;
+            match next {
+                None => {
+                    self.pending_cm_callbacks.remove(index);
+                    self.retire_cm_thread(target, retain_task)?;
+                }
+                Some(waiting) => {
+                    if let CallbackWait::Wait(set) = waiting {
+                        if self.waitable_sets.get(set).is_none() {
+                            return Err(VMError::new(format!(
+                                "canon lift callback: handle {set} is not a waitable set (trap)"
+                            )));
+                        }
+                    }
+                    self.pending_cm_callbacks[index].waiting = waiting;
+                    let thread = self.cm_instance.threads.get_mut(target)
+                        .expect("callback thread remains registered");
+                    thread.put_cont(Value::Undefined);
+                    let ready = match waiting {
+                        CallbackWait::Yield => crate::cm_thread::ReadyWhen::Always,
+                        CallbackWait::Wait(_) => crate::cm_thread::ReadyWhen::HostEvent,
+                    };
+                    thread.start_waiting_internal(ready)
+                        .map_err(|e| VMError::new(format!("canon lift callback: {e} (trap)")))?;
+                }
+            }
+            Ok(())
+    }
+
+    fn run_pending_cm_callback(&mut self, who: &str, me: u32, mut target: u32) -> Result<(), VMError> {
+        self.cm_instance.threads.get_mut(me).expect("current thread exists")
+            .put_cont(Value::Undefined);
+        loop {
+            self.run_cm_callback_turn(who, target, None)?;
+            if self.cm_instance.threads.get(me).is_some_and(|thread| thread.ready()) {
+                let thread = self.cm_instance.threads.get_mut(me).expect("current thread exists");
+                thread.stop_waiting_internal(false)
+                    .map_err(|e| VMError::new(format!("canon {who}: {e} (trap)")))?;
+                thread.take_cont();
+                return Ok(());
+            }
+            self.refresh_cm_callback_waiters()?;
+            target = self.cm_instance.threads.ready_indices().into_iter()
+                .find(|&thread| thread != me && self.pending_cm_callbacks.iter()
+                    .any(|pending| pending.thread_index == thread))
+                .ok_or_else(|| VMError::new(
+                    "trap: cannot block a synchronous task before returning"
+                ))?;
+        }
+    }
+
+    fn await_cm_task_result(&mut self, task_id: u32) -> Result<Value, VMError> {
+        loop {
+            if let Some(result) = self.cm_tasks.iter().find(|task| task.id == task_id)
+                .and_then(|task| task.result.clone())
+            {
+                return Ok(result);
+            }
+            if !self.pending_cm_callbacks.iter().any(|pending| pending.task_id == task_id) {
+                return Err(VMError::new("canon lift: async implicit thread exited before task.return (trap)"));
+            }
+            self.refresh_cm_callback_waiters()?;
+            let target = self.cm_instance.threads.ready_indices().into_iter()
+                .find(|&thread| self.pending_cm_callbacks.iter()
+                    .any(|pending| pending.thread_index == thread))
+                .ok_or_else(|| VMError::new(
+                    "canon lift: async task has no ready callback before task.return (trap)"
+                ))?;
+            self.run_cm_callback_turn("lift", target, Some(task_id))?;
+        }
+    }
+
     /// A `Ready` continuation over `entry` with `arg` bound, so entering it
     /// calls `entry(arg)`.
     ///
@@ -12842,7 +14823,7 @@ impl VM {
         bound.kind = ObjectKind::Array(vec![arg]);
         let state = crate::value::ContinuationState {
             entry,
-            saved: std::sync::Mutex::new(None),
+            saved: Box::new(std::sync::Mutex::new(None)),
             state: std::sync::Mutex::new(crate::value::ContinuationPhase::Ready),
         };
         let mut obj = crate::value::Object::new();
@@ -12863,7 +14844,7 @@ impl VM {
     fn new_parked_continuation(&mut self) -> Value {
         let state = crate::value::ContinuationState {
             entry: Value::Undefined,
-            saved: std::sync::Mutex::new(None),
+            saved: Box::new(std::sync::Mutex::new(None)),
             state: std::sync::Mutex::new(crate::value::ContinuationPhase::Ready),
         };
         let mut obj = crate::value::Object::new();
@@ -12977,13 +14958,34 @@ impl VM {
         Ok(())
     }
 
-    /// `(current thread index, slot index)` for a `context.*` built-in.
-    /// Pops the slot index.
+    /// `(current thread index, slot index, is_i64)` for a `context.*` built-in.
+    /// The type and slot are canonical-definition immediates, not stack operands.
     ///
     /// `thread = current_thread()` is unconditional in the spec, so there is no
     /// answer outside a lifted call — the implicit thread IS the context.
-    fn canon_context_slot(&mut self, builtin: &str) -> Result<(u32, usize), VMError> {
-        let index = self.pop_i32_fast() as usize;
+    fn canon_context_slot(&self, builtin: &str) -> Result<(u32, usize, bool), VMError> {
+        let canonidx = self.canon_type_immediate.ok_or_else(|| {
+            VMError::new(format!("canon {builtin}: missing canonical definition (trap)"))
+        })?;
+        let (ty, index) = self
+            .canon_defs
+            .get(canonidx as usize)
+            .and_then(|def| def.context.as_ref())
+            .ok_or_else(|| {
+                VMError::new(format!(
+                    "canon {builtin}: row {canonidx} has no context type and slot (trap)"
+                ))
+            })?;
+        let is_i64 = match ty {
+            crate::component::ValType::I32 => false,
+            crate::component::ValType::I64 => true,
+            _ => {
+                return Err(VMError::new(format!(
+                    "canon {builtin}: context type must be i32 or i64 (trap)"
+                )));
+            }
+        };
+        let index = *index as usize;
         // `Explainer.md:1679`: "Validation currently restricts `i` to be less
         // than 2". Checked here as well as by the array bound, so the message
         // names the SPEC limit rather than a Rust length.
@@ -12999,7 +15001,7 @@ impl VM {
                  only inside a `canon lift`ed call (trap)"
             ))
         })?;
-        Ok((thread_idx, index))
+        Ok((thread_idx, index, is_i64))
     }
 
     /// The `$t` / `$rt` TYPE INDEX this built-in was defined with — the row's
@@ -13208,6 +15210,11 @@ impl VM {
         let def = self.canon_def_required(builtin)?;
         let functype = Box::new(self.canon_functype(builtin, &def)?);
         def.require_callee(builtin).map_err(VMError::new)?;
+        if def.opts.is_async && !functype.is_async {
+            return Err(VMError::new(
+                "the `async` canonical option requires an async function type",
+            ));
+        }
         if functype.params.iter().any(canon_contains_any)
             || functype.result.as_ref().is_some_and(canon_contains_any)
         {
@@ -13249,11 +15256,8 @@ impl VM {
 
     /// Call a canon callee to completion and return its single result.
     ///
-    /// `argc` values are already on the operand stack. The callee value is
-    /// inserted BELOW them — the same shape `ImportTarget::ChunkFn` uses — and
-    /// `execute_until` runs the nested frame to completion, which is what makes
-    /// this a synchronous call rather than a frame push the caller never sees
-    /// the result of.
+    /// `argc` values are already on the operand stack. Core callees enter the
+    /// chunk directly; `execute_until` runs the nested frame to completion.
     fn call_canon_callee(
         &mut self,
         builtin: &str,
@@ -13272,11 +15276,11 @@ impl VM {
             // row that defines it, and calling it IS running that lift. The
             // linker is for component functions that arrive as IMPORTS.
             crate::canon_def::CalleeRef::Component(i) => {
-                let slot = *self.component_funcs.get(i as usize).ok_or_else(|| {
+                let slot = *self.component_func_resolved.get(i as usize).ok_or_else(|| {
                     VMError::new(format!(
                         "canon {builtin}: $callee {i} is not in the component function \
                          index space (have {})",
-                        self.component_funcs.len()
+                        self.component_func_resolved.len()
                     ))
                 })?;
                 // ⛔ THE SLOT EXISTS AND IS EMPTY. That is an IMPORTED component
@@ -13293,8 +15297,7 @@ impl VM {
                 let canonidx = slot.ok_or_else(|| {
                     VMError::new(format!(
                         "canon {builtin}: component func {i} is IMPORTED — it has no \
-                         defining row in this component, so calling it needs the \
-                         component linker (see cmplan.md §Deferred to export)"
+                         supplied function in this component instance"
                     ))
                 })?;
                 // `exec_canon_lift` reads its row through `canon_type_immediate`,
@@ -13304,11 +15307,11 @@ impl VM {
                 // inner one's immediates.
                 let saved = self.canon_type_immediate;
                 self.canon_type_immediate = Some(canonidx);
-                let outcome = self.exec_canon_lift();
+                let outcome = self.exec_canon_lift(true);
                 self.canon_type_immediate = saved;
                 outcome?;
-                // `exec_canon_lift` pushes exactly one value, per this VM's
-                // canon-import ABI.
+                // A component callee returns the lifted value; `canon lower`
+                // converts it back to flat core values for its own caller.
                 return Ok(self.pop_fast());
             }
         };
@@ -13318,24 +15321,23 @@ impl VM {
                 self.chunks.len()
             )));
         }
-        let func = crate::value::Function {
-            name: None,
-            arity: self.chunks[chunk_index].arity,
-            chunk_index,
-            upvalues: Vec::new(),
-        };
-        let mut obj = crate::value::Object::new();
-        obj.kind = crate::value::ObjectKind::Function(func);
-        let func_val = Value::Object(crate::heap::alloc(obj));
         let args_start = self.stack.len() - argc;
-        self.stack.insert(args_start, func_val);
+        // call_value consumes this one-shot marker before dispatching the
+        // function, including paths that later reject the call.
+        let _ = std::mem::take(&mut self.host_originated_call);
+        // Keep the same direct-call restriction as call_value's function arm.
+        if self.func_switches.contains_key(&chunk_index) {
+            return Err(VMError::new(
+                "call: a func_switch has no type and cannot be called directly — reach it with call_with_tag"
+            ));
+        }
         let depth = self.frames.len();
-        self.call_value(argc)?;
-        // `call_value` does not always push a frame — a host or callable shim
-        // completes inline and leaves its result on the stack. Mirrors the
-        // same guard in `vm.rs`'s callback path.
+        self.call_chunk_function(chunk_index, self.chunks[chunk_index].arity, argc)?;
+        // Async and generator chunks may complete inline without a frame.
         if self.frames.len() == depth {
-            return Ok(self.pop_fast());
+            let result = self.pop_fast();
+            self.stack.truncate(args_start);
+            return Ok(result);
         }
         // ⛔ `depth + 1`, not `depth`. `execute_until_inner` exits a nested
         // loop when `frames.len() < min_depth`, and the callee's RETURN pops
@@ -13351,7 +15353,283 @@ impl VM {
         // changed nothing.
         //
         // `vm.rs` and `jspi.rs` both pass `saved_frame_depth + 1`.
-        self.execute_until(depth + 1)
+        let fiber_id = self.cur_fiber_id;
+        let mut outcome = self.execute_until(depth + 1);
+        while outcome.as_ref().is_err_and(|error| error.message.starts_with("__stream_read__:"))
+            && self.current_thread.is_some()
+        {
+            let ready = self.event_loop.borrow_mut().take_ready_copy(fiber_id, self.current_thread);
+            if let Some(mut fiber) = ready {
+                let pending = fiber.pending_copy.take().expect("copy fiber");
+                self.resume_fiber_with(fiber, None)?;
+                match self.perform_pending_copy(&pending)? {
+                    Some(packed) => {
+                        self.push(Value::I32(packed))?;
+                        outcome = self.execute_until(depth + 1);
+                    }
+                    None => outcome = Err(self.park_sync_copy(pending)),
+                }
+                continue;
+            }
+            self.refresh_cm_callback_waiters()?;
+            let current = self.current_thread;
+            let candidate = self.cm_instance.threads.first_ready_except(current);
+            let Some(candidate) = candidate else { break };
+            if let Err(error) = self.run_ready_cm_thread(candidate) {
+                let end_id = outcome.as_ref().unwrap_err().message
+                    .strip_prefix("__stream_read__:").and_then(|id| id.parse::<u64>().ok());
+                let mut fiber = self.event_loop.borrow_mut().take_ready_copy(fiber_id, current);
+                if fiber.is_none() {
+                    if let Some(end_id) = end_id {
+                        fiber = self.event_loop.borrow_mut().take_parked_copy(end_id, fiber_id, current);
+                    }
+                }
+                if let Some(mut fiber) = fiber {
+                    fiber.pending_copy = None;
+                    self.resume_fiber_with(fiber, None)?;
+                }
+                return Err(error);
+            }
+        }
+        let result = outcome?;
+        // A nested execute_until returns before the callee's stack window is
+        // trimmed. Only the declared result crosses this canonical boundary.
+        self.stack.truncate(args_start);
+        Ok(result)
+    }
+
+    /// A blocked synchronous lift keeps its native call boundary alive while
+    /// another thread of the current component instance makes progress.
+    pub(crate) fn run_ready_cm_thread(&mut self, index: u32) -> Result<(), VMError> {
+        if self.pending_cm_callbacks.iter().any(|pending| pending.thread_index == index) {
+            return self.run_cm_callback_turn("lift", index, None);
+        }
+        let thread = self.cm_instance.threads.get_mut(index)
+            .ok_or_else(|| VMError::new("trap: scheduled thread no longer exists"))?;
+        thread.stop_waiting_internal(false)
+            .map_err(|error| VMError::new(format!("trap: scheduled thread: {error}")))?;
+        let continuation = thread.take_cont()
+            .ok_or_else(|| VMError::new("trap: scheduled thread has no continuation"))?;
+        let (entry, bound, saved) = match &continuation {
+            Value::Object(object) => {
+                let object = object.lock().unwrap();
+                let ObjectKind::Continuation(state) = &object.kind else {
+                    return Err(VMError::new("trap: scheduled thread has invalid continuation"));
+                };
+                if *state.state.lock().unwrap() == crate::value::ContinuationPhase::Done {
+                    return Err(VMError::new("trap: scheduled thread continuation already completed"));
+                }
+                let bound = match object.properties.get("__bound_args") {
+                    Some(Value::Object(args)) => match &args.lock().unwrap().kind {
+                        ObjectKind::Array(args) => args.clone(),
+                        _ => Vec::new(),
+                    },
+                    _ => Vec::new(),
+                };
+                let saved = state.saved.lock().unwrap().take();
+                (state.entry.clone(), bound, saved)
+            }
+            _ => return Err(VMError::new("trap: scheduled thread has invalid continuation")),
+        };
+        let previous_thread = self.current_thread.replace(index);
+        let previous_canon = self.canon_type_immediate;
+        let previous_fiber = self.cur_fiber_id;
+        let outcome = (|| {
+            if let Some(fiber) = saved {
+                self.resume_fiber_with(fiber, Some(Value::I32(0)))?;
+                self.current_thread = Some(index);
+            } else {
+                self.cur_fiber_id = self.next_fiber_id;
+                self.next_fiber_id += 1;
+                self.push(entry)?;
+                let argc = bound.len();
+                for value in bound { self.push(value)?; }
+                self.call_value_direct(argc)?;
+            }
+            self.execute_until(1)
+        })();
+        let scheduled_fiber = self.cur_fiber_id;
+        self.current_thread = previous_thread;
+        self.canon_type_immediate = previous_canon;
+        self.cur_fiber_id = previous_fiber;
+        match outcome {
+            Ok(_) => {
+                self.retire_cm_thread(index, None)?;
+                if let Value::Object(object) = continuation {
+                    if let ObjectKind::Continuation(state) = &object.lock().unwrap().kind {
+                        *state.state.lock().unwrap() = crate::value::ContinuationPhase::Done;
+                    }
+                }
+                self.stack.clear();
+                Ok(())
+            }
+            Err(error) if error.is_suspension() => {
+                // park_sync_copy already owns the saved fiber and has moved
+                // this thread to its host-event wait. Do not enter it twice.
+                if let Some(end) = error.message.strip_prefix("__stream_read__:")
+                    .and_then(|id| id.parse::<u64>().ok())
+                {
+                    if !self.event_loop.borrow_mut().mark_copy_thread_exit(end, scheduled_fiber, index) {
+                        return Err(VMError::new("trap: scheduled copy lost its continuation"));
+                    }
+                } else {
+                    if let Some(thread) = self.cm_instance.threads.get_mut(index) {
+                        thread.put_cont(Value::Undefined);
+                        thread.start_waiting_internal(crate::cm_thread::ReadyWhen::HostEvent)
+                            .map_err(|error| VMError::new(format!("trap: scheduled thread: {error}")))?;
+                    }
+                }
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn canon_memory(&self, index: Option<u32>) -> Result<crate::shared_memory::SharedMemory, VMError> {
+        match index.unwrap_or(0) as usize {
+            0 => Ok(self.memory.clone()),
+            index => self.extra_memories.get(index - 1).cloned()
+                .ok_or_else(|| VMError::new("trap: canon memory index out of range")),
+        }
+    }
+
+    fn canon_copy_options(&self) -> (u32, Option<u32>) {
+        self.canon_type_immediate
+            .and_then(|index| self.canon_defs.get(index as usize))
+            .map(|definition| (definition.opts.memory.unwrap_or(0), definition.opts.realloc))
+            .unwrap_or((0, None))
+    }
+
+    fn store_canon_copy_values(
+        &mut self,
+        memory_index: u32,
+        realloc_function: Option<u32>,
+        ptr: u32,
+        values: &[Value],
+        ty: &crate::component::ValType,
+        layout: &crate::canon_layout::MemLayout,
+        context: &str,
+    ) -> Result<(), VMError> {
+        let memory = self.canon_memory(Some(memory_index))?;
+        let mut bump = None;
+        let mut allocation_error = None;
+        let mut allocate = |size, align| {
+            if let Some(function) = realloc_function {
+                match self.call_canon_realloc(function, size, align, memory_index as usize) {
+                    Ok(ptr) => Some(ptr),
+                    Err(error) => {
+                        allocation_error = Some(error);
+                        None
+                    }
+                }
+            } else {
+                let bump = bump.get_or_insert_with(|| self.canon_bump_start());
+                Self::bump_realloc(&memory, bump)(size, align)
+            }
+        };
+        let result = values.iter().enumerate().try_for_each(|(index, value)| {
+            crate::canon_value::store_with_layout(
+                &memory, &mut allocate, value, ty,
+                ptr + layout.size * index as u32, layout,
+            )
+        });
+        drop(allocate);
+        if result.is_ok() {
+            if let Some(bump) = bump {
+                self.canon_bump_commit(bump);
+            }
+        }
+        result.map_err(|error| allocation_error
+            .unwrap_or_else(|| VMError::new(format!("{context}: {error}"))))
+    }
+
+    fn call_canon_realloc(
+        &mut self,
+        function: u32,
+        size: u32,
+        align: u32,
+        memory_index: usize,
+    ) -> Result<u32, VMError> {
+        self.cm_instance
+            .enter_no_leave()
+            .map_err(|e| VMError::new(format!("trap: canon realloc: {e}")))?;
+        let outcome = (|| {
+            for arg in [0, 0, align, size] {
+                self.push(Value::I32(arg as i32))?;
+            }
+            let result = self.call_canon_callee(
+                "realloc",
+                crate::canon_def::CalleeRef::Core(function),
+                4,
+            )?;
+            let ptr = result.as_i32() as u32;
+            if ptr % align.max(1) != 0 {
+                return Err(VMError::new("trap: canon realloc: unaligned result"));
+            }
+            if (ptr as usize).checked_add(size as usize).is_none_or(|end| end > self.mem_len(memory_index)) {
+                return Err(VMError::new("trap: canon realloc: result outside memory"));
+            }
+            Ok(ptr)
+        })();
+        self.cm_instance.exit_no_leave();
+        outcome
+    }
+
+    fn lower_canon_values(
+        &mut self,
+        shape: &crate::vm::CanonCallShape,
+        max_flat: usize,
+        values: &[Value],
+        types: &[crate::component::ValType],
+        params: bool,
+        spill_at: Option<u32>,
+        context: &str,
+    ) -> Result<Vec<crate::canon_flat_values::CoreValue>, VMError> {
+        use crate::canon_flat::CoreType;
+        let memory = self.canon_memory(shape.def.opts.memory)?;
+        let mut bump = None;
+        let mut allocation_error = None;
+        let mut allocate = |size, align| {
+            if let Some(function) = shape.def.opts.realloc {
+                match self.call_canon_realloc(function, size, align, shape.def.opts.memory.unwrap_or(0) as usize) {
+                    Ok(ptr) => Some(ptr),
+                    Err(error) => {
+                        allocation_error = Some(error);
+                        None
+                    }
+                }
+            } else {
+                let bump = bump.get_or_insert_with(|| self.canon_bump_start());
+                Self::bump_realloc(&memory, bump)(size, align)
+            }
+        };
+        let mut realloc: crate::canon_value::Realloc<'_> = &mut allocate;
+        let flat_len = if params {
+            shape.layouts.params_flat_len
+        } else {
+            shape.layouts.result_flat_len
+        };
+        let lowered = if let Some(at) = spill_at {
+            crate::canon_flat_values::lower_flat_values_cached_into(
+                &memory, &mut realloc, max_flat, values, types, CoreType::I32,
+                &shape.layouts, flat_len, at,
+            )
+        } else {
+            crate::canon_flat_values::lower_flat_values_cached(
+                &memory, &mut realloc, max_flat, values, types, CoreType::I32,
+                &shape.layouts, flat_len,
+            )
+        };
+        if lowered.is_ok() {
+            if let Some(bump) = bump {
+                self.canon_bump_commit(bump);
+            }
+        }
+        match lowered {
+            Ok(values) => Ok(values),
+            Err(error) => Err(allocation_error
+                .unwrap_or_else(|| VMError::new(format!("{context}: {error}")))),
+        }
     }
 
     /// `canon lower` — `CanonicalABI.md §canon lower`, synchronous path.
@@ -13375,12 +15653,21 @@ impl VM {
         let ft = &shape.functype;
         let callee = def.require_callee("lower").map_err(VMError::new)?;
         let flat_args = self.pop_core_values(&shape.lower.params)?;
+        let result_ptr = if shape.layouts.result_flat_len > MAX_FLAT_RESULTS {
+            match flat_args.last() {
+                Some(crate::canon_flat_values::CoreValue::I32(ptr)) => Some(*ptr),
+                _ => return Err(VMError::new("canon lower: missing result pointer")),
+            }
+        } else {
+            None
+        };
+        let arg_count = flat_args.len() - usize::from(result_ptr.is_some());
 
-        let memory = self.memory.clone();
+        let memory = self.canon_memory(def.opts.memory)?;
         let args = crate::canon_flat_values::lift_flat_values_cached(
             &memory,
             MAX_FLAT_PARAMS,
-            &flat_args,
+            &flat_args[..arg_count],
             &ft.params,
             CoreType::I32,
             &shape.layouts,
@@ -13394,28 +15681,17 @@ impl VM {
         }
         let result = self.call_canon_callee("lower", callee, argc)?;
 
-        let mut bump = self.canon_bump_start();
-        let flat_results = {
-            let mut alloc = Self::bump_realloc(&memory, &mut bump);
-            // `Realloc<'a> = &'a mut dyn FnMut(u32,u32) -> Option<u32>` — the
-            // coercion is explicit because an `impl FnMut` is not the trait
-            // object the canonical-ABI helpers take.
-            let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
-            let types = ft.result.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
-            let values: Vec<_> = ft.result.iter().map(|_| result.clone()).collect();
-            crate::canon_flat_values::lower_flat_values_cached(
-                &memory,
-                &mut realloc,
-                MAX_FLAT_RESULTS,
-                &values,
-                types,
-                CoreType::I32,
-                &shape.layouts,
-                shape.layouts.result_flat_len,
-            )
-            .map_err(|e| VMError::new(format!("canon lower: lowering result: {e}")))?
-        };
-        self.canon_bump_commit(bump);
+        let types = ft.result.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+        let values: Vec<_> = ft.result.iter().map(|_| result.clone()).collect();
+        let flat_results = self.lower_canon_values(
+            &shape,
+            MAX_FLAT_RESULTS,
+            &values,
+            types,
+            false,
+            result_ptr,
+            "canon lower: lowering result",
+        )?;
         for v in flat_results {
             self.push(Self::core_value_to_value(v))?;
         }
@@ -13438,7 +15714,7 @@ impl VM {
     /// The mirror of `lower`: component values in, flat values to the core
     /// callee, and the core results lifted back up. The result goes to the
     /// TASK (`task.return_`), not to the operand stack.
-    fn exec_canon_lift(&mut self) -> Result<(), VMError> {
+    fn exec_canon_lift(&mut self, component_result: bool) -> Result<(), VMError> {
         use crate::canon_flat::{CoreType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS};
         let shape = self.canon_call_shape("lift")?;
         let def = &shape.def;
@@ -13457,6 +15733,10 @@ impl VM {
         let task_id = self.next_cm_task_id;
         self.next_cm_task_id += 1;
         let mut task = crate::cm_task::CMTask::new(task_id);
+        if def.opts.is_async {
+            task.result_type = ft.result.clone();
+            task.opts = def.opts.clone();
+        }
         task.start();
         self.cm_tasks.push(task);
 
@@ -13471,27 +15751,20 @@ impl VM {
         let thread_index = self.cm_instance.threads.register(implicit);
         let prev_thread = self.current_thread.replace(thread_index);
 
+        let outcome = (|| {
         let args_start = self.stack.len() - ft.params.len();
         let args = self.stack.split_off(args_start);
 
-        let memory = self.memory.clone();
-        let mut bump = self.canon_bump_start();
-        let flat_args = {
-            let mut alloc = Self::bump_realloc(&memory, &mut bump);
-            let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
-            crate::canon_flat_values::lower_flat_values_cached(
-                &memory,
-                &mut realloc,
-                MAX_FLAT_PARAMS,
-                &args,
-                &ft.params,
-                CoreType::I32,
-                &shape.layouts,
-                shape.layouts.params_flat_len,
-            )
-            .map_err(|e| VMError::new(format!("canon lift: lowering arguments: {e}")))?
-        };
-        self.canon_bump_commit(bump);
+        let memory = self.canon_memory(def.opts.memory)?;
+        let flat_args = self.lower_canon_values(
+            &shape,
+            MAX_FLAT_PARAMS,
+            &args,
+            &ft.params,
+            true,
+            None,
+            "canon lift: lowering arguments",
+        )?;
 
         let argc = flat_args.len();
         for v in &flat_args {
@@ -13499,7 +15772,7 @@ impl VM {
         }
         let raw = self.call_canon_callee("lift", callee, argc)?;
 
-        // The core type comes from the SPEC'S FLATTENING of the declared
+        // The synchronous core result type comes from the declared flattening,
         // result, not from whatever variant the returned `Value` happens to
         // hold. Those are different questions: `flatten_type(u32)` is `i32`,
         // while a core function returning `(i32.const 5)` hands back a
@@ -13507,76 +15780,82 @@ impl VM {
         // the core type off the value made every integer-returning lift fail
         // with "wanted a core I32 and got a F64" — the callee was right and the
         // question was wrong.
-        let flat_results = match &ft.result {
-            Some(_) => {
-                vec![Self::value_to_core_value_as(
+        let result = if def.opts.is_async {
+            if let Some(callback) = def.opts.callback {
+                let waiting = crate::cm_task::unpack_callback_result(raw.as_i32() as u32)
+                    .map_err(|e| VMError::new(format!("canon lift: {e} (trap)")))?;
+                if let Some(waiting) = waiting {
+                    if let crate::cm_task::CallbackWait::Wait(set) = waiting {
+                        if self.waitable_sets.get(set).is_none() {
+                            return Err(VMError::new(format!(
+                                "canon lift: handle {set} is not a waitable set (trap)"
+                            )));
+                        }
+                    }
+                    let thread = self.cm_instance.threads.get_mut(thread_index)
+                        .expect("implicit thread is registered");
+                    thread.put_cont(Value::Undefined);
+                    let ready = match waiting {
+                        crate::cm_task::CallbackWait::Yield => crate::cm_thread::ReadyWhen::Always,
+                        crate::cm_task::CallbackWait::Wait(_) => crate::cm_thread::ReadyWhen::HostEvent,
+                    };
+                    thread.start_waiting_internal(ready)
+                        .map_err(|e| VMError::new(format!("canon lift: {e} (trap)")))?;
+                    self.pending_cm_callbacks.push(crate::cm_task::PendingCallback {
+                        task_id,
+                        thread_index,
+                        callback,
+                        waiting,
+                    });
+                }
+            }
+            let result = self.await_cm_task_result(task_id)?;
+            result
+        } else {
+            let flat_results = match &ft.result {
+                Some(_) => vec![Self::value_to_core_value_as(
                     &raw,
                     shape.lift_result.unwrap_or(CoreType::I32),
-                )]
-            }
-            None => Vec::new(),
-        };
-        let types = ft.result.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
-        let lifted = crate::canon_flat_values::lift_flat_values_cached(
-            &memory,
-            MAX_FLAT_RESULTS,
-            &flat_results,
-            types,
-            CoreType::I32,
-            &shape.layouts,
-            shape.layouts.result_flat_len,
-        )
-        .map_err(|e| VMError::new(format!("canon lift: lifting result: {e}")))?;
-
-        // `task.return_(result)` — the result belongs to the TASK. `canon_lift`
-        // has no return value in the spec: it hands the lifted result to the
-        // task and a core caller reaches it through `canon lower`, never by
-        // calling the lift directly.
-        let result = lifted.into_iter().next().unwrap_or(Value::Undefined);
-        if let Some(task) = self.cm_tasks.last_mut() {
-            task.return_(result.clone())
+                )],
+                None => Vec::new(),
+            };
+            let types = ft.result.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+            let lifted = crate::canon_flat_values::lift_flat_values_cached(
+                &memory,
+                MAX_FLAT_RESULTS,
+                &flat_results,
+                types,
+                CoreType::I32,
+                &shape.layouts,
+                shape.layouts.result_flat_len,
+            )
+            .map_err(|e| VMError::new(format!("canon lift: lifting result: {e}")))?;
+            let result = lifted.into_iter().next().unwrap_or(Value::Undefined);
+            self.current_cm_task_mut().expect("implicit task exists")
+                .return_(result.clone())
                 .map_err(|e| VMError::new(format!("canon lift: {e} (trap)")))?;
-        }
-        // …but THIS VM's canon-import ABI is one value per call: the emitter
-        // reserves a stack slot for every `canon` import's result and drops it
-        // when unused. Pushing nothing does not mean "no result", it means the
-        // caller reads whatever sat BELOW — which is how a lifted
-        // `(func (result bool))` handed its caller the callee's raw 9 instead
-        // of 1, and how deleting the result type changed nothing.
-        //
-        // What a CORE caller must receive is the result LOWERED back to flat
-        // core values, not the component value: `result` here is a
-        // `Value::Bool`, and a core function cannot receive one. Importing
-        // `canon`/`lift@N` into core wasm is standing in for lower ∘ lift, so
-        // this composes them — which is also what makes the value observably
-        // the LIFTED one: a `bool` lifted from a core 9 lowers back to 1, so
-        // 9 arriving would prove the lift had been skipped.
-        let pushed = match &ft.result {
-            Some(t) => {
-                let mut bump2 = self.canon_bump_start();
-                let flat = {
-                    let mut alloc = Self::bump_realloc(&memory, &mut bump2);
-                    let mut realloc: crate::canon_value::Realloc<'_> = &mut alloc;
-                    crate::canon_flat_values::lower_flat_values_cached(
-                        &memory,
-                        &mut realloc,
-                        MAX_FLAT_RESULTS,
-                        std::slice::from_ref(&result),
-                        std::slice::from_ref(t),
-                        CoreType::I32,
-                        &shape.layouts,
-                        shape.layouts.result_flat_len,
-                    )
-                    .map_err(|e| VMError::new(format!("canon lift: lowering result: {e}")))?
-                };
-                self.canon_bump_commit(bump2);
-                flat.first()
-                    .map(|v| Self::core_value_to_value(*v))
-                    .unwrap_or(Value::Undefined)
-            }
-            // A lift with no declared result still owes the caller its one
-            // stack slot; the emitter drops it.
-            None => Value::Undefined,
+            result
+        };
+        // The component function returns the lifted value. A core import of
+        // the same canonical row instead needs the flattened core value.
+        // Keep one stack slot for a result-less lift in either call path.
+        let pushed = if component_result {
+            result
+        } else if let Some(t) = &ft.result {
+            let flat = self.lower_canon_values(
+                &shape,
+                MAX_FLAT_RESULTS,
+                std::slice::from_ref(&result),
+                std::slice::from_ref(t),
+                false,
+                None,
+                "canon lift: lowering result",
+            )?;
+            flat.first()
+                .map(|value| Self::core_value_to_value(*value))
+                .unwrap_or(Value::Undefined)
+        } else {
+            Value::Undefined
         };
         self.push(pushed)?;
 
@@ -13599,14 +15878,28 @@ impl VM {
             outcome?;
         }
 
-        // `task.exit_implicit_thread()` — thread and task end with the call.
+        Ok(())
+        })();
+
+        // A pending callback retains its implicit thread until EXIT; otherwise
+        // the thread and task end with this call.
         // `current_thread` is RESTORED, not cleared: a lifted call nests (a
         // `realloc` is itself a `canon_lift`), and clearing would strand the
         // outer thread with no index.
-        self.cm_instance.threads.unregister(thread_index);
+        if outcome.is_err() {
+            self.pending_cm_callbacks.retain(|pending| pending.thread_index != thread_index);
+        }
+        if !self.pending_cm_callbacks.iter().any(|pending| pending.thread_index == thread_index) {
+            let retired = if self.cm_instance.threads.get(thread_index).is_some() {
+                self.retire_cm_thread(thread_index, None)
+            } else {
+                self.reclaim_cm_task(task_id, None)
+            };
+            self.current_thread = prev_thread;
+            return outcome.and(retired);
+        }
         self.current_thread = prev_thread;
-        self.cm_tasks.pop();
-        Ok(())
+        outcome
     }
 
     /// Pop the operand-stack values for `want` as flat core values, in stack
@@ -13659,7 +15952,7 @@ impl VM {
     /// its i32 form rather than silently reinterpreted as a float.
     /// A `Value` as the core type the canonical ABI asks for.
     ///
-    /// Distinct from [`Self::value_to_core_value`], which infers the core type
+    /// Uses the declared core type rather than inferring it from the value.
     /// from the value's own variant. That inference is right where the flat
     /// types are genuinely unknown and wrong wherever the signature states
     /// them — a `u32` result flattens to `i32` no matter how the VM happens to
@@ -13678,14 +15971,6 @@ impl VM {
         }
     }
 
-    fn value_to_core_value(v: &Value) -> crate::canon_flat_values::CoreValue {
-        use crate::canon_flat_values::CoreValue as C;
-        match v {
-            Value::I64(i) => C::I64(*i as u64),
-            Value::F64(f) => C::F64(*f),
-            other => C::I32(other.as_i32() as u32),
-        }
-    }
 
     /// Look up a waitable set and take its ready event, as an `EventTuple`.
     ///
@@ -13699,25 +15984,52 @@ impl VM {
     /// ready", so a guest polling a bogus handle would spin forever instead of
     /// failing at the call that was wrong.
     fn poll_waitable_set(
-        &self,
+        &mut self,
         builtin: &str,
         set_handle: u32,
     ) -> Result<(crate::waitable::EventCode, u32, u32), VMError> {
+        if !self.async_stream_reads.is_empty() {
+            let ids: Vec<_> = self.waitable_sets.get(set_handle)
+                .into_iter().flat_map(|set| set.members.iter())
+                .filter_map(|member| match member {
+                    crate::waitable::Waitable::Stream(id) => Some(*id),
+                    _ => None,
+                }).collect();
+            for id in ids {
+                self.complete_async_stream_read(id)?;
+            }
+        }
         let el = self.event_loop.borrow();
         let Some(set) = self.waitable_sets.get(set_handle) else {
             return Err(VMError::new(format!(
                 "canon {builtin}: handle {set_handle} is not a waitable set (trap)"
             )));
         };
-        // `EventTuple = tuple[EventCode, int, int]`. `p2` is event-kind
-        // specific — `subtask.state` for SUBTASK, the packed
-        // `result | (count << 4)` for the stream/future codes. `poll_ready`
-        // reports only `(code, id)`, so p2 is 0 until it carries the payload;
-        // recorded in cmplan.md rather than left to look intentional.
         Ok(match set.poll_ready(&el) {
-            Some((code, id)) => (code, id as u32, 0),
+            Some(event) => event,
             None => (crate::waitable::EventCode::None, 0, 0),
         })
+    }
+
+    fn consume_stream_waitable_event(&mut self, code: crate::waitable::EventCode, handle: u32) {
+        let side = match (code, self.handle_table.get(handle)) {
+            (crate::waitable::EventCode::StreamRead,
+                Some(crate::handle_table::HandleEntry::ReadableStreamEnd(end))) => Some((end.id, true)),
+            (crate::waitable::EventCode::StreamWrite,
+                Some(crate::handle_table::HandleEntry::WritableStreamEnd(end))) => Some((end.id, false)),
+            _ => None,
+        };
+        if let Some((id, readable)) = side {
+            let completion = self.event_loop.borrow_mut().take_stream_zero_completion(id, readable);
+            if let Some(packed) = completion {
+                if !readable { self.guest_stream_writes.remove(&id); }
+                if packed & 15 == crate::canon_copy::CopyResult::Dropped as u32 {
+                    self.mark_end_done(handle);
+                } else {
+                    self.handle_table.release_copying(id, readable);
+                }
+            }
+        }
     }
 
     /// `unpack_event` — `CanonicalABI.md`:
@@ -13744,13 +16056,15 @@ impl VM {
         ptr: usize,
         (code, p1, p2): (crate::waitable::EventCode, u32, u32),
     ) -> Result<i32, VMError> {
-        if ptr + 8 > self.memory.len() {
+        let (memory_index, _) = self.canon_copy_options();
+        let memory = self.canon_memory(Some(memory_index))?;
+        if ptr.checked_add(8).is_none_or(|end| end > memory.len()) {
             return Err(VMError::new(format!(
-                "canon waitable-set: event pointer {ptr} + 8 is out of bounds (trap)"
+                "trap: canon waitable-set: event pointer {ptr} + 8 is out of bounds"
             )));
         }
-        self.memory.store_i32(ptr, p1 as i32)?;
-        self.memory.store_i32(ptr + 4, p2 as i32)?;
+        memory.store_i32(ptr, p1 as i32)?;
+        memory.store_i32(ptr + 4, p2 as i32)?;
         Ok(code as i32)
     }
 
@@ -13793,6 +16107,28 @@ impl VM {
                 want.builtin_name()
             )));
         }
+        if matches!(want, EndKind::ReadableStream) {
+            self.complete_async_stream_read(end.id)?;
+        }
+        let dropped = match want {
+            EndKind::ReadableStream | EndKind::WritableStream => {
+                self.event_loop.borrow().stream_zero_completion(end.id,
+                    matches!(want, EndKind::ReadableStream))
+                    .is_some_and(|packed| packed & 15 == crate::canon_copy::CopyResult::Dropped as u32)
+            }
+            _ => false,
+        };
+        let copied = match want {
+            EndKind::ReadableStream => {
+                self.async_stream_reads.remove(&end.id);
+                self.event_loop.borrow_mut().cancel_stream_zero(end.id, true)
+            }
+            EndKind::WritableStream => {
+                self.guest_stream_writes.remove(&end.id);
+                self.event_loop.borrow_mut().cancel_stream_zero(end.id, false)
+            },
+            _ => 0,
+        };
         if let Some(e) = self.handle_table.get_mut(handle) {
             let state = match e {
                 HandleEntry::ReadableStreamEnd(s)
@@ -13801,13 +16137,103 @@ impl VM {
                 | HandleEntry::WritableFutureEnd(s) => &mut s.state,
                 _ => unreachable!("kind was matched above"),
             };
-            *state = CopyState::Idle;
+            *state = if dropped { CopyState::Done } else { CopyState::Idle };
         }
-        // Nothing had been copied into the buffer — the copy blocked before
-        // making progress — so the count is 0.
         self.push(Value::I32(
-            crate::canon_copy::pack(crate::canon_copy::CopyResult::Cancelled, 0) as i32,
+            crate::canon_copy::pack(if dropped { crate::canon_copy::CopyResult::Dropped }
+                else { crate::canon_copy::CopyResult::Cancelled }, copied) as i32,
         ))?;
+        Ok(())
+    }
+
+    fn validate_stream_drop(&mut self, handle: u32, readable: bool) -> Result<(), VMError> {
+        use crate::component::ValType;
+        use crate::handle_table::{CopyState, HandleEntry};
+        let name = if readable { "stream.drop-readable" } else { "stream.drop-writable" };
+        let end = match (readable, self.handle_table.get(handle)) {
+            (true, Some(HandleEntry::ReadableStreamEnd(end)))
+            | (false, Some(HandleEntry::WritableStreamEnd(end))) => *end,
+            _ => return Err(VMError::new(format!("trap: canon {name}: invalid stream end"))),
+        };
+        let declared = if self.canon_type_index().is_some() {
+            Some(self.canon_element_type(name)?)
+        } else { None };
+        let expected = match declared.as_deref() {
+            Some(ValType::Stream(element)) => element.as_ref(),
+            Some(ValType::U8) | None => &ValType::U8,
+            _ => return Err(VMError::new(format!("trap: canon {name}: type is not a stream"))),
+        };
+        let events = self.event_loop.borrow();
+        let record = events.stream_buffers.get(&end.id)
+            .ok_or_else(|| VMError::new(format!("trap: canon {name}: missing stream state")))?;
+        if record.elem.as_deref().unwrap_or(&ValType::U8) != expected {
+            return Err(VMError::new(format!("trap: canon {name}: stream of a different type")));
+        }
+        if end.state == CopyState::Copying {
+            return Err(VMError::new(format!("trap: canon {name}: cannot drop busy stream")));
+        }
+        Ok(())
+    }
+
+    fn canon_forward(&mut self, stream: bool) -> Result<(), VMError> {
+        use crate::handle_table::{CopyState, HandleEntry};
+        let name = if stream { "stream.forward" } else { "future.forward" };
+        let writable_handle = self.pop_i32_fast() as u32;
+        let readable_handle = self.pop_i32_fast() as u32;
+        let readable = match (stream, self.handle_table.get(readable_handle)) {
+            (true, Some(HandleEntry::ReadableStreamEnd(end)))
+            | (false, Some(HandleEntry::ReadableFutureEnd(end))) => *end,
+            _ => return Err(VMError::new(format!("canon {name}: invalid readable end"))),
+        };
+        let writable = match (stream, self.handle_table.get(writable_handle)) {
+            (true, Some(HandleEntry::WritableStreamEnd(end)))
+            | (false, Some(HandleEntry::WritableFutureEnd(end))) => *end,
+            _ => return Err(VMError::new(format!("canon {name}: invalid writable end"))),
+        };
+        let expected_type = self.canon_type_index();
+        if expected_type.is_some() {
+            let valid = matches!(
+                (stream, self.canon_element_type(name)?.as_ref()),
+                (true, crate::component::ValType::Stream(_))
+                    | (false, crate::component::ValType::Future(_))
+                    | (_, crate::component::ValType::U8)
+            );
+            if !valid { return Err(VMError::new(format!("canon {name}: wrong type immediate"))); }
+        }
+        if readable.type_id != writable.type_id || readable.type_id != expected_type {
+            return Err(VMError::new(format!("canon {name}: end type mismatch")));
+        }
+        if readable.state != CopyState::Idle || writable.state != CopyState::Idle {
+            return Err(VMError::new(format!("canon {name}: end is not IDLE")));
+        }
+        if readable.in_waitable_set || writable.in_waitable_set {
+            return Err(VMError::new(format!("canon {name}: end is in a waitable set")));
+        }
+        let present = {
+            let events = self.event_loop.borrow();
+            if stream {
+                events.stream_buffers.contains_key(&readable.id)
+                    && events.stream_buffers.contains_key(&writable.id)
+            } else {
+                events.future_states.contains_key(&readable.id)
+                    && events.future_states.contains_key(&writable.id)
+            }
+        };
+        if !present { return Err(VMError::new(format!("canon {name}: missing end state"))); }
+        let surviving_writers = self.handle_table.writable_end_handles(readable.id, stream);
+        self.handle_table.remove(readable_handle);
+        self.handle_table.remove(writable_handle);
+        let forwarded = if stream {
+            self.event_loop.borrow_mut().forward_stream(readable.id, writable.id)
+        } else {
+            self.event_loop.borrow_mut().forward_future(readable.id, writable.id)
+        };
+        debug_assert!(forwarded, "end state was checked before removal");
+        if readable.id != writable.id {
+            for handle in surviving_writers {
+                self.handle_table.retarget_end(handle, writable.id);
+            }
+        }
         Ok(())
     }
 
@@ -13815,6 +16241,14 @@ impl VM {
     /// under module "canon" — see `ImportTarget::Canon`). Args and results
     /// ride the operand stack; each builtin pops exactly its own args.
     pub(crate) fn exec_canon_builtin(&mut self, b: crate::vm::CanonBuiltin) -> Result<(), VMError> {
+        self.exec_canon_builtin_with_result(b, false)
+    }
+
+    pub(crate) fn exec_canon_builtin_with_result(
+        &mut self,
+        b: crate::vm::CanonBuiltin,
+        component_result: bool,
+    ) -> Result<(), VMError> {
         use crate::vm::CanonBuiltin as B;
 
         // `trap_if(not inst.may_leave)` — 32 occurrences in `CanonicalABI.md`,
@@ -13856,29 +16290,55 @@ impl VM {
         }
 
         match b {
-            B::Lift => self.exec_canon_lift()?,
+            B::Lift => self.exec_canon_lift(component_result)?,
             B::Lower => self.exec_canon_lower()?,
+            B::StreamForward => self.canon_forward(true)?,
+            B::FutureForward => self.canon_forward(false)?,
             B::TaskReturn => {
-                // canon task.return — `CanonicalABI.md §canon task.return`:
-                //
-                //     task.return_(result)
-                //     return []
-                //
-                // The result belongs to the TASK. It is NOT pushed back:
-                // `canon_task_return` returns the empty list, so a value left
-                // on the operand stack here is one the spec says is not there,
-                // and the result itself would be discarded.
-                //
-                // Still missing (they need the `rs`/`opts` immediates, which
-                // an import name cannot carry — see cmplan.md):
-                //   trap_if(not task.opts.async_)
-                //   trap_if(result_type != task.ft.result)
-                //   trap_if(not LiftOptions.equal(opts, task.opts))
-                let result = self.pop_fast();
-                if let Some(task) = self.cm_tasks.last_mut() {
-                    task.return_(result)
-                        .map_err(|e| VMError::new(format!("canon task.return: {e} (trap)")))?;
+                let row = self.canon_type_immediate
+                    .and_then(|index| self.canon_defs.get(index as usize))
+                    .ok_or_else(|| VMError::new("canon task.return: no canonical definition (trap)"))?;
+                let indices = row.results.clone();
+                let opts = row.opts.clone();
+                if indices.len() > 1 {
+                    return Err(VMError::new("canon task.return: multiple result types (trap)"));
                 }
+                let types: Vec<_> = indices.iter().map(|index| {
+                    self.canon_types.get(*index as usize).and_then(Option::as_ref)
+                        .cloned().ok_or_else(|| VMError::new(format!(
+                            "canon task.return: value type {index} is not declared (trap)"
+                        )))
+                }).collect::<Result<_, _>>()?;
+                let result_type = types.first().cloned();
+                let task = self.current_cm_task_mut()
+                    .ok_or_else(|| VMError::new("canon task.return: no current task (trap)"))?;
+                if !task.opts.is_async || task.result_type != result_type
+                    || task.opts.memory != opts.memory
+                    || task.opts.string_encoding != opts.string_encoding
+                {
+                    return Err(VMError::new(
+                        "canon task.return: result type or lift options do not match the async task (trap)"
+                    ));
+                }
+                let flat = crate::canon_flat::flatten_types(&types, crate::canon_flat::CoreType::I32);
+                let flat_params = if flat.len() > crate::canon_flat::MAX_FLAT_PARAMS {
+                    vec![crate::canon_flat::CoreType::I32]
+                } else {
+                    flat
+                };
+                let args = self.pop_core_values(&flat_params)?;
+                let memory = self.canon_memory(opts.memory)?;
+                let result = crate::canon_flat_values::lift_flat_values(
+                    &memory,
+                    crate::canon_flat::MAX_FLAT_PARAMS,
+                    &args,
+                    &types,
+                    crate::canon_flat::CoreType::I32,
+                ).map_err(|e| VMError::new(format!("canon task.return: lifting result: {e}")))?
+                    .into_iter().next().unwrap_or(Value::Undefined);
+                self.current_cm_task_mut().expect("validated current task")
+                    .return_(result)
+                    .map_err(|e| VMError::new(format!("canon task.return: {e} (trap)")))?;
             }
             B::TaskCancel => {
                 // canon task.cancel — `CanonicalABI.md §Task.cancel`:
@@ -13893,7 +16353,7 @@ impl VM {
                 // still holds. Writing `phase = Resolved` directly (as this
                 // did) skipped both checks and made a cancel indistinguishable
                 // from a return.
-                if let Some(task) = self.cm_tasks.last_mut() {
+                if let Some(task) = self.current_cm_task_mut() {
                     task.cancel()
                         .map_err(|e| VMError::new(format!("canon task.cancel: {e} (trap)")))?;
                 }
@@ -13943,6 +16403,7 @@ impl VM {
                 let set_handle = self.pop_i32_fast() as u32;
                 let event = self.poll_waitable_set("waitable-set.wait", set_handle)?;
                 let code = self.unpack_event(memory_ptr, event)?;
+                self.consume_stream_waitable_event(event.0, event.1);
                 self.push(Value::I32(code))?;
             }
             B::WaitableSetPoll => {
@@ -13952,6 +16413,7 @@ impl VM {
                 let set_handle = self.pop_i32_fast() as u32;
                 let event = self.poll_waitable_set("waitable-set.poll", set_handle)?;
                 let code = self.unpack_event(memory_ptr, event)?;
+                self.consume_stream_waitable_event(event.0, event.1);
                 self.push(Value::I32(code))?;
             }
             B::WaitableJoin => {
@@ -13963,17 +16425,50 @@ impl VM {
                     Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) => {
                         Some(crate::waitable::Waitable::Stream(e.id))
                     }
+                    Some(crate::handle_table::HandleEntry::WritableStreamEnd(e)) => {
+                        Some(crate::waitable::Waitable::StreamWrite(e.id))
+                    }
                     Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e)) => {
                         Some(crate::waitable::Waitable::Future(e.id))
+                    }
+                    Some(crate::handle_table::HandleEntry::WritableFutureEnd(e)) => {
+                        Some(crate::waitable::Waitable::FutureWrite(e.id))
                     }
                     Some(crate::handle_table::HandleEntry::Subtask { future_id, .. }) => {
                         Some(crate::waitable::Waitable::Subtask(*future_id))
                     }
                     _ => None,
                 };
-                if let Some(w) = waitable {
-                    if let Some(set) = self.waitable_sets.get_mut(set_handle) {
-                        set.join(w);
+                let Some(waitable) = waitable else {
+                    return Err(VMError::new("trap: canon waitable.join: invalid waitable handle"));
+                };
+                let (id, stream) = match &waitable {
+                    crate::waitable::Waitable::Stream(id)
+                    | crate::waitable::Waitable::StreamWrite(id) => (*id, true),
+                    crate::waitable::Waitable::Future(id)
+                    | crate::waitable::Waitable::FutureWrite(id)
+                    | crate::waitable::Waitable::Subtask(id) => (*id, false),
+                };
+                if self.event_loop.borrow().has_sync_copy_waiter(id, stream, waitable_handle) {
+                    return Err(VMError::new("trap: canon waitable.join: waitable has a synchronous waiter"));
+                }
+                if set_handle != 0 && self.waitable_sets.get(set_handle).is_none() {
+                    return Err(VMError::new("trap: canon waitable.join: invalid waitable set"));
+                }
+                self.waitable_sets.detach_handle(waitable_handle);
+                if set_handle != 0 {
+                    assert!(self.waitable_sets.join_handle(set_handle, waitable_handle, waitable),
+                        "set was validated");
+                }
+                if let Some(entry) = self.handle_table.get_mut(waitable_handle) {
+                    match entry {
+                        crate::handle_table::HandleEntry::ReadableStreamEnd(end)
+                        | crate::handle_table::HandleEntry::WritableStreamEnd(end)
+                        | crate::handle_table::HandleEntry::ReadableFutureEnd(end)
+                        | crate::handle_table::HandleEntry::WritableFutureEnd(end) => {
+                            end.in_waitable_set = set_handle != 0;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -13991,17 +16486,32 @@ impl VM {
                 // frontend that sees `(result i64)` reads one value while a
                 // frontend told `(result i32 i32)` goes looking for the
                 // multi-value pack convention. Neither finds two bare pushes.
-                let stream_id = self.event_loop.borrow_mut().create_stream();
+                if !self.handle_table.can_allocate(2) {
+                    return Err(VMError::new("trap: component handle table exhausted"));
+                }
+                let type_id = self.canon_type_index();
+                let elem = if type_id.is_some() {
+                    match self.canon_element_type("stream.new")?.as_ref() {
+                        crate::component::ValType::Stream(inner) if matches!(inner.as_ref(), crate::component::ValType::U8) => None,
+                        crate::component::ValType::Stream(inner) => Some(inner.as_ref().clone()),
+                        // Older component fixtures name the byte element directly.
+                        crate::component::ValType::U8 => None,
+                        _ => return Err(VMError::new("canon stream.new: type is not a stream")),
+                    }
+                } else { None };
+                let stream_id = self.event_loop.borrow_mut().create_stream_of(elem);
                 let rd =
                     self.handle_table
                         .insert(crate::handle_table::HandleEntry::ReadableStreamEnd(
-                            crate::handle_table::StreamEnd::new(stream_id),
-                        ));
+                            crate::handle_table::StreamEnd::typed(stream_id, type_id),
+                        ))
+                        .map_err(VMError::new)?;
                 let wr =
                     self.handle_table
                         .insert(crate::handle_table::HandleEntry::WritableStreamEnd(
-                            crate::handle_table::StreamEnd::new(stream_id),
-                        ));
+                            crate::handle_table::StreamEnd::typed(stream_id, type_id),
+                        ))
+                        .map_err(VMError::new)?;
                 self.push(Value::I64((rd as i64) | ((wr as i64) << 32)))?;
             }
             B::StreamWrite => {
@@ -14032,12 +16542,48 @@ impl VM {
                         "canon stream.write: end is not IDLE — pipelined copies are not permitted",
                     ));
                 }
-                if n < 0 || ptr < 0 || n as u32 > crate::canon_copy::MAX_LENGTH {
+                if end.in_waitable_set && !self.canon_async_opt() {
+                    return Err(VMError::new(
+                        "trap: canon stream.write: synchronous write on an end already awaited via a waitable set",
+                    ));
+                }
+                if n < 0 || (n != 0 && ptr < 0) || n as u32 > crate::canon_copy::MAX_LENGTH {
                     return Err(VMError::new(
                         "canon stream.write: buffer length out of range",
                     ));
                 }
                 let (ptr, n) = (ptr as usize, n as usize);
+                let (memory_index, realloc) = self.canon_copy_options();
+                let memory = self.canon_memory(Some(memory_index))?;
+
+                if n == 0 {
+                    let pending_read = self.async_stream_reads.get(&end.id).map(|read| read.n)
+                        .or_else(|| self.event_loop.borrow().pending_stream_read_capacity(end.id));
+                    let result = if pending_read.is_some_and(|capacity| capacity != 0) {
+                        Some(crate::canon_copy::CopyResult::Completed)
+                    } else {
+                        self.event_loop.borrow_mut().stream_zero_write(end.id)
+                    };
+                    if let Some(result) = result {
+                        self.push(Value::I32(crate::canon_copy::pack(result, 0) as i32))?;
+                    } else {
+                        if let Some(crate::handle_table::HandleEntry::WritableStreamEnd(e)) =
+                            self.handle_table.get_mut(handle)
+                        {
+                            e.state = crate::handle_table::CopyState::Copying;
+                        }
+                        if self.canon_async_opt() {
+                            self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
+                        } else {
+                            return Err(self.park_sync_copy(crate::fiber::PendingCopy {
+                                handle, end_id: end.id, ptr, n,
+                                memory: memory_index, realloc,
+                                kind: crate::fiber::PendingCopyKind::StreamWritePending,
+                            }));
+                        }
+                    }
+                    return Ok(());
+                }
 
                 // `n` counts ELEMENTS, so a typed stream lifts `n` values at
                 // the element stride. Reading `n` BYTES and pushing them as
@@ -14046,55 +16592,83 @@ impl VM {
                 // element. `stream<u8>` keeps the byte path below unchanged.
                 let typed_elem = self.event_loop.borrow().stream_elem(end.id);
                 if let Some(elem) = typed_elem {
-                    return self.stream_write_typed(end, ptr, n, &elem);
+                    return self.stream_write_typed(handle, end, ptr, n, &elem);
                 }
 
-                if ptr.saturating_add(n) > self.memory.len() {
+                if n != 0 && ptr.saturating_add(n) > memory.len() {
                     return Err(VMError::new(
-                        "canon stream.write: buffer is out of bounds of linear memory",
+                        "trap: canon stream.write: buffer is out of bounds of linear memory",
                     ));
                 }
 
+                if self.event_loop.borrow().stream_is_eof(end.id) {
+                    self.mark_end_done(handle);
+                    self.push(Value::I32(crate::canon_copy::pack(
+                        crate::canon_copy::CopyResult::Dropped, 0,
+                    ) as i32))?;
+                    return Ok(());
+                }
+
+                // End.copy transfers only the overlapping guest-buffer prefix.
+                // Validate the original range above, but leave its suffix guest-owned.
+                if !self.event_loop.borrow().has_stream_consumer(end.id) {
+                    return self.retain_guest_stream_write(handle, end.id,
+                        crate::guest_stream::GuestStreamWrite {
+                            memory, ptr, remaining: n, element: None,
+                        }, memory_index, realloc);
+                }
                 let mut bytes = vec![0u8; n];
-                self.memory.read_bytes(ptr, &mut bytes);
-                let mut el = self.event_loop.borrow_mut();
-                el.stream_push_bytes(end.id, bytes);
-                drop(el);
-                // Data is available now, so a reader parked in COPYING by a
-                // BLOCKED read may copy again — the reset the spec performs on
-                // event delivery. Without it, BLOCKED is a dead end.
-                self.handle_table.release_copying(end.id, true);
+                memory.read_bytes(ptr, &mut bytes);
+                self.event_loop.borrow_mut().stream_push_bytes(end.id, bytes);
+                let dropped = self.event_loop.borrow().stream_is_eof(end.id);
+                if dropped { self.mark_end_done(handle); }
                 self.push(Value::I32(crate::canon_copy::pack(
-                    crate::canon_copy::CopyResult::Completed,
-                    n as u32,
+                    if dropped { crate::canon_copy::CopyResult::Dropped }
+                    else { crate::canon_copy::CopyResult::Completed }, n as u32,
                 ) as i32))?;
             }
             B::StreamDropReadable => {
                 // canon stream.drop-readable — pops readable stream handle.
                 let handle = self.pop_i32_fast() as u32;
-                if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(end)) =
-                    self.handle_table.remove(handle)
-                {
-                    // Close the stream so waiting writers don't block forever.
-                    let mut el = self.event_loop.borrow_mut();
-                    if let Some(fiber) = el.stream_close(end.id) {
-                        el.immediate
-                            .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                    }
+                self.validate_stream_drop(handle, true)?;
+                let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(end)) = self
+                    .handle_table
+                    .remove_if(handle, |entry| {
+                        matches!(entry, crate::handle_table::HandleEntry::ReadableStreamEnd(_))
+                    })
+                else {
+                    return Err(VMError::new(
+                        "canon stream.drop-readable: handle is not a readable stream end",
+                    ));
+                };
+                if end.in_waitable_set { self.waitable_sets.detach_handle(handle); }
+                // Close the stream so waiting writers don't block forever.
+                let mut el = self.event_loop.borrow_mut();
+                if let Some(fiber) = el.stream_close_readable(end.id) {
+                    el.immediate
+                        .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                 }
             }
             B::StreamDropWritable => {
                 // canon stream.drop-writable — pops writable stream handle.
                 let handle = self.pop_i32_fast() as u32;
-                if let Some(crate::handle_table::HandleEntry::WritableStreamEnd(end)) =
-                    self.handle_table.remove(handle)
-                {
-                    // Closing the write end signals EOF to the reader.
-                    let mut el = self.event_loop.borrow_mut();
-                    if let Some(fiber) = el.stream_close(end.id) {
-                        el.immediate
-                            .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                    }
+                self.validate_stream_drop(handle, false)?;
+                let Some(crate::handle_table::HandleEntry::WritableStreamEnd(end)) = self
+                    .handle_table
+                    .remove_if(handle, |entry| {
+                        matches!(entry, crate::handle_table::HandleEntry::WritableStreamEnd(_))
+                    })
+                else {
+                    return Err(VMError::new(
+                        "canon stream.drop-writable: handle is not a writable stream end",
+                    ));
+                };
+                if end.in_waitable_set { self.waitable_sets.detach_handle(handle); }
+                // Closing the write end signals EOF to the reader.
+                let mut el = self.event_loop.borrow_mut();
+                if let Some(fiber) = el.stream_close(end.id) {
+                    el.immediate
+                        .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                 }
             }
             B::StreamRead => {
@@ -14117,11 +16691,8 @@ impl VM {
                 // ASYNC variant (`opts.async_`): a copy that cannot complete
                 // synchronously answers `BLOCKED` and the real result arrives
                 // later as an `EventCode.STREAM_READ` event. The SYNC variant
-                // instead suspends until an event exists; that needs a resume
-                // path which re-enters the copy (the current suspension
-                // mechanism resumes by pushing exactly one value, which cannot
-                // both fill a buffer and return a count), so it is not wired
-                // yet and this is the async shape.
+                // suspends with its buffer options and finishes the copy on
+                // resume before returning the packed result.
                 let n = self.pop_i32_fast();
                 let ptr = self.pop_i32_fast();
                 let handle = self.pop_i32_fast() as u32;
@@ -14140,23 +16711,48 @@ impl VM {
                         "canon stream.read: end is not IDLE — pipelined copies are not permitted",
                     ));
                 }
-                if end.in_waitable_set {
+                if end.in_waitable_set && !self.canon_async_opt() {
                     return Err(VMError::new(
-                        "canon stream.read: synchronous read on an end already awaited via a waitable set",
+                        "trap: canon stream.read: synchronous read on an end already awaited via a waitable set",
                     ));
                 }
                 // `Buffer`'s constructor eagerly checks the bounds of (ptr, n),
                 // and MAX_LENGTH is fixed independently of the address type.
-                if n < 0 || ptr < 0 || n as u32 > crate::canon_copy::MAX_LENGTH {
+                if n < 0 || (n != 0 && ptr < 0) || n as u32 > crate::canon_copy::MAX_LENGTH {
                     return Err(VMError::new(
                         "canon stream.read: buffer length out of range",
                     ));
                 }
                 let (ptr, n) = (ptr as usize, n as usize);
-                if ptr.saturating_add(n) > self.memory.len() {
+                let (memory_index, realloc) = self.canon_copy_options();
+                let memory = self.canon_memory(Some(memory_index))?;
+                if n != 0 && ptr.saturating_add(n) > memory.len() {
                     return Err(VMError::new(
-                        "canon stream.read: buffer is out of bounds of linear memory",
+                        "trap: canon stream.read: buffer is out of bounds of linear memory",
                     ));
+                }
+
+                if n == 0 {
+                    let result = self.event_loop.borrow_mut().stream_zero_read(end.id);
+                    if let Some(result) = result {
+                        self.push(Value::I32(crate::canon_copy::pack(result, 0) as i32))?;
+                    } else {
+                        if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e)) =
+                            self.handle_table.get_mut(handle)
+                        {
+                            e.state = crate::handle_table::CopyState::Copying;
+                        }
+                        if self.canon_async_opt() {
+                            self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
+                        } else {
+                            return Err(self.park_sync_copy(crate::fiber::PendingCopy {
+                                handle, end_id: end.id, ptr, n,
+                                memory: memory_index, realloc,
+                                kind: crate::fiber::PendingCopyKind::StreamReadZero,
+                            }));
+                        }
+                    }
+                    return Ok(());
                 }
 
                 // `n` is a count of ELEMENTS. For `stream<u8>` that is also a
@@ -14169,6 +16765,7 @@ impl VM {
 
                 // Same as the typed path: the producer is a last resort the
                 // event loop drives, never an inline blocking call.
+                self.materialize_guest_stream_write(end.id, n)?;
                 let bytes = self.event_loop.borrow_mut().stream_read_bytes(end.id, n);
                 if bytes.is_empty() {
                     // Nothing copied: either the far end is gone for good, or
@@ -14211,6 +16808,11 @@ impl VM {
                         // reading again, which is the only thing that returns
                         // an end to IDLE; a bare retry traps on "not IDLE".
                         if self.canon_async_opt() {
+                            self.async_stream_reads.insert(end.id, crate::fiber::PendingCopy {
+                                handle, end_id: end.id, ptr, n,
+                                memory: memory_index, realloc,
+                                kind: crate::fiber::PendingCopyKind::StreamBytes,
+                            });
                             self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
                             return Ok(());
                         }
@@ -14225,11 +16827,13 @@ impl VM {
                             end_id: end.id,
                             ptr,
                             n,
+                            memory: memory_index,
+                            realloc,
                             kind: crate::fiber::PendingCopyKind::StreamBytes,
                         }));
                     }
                 } else {
-                    self.write_memory_bytes(0, ptr, &bytes)?;
+                    self.write_memory_bytes(memory_index as usize, ptr, &bytes)?;
                     self.push(Value::I32(crate::canon_copy::pack(
                         crate::canon_copy::CopyResult::Completed,
                         bytes.len() as u32,
@@ -14271,7 +16875,11 @@ impl VM {
             B::FutureRead => {
                 let ptr = self.pop_i32_fast();
                 let handle = self.pop_i32_fast() as u32;
-                let t = self.canon_element_type("future.read")?;
+                let declared = self.canon_element_type("future.read")?;
+                let t = match declared.as_ref() {
+                    crate::component::ValType::Future(element) => std::sync::Arc::new(element.as_ref().clone()),
+                    _ => declared,
+                };
                 let layout = self.canon_element_layout(&t);
                 let end = match self.handle_table.get(handle) {
                     Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e)) => *e,
@@ -14286,10 +16894,18 @@ impl VM {
                         "canon future.read: end is not IDLE — pipelined copies are not permitted",
                     ));
                 }
-                if end.in_waitable_set {
+                if end.in_waitable_set && !self.canon_async_opt() {
                     return Err(VMError::new(
-                        "canon future.read: synchronous read on an end already awaited via a waitable set",
+                        "trap: canon future.read: synchronous read on an end already awaited via a waitable set",
                     ));
+                }
+                let (memory_index, realloc) = self.canon_copy_options();
+                let memory = self.canon_memory(Some(memory_index))?;
+                let address = ptr as u32 as usize;
+                if address % layout.align as usize != 0
+                    || address.checked_add(layout.size as usize).is_none_or(|end| end > memory.len())
+                {
+                    return Err(VMError::new("trap: canon future.read: buffer is unaligned or out of bounds"));
                 }
                 let settled = {
                     let el = self.event_loop.borrow();
@@ -14305,18 +16921,10 @@ impl VM {
                         // call answers as tuple element 1 — needs a realloc
                         // for its payload. Scalar-only `store` reported
                         // OutOfMemory for exactly the shape futures carry most.
-                        let memory = self.memory.clone();
-                        let mut bump = self.canon_bump_start();
-                        crate::canon_value::store_with_layout(
-                            &memory,
-                            &mut Self::bump_realloc(&memory, &mut bump),
-                            &v,
-                            &t,
-                            ptr as u32,
-                            &layout,
-                        )
-                        .map_err(|e| VMError::new(format!("canon future.read: {e}")))?;
-                        self.canon_bump_commit(bump);
+                        self.store_canon_copy_values(
+                            memory_index, realloc, ptr as u32,
+                            std::slice::from_ref(&v), &t, &layout, "canon future.read",
+                        )?;
                         self.push(Value::I32(crate::canon_copy::pack(
                             crate::canon_copy::CopyResult::Completed,
                             1,
@@ -14358,7 +16966,9 @@ impl VM {
                         return Err(self.park_sync_copy(crate::fiber::PendingCopy {
                             handle,
                             end_id: end.id,
-                            ptr: ptr as usize,
+                            ptr: address,
+                            memory: memory_index,
+                            realloc,
                             n: 1,
                             kind: crate::fiber::PendingCopyKind::Future(t.clone()),
                         }));
@@ -14368,7 +16978,11 @@ impl VM {
             B::FutureWrite => {
                 let ptr = self.pop_i32_fast();
                 let handle = self.pop_i32_fast() as u32;
-                let t = self.canon_element_type("future.write")?;
+                let declared = self.canon_element_type("future.write")?;
+                let t = match declared.as_ref() {
+                    crate::component::ValType::Future(element) => std::sync::Arc::new(element.as_ref().clone()),
+                    _ => declared,
+                };
                 let layout = self.canon_element_layout(&t);
                 let end = match self.handle_table.get(handle) {
                     Some(crate::handle_table::HandleEntry::WritableFutureEnd(e)) => *e,
@@ -14383,7 +16997,14 @@ impl VM {
                         "canon future.write: end is not IDLE — pipelined copies are not permitted",
                     ));
                 }
-                let v = crate::canon_value::load_with_layout(&self.memory, &t, ptr as u32, &layout)
+                if end.in_waitable_set && !self.canon_async_opt() {
+                    return Err(VMError::new(
+                        "trap: canon future.write: synchronous write on an end already awaited via a waitable set",
+                    ));
+                }
+                let (memory_index, _) = self.canon_copy_options();
+                let memory = self.canon_memory(Some(memory_index))?;
+                let v = crate::canon_value::load_with_layout(&memory, &t, ptr as u32, &layout)
                     .map_err(|e| VMError::new(format!("canon future.write: {e}")))?;
                 let mut el = self.event_loop.borrow_mut();
                 if let Some(fiber) = el.resolve_future(end.id, v) {
@@ -14404,7 +17025,7 @@ impl VM {
             }
             // canon resource.new — `CanonicalABI.md` §`canon resource.new`:
             //
-            //     $f : (func (param $rt.rep) (result i32))     $rt.rep = i32
+            //     $f : (func (param $rt.rep) (result i32))
             //
             // Wraps a REPRESENTATION (an opaque i32 the component chose) in an
             // owning handle. The rep is the component's private business; the
@@ -14437,7 +17058,8 @@ impl VM {
                     .map_err(|e| VMError::new(format!("canon error-context.new: {e}")))?;
                 let h = self
                     .handle_table
-                    .insert(crate::handle_table::HandleEntry::ErrorContext { debug_message: msg });
+                    .insert(crate::handle_table::HandleEntry::ErrorContext { debug_message: msg })
+                    .map_err(VMError::new)?;
                 self.push(Value::I32(h as i32))?;
             }
             // 📝 canon error-context.debug-message — `CanonicalABI.md:5189`.
@@ -14509,14 +17131,20 @@ impl VM {
                 self.handle_table.remove(handle);
             }
             B::ResourceNew => {
-                let rep = self.pop_i32_fast();
+                let rep_kind = self
+                    .canon_type_immediate
+                    .and_then(|idx| self.canon_defs.get(idx as usize))
+                    .and_then(|def| def.resource_rep);
+                let rep = if rep_kind == Some(crate::canon_flat::CoreType::I64) {
+                    Value::I64(self.pop_i64_fast())
+                } else {
+                    Value::I32(self.pop_i32_fast())
+                };
                 let type_id = self.canon_type_index().unwrap_or(0);
                 let h = self
                     .handle_table
-                    .insert(crate::handle_table::HandleEntry::OwnedResource {
-                        type_id,
-                        value: Value::I32(rep),
-                    });
+                    .lower_owned_resource(type_id, rep)
+                    .map_err(VMError::new)?;
                 self.push(Value::I32(h as i32))?;
             }
             // canon resource.rep — §`canon resource.rep`:
@@ -14531,7 +17159,7 @@ impl VM {
                 let handle = self.pop_i32_fast() as u32;
                 let want = self.canon_type_index().unwrap_or(0);
                 match self.handle_table.get(handle) {
-                    Some(crate::handle_table::HandleEntry::OwnedResource { type_id, value })
+                    Some(crate::handle_table::HandleEntry::OwnedResource { type_id, value, .. })
                     | Some(crate::handle_table::HandleEntry::BorrowedResource {
                         type_id,
                         value,
@@ -14542,8 +17170,22 @@ impl VM {
                                 "canon resource.rep: handle is resource type {type_id}, not {want}"
                             )));
                         }
-                        let rep = value.as_i32();
-                        self.push(Value::I32(rep))?;
+                        let rep_kind = self
+                            .canon_type_immediate
+                            .and_then(|idx| self.canon_defs.get(idx as usize))
+                            .and_then(|def| def.resource_rep);
+                        let rep = match (rep_kind, value) {
+                            (Some(crate::canon_flat::CoreType::I64), Value::I64(_))
+                            | (None | Some(crate::canon_flat::CoreType::I32), Value::I32(_)) => {
+                                value.clone()
+                            }
+                            _ => {
+                                return Err(VMError::new(
+                                    "canon resource.rep: representation width does not match its resource type",
+                                ));
+                            }
+                        };
+                        self.push(rep)?;
                     }
                     _ => {
                         return Err(VMError::new(
@@ -14563,39 +17205,74 @@ impl VM {
             B::ResourceDrop => {
                 let handle = self.pop_i32_fast() as u32;
                 let want = self.canon_type_index();
-                match self.handle_table.get(handle) {
-                    Some(crate::handle_table::HandleEntry::OwnedResource { type_id, .. })
-                    | Some(crate::handle_table::HandleEntry::BorrowedResource {
-                        type_id, ..
-                    }) => {
-                        if let Some(want) = want {
-                            if *type_id != want {
-                                return Err(VMError::new(format!(
-                                    "canon resource.drop: handle is resource type {type_id}, not {want}"
-                                )));
-                            }
-                        }
-                    }
+                let (type_id, num_lends, scope_task) = match self.handle_table.get(handle) {
+                    Some(crate::handle_table::HandleEntry::OwnedResource {
+                        type_id, num_lends, ..
+                    }) => (*type_id, *num_lends, None),
+                    Some(crate::handle_table::HandleEntry::BorrowedResource {
+                        type_id, num_lends, scope_task, ..
+                    }) => (*type_id, *num_lends, Some(*scope_task)),
                     _ => {
                         return Err(VMError::new(
                             "canon resource.drop: handle is not a resource handle",
                         ));
                     }
+                };
+                if let Some(want) = want {
+                    if type_id != want {
+                        return Err(VMError::new(format!(
+                            "canon resource.drop: handle is resource type {type_id}, not {want}"
+                        )));
+                    }
                 }
-                let removed = self.handle_table.remove(handle);
-                // ⚠ The destructor is NOT called yet. A resource declares one
-                // as a `[resource-drop]` method, but
-                // invoking it from here means re-entering the VM mid-builtin,
-                // which the current dispatch cannot do. Left explicit rather
-                // than silently skipped: an owning drop that runs no destructor
-                // leaks whatever the representation owned.
-                let _ = removed;
+                if num_lends != 0 {
+                    return Err(VMError::new(
+                        "canon resource.drop: handle has outstanding lends",
+                    ));
+                }
+                if let Some(scope_task) = scope_task {
+                    let task = self
+                        .cm_tasks
+                        .iter_mut()
+                        .find(|task| task.id == scope_task)
+                        .ok_or_else(|| VMError::new("canon resource.drop: borrow scope has ended"))?;
+                    if task.num_borrows == 0 {
+                        return Err(VMError::new(
+                            "canon resource.drop: borrow scope has no outstanding borrow",
+                        ));
+                    }
+                    task.num_borrows -= 1;
+                    self.handle_table.remove(handle);
+                } else {
+                    let dtor = self
+                        .canon_type_immediate
+                        .and_then(|idx| self.canon_defs.get(idx as usize))
+                        .and_then(|def| def.resource_dtor);
+                    let Some(crate::handle_table::HandleEntry::OwnedResource { value, .. }) =
+                        self.handle_table.remove(handle)
+                    else {
+                        unreachable!("owning resource was validated before removal")
+                    };
+                    if let Some(dtor) = dtor {
+                        self.push(value)?;
+                        self.call_canon_callee("resource.drop destructor", dtor, 1)?;
+                    }
+                }
             }
             B::WaitableSetDrop => {
-                // canon waitable-set.drop — pops the set handle and releases it.
-                // Without this a set could be created and waited on but never
-                // freed, so a long-running component leaks one per wait site.
                 let handle = self.pop_i32_fast() as u32;
+                let set = self.waitable_sets.get(handle).ok_or_else(||
+                    VMError::new("trap: canon waitable-set.drop: invalid waitable set"))?;
+                if !set.members.is_empty() {
+                    return Err(VMError::new("trap: canon waitable-set.drop: resource has children"));
+                }
+                if self.pending_cm_callbacks.iter().any(|pending|
+                    pending.waiting == crate::cm_task::CallbackWait::Wait(handle)
+                        && self.cm_instance.threads.get(pending.thread_index)
+                            .is_some_and(|thread| thread.waiting()))
+                {
+                    return Err(VMError::new("trap: canon waitable-set.drop: set has waiting threads"));
+                }
                 self.waitable_sets.remove(handle);
             }
             B::ThreadYield => {
@@ -14628,38 +17305,73 @@ impl VM {
                 // canon future.new — same shape as `stream.new` above and from
                 // the same spec paragraph: `(func (result i64))`,
                 // `return [ ri | (wi << 32) ]`.
+                if !self.handle_table.can_allocate(2) {
+                    return Err(VMError::new("trap: component handle table exhausted"));
+                }
+                let type_id = self.canon_type_index();
+                if type_id.is_some() && !matches!(self.canon_element_type("future.new")?.as_ref(), crate::component::ValType::Future(_) | crate::component::ValType::U8) {
+                    return Err(VMError::new("canon future.new: type is not a future"));
+                }
                 let future_id = self.event_loop.borrow_mut().create_future();
                 let rd =
                     self.handle_table
                         .insert(crate::handle_table::HandleEntry::ReadableFutureEnd(
-                            crate::handle_table::StreamEnd::new(future_id),
-                        ));
+                            crate::handle_table::StreamEnd::typed(future_id, type_id),
+                        ))
+                        .map_err(VMError::new)?;
                 let wr =
                     self.handle_table
                         .insert(crate::handle_table::HandleEntry::WritableFutureEnd(
-                            crate::handle_table::StreamEnd::new(future_id),
-                        ));
+                            crate::handle_table::StreamEnd::typed(future_id, type_id),
+                        ))
+                        .map_err(VMError::new)?;
                 self.push(Value::I64((rd as i64) | ((wr as i64) << 32)))?;
             }
             B::FutureDropReadable => {
                 // canon future.drop-readable — pops readable future handle (i32).
                 let handle = self.pop_i32_fast() as u32;
-                self.handle_table.remove(handle);
+                if matches!(self.handle_table.get(handle),
+                    Some(crate::handle_table::HandleEntry::ReadableFutureEnd(end))
+                        if end.state == crate::handle_table::CopyState::Copying) {
+                    return Err(VMError::new("canon future.drop-readable: copy is in progress"));
+                }
+                let Some(crate::handle_table::HandleEntry::ReadableFutureEnd(end)) = self
+                    .handle_table
+                    .remove_if(handle, |entry| {
+                        matches!(entry, crate::handle_table::HandleEntry::ReadableFutureEnd(_))
+                    })
+                else {
+                    return Err(VMError::new(
+                        "canon future.drop-readable: handle is not a readable future end",
+                    ));
+                };
+                if !self.handle_table.has_future_ends(end.id) {
+                    self.event_loop.borrow_mut().release_future(end.id);
+                }
             }
             B::FutureDropWritable => {
                 // canon future.drop-writable — pops writable future handle (i32).
                 let handle = self.pop_i32_fast() as u32;
-                if let Some(crate::handle_table::HandleEntry::WritableFutureEnd(end)) =
-                    self.handle_table.remove(handle)
+                let Some(crate::handle_table::HandleEntry::WritableFutureEnd(end)) = self
+                    .handle_table
+                    .remove_if(handle, |entry| {
+                        matches!(entry, crate::handle_table::HandleEntry::WritableFutureEnd(_))
+                    })
+                else {
+                    return Err(VMError::new(
+                        "canon future.drop-writable: handle is not a writable future end",
+                    ));
+                };
+                // Dropping the write end without resolving rejects the future.
+                let mut el = self.event_loop.borrow_mut();
+                if let Some(fiber) =
+                    el.reject_future(end.id, Value::String(Arc::from("future dropped")))
                 {
-                    // Dropping the write end without resolving rejects the future.
-                    let mut el = self.event_loop.borrow_mut();
-                    if let Some(fiber) =
-                        el.reject_future(end.id, Value::String(Arc::from("future dropped")))
-                    {
-                        el.immediate
-                            .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                    }
+                    el.immediate
+                        .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                }
+                if !self.handle_table.has_future_ends(end.id) {
+                    el.release_future(end.id);
                 }
             }
             // canon backpressure.inc / backpressure.dec — CM3 replaced the
@@ -14745,6 +17457,7 @@ impl VM {
                 self.refuse_shared_threads("thread.spawn-ref")?;
                 let closure = self.pop_fast();
                 let funcref = self.pop_fast();
+                self.require_thread_func_type("thread.spawn-ref", &funcref)?;
                 let index = self.create_thread_over("thread.spawn-ref", funcref, closure)?;
                 self.resume_thread_later("thread.spawn-ref", index)?;
                 self.push(Value::I32(index as i32))?;
@@ -14845,7 +17558,7 @@ impl VM {
                 // the opposite of what thread-local storage is for. Now that
                 // `canon lift` creates the implicit thread, the array has its
                 // real owner and the VM-wide field is gone.
-                let (thread_idx, index) = self.canon_context_slot("context.get")?;
+                let (thread_idx, index, is_i64) = self.canon_context_slot("context.get")?;
                 let val = self
                     .cm_instance
                     .threads
@@ -14856,14 +17569,26 @@ impl VM {
                             "canon context.get: no thread at index {thread_idx} (trap)"
                         ))
                     })?;
-                self.push(val)?;
+                self.push(if is_i64 && matches!(val, Value::I32(0)) {
+                    Value::I64(0)
+                } else {
+                    val
+                })?;
             }
             B::ContextSet => {
                 // canon context.set — same owner, same bound:
                 //
                 //     thread.storage[i] = v
                 let val = self.pop_fast();
-                let (thread_idx, index) = self.canon_context_slot("context.set")?;
+                let (thread_idx, index, is_i64) = self.canon_context_slot("context.set")?;
+                if !matches!(
+                    (&val, is_i64),
+                    (Value::I32(_), false) | (Value::I64(_), true)
+                ) {
+                    return Err(VMError::new(format!(
+                        "canon context.set: value does not match declared context type (trap)"
+                    )));
+                }
                 let slot = self
                     .cm_instance
                     .threads
@@ -14899,6 +17624,61 @@ impl VM {
         }
     }
 
+    // Byte offsets belong to the opaque view, not a global cache. Existing
+    // property-bag views and externally changed metadata retain the old path.
+    fn try_string_iter_cursor(&mut self, view: &Value, op: Op, n: usize) -> Option<Value> {
+        let Value::Object(object) = view else { return None };
+        let mut guard = object.lock().unwrap();
+        let crate::value::Object { kind, properties, .. } = &mut *guard;
+        let ObjectKind::StringViewIter { source, byte_offset, scalar_offset } = kind else { return None };
+        let Some(Value::String(property_source)) = properties.get("__iter_str") else { return None };
+        let Some(Value::I32(property_pos)) = properties.get("__iter_pos") else { return None };
+        if !Arc::ptr_eq(source, property_source) || *property_pos as usize != *scalar_offset {
+            return None;
+        }
+        let tail = &source[*byte_offset..];
+        let result = match op {
+            Op::STRINGVIEW_ITER_NEXT => {
+                let Some(cp) = tail.chars().next() else { return Some(Value::I32(-1)) };
+                *byte_offset += cp.len_utf8();
+                *scalar_offset += 1;
+                Value::I32(cp as i32)
+            }
+            Op::STRINGVIEW_ITER_ADVANCE => {
+                let (end, moved) = if n >= tail.len() {
+                    (tail.len(), tail.chars().count())
+                } else if let Some((end, _)) = tail.char_indices().nth(n) {
+                    (end, n)
+                } else {
+                    (tail.len(), tail.chars().count())
+                };
+                *byte_offset += end;
+                *scalar_offset += moved;
+                Value::I32(moved as i32)
+            }
+            Op::STRINGVIEW_ITER_REWIND => {
+                let moved = n.min(*scalar_offset);
+                *byte_offset = if moved == *scalar_offset {
+                    0
+                } else if moved == 0 {
+                    *byte_offset
+                } else {
+                    source[..*byte_offset].char_indices().rev().nth(moved - 1).unwrap().0
+                };
+                *scalar_offset -= moved;
+                Value::I32(moved as i32)
+            }
+            Op::STRINGVIEW_ITER_SLICE => {
+                let end = if n >= tail.len() { tail.len() }
+                    else { tail.char_indices().nth(n).map_or(tail.len(), |(end, _)| end) };
+                return Some(Value::String(Arc::from(&tail[..end])));
+            }
+            _ => unreachable!("string iterator cursor operation"),
+        };
+        *properties.get_mut("__iter_pos").unwrap() = Value::I32(*scalar_offset as i32);
+        Some(result)
+    }
+
     /// Read a codepoint-iterator view (`string.as_iter` result): its backing
     /// string and current codepoint index, stashed in the object's properties.
     fn read_string_iter(&mut self, view: &Value) -> Result<(Arc<str>, usize), VMError> {
@@ -14919,8 +17699,7 @@ impl VM {
     }
 
     /// Update the codepoint index of an iterator view in place.
-    /// Where host-side canonical lowering allocates from — `cx.opts.realloc`.
-    ///
+    /// Fallback allocator for canonical rows without a declared `realloc`.
     /// The SAME bump global compiler-emitted marshalling uses
     /// (`vybe_compiler::primitives::canon_marshal`). Two independent bump
     /// pointers over one linear memory would eventually hand the same address
@@ -14987,54 +17766,38 @@ impl VM {
     /// well-formed.
     fn stream_write_typed(
         &mut self,
+        handle: u32,
         end: crate::handle_table::StreamEnd,
         ptr: usize,
         n: usize,
         elem: &std::sync::Arc<crate::component::ValType>,
     ) -> Result<(), VMError> {
         let layout = self.canon_element_layout(elem);
+        let (memory_index, realloc) = self.canon_copy_options();
+        let memory = self.canon_memory(Some(memory_index))?;
         let stride = layout.size as usize;
         let align = layout.align;
-        if ptr as u32 != crate::canon_layout::align_to(ptr as u32, align) {
+        if n != 0 && ptr as u32 != crate::canon_layout::align_to(ptr as u32, align) {
             return Err(VMError::new(format!(
                 "canon stream.write: buffer at {ptr} is not aligned to {align} bytes for this element type"
             )));
         }
-        if ptr.saturating_add(stride.saturating_mul(n)) > self.memory.len() {
+        if n != 0 && ptr.saturating_add(stride.saturating_mul(n)) > memory.len() {
             return Err(VMError::new(
-                "canon stream.write: element buffer is out of bounds of linear memory",
+                "trap: canon stream.write: element buffer is out of bounds of linear memory",
             ));
         }
 
-        let mut items = Vec::with_capacity(n);
-        for i in 0..n {
-            match crate::canon_value::load_with_layout(
-                &self.memory,
-                elem,
-                (ptr + stride * i) as u32,
-                &layout,
-            ) {
-                Ok(value) => items.push(value),
-                Err(e) => return Err(VMError::new(format!("canon stream.write: {e}"))),
-            }
+        if self.event_loop.borrow().stream_is_eof(end.id) {
+            self.mark_end_done(handle);
+            return self.push(Value::I32(crate::canon_copy::pack(
+                crate::canon_copy::CopyResult::Dropped, 0,
+            ) as i32));
         }
-
-        let written = items.len() as u32;
-        {
-            let mut el = self.event_loop.borrow_mut();
-            for item in items {
-                if let Some(fiber) = el.stream_push(end.id, item) {
-                    el.immediate
-                        .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                }
-            }
-        }
-        self.handle_table.release_copying(end.id, true);
-        self.push(Value::I32(crate::canon_copy::pack(
-            crate::canon_copy::CopyResult::Completed,
-            written,
-        ) as i32))?;
-        Ok(())
+        self.retain_guest_stream_write(handle, end.id,
+            crate::guest_stream::GuestStreamWrite {
+                memory, ptr, remaining: n, element: Some((elem.clone(), layout)),
+            }, memory_index, realloc)
     }
 
     /// `canon stream.read` for a `stream<T>` where `T` is not `u8`.
@@ -15054,29 +17817,66 @@ impl VM {
         &mut self,
         p: &crate::fiber::PendingCopy,
     ) -> Result<Option<i32>, VMError> {
+        self.perform_pending_copy_inner(p, true)
+    }
+
+    pub(crate) fn complete_async_stream_read(&mut self, id: u64) -> Result<(), VMError> {
+        let Some(pending) = self.async_stream_reads.get(&id).cloned() else {
+            return Ok(());
+        };
+        let ready = {
+            let events = self.event_loop.borrow();
+            events.stream_has_item(id) || events.stream_is_eof(id)
+        };
+        if !ready { return Ok(()); }
+        if let Some(packed) = self.perform_pending_copy_inner(&pending, false)? {
+            self.async_stream_reads.remove(&id);
+            self.event_loop.borrow_mut().complete_guest_stream_read(id, packed as u32);
+        }
+        Ok(())
+    }
+
+    fn perform_pending_copy_inner(
+        &mut self,
+        p: &crate::fiber::PendingCopy,
+        deliver: bool,
+    ) -> Result<Option<i32>, VMError> {
         use crate::canon_copy::{CopyResult, pack};
         use crate::fiber::PendingCopyKind as K;
 
         match &p.kind {
+            K::StreamReadZero | K::StreamWritePending => {
+                let readable = matches!(&p.kind, K::StreamReadZero);
+                if let Some(result) = self.event_loop.borrow_mut()
+                    .take_stream_zero_completion(p.end_id, readable)
+                {
+                    if !readable { self.guest_stream_writes.remove(&p.end_id); }
+                    self.handle_table.release_copying(p.end_id, readable);
+                    return Ok(Some(result as i32));
+                }
+                Ok(None)
+            }
             K::StreamBytes => {
+                self.materialize_guest_stream_write(p.end_id, p.n)?;
                 let bytes = self
                     .event_loop
                     .borrow_mut()
                     .stream_read_bytes(p.end_id, p.n);
                 if !bytes.is_empty() {
-                    self.write_memory_bytes(0, p.ptr, &bytes)?;
+                    self.write_memory_bytes(p.memory as usize, p.ptr, &bytes)?;
                     // The copy completed, so the end leaves COPYING — the reset
                     // the spec performs when it delivers the event.
-                    self.handle_table.release_copying(p.end_id, true);
+                    if deliver { self.handle_table.release_copying(p.end_id, true); }
                     return Ok(Some(pack(CopyResult::Completed, bytes.len() as u32) as i32));
                 }
                 if self.event_loop.borrow().stream_is_eof(p.end_id) {
-                    self.mark_end_done(p.handle);
+                    if deliver { self.mark_end_done(p.handle); }
                     return Ok(Some(pack(CopyResult::Dropped, 0) as i32));
                 }
                 Ok(None)
             }
             K::StreamTyped(elem) => {
+                self.materialize_guest_stream_write(p.end_id, p.n)?;
                 let layout = self.canon_element_layout(elem);
                 let items = self
                     .event_loop
@@ -15084,33 +17884,17 @@ impl VM {
                     .stream_read_items(p.end_id, p.n);
                 if items.is_empty() {
                     if self.event_loop.borrow().stream_is_eof(p.end_id) {
-                        self.mark_end_done(p.handle);
+                        if deliver { self.mark_end_done(p.handle); }
                         return Ok(Some(pack(CopyResult::Dropped, 0) as i32));
                     }
                     return Ok(None);
                 }
-                let stride = layout.size as usize;
-                let memory = self.memory.clone();
-                let mut bump = self.canon_bump_start();
-                let mut realloc = Self::bump_realloc(&memory, &mut bump);
-                let mut copied = 0u32;
-                for (i, item) in items.iter().enumerate() {
-                    let at = (p.ptr + stride * i) as u32;
-                    if let Err(e) = crate::canon_value::store_with_layout(
-                        &memory,
-                        &mut realloc,
-                        item,
-                        elem,
-                        at,
-                        &layout,
-                    ) {
-                        return Err(VMError::new(format!("canon stream.read: {e}")));
-                    }
-                    copied += 1;
-                }
-                drop(realloc);
-                self.canon_bump_commit(bump);
-                self.handle_table.release_copying(p.end_id, true);
+                self.store_canon_copy_values(
+                    p.memory, p.realloc, p.ptr as u32, &items, elem, &layout,
+                    "canon stream.read",
+                )?;
+                let copied = items.len() as u32;
+                if deliver { self.handle_table.release_copying(p.end_id, true); }
                 Ok(Some(pack(CopyResult::Completed, copied) as i32))
             }
             K::Future(t) => {
@@ -15123,18 +17907,10 @@ impl VM {
                 };
                 match settled {
                     Some((crate::event_loop::FuturePhase::Resolved, Some(v))) => {
-                        let memory = self.memory.clone();
-                        let mut bump = self.canon_bump_start();
-                        crate::canon_value::store_with_layout(
-                            &memory,
-                            &mut Self::bump_realloc(&memory, &mut bump),
-                            &v,
-                            t,
-                            p.ptr as u32,
-                            &layout,
-                        )
-                        .map_err(|e| VMError::new(format!("canon future.read: {e}")))?;
-                        self.canon_bump_commit(bump);
+                        self.store_canon_copy_values(
+                            p.memory, p.realloc, p.ptr as u32,
+                            std::slice::from_ref(&v), t, &layout, "canon future.read",
+                        )?;
                         self.handle_table.release_copying(p.end_id, true);
                         Ok(Some(pack(CopyResult::Completed, 1) as i32))
                     }
@@ -15155,7 +17931,9 @@ impl VM {
     fn mark_end_done(&mut self, handle: u32) {
         match self.handle_table.get_mut(handle) {
             Some(crate::handle_table::HandleEntry::ReadableStreamEnd(e))
-            | Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e)) => {
+            | Some(crate::handle_table::HandleEntry::ReadableFutureEnd(e))
+            | Some(crate::handle_table::HandleEntry::WritableStreamEnd(e))
+            | Some(crate::handle_table::HandleEntry::WritableFutureEnd(e)) => {
                 e.state = crate::handle_table::CopyState::Done;
             }
             _ => {}
@@ -15171,16 +17949,18 @@ impl VM {
         elem: &std::sync::Arc<crate::component::ValType>,
     ) -> Result<(), VMError> {
         let layout = self.canon_element_layout(elem);
+        let (memory_index, realloc) = self.canon_copy_options();
+        let memory = self.canon_memory(Some(memory_index))?;
         let stride = layout.size as usize;
         let align = layout.align;
-        if ptr as u32 != crate::canon_layout::align_to(ptr as u32, align) {
+        if n != 0 && ptr as u32 != crate::canon_layout::align_to(ptr as u32, align) {
             return Err(VMError::new(format!(
                 "canon stream.read: buffer at {ptr} is not aligned to {align} bytes for this element type"
             )))?;
         }
-        if ptr.saturating_add(stride.saturating_mul(n)) > self.memory.len() {
+        if n != 0 && ptr.saturating_add(stride.saturating_mul(n)) > memory.len() {
             return Err(VMError::new(
-                "canon stream.read: element buffer is out of bounds of linear memory",
+                "trap: canon stream.read: element buffer is out of bounds of linear memory",
             ));
         }
 
@@ -15194,6 +17974,7 @@ impl VM {
         // blocks the one execution thread that would have run the client. The
         // read has to park FIRST so the loop can run everyone else; only when
         // it has run out of work is blocking for a peer the right thing to do.
+        self.materialize_guest_stream_write(end.id, n)?;
         let items = self.event_loop.borrow_mut().stream_read_items(end.id, n);
         if items.is_empty() {
             if self.event_loop.borrow().stream_is_eof(end.id) {
@@ -15220,6 +18001,11 @@ impl VM {
                 // may answer BLOCKED. Both paths branch, so a typed stream and
                 // a `stream<u8>` cannot disagree about what `async` means.
                 if self.canon_async_opt() {
+                    self.async_stream_reads.insert(end.id, crate::fiber::PendingCopy {
+                        handle, end_id: end.id, ptr, n,
+                        memory: memory_index, realloc,
+                        kind: crate::fiber::PendingCopyKind::StreamTyped(elem.clone()),
+                    });
                     self.push(Value::I32(crate::canon_copy::BLOCKED as i32))?;
                     return Ok(());
                 }
@@ -15228,6 +18014,8 @@ impl VM {
                     end_id: end.id,
                     ptr,
                     n,
+                    memory: memory_index,
+                    realloc,
                     kind: crate::fiber::PendingCopyKind::StreamTyped(elem.clone()),
                 }));
             }
@@ -15236,27 +18024,11 @@ impl VM {
 
         // Shared with `future.read` and with compiler-emitted marshalling —
         // see `bump_realloc`.
-        let memory = self.memory.clone();
-        let mut bump = self.canon_bump_start();
-        let mut realloc = Self::bump_realloc(&memory, &mut bump);
-
-        let mut copied = 0u32;
-        for (i, item) in items.iter().enumerate() {
-            let at = (ptr + stride * i) as u32;
-            if let Err(e) = crate::canon_value::store_with_layout(
-                &memory,
-                &mut realloc,
-                item,
-                elem,
-                at,
-                &layout,
-            ) {
-                return Err(VMError::new(format!("canon stream.read: {e}")))?;
-            }
-            copied += 1;
-        }
-        drop(realloc);
-        self.canon_bump_commit(bump);
+        self.store_canon_copy_values(
+            memory_index, realloc, ptr as u32, &items, elem, &layout,
+            "canon stream.read",
+        )?;
+        let copied = items.len() as u32;
 
         self.push(Value::I32(crate::canon_copy::pack(
             crate::canon_copy::CopyResult::Completed,
@@ -15322,36 +18094,6 @@ impl VM {
             .collect())
     }
 
-    #[inline(always)]
-    pub(crate) fn read_optional_memarg(&mut self) -> (usize, usize) {
-        // OPTIONAL marker-tagged memarg (`SimdMemArg` — the same shape the
-        // v128 loads/stores use): present iff the first LEB carries the 0x80
-        // marker. The peek is unambiguous — instruction group-hi bytes are
-        // always 0x00 — so there is NO opcode-decode guessing. 0x100 =
-        // memory64 (u64 offset), 0x40 = explicit memidx LEB follows (the
-        // spec multi-memory bit). Absent means align natural, offset 0,
-        // memory 0.
-        let frame_index = self.frames.len() - 1;
-        let chunk_idx = self.frames[frame_index].chunk_index;
-        let code = &self.chunks[chunk_idx].code;
-        let mut ip = self.frames[frame_index].ip;
-        if code[ip] & 0x80 == 0 {
-            return (0, 0);
-        }
-        let align = read_leb_u32(code, &mut ip);
-        let offset = if align & 0x100 != 0 {
-            read_leb_u64(code, &mut ip) as usize
-        } else {
-            read_leb_u32(code, &mut ip) as usize
-        };
-        let memidx = if align & 0x40 != 0 {
-            read_leb_u32(code, &mut ip) as usize
-        } else {
-            0
-        };
-        self.frames[frame_index].ip = ip;
-        (offset, memidx)
-    }
 
     #[inline(always)]
     fn cached_memory0_i32_load_addr(
@@ -15878,6 +18620,15 @@ impl VM {
         let chunk_idx = self.frames[frame_index].chunk_index;
         let code = &self.chunks[chunk_idx].code;
         let mut ip = self.frames[frame_index].ip;
+        // Omitted immediates are common in compiler-produced bytecode. Do not
+        // consult execution metadata or advance the cursor in that case.
+        if code.get(ip).copied().unwrap_or(0) & 0x80 == 0 {
+            return (0, 0, false);
+        }
+        if let Some((offset, len)) = self.cached_optional_memory_arg(chunk_idx, ip) {
+            self.frames[frame_index].ip = ip + len;
+            return (offset, 0, false);
+        }
         let align = read_leb_u32(code, &mut ip);
         if align & 0x80 == 0 {
             return (0, 0, false);
@@ -15902,6 +18653,22 @@ impl VM {
         let (offset, memidx, memory64) = self.read_optional_simd_memarg();
         let addr = self.pop_simd_effective_addr(offset, memory64)?;
         Ok((memidx, addr))
+    }
+
+    #[inline(always)]
+    fn pop_cached_simd_addr(&mut self, packed: u32) -> Result<(usize, usize), VMError> {
+        if packed == 0 {
+            // Omitted immediates neither consume bytecode nor alter the cursor.
+            return Ok((0, self.pop_simd_effective_addr(0, false)?));
+        }
+        if let Some((offset, len)) = Self::unpack_cached_simd_memarg(packed) {
+            let frame_index = self.frames.len() - 1;
+            self.frames[frame_index].ip += len;
+            let addr = self.pop_simd_effective_addr(offset, false)?;
+            Ok((0, addr))
+        } else {
+            self.pop_simd_addr()
+        }
     }
 
     #[inline(always)]
@@ -16020,36 +18787,36 @@ impl VM {
                 decoded_operands_ptr,
                 decoded_operands64_ptr,
                 native_call_sites_ptr,
-                native_result_fast_paths_ptr,
                 local_fast_paths_ptr,
             ) = unsafe {
                 (
                     self.decoded_ops.get_unchecked(chunk_index).as_ptr(),
                     self.decoded_operands.get_unchecked(chunk_index).as_ptr(),
                     self.decoded_operands64.get_unchecked(chunk_index).as_ptr(),
-                    self.native_call_sites.get_unchecked(chunk_index).as_ptr(),
-                    self.native_result_fast_paths
-                        .get_unchecked(chunk_index)
-                        .as_ptr(),
+                    {
+                        let sites = self.native_call_sites.get_unchecked(chunk_index);
+                        if sites.is_empty() { std::ptr::null() } else { sites.as_ptr() }
+                    },
                     self.local_fast_paths.get_unchecked(chunk_index).as_ptr(),
                 )
             };
             let op = unsafe {
                 // `chunk_index` comes from the active frame and `opcode_start`
                 // was checked against the chunk's code length above. The
-                // decoded-op cache is maintained parallel to `chunks` with the
-                // same byte length, so this avoids two redundant bounds checks
+                // decoded-op cache is maintained parallel to `chunks`, with
+                // one entry per four-byte bucket. Validated instruction starts
+                // occupy distinct buckets, avoiding redundant bounds checks
                 // in the interpreter's hottest path.
-                *decoded_ops_ptr.add(opcode_start)
+                *decoded_ops_ptr.add((opcode_start) / 4)
             };
             macro_rules! cached_operand {
                 () => {
-                    unsafe { *decoded_operands_ptr.add(opcode_start) }
+                    unsafe { *decoded_operands_ptr.add((opcode_start) / 4) }
                 };
             }
             macro_rules! cached_operand64 {
                 () => {
-                    unsafe { *decoded_operands64_ptr.add(opcode_start) }
+                    unsafe { *decoded_operands64_ptr.add(cached_operand!() as usize) }
                 };
             }
             macro_rules! cached_byte_operand {
@@ -16060,37 +18827,6 @@ impl VM {
                 }};
             }
             self.frames[frame_index].ip = opcode_start + 4;
-            if let Some(counters) = self.perf_counters.as_mut() {
-                counters.record_op(op);
-                counters.record_stack_depth(self.stack.len());
-                counters.record_frame_depth(self.frames.len());
-                if matches!(op, Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE) {
-                    let next_ip = match op {
-                        Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE => opcode_start + 6,
-                        _ => opcode_start + 4,
-                    };
-                    if next_ip < code_len {
-                        let next_op = unsafe { *decoded_ops_ptr.add(next_ip) };
-                        let next2_ip = match next_op {
-                            Op::CALL => next_ip + 7,
-                            Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE => next_ip + 6,
-                            _ => next_ip + 4,
-                        };
-                        if next2_ip < code_len {
-                            let next2_op = unsafe { *decoded_ops_ptr.add(next2_ip) };
-                            counters.record_local_window(format!(
-                                "{:?} -> {:?} -> {:?}",
-                                op, next_op, next2_op
-                            ));
-                        } else {
-                            counters.record_local_window(format!("{:?} -> {:?}", op, next_op));
-                        }
-                    }
-                }
-            }
-            if dbg_ac {
-                dbg_last_op = Some(op);
-            }
 
             // ── Instrumentation (step debugger + execution trace) ────────
             // Single hot-path gate: false in normal runs. `opcode_start` is the
@@ -16104,6 +18840,13 @@ impl VM {
                     let r = dbg.on_instruction(self, opcode_start, op);
                     self.debugger = Some(dbg);
                     r?;
+                    // Reload can relocate this live frame while paused. No
+                    // instruction has executed yet; refresh its code and all
+                    // decoded/cache pointers before consuming an operand.
+                    if self.frames[frame_index].chunk_index != chunk_index {
+                        self.frames[frame_index].ip = opcode_start;
+                        continue;
+                    }
                 }
                 if self.trace {
                     let f = self.frame();
@@ -16133,6 +18876,38 @@ impl VM {
                 }
             }
 
+            if let Some(counters) = self.perf_counters.as_mut() {
+                counters.record_op(op);
+                counters.record_stack_depth(self.stack.len());
+                counters.record_frame_depth(self.frames.len());
+                if matches!(op, Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE) {
+                    let next_ip = match op {
+                        Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE => opcode_start + 6,
+                        _ => opcode_start + 4,
+                    };
+                    if next_ip < code_len {
+                        let next_op = unsafe { *decoded_ops_ptr.add((next_ip) / 4) };
+                        let next2_ip = match next_op {
+                            Op::CALL => next_ip + 7,
+                            Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE => next_ip + 6,
+                            _ => next_ip + 4,
+                        };
+                        if next2_ip < code_len {
+                            let next2_op = unsafe { *decoded_ops_ptr.add((next2_ip) / 4) };
+                            counters.record_local_window(format!(
+                                "{:?} -> {:?} -> {:?}",
+                                op, next_op, next2_op
+                            ));
+                        } else {
+                            counters.record_local_window(format!("{:?} -> {:?}", op, next_op));
+                        }
+                    }
+                }
+            }
+            if dbg_ac {
+                dbg_last_op = Some(op);
+            }
+
             let code = &self.chunks[chunk_index].code;
             match op {
                 Op::UNREACHABLE => {
@@ -16157,6 +18932,27 @@ impl VM {
                     if idx >= self.stack.len() {
                         return Err(VMError::new("trap: local index out of bounds"));
                     }
+                    let local_fast_path = unsafe {
+                        *local_fast_paths_ptr.add(opcode_start / 4)
+                    };
+                    if let LocalFastPath::LocalGetLocalSet { target_slot, next_ip } = local_fast_path {
+                        if target_slot as usize == slot && self.type_recorder.is_none() {
+                            // The existing fusion already consumes both instructions.
+                            // A self-copy changes neither the local nor the operand
+                            // stack, so avoid a clone/replacement (and reference-count
+                            // traffic). Keep the normal path when recording types.
+                            self.frames[frame_index].ip = next_ip as usize;
+                            continue;
+                        }
+                        self.frames[frame_index].ip = next_ip as usize;
+                        self.copy_local_value_fast(
+                            frame_index,
+                            chunk_index,
+                            slot,
+                            target_slot as usize,
+                        )?;
+                        continue;
+                    }
                     let val = unsafe {
                         // Bounds checked above. Valid WASM local.get is one of
                         // the hottest interpreter operations, so avoid
@@ -16166,7 +18962,7 @@ impl VM {
                     if let Some(rec) = self.type_recorder.as_mut() {
                         rec.record(chunk_idx, slot, &val);
                     }
-                    match unsafe { *local_fast_paths_ptr.add(opcode_start) } {
+                    match local_fast_path {
                         LocalFastPath::LocalGetGlobalGet {
                             global_idx,
                             next_ip,
@@ -16223,13 +19019,13 @@ impl VM {
                             };
                             let after_call_ip = self.frames[frame_index].ip;
                             if after_call_ip < code_len
-                                && unsafe { *decoded_ops_ptr.add(after_call_ip) } == Op::CALL
+                                && unsafe { *decoded_ops_ptr.add((after_call_ip) / 4) } == Op::CALL
                             {
                                 let next_operand =
-                                    unsafe { *decoded_operands_ptr.add(after_call_ip) };
+                                    unsafe { *decoded_operands_ptr.add((after_call_ip) / 4) };
                                 let next_argc = ((next_operand >> 16) & 0xff) as usize;
                                 let next_native =
-                                    unsafe { *native_call_sites_ptr.add(after_call_ip) };
+                                    unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((after_call_ip) / 4) } };
                                 if next_argc == 1
                                     && matches!(
                                         next_native,
@@ -16286,7 +19082,7 @@ impl VM {
                             };
                             let after_call_ip = self.frames[frame_index].ip;
                             if after_call_ip < code_len
-                                && unsafe { *decoded_ops_ptr.add(after_call_ip) } == Op::I32_EQZ
+                                && unsafe { *decoded_ops_ptr.add((after_call_ip) / 4) } == Op::I32_EQZ
                             {
                                 self.frames[frame_index].ip = after_call_ip + 4;
                                 self.push_fast(Value::I32(i32::from(v == 0)));
@@ -16411,6 +19207,24 @@ impl VM {
                     let ip = opcode_start + 4;
                     let slot = cached_operand!() as usize;
                     self.frames[frame_index].ip = ip + 2;
+                    let base = self.frames[frame_index].base;
+                    let idx = base + slot;
+                    if idx < self.stack.len() {
+                        // A valid destination implies a nonempty stack. Keep
+                        // the operand in place and copy directly into the local.
+                        let source = self.stack.len() - 1;
+                        if let Some(rec) = self.type_recorder.as_mut() {
+                            rec.record(chunk_idx, slot, &self.stack[source]);
+                        }
+                        if idx != source {
+                            // idx < stack.len() implies idx <= source. Split
+                            // off the retained operand without a general range
+                            // copy; distinct locals are strictly before it.
+                            let (locals, operand) = self.stack.split_at_mut(source);
+                            locals[idx].clone_from(&operand[0]);
+                        }
+                        continue;
+                    }
                     let val = self.clone_top_fast();
                     let base = self.frames[frame_index].base;
                     if let Some(rec) = self.type_recorder.as_mut() {
@@ -16452,13 +19266,11 @@ impl VM {
                     // An UNASSIGNED slot reads exactly as it did when globals
                     // were a map and the key was simply absent: Undefined.
                     // That matters because emitted code tests "unset" two
-                    // different ways — `ref.is_null` (which accepts Undefined)
-                    // and `js-undefined:test` (which does NOT accept Null).
-                    // Storing Null and returning it satisfies the first and
-                    // breaks the second; storing Undefined breaks neither, but
-                    // then `GlobalInit` cannot tell unset from a real
-                    // undefined. `globals_assigned` separates the two
-                    // questions, so the READ can answer this one correctly.
+                    // different ways — `ref.is_null` (which accepts only null)
+                    // and `js-undefined:test` (which accepts only Undefined).
+                    // An unassigned global must remain distinguishable from
+                    // null and from an explicitly assigned Undefined value.
+                    // `globals_assigned` records that distinction separately.
                     let val = if idx < self.globals_assigned.len()
                         && unsafe { *self.globals_assigned.get_unchecked(idx) }
                         && idx < self.globals.len()
@@ -16581,10 +19393,10 @@ impl VM {
                                 // Task object was updated by child thread
                             }
                         }
-                        let getter_key = format!("__get_{}", name);
+                        let getter_key = property_accessor_key::AccessorKey::getter(&name);
                         let own_member = {
                             let o_ref = o.lock().unwrap();
-                            if let Some(g) = o_ref.properties.get(&getter_key) {
+                            if let Some(g) = o_ref.properties.get(getter_key.as_str()) {
                                 Some(Err(g.clone()))
                             } else {
                                 o_ref.properties.get(name).cloned().map(Ok)
@@ -16626,24 +19438,23 @@ impl VM {
                             let Some(Value::Object(ref node)) = current else {
                                 break;
                             };
-                            let found = {
+                            let (found, next) = {
                                 let n = node.lock().unwrap();
-                                if let Some(g) = n.properties.get(&getter_key) {
-                                    Some(g.clone())
+                                if let Some(g) = n.properties.get(getter_key.as_str()) {
+                                    (Some(g.clone()), None)
                                 } else {
                                     // A DATA property at this level shadows an
                                     // accessor further up — stop looking.
                                     if n.properties.contains_key(name) {
                                         break;
                                     }
-                                    None
+                                    (None, n.properties.get("__proto__").cloned())
                                 }
                             };
                             if let Some(g) = found {
                                 getter = Some(g);
                                 break;
                             }
-                            let next = node.lock().unwrap().properties.get("__proto__").cloned();
                             current = match next {
                                 Some(Value::Object(p)) => Some(Value::Object(p)),
                                 _ => None,
@@ -16747,13 +19558,24 @@ impl VM {
                         // languages (C#, Dart) whose AST preserves
                         // PascalCase field names.
                         let setter_key = format!("__set_{}", name);
-                        let setter_key_lc = format!("__set_{}", name.to_lowercase());
                         let setter = {
                             let props = &o.lock().unwrap().properties;
                             props
                                 .get(&setter_key)
                                 .cloned()
-                                .or_else(|| props.get(&setter_key_lc).cloned())
+                                .or_else(|| {
+                                    // ASCII names with no uppercase letters
+                                    // fold to the exact key already checked.
+                                    // Avoid two allocations on that hot path;
+                                    // retain full Unicode folding otherwise.
+                                    if name.is_ascii()
+                                        && !name.bytes().any(|byte| byte.is_ascii_uppercase())
+                                    {
+                                        return None;
+                                    }
+                                    let folded = format!("__set_{}", name.to_lowercase());
+                                    props.get(&folded).cloned()
+                                })
                         };
                         if let Some(setter_fn) = setter {
                             // Call the setter synchronously. Save stack depth
@@ -16778,13 +19600,13 @@ impl VM {
                             self.stack.truncate(stack_save);
                         } else {
                             // Set property in properties HashMap
-                            o.lock().unwrap().set(name.to_string(), val.clone());
+                            let mut ob = o.lock().unwrap();
+                            ob.set(name.to_string(), val.clone());
                             // For typed objects, also update the fields Vec if this property is a field
-                            let type_id = o.lock().unwrap().type_id;
+                            let type_id = ob.type_id;
                             if type_id > 0 {
                                 if let Some(td) = self.type_registry.get(type_id) {
                                     if let Some(field_idx) = td.field_index(&name) {
-                                        let mut ob = o.lock().unwrap();
                                         if field_idx < ob.fields.len() {
                                             ob.fields[field_idx] = val.clone();
                                         }
@@ -18163,7 +20985,8 @@ impl VM {
                         upvalues,
                     };
                     let mut obj = Object {
-                        properties: indexmap::IndexMap::new(),
+                        descriptor: None,
+            properties: indexmap::IndexMap::new(),
                         kind: ObjectKind::Function(func),
                         type_id: 0,
                         fields: Vec::new(),
@@ -18175,7 +20998,7 @@ impl VM {
                     let func_val = Value::Object(crate::heap::alloc(obj));
                     self.func_table.push(func_val.clone());
                     // Intern the canonical capture-free funcref for reuse.
-                    if uv_count == 0 {
+                    if uv_count == 0 && !no_intern {
                         self.funcref_cache.insert(func_idx, func_val.clone());
                     }
                     self.push(func_val)?;
@@ -18188,8 +21011,21 @@ impl VM {
                 // table. (The retired 0xFF CALL_IMPORT alias carried the
                 // identical immediates and body.)
                 Op::CALL => {
-                    let ip = opcode_start + 4;
                     let operand = cached_operand!();
+                    if operand & DECODED_DEFINED_CALL != 0 {
+                        let edge = self.chunks[chunk_index].direct_defined_calls.get(&opcode_start)
+                            .ok_or_else(|| VMError::new("trap: direct-call cache metadata missing"))?;
+                        let owner = self.chunk_import_owner.get(chunk_index).copied().unwrap_or(0);
+                        let target = owner.checked_add(edge.target as usize).ok_or_else(|| VMError::new("trap: direct call target overflow"))?;
+                        if self.func_switches.contains_key(&target) { return Err(VMError::new("call: a func_switch has no type — use call_with_tag")); }
+                        // Load validation proves this operand matches the
+                        // signature; invocation need not parse type strings.
+                        let arity = ((operand >> 16) & 0xff) as u8;
+                        self.frames[frame_index].ip = opcode_start + 7;
+                        self.call_chunk_function(target, arity, arity as usize)?;
+                        continue;
+                    }
+                    let ip = opcode_start + 4;
                     let import_idx = (operand & 0xffff) as usize;
                     let argc = ((operand >> 16) & 0xff) as usize;
                     self.frames[frame_index].ip = ip + 3;
@@ -18231,13 +21067,13 @@ impl VM {
                             if next_ip >= code_len {
                                 "<end>".to_string()
                             } else {
-                                let next_op = unsafe { *decoded_ops_ptr.add(next_ip) };
+                                let next_op = unsafe { *decoded_ops_ptr.add((next_ip) / 4) };
                                 if next_op == Op::CALL {
                                     let next_operand =
-                                        unsafe { *decoded_operands_ptr.add(next_ip) };
+                                        unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
                                     let next_argc = ((next_operand >> 16) & 0xff) as usize;
                                     let next_native =
-                                        unsafe { *native_call_sites_ptr.add(next_ip) };
+                                        unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
                                     match next_native {
                                         Some(native) => format!(
                                             "CALL(argc={}, {})",
@@ -18258,11 +21094,11 @@ impl VM {
                             if $ip >= code_len {
                                 "<end>".to_string()
                             } else {
-                                let op = unsafe { *decoded_ops_ptr.add($ip) };
+                                let op = unsafe { *decoded_ops_ptr.add(($ip) / 4) };
                                 if op == Op::CALL {
-                                    let operand = unsafe { *decoded_operands_ptr.add($ip) };
+                                    let operand = unsafe { *decoded_operands_ptr.add(($ip) / 4) };
                                     let argc = ((operand >> 16) & 0xff) as usize;
-                                    let native = unsafe { *native_call_sites_ptr.add($ip) };
+                                    let native = unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add(($ip) / 4) } };
                                     match native {
                                         Some(native) => format!(
                                             "CALL(argc={}, {})",
@@ -18283,7 +21119,7 @@ impl VM {
                             if $ip >= code_len {
                                 None
                             } else {
-                                let op = unsafe { *decoded_ops_ptr.add($ip) };
+                                let op = unsafe { *decoded_ops_ptr.add(($ip) / 4) };
                                 let width = match op {
                                     Op::CALL => 7,
                                     Op::LOCAL_GET | Op::LOCAL_SET => 6,
@@ -18344,13 +21180,13 @@ impl VM {
                                 (NativeCallSiteTarget::JsNumber(JsNumberBuiltin::FromI32), 1) => {
                                     let next_ip = self.frames[frame_index].ip;
                                     if next_ip < code_len
-                                        && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL
+                                        && unsafe { *decoded_ops_ptr.add((next_ip) / 4) } == Op::CALL
                                     {
                                         let next_operand =
-                                            unsafe { *decoded_operands_ptr.add(next_ip) };
+                                            unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
                                         let next_argc = ((next_operand >> 16) & 0xff) as usize;
                                         let next_native =
-                                            unsafe { *native_call_sites_ptr.add(next_ip) };
+                                            unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
                                         if next_argc == 1 {
                                             match next_native {
                                                 Some(NativeCallSiteTarget::JsNumber(
@@ -18367,17 +21203,17 @@ impl VM {
                                                     let mut fused_ip = next_ip + 7;
                                                     if fused_ip < code_len
                                                         && unsafe {
-                                                            *decoded_ops_ptr.add(fused_ip)
+                                                            *decoded_ops_ptr.add((fused_ip) / 4)
                                                         } == Op::CALL
                                                     {
                                                         let next2_operand = unsafe {
-                                                            *decoded_operands_ptr.add(fused_ip)
+                                                            *decoded_operands_ptr.add((fused_ip) / 4)
                                                         };
                                                         let next2_argc =
                                                             ((next2_operand >> 16) & 0xff)
                                                                 as usize;
                                                         let next2_native = unsafe {
-                                                            *native_call_sites_ptr.add(fused_ip)
+                                                            if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((fused_ip) / 4) }
                                                         };
                                                         if next2_argc == 1
                                                             && matches!(
@@ -18407,13 +21243,13 @@ impl VM {
                                 (NativeCallSiteTarget::JsNumber(JsNumberBuiltin::FromF64), 1) => {
                                     let next_ip = self.frames[frame_index].ip;
                                     if next_ip < code_len
-                                        && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL
+                                        && unsafe { *decoded_ops_ptr.add((next_ip) / 4) } == Op::CALL
                                     {
                                         let next_operand =
-                                            unsafe { *decoded_operands_ptr.add(next_ip) };
+                                            unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
                                         let next_argc = ((next_operand >> 16) & 0xff) as usize;
                                         let next_native =
-                                            unsafe { *native_call_sites_ptr.add(next_ip) };
+                                            unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
                                         if next_argc == 1 {
                                             match next_native {
                                                 Some(NativeCallSiteTarget::JsNumber(
@@ -18422,17 +21258,17 @@ impl VM {
                                                     let mut fused_ip = next_ip + 7;
                                                     if fused_ip < code_len
                                                         && unsafe {
-                                                            *decoded_ops_ptr.add(fused_ip)
+                                                            *decoded_ops_ptr.add((fused_ip) / 4)
                                                         } == Op::CALL
                                                     {
                                                         let next2_operand = unsafe {
-                                                            *decoded_operands_ptr.add(fused_ip)
+                                                            *decoded_operands_ptr.add((fused_ip) / 4)
                                                         };
                                                         let next2_argc =
                                                             ((next2_operand >> 16) & 0xff)
                                                                 as usize;
                                                         let next2_native = unsafe {
-                                                            *native_call_sites_ptr.add(fused_ip)
+                                                            if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((fused_ip) / 4) }
                                                         };
                                                         if next2_argc == 1
                                                             && matches!(
@@ -18479,13 +21315,13 @@ impl VM {
                                 (NativeCallSiteTarget::JsNumber(JsNumberBuiltin::Test), 1) => {
                                     let next_ip = self.frames[frame_index].ip;
                                     let fused_ip = if next_ip < code_len
-                                        && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL
+                                        && unsafe { *decoded_ops_ptr.add((next_ip) / 4) } == Op::CALL
                                     {
                                         let next_operand =
-                                            unsafe { *decoded_operands_ptr.add(next_ip) };
+                                            unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
                                         let next_argc = ((next_operand >> 16) & 0xff) as usize;
                                         let next_native =
-                                            unsafe { *native_call_sites_ptr.add(next_ip) };
+                                            unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
                                         if next_argc == 1
                                             && matches!(
                                                 next_native,
@@ -18513,14 +21349,14 @@ impl VM {
                                 (NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToF64), 1) => {
                                     let next_ip = self.frames[frame_index].ip;
                                     if next_ip < code_len {
-                                        let next_op = unsafe { *decoded_ops_ptr.add(next_ip) };
+                                        let next_op = unsafe { *decoded_ops_ptr.add((next_ip) / 4) };
                                         if next_op == Op::CALL {
                                             let next_operand =
-                                                unsafe { *decoded_operands_ptr.add(next_ip) };
+                                                unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
                                             let next_argc =
                                                 ((next_operand >> 16) & 0xff) as usize;
                                             let next_native =
-                                                unsafe { *native_call_sites_ptr.add(next_ip) };
+                                                unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
                                             if next_argc == 1
                                                 && matches!(
                                                     next_native,
@@ -18559,16 +21395,16 @@ impl VM {
                                             let next2_ip = next_ip + 4;
                                             if next2_ip < code_len
                                                 && unsafe {
-                                                    *decoded_ops_ptr.add(next2_ip)
+                                                    *decoded_ops_ptr.add((next2_ip) / 4)
                                                 } == Op::CALL
                                             {
                                                 let next2_operand = unsafe {
-                                                    *decoded_operands_ptr.add(next2_ip)
+                                                    *decoded_operands_ptr.add((next2_ip) / 4)
                                                 };
                                                 let next2_argc =
                                                     ((next2_operand >> 16) & 0xff) as usize;
                                                 let next2_native = unsafe {
-                                                    *native_call_sites_ptr.add(next2_ip)
+                                                    if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next2_ip) / 4) }
                                                 };
                                                 if next2_argc == 1
                                                     && matches!(
@@ -18603,16 +21439,16 @@ impl VM {
                                             let next2_ip = next_ip + 4;
                                             if next2_ip < code_len
                                                 && unsafe {
-                                                    *decoded_ops_ptr.add(next2_ip)
+                                                    *decoded_ops_ptr.add((next2_ip) / 4)
                                                 } == Op::CALL
                                             {
                                                 let next2_operand = unsafe {
-                                                    *decoded_operands_ptr.add(next2_ip)
+                                                    *decoded_operands_ptr.add((next2_ip) / 4)
                                                 };
                                                 let next2_argc =
                                                     ((next2_operand >> 16) & 0xff) as usize;
                                                 let next2_native = unsafe {
-                                                    *native_call_sites_ptr.add(next2_ip)
+                                                    if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next2_ip) / 4) }
                                                 };
                                                 if next2_argc == 1
                                                     && matches!(
@@ -18691,23 +21527,23 @@ impl VM {
                                         }
                                     };
                                     let next_op = if next_ip < code_len {
-                                        Some(unsafe { *decoded_ops_ptr.add(next_ip) })
+                                        Some(unsafe { *decoded_ops_ptr.add((next_ip) / 4) })
                                     } else {
                                         None
                                     };
                                     if matches!(next_op, Some(Op::LOCAL_GET)) {
                                         let slot =
-                                            unsafe { *decoded_operands_ptr.add(next_ip) } as usize;
+                                            unsafe { *decoded_operands_ptr.add((next_ip) / 4) } as usize;
                                         let next2_ip = next_ip + 6;
                                         if next2_ip < code_len
-                                            && unsafe { *decoded_ops_ptr.add(next2_ip) } == Op::CALL
+                                            && unsafe { *decoded_ops_ptr.add((next2_ip) / 4) } == Op::CALL
                                         {
                                             let next2_operand =
-                                                unsafe { *decoded_operands_ptr.add(next2_ip) };
+                                                unsafe { *decoded_operands_ptr.add((next2_ip) / 4) };
                                             let next2_argc =
                                                 ((next2_operand >> 16) & 0xff) as usize;
                                             let next2_native =
-                                                unsafe { *native_call_sites_ptr.add(next2_ip) };
+                                                unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next2_ip) / 4) } };
                                             if next2_argc == 1
                                                 && matches!(
                                                     next2_native,
@@ -18746,7 +21582,7 @@ impl VM {
                                                 let next3_ip = next2_ip + 7;
                                                 let next3_op = if next3_ip < code_len {
                                                     Some(unsafe {
-                                                        *decoded_ops_ptr.add(next3_ip)
+                                                        *decoded_ops_ptr.add((next3_ip) / 4)
                                                     })
                                                 } else {
                                                     None
@@ -18793,18 +21629,17 @@ impl VM {
                                                         let mut fused_ip = next3_ip + 4;
                                                         if fused_ip < code_len
                                                             && unsafe {
-                                                                *decoded_ops_ptr.add(fused_ip)
+                                                                *decoded_ops_ptr.add((fused_ip) / 4)
                                                             } == Op::CALL
                                                         {
                                                             let next4_operand = unsafe {
-                                                                *decoded_operands_ptr.add(fused_ip)
+                                                                *decoded_operands_ptr.add((fused_ip) / 4)
                                                             };
                                                             let next4_argc =
                                                                 ((next4_operand >> 16) & 0xff)
                                                                     as usize;
                                                             let next4_native = unsafe {
-                                                                *native_call_sites_ptr
-                                                                    .add(fused_ip)
+                                                                if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((fused_ip) / 4) }
                                                             };
                                                             if next4_argc == 1
                                                                 && matches!(
@@ -18982,18 +21817,18 @@ impl VM {
                                 (NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32), 1) => {
                                     let next_ip = self.frames[frame_index].ip;
                                     let next_op = if next_ip < code_len {
-                                        Some(unsafe { *decoded_ops_ptr.add(next_ip) })
+                                        Some(unsafe { *decoded_ops_ptr.add((next_ip) / 4) })
                                     } else {
                                         None
                                     };
                                     let fused_ip = if matches!(next_op, Some(Op::CALL))
-                                        && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL
+                                        && unsafe { *decoded_ops_ptr.add((next_ip) / 4) } == Op::CALL
                                     {
                                         let next_operand =
-                                            unsafe { *decoded_operands_ptr.add(next_ip) };
+                                            unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
                                         let next_argc = ((next_operand >> 16) & 0xff) as usize;
                                         let next_native =
-                                            unsafe { *native_call_sites_ptr.add(next_ip) };
+                                            unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
                                         if next_argc == 1
                                             && matches!(
                                                 next_native,
@@ -19014,7 +21849,7 @@ impl VM {
                                             let v = $value;
                                             if let NativeResultFastPath::I32Eqz { next_ip } =
                                                 unsafe {
-                                                    *native_result_fast_paths_ptr.add(opcode_start)
+                                                    self.native_result_fast_paths.get_unchecked(chunk_index).get(opcode_start / 4).copied().unwrap_or(NativeResultFastPath::None)
                                                 }
                                             {
                                                 self.frames[frame_index].ip = next_ip as usize;
@@ -19027,21 +21862,21 @@ impl VM {
                                                 self.push_fast(Value::I32(v));
                                             } else if matches!(next_op, Some(Op::LOCAL_GET)) {
                                                 let slot =
-                                                    unsafe { *decoded_operands_ptr.add(next_ip) }
+                                                    unsafe { *decoded_operands_ptr.add((next_ip) / 4) }
                                                         as usize;
                                                 let next2_ip = next_ip + 6;
                                                 if next2_ip < code_len
                                                     && unsafe {
-                                                        *decoded_ops_ptr.add(next2_ip)
+                                                        *decoded_ops_ptr.add((next2_ip) / 4)
                                                     } == Op::CALL
                                                 {
                                                     let next2_operand = unsafe {
-                                                        *decoded_operands_ptr.add(next2_ip)
+                                                        *decoded_operands_ptr.add((next2_ip) / 4)
                                                     };
                                                     let next2_argc =
                                                         ((next2_operand >> 16) & 0xff) as usize;
                                                     let next2_native = unsafe {
-                                                        *native_call_sites_ptr.add(next2_ip)
+                                                        if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next2_ip) / 4) }
                                                     };
                                                     if next2_argc == 3
                                                         && matches!(
@@ -19092,8 +21927,7 @@ impl VM {
                                                             Ok(result) => {
                                                                 if after_call_ip < code_len
                                                                     && unsafe {
-                                                                        *decoded_ops_ptr
-                                                                            .add(after_call_ip)
+                                                                        *decoded_ops_ptr.add((after_call_ip) / 4)
                                                                     } == Op::DROP
                                                                 {
                                                                     self.frames[frame_index].ip =
@@ -19189,7 +22023,7 @@ impl VM {
                                                         let next3_ip = next2_ip + 7;
                                                         let next3_op = if next3_ip < code_len {
                                                             Some(unsafe {
-                                                                *decoded_ops_ptr.add(next3_ip)
+                                                                *decoded_ops_ptr.add((next3_ip) / 4)
                                                             })
                                                         } else {
                                                             None
@@ -19302,7 +22136,7 @@ impl VM {
                                     1,
                                 ) => {
                                     if let NativeResultFastPath::EcmaBooleanToI32 { next_ip } =
-                                        unsafe { *native_result_fast_paths_ptr.add(opcode_start) }
+                                        unsafe { self.native_result_fast_paths.get_unchecked(chunk_index).get(opcode_start / 4).copied().unwrap_or(NativeResultFastPath::None) }
                                     {
                                         self.frames[frame_index].ip = next_ip as usize;
                                         let value = self.pop_fast();
@@ -19377,19 +22211,19 @@ impl VM {
                                     if let Ok(value) = self.fast_ecma_object_get(&obj, &key) {
                                         let next_ip = self.frames[frame_index].ip;
                                         if next_ip < code_len
-                                            && unsafe { *decoded_ops_ptr.add(next_ip) }
+                                            && unsafe { *decoded_ops_ptr.add((next_ip) / 4) }
                                                 == Op::LOCAL_SET
                                         {
                                             let slot =
-                                                unsafe { *decoded_operands_ptr.add(next_ip) }
+                                                unsafe { *decoded_operands_ptr.add((next_ip) / 4) }
                                                     as usize;
                                             let after_set_ip = next_ip + 6;
                                             if after_set_ip < code_len
                                                 && unsafe {
-                                                    *decoded_ops_ptr.add(after_set_ip)
+                                                    *decoded_ops_ptr.add((after_set_ip) / 4)
                                                 } == Op::LOCAL_GET
                                                 && unsafe {
-                                                    *decoded_operands_ptr.add(after_set_ip)
+                                                    *decoded_operands_ptr.add((after_set_ip) / 4)
                                                 } as usize
                                                     == slot
                                             {
@@ -19411,14 +22245,14 @@ impl VM {
                                                 )?;
                                             }
                                         } else if next_ip < code_len
-                                            && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL
+                                            && unsafe { *decoded_ops_ptr.add((next_ip) / 4) } == Op::CALL
                                         {
                                             let next_operand =
-                                                unsafe { *decoded_operands_ptr.add(next_ip) };
+                                                unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
                                             let next_argc =
                                                 ((next_operand >> 16) & 0xff) as usize;
                                             let next_native =
-                                                unsafe { *native_call_sites_ptr.add(next_ip) };
+                                                unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
                                             if next_argc == 1
                                                 && matches!(
                                                     next_native,
@@ -19466,7 +22300,7 @@ impl VM {
                                     if let Some(value) = self.fast_ecma_array_get_value(&obj, &key)
                                     {
                                         match unsafe {
-                                            *native_result_fast_paths_ptr.add(opcode_start)
+                                            self.native_result_fast_paths.get_unchecked(chunk_index).get(opcode_start / 4).copied().unwrap_or(NativeResultFastPath::None)
                                         } {
                                             NativeResultFastPath::EndLocalSet { slot, next_ip } => {
                                                 if let Some(label) = self.label_stack.pop() {
@@ -19506,7 +22340,7 @@ impl VM {
                                         Ok(result) => {
                                             let next_ip = self.frames[frame_index].ip;
                                             if next_ip < code_len
-                                                && unsafe { *decoded_ops_ptr.add(next_ip) }
+                                                && unsafe { *decoded_ops_ptr.add((next_ip) / 4) }
                                                     == Op::DROP
                                             {
                                                 self.frames[frame_index].ip = next_ip + 4;
@@ -19569,11 +22403,11 @@ impl VM {
 
                     let cached_native_target = unsafe {
                         // `native_call_sites` is maintained parallel to the
-                        // bytecode chunk and pre-sized to code.len() when the
-                        // chunk is installed. `opcode_start` was already
+                        // bytecode chunk and pre-sized to ceil(code.len()/4)
+                        // when installed. `opcode_start` was already
                         // bounds-checked against that code length at the top
                         // of this dispatch iteration.
-                        *native_call_sites_ptr.add(opcode_start)
+                        if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((opcode_start) / 4) }
                     };
                     match cached_native_target {
                         Some(native_target) => {
@@ -19633,7 +22467,7 @@ impl VM {
                                 counters.call_target_ecma_builtin =
                                     counters.call_target_ecma_builtin.saturating_add(1);
                             }
-                            ResolvedCallTarget::Canon(_, _) => {
+                            ResolvedCallTarget::Canon { .. } => {
                                 counters.call_target_canon =
                                     counters.call_target_canon.saturating_add(1);
                             }
@@ -19684,16 +22518,15 @@ impl VM {
                     match target {
                         ResolvedCallTarget::Host(host_idx) => {
                             if self.perf_counters.is_some() {
-                                let host_name = self
-                                    .host_registry
-                                    .iter()
-                                    .find(|(_, v)| **v == host_idx)
-                                    .map(|((m, n), _)| format!("{}:{}", m, n));
+                                let host_registry = &self.host_registry;
                                 if let Some(counters) = self.perf_counters.as_mut() {
                                     counters.host_call = counters.host_call.saturating_add(1);
-                                    if let Some(name) = host_name {
-                                        counters.record_host_import(name);
-                                    }
+                                    counters.record_host_import_index(host_idx, || {
+                                        host_registry
+                                            .iter()
+                                            .find(|(_, v)| **v == host_idx)
+                                            .map(|((m, n), _)| format!("{}:{}", m, n))
+                                    });
                                 }
                             }
 
@@ -19792,6 +22625,9 @@ impl VM {
                                     result
                                 }
                             };
+                            if let Some(trap) = self.pending_host_trap.take() {
+                                return Err(trap);
+                            }
                             if let Some(exc) = self.last_exception.take() {
                                 self.raise_exception_value(exc)?;
                                 continue;
@@ -19903,7 +22739,7 @@ impl VM {
                             }
                             self.push(Value::String(s.clone()))?;
                         }
-                        ResolvedCallTarget::Canon(b, type_idx) => {
+                        ResolvedCallTarget::Canon { builtin, type_idx, component_result } => {
                             // CM canonical built-in: args/results ride the
                             // stack; the builtin pops exactly its own args
                             // (the emitter's argc matches by construction).
@@ -19911,7 +22747,7 @@ impl VM {
                             // definition carried — what tells a typed copy how
                             // wide one element is.
                             self.canon_type_immediate = type_idx;
-                            self.exec_canon_builtin(b)?;
+                            self.exec_canon_builtin_with_result(builtin, component_result)?;
                         }
                         ResolvedCallTarget::Slow(_) => {
                             return Err(VMError::new("unsupported slow import target"));
@@ -19959,6 +22795,13 @@ impl VM {
                             0
                         };
                         let fields = self.stack.split_off(start);
+                        // Reserve a bounded prefix of the known property count.
+                        // Tiny literals already fit IndexMap's first allocation;
+                        // the cap avoids oversized maps for repeated keys.
+                        let property_count = fields.len() / 2;
+                        if property_count > 3 {
+                            obj.properties.reserve(property_count.min(64));
+                        }
                         let mut fields = fields.into_iter();
                         for _ in 0..count {
                             let Some(key_value) = fields.next() else {
@@ -20006,26 +22849,44 @@ impl VM {
                     // `set`/`copy` trap per spec for GC arrays and stay lenient
                     // for dynamic arrays (id 0 = `Object`, a `Struct` kind).
                     let typeidx = self.read_u16() as usize;
-                    let len = self.pop_i32_fast().max(0) as usize;
+                    let raw_len = self.pop_i32_fast();
+                    let len = if typeidx != 0 {
+                        raw_len as u32 as usize
+                    } else {
+                        raw_len.max(0) as usize
+                    };
                     let value = self.pop_fast();
-                    let elems = vec![value; len];
+                    let elems = allocate_array_values(len, value)?;
                     let mut obj = Object::new_array(elems);
                     obj.type_id = self.resolve_gc_rtt(typeidx);
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 // `array.new_default $t` — [length] -> [array of length,
-                // zero-initialised]. We use `Value::Null` as the default
-                // for externref lanes (the only lane type we actually
-                // support) per the "null is the default for refs" rule.
+                // zero-initialised]. Numeric and v128 lanes have typed zero
+                // defaults; reference lanes retain the null default.
                 Op::ARRAY_NEW_DEFAULT => {
                     // Immediate is a 1-based script-chunk type-table index (0 =
                     // dynamic); resolved to the instance rtt so a defaulted GC
                     // array traps per spec, matching `array.new`.
                     let typeidx = self.read_u16() as usize;
-                    let len = self.pop_i32_fast().max(0) as usize;
-                    let elems = vec![Value::Null; len];
+                    let raw_len = self.pop_i32_fast();
+                    let len = if typeidx != 0 {
+                        raw_len as u32 as usize
+                    } else {
+                        raw_len.max(0) as usize
+                    };
+                    let type_id = self.resolve_gc_rtt(typeidx);
+                    let default = if typeidx != 0 {
+                        self.type_registry.get(type_id)
+                            .and_then(|ty| ty.field_defs.first())
+                            .map(|field| default_gc_array_element(&field.name))
+                            .unwrap_or(Value::Null)
+                    } else {
+                        Value::Null
+                    };
+                    let elems = allocate_array_values(len, default)?;
                     let mut obj = Object::new_array(elems);
-                    obj.type_id = self.resolve_gc_rtt(typeidx);
+                    obj.type_id = type_id;
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 // `array.new_data $t $d` — allocate a new array of `size`
@@ -20073,24 +22934,20 @@ impl VM {
                         ));
                     }
                     let src = &data[offset..end];
-                    let mut elems = Vec::with_capacity(size);
+                    let mut elems = reserve_array_values(size)?;
                     match kind {
-                        1 => {
-                            for chunk in src.chunks_exact(8) {
-                                elems.push(Value::I64(i64::from_le_bytes([
+                        1 => elems.extend(src.chunks_exact(8)
+                            .map(|chunk| Value::I64(i64::from_le_bytes([
                                     chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5],
                                     chunk[6], chunk[7],
-                                ])));
-                            }
-                        }
-                        2 => {
-                            for chunk in src.chunks_exact(4) {
-                                elems.push(Value::F32(f32::from_le_bytes([
+                                ])))),
+                        2 => elems.extend(src.chunks_exact(4)
+                            .map(|chunk| Value::F32(f32::from_le_bytes([
                                     chunk[0], chunk[1], chunk[2], chunk[3],
-                                ])));
-                            }
-                        }
+                                ])))),
                         3 => {
+                            // Keep the measured faster f64 materialization
+                            // loop; exact-length extension is not a win here.
                             for chunk in src.chunks_exact(8) {
                                 elems.push(Value::F64(f64::from_le_bytes([
                                     chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5],
@@ -20098,30 +22955,24 @@ impl VM {
                                 ])));
                             }
                         }
-                        4 => {
-                            elems.extend(src.iter().map(|byte| Value::I32(*byte as i32)));
-                        }
-                        5 => {
-                            for chunk in src.chunks_exact(2) {
-                                elems.push(Value::I32(
+                        4 => elems.extend(src.iter().map(|byte| Value::I32(*byte as i32))),
+                        5 => elems.extend(src.chunks_exact(2)
+                            .map(|chunk| Value::I32(
                                     u16::from_le_bytes([chunk[0], chunk[1]]) as i32
-                                ));
-                            }
-                        }
-                        _ => {
-                            for chunk in src.chunks_exact(4) {
-                                elems.push(Value::I32(i32::from_le_bytes([
+                                ))),
+                        6 => elems.extend(src.chunks_exact(16)
+                            .map(|chunk| Value::V128(chunk.try_into().unwrap()))),
+                        _ => elems.extend(src.chunks_exact(4)
+                            .map(|chunk| Value::I32(i32::from_le_bytes([
                                     chunk[0], chunk[1], chunk[2], chunk[3],
-                                ])));
-                            }
-                        }
+                                ])))),
                     }
                     let mut obj = Object::new_array(elems);
                     obj.type_id = type_id;
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 Op::ARRAY_NEW_ELEM => {
-                    let _typeidx = self.read_u16();
+                    let typeidx = self.read_u16();
                     let elemidx = self.read_u16() as u32;
                     // ⚠ A DROPPED segment is an EMPTY one, not an error of
                     // its own. The spec drops the payload and leaves the
@@ -20134,6 +22985,7 @@ impl VM {
                     let dropped = self.dropped_elems.contains(&elemidx);
                     let size = self.pop_u32_operand();
                     let offset = self.pop_u32_operand();
+                    let type_id = self.resolve_gc_rtt(typeidx as usize);
                     let elems = self.elem_segments.get(elemidx as usize).ok_or_else(|| {
                         VMError::new("trap: array.new_elem: missing element segment")
                     })?;
@@ -20144,9 +22996,11 @@ impl VM {
                             "trap: out of bounds table access (array.new_elem)",
                         ));
                     }
-                    self.push(Value::Object(crate::heap::alloc(Object::new_array(
-                        elems[offset..end].to_vec(),
-                    ))))?;
+                    let mut values = reserve_array_values(size)?;
+                    values.extend_from_slice(&elems[offset..end]);
+                    let mut obj = Object::new_array(values);
+                    obj.type_id = type_id;
+                    self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 // `array.get_s $t` / `array.get_u $t` — only applicable to
                 // arrays of packed element types (i8/i16). Our array model
@@ -20159,6 +23013,9 @@ impl VM {
                 // storage (TypedArray / ArrayBuffer) and fall back to a
                 // plain read for Value arrays.
                 Op::ARRAY_GET_S | Op::ARRAY_GET_U => {
+                    if let Some(counters) = self.perf_counters.as_mut() {
+                        counters.array_get = counters.array_get.saturating_add(1);
+                    }
                     let _typeidx = self.read_u16();
                     let is_signed = op == Op::ARRAY_GET_S;
                     let raw_idx = self.pop_i32_fast();
@@ -20174,12 +23031,13 @@ impl VM {
                     }
                     let idx = raw_idx.max(0) as usize;
                     let val = if let Value::Object(obj) = arr {
+                        if let Some(counters) = self.perf_counters.as_mut() {
+                            counters.record_object_lock();
+                        }
                         let o = obj.lock().unwrap();
-                        let is_gc_array = o.type_id > 0
-                            && self
-                                .type_registry
-                                .get(o.type_id)
-                                .is_some_and(|td| td.is_array());
+                        let gc_type = self.type_registry.get(o.type_id)
+                            .filter(|td| o.type_id > 0 && td.is_array());
+                        let is_gc_array = gc_type.is_some();
                         match &o.kind {
                             ObjectKind::TypedArray(ta) => {
                                 let buf = ta.buffer.lock().unwrap();
@@ -20225,7 +23083,21 @@ impl VM {
                                         "trap: out of bounds array access (array.get)",
                                     ));
                                 }
-                                elems.get(idx).cloned().unwrap_or(Value::Null)
+                                if let Some(counters) = self.perf_counters.as_mut() {
+                                    counters.array_get_dense = counters.array_get_dense.saturating_add(1);
+                                }
+                                let value = elems.get(idx).cloned().unwrap_or(Value::Null);
+                                let width = gc_type
+                                    .and_then(|td| td.field_defs.first())
+                                    .and_then(|field| array_elem_storage_kind(&field.name))
+                                    .map(|(width, _)| width);
+                                match width {
+                                    Some(1) if is_signed => Value::I32(value.as_i32() as i8 as i32),
+                                    Some(1) => Value::I32(value.as_i32() as u8 as i32),
+                                    Some(2) if is_signed => Value::I32(value.as_i32() as i16 as i32),
+                                    Some(2) => Value::I32(value.as_i32() as u16 as i32),
+                                    _ => value,
+                                }
                             }
                             _ => Value::Null,
                         }
@@ -20271,15 +23143,12 @@ impl VM {
                         // element byte width cannot be read from the runtime
                         // value — recover it from the array's rtt (its element
                         // storage type, kept as the type's single "field").
-                        let (elem_size, kind) = {
-                            let tid = obj.lock().unwrap().type_id;
-                            self.type_registry
-                                .get(tid)
-                                .and_then(|td| td.field_defs.first())
-                                .and_then(|f| array_elem_storage_kind(&f.name))
-                                .unwrap_or((4, 0))
-                        };
                         let mut o = obj.lock().unwrap();
+                        let (elem_size, kind) = self.type_registry
+                            .get(o.type_id)
+                            .and_then(|td| td.field_defs.first())
+                            .and_then(|f| array_elem_storage_kind(&f.name))
+                            .unwrap_or((4, 0));
                         match &mut o.kind {
                             ObjectKind::Array(elems) => {
                                 // ⚠ DESTINATION FIRST. When both ends
@@ -20294,10 +23163,11 @@ impl VM {
                                     ));
                                 }
                                 check_src(elem_size)?;
-                                for i in 0..size {
-                                    let base = src_offset + i * elem_size;
-                                    elems[dst_offset + i] =
-                                        decode_le_numeric(kind, &data[base..base + elem_size]);
+                                let src_end = src_offset + size * elem_size;
+                                for (slot, bytes) in elems[dst_offset..dst_end].iter_mut()
+                                    .zip(data[src_offset..src_end].chunks_exact(elem_size))
+                                {
+                                    *slot = decode_le_numeric(kind, bytes);
                                 }
                             }
                             ObjectKind::TypedArray(ta) => {
@@ -20391,11 +23261,7 @@ impl VM {
                     let mut obj = Object::new();
                     if typeidx != 0 {
                         let type_id = self.resolve_gc_rtt(typeidx);
-                        let arity = self
-                            .type_registry
-                            .get(type_id)
-                            .map_or(0, |td| td.field_defs.len());
-                        obj.fields = vec![Value::Null; arity];
+                        obj.fields = self.default_gc_struct_fields(type_id)?;
                         obj.type_id = type_id;
                     }
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
@@ -20451,7 +23317,7 @@ impl VM {
                     let mut obj = Object::new();
                     obj.fields = fields;
                     obj.type_id = type_id;
-                    set_descriptor(&mut obj, descriptor);
+                    set_descriptor(&mut obj, descriptor)?;
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 Op::STRUCT_NEW_DEFAULT_DESC => {
@@ -20470,7 +23336,7 @@ impl VM {
                         obj.fields = vec![Value::Null; arity];
                         obj.type_id = type_id;
                     }
-                    set_descriptor(&mut obj, descriptor);
+                    set_descriptor(&mut obj, descriptor)?;
                     self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 // `ref.get_desc x : (ref null (exact_1 x)) -> (ref (exact_1 y))`
@@ -20503,7 +23369,7 @@ impl VM {
                     if expected.is_null_ref() {
                         return Err(VMError::new("trap: null descriptor reference"));
                     }
-                    let val = self.peek(0).clone();
+                    let val = self.peek(0);
                     if val.is_null_ref() {
                         // The `(ref ht)` form does not admit null; the
                         // `(ref null ht)` form passes it through untouched.
@@ -20520,7 +23386,7 @@ impl VM {
                         if op == Op::REF_CAST_DESC_EQ {
                             return Err(VMError::new("trap: descriptor cast failure"));
                         }
-                    } else if !ref_eq(&descriptor_of(&val), &expected) {
+                    } else if !descriptor_matches(val, &expected) {
                         return Err(VMError::new("trap: descriptor cast failure"));
                     }
                 }
@@ -20561,11 +23427,11 @@ impl VM {
                     if expected.is_null_ref() {
                         return Err(VMError::new("trap: null descriptor reference"));
                     }
-                    let val = self.peek(0).clone();
+                    let val = self.peek(0);
                     let matched = if val.is_null_ref() {
                         target_nullable
                     } else {
-                        ref_eq(&descriptor_of(&val), &expected)
+                        descriptor_matches(val, &expected)
                     };
                     let take = if op == Op::BR_ON_CAST_DESC_EQ {
                         matched
@@ -20578,13 +23444,11 @@ impl VM {
                         }
                     }
                 }
-                // `struct.get_s $t i` / `struct.get_u $t i` — packed field
-                // variants. Our structs have externref fields only, so
-                // there's no sign extension to do — both behave like
-                // `struct.get`.
+                // Packed storage retains only its low 8/16 bits. The load
+                // instruction chooses signed or unsigned extension to i32.
                 Op::STRUCT_GET_S | Op::STRUCT_GET_U => {
                     let operand = cached_operand!();
-                    let (_typeidx, field_idx) =
+                    let (typeidx, field_idx) =
                         if operand & crate::vm::DECODED_ONE_BYTE_LEB_PRESENT != 0 {
                             self.frames[frame_index].ip = opcode_start + 4 + 2;
                             ((operand & 0xff) as usize, ((operand >> 8) & 0xff) as u32)
@@ -20592,16 +23456,36 @@ impl VM {
                             (self.read_leb_u32() as usize, self.read_leb_u32())
                         };
                     let obj = self.pop_fast();
-                    let val = if let Value::Object(o) = obj {
-                        let o = o.lock().unwrap();
-                        o.fields
-                            .get(field_idx as usize)
-                            .cloned()
-                            .unwrap_or(Value::Null)
-                    } else {
-                        Value::Null
+                    if obj.is_null_ref() {
+                        return Err(VMError::new("trap: null structure reference (struct.get)"));
+                    }
+                    let type_id = self.resolve_gc_rtt(typeidx);
+                    let storage = self.type_registry.get(type_id)
+                        .and_then(|ty| ty.native_identity.as_ref())
+                        .and_then(|identity| match &identity.definition().composite {
+                            crate::native_gc::CompositeType::Struct(fields) => fields.get(field_idx as usize),
+                            _ => None,
+                        })
+                        .map(|field| &field.storage);
+                    let bits = match &obj {
+                        Value::Object(object) => {
+                            let object = object.lock().unwrap();
+                            match object.fields.get(field_idx as usize) {
+                                Some(Value::I32(value)) => *value,
+                                Some(_) => return Err(VMError::new("trap: packed struct field is not i32")),
+                                None => return Err(VMError::new("trap: struct.get field index out of range")),
+                            }
+                        }
+                        _ => return Err(VMError::new("trap: struct.get on a non-struct")),
                     };
-                    self.push_fast(val);
+                    let value = match (storage, op == Op::STRUCT_GET_S) {
+                        (Some(crate::native_gc::StorageType::I8), true) => (bits as i8) as i32,
+                        (Some(crate::native_gc::StorageType::I8), false) => (bits as u8) as i32,
+                        (Some(crate::native_gc::StorageType::I16), true) => (bits as i16) as i32,
+                        (Some(crate::native_gc::StorageType::I16), false) => (bits as u16) as i32,
+                        _ => return Err(VMError::new("trap: struct.get_s/u requires packed storage")),
+                    };
+                    self.push_fast(Value::I32(value));
                 }
                 // `ref.test_null ht` / `ref.cast_null ht` — same as their
                 // non-null variants but succeed when the operand is null.
@@ -20622,8 +23506,8 @@ impl VM {
                 }
                 Op::REF_CAST_NULL => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
-                    let val = self.peek(0).clone();
-                    if !val.is_null_ref() && !self.ref_test(&val, ht) {
+                    let val = self.peek(0);
+                    if !val.is_null_ref() && !self.ref_test(val, ht) {
                         return Err(VMError::new(&format!(
                             "trap: cast failure: value is not {}",
                             self.heaptype_label(ht)
@@ -20714,10 +23598,10 @@ impl VM {
                     };
                     let next_ip = self.frames[frame_index].ip;
                     let mut store_slot = None;
-                    if next_ip < code_len && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL {
-                        let next_operand = unsafe { *decoded_operands_ptr.add(next_ip) };
+                    if next_ip < code_len && unsafe { *decoded_ops_ptr.add((next_ip) / 4) } == Op::CALL {
+                        let next_operand = unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
                         let next_argc = ((next_operand >> 16) & 0xff) as usize;
-                        let next_native = unsafe { *native_call_sites_ptr.add(next_ip) };
+                        let next_native = unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
                         if next_argc == 1
                             && matches!(
                                 next_native,
@@ -20726,10 +23610,10 @@ impl VM {
                         {
                             let after_call_ip = next_ip + 7;
                             if after_call_ip < code_len
-                                && unsafe { *decoded_ops_ptr.add(after_call_ip) } == Op::LOCAL_SET
+                                && unsafe { *decoded_ops_ptr.add((after_call_ip) / 4) } == Op::LOCAL_SET
                             {
                                 store_slot =
-                                    Some(unsafe { *decoded_operands_ptr.add(after_call_ip) }
+                                    Some(unsafe { *decoded_operands_ptr.add((after_call_ip) / 4) }
                                         as usize);
                                 self.frames[frame_index].ip = after_call_ip + 6;
                             } else {
@@ -20786,10 +23670,10 @@ impl VM {
                     self.frames[frame_index].ip = opcode_start + 12;
                     let next_ip = self.frames[frame_index].ip;
                     let mut store_slot = None;
-                    if next_ip < code_len && unsafe { *decoded_ops_ptr.add(next_ip) } == Op::CALL {
-                        let next_operand = unsafe { *decoded_operands_ptr.add(next_ip) };
+                    if next_ip < code_len && unsafe { *decoded_ops_ptr.add((next_ip) / 4) } == Op::CALL {
+                        let next_operand = unsafe { *decoded_operands_ptr.add((next_ip) / 4) };
                         let next_argc = ((next_operand >> 16) & 0xff) as usize;
-                        let next_native = unsafe { *native_call_sites_ptr.add(next_ip) };
+                        let next_native = unsafe { if native_call_sites_ptr.is_null() { None } else { *native_call_sites_ptr.add((next_ip) / 4) } };
                         if next_argc == 1
                             && matches!(
                                 next_native,
@@ -20798,10 +23682,10 @@ impl VM {
                         {
                             let after_call_ip = next_ip + 7;
                             if after_call_ip < code_len
-                                && unsafe { *decoded_ops_ptr.add(after_call_ip) } == Op::LOCAL_SET
+                                && unsafe { *decoded_ops_ptr.add((after_call_ip) / 4) } == Op::LOCAL_SET
                             {
                                 store_slot =
-                                    Some(unsafe { *decoded_operands_ptr.add(after_call_ip) }
+                                    Some(unsafe { *decoded_operands_ptr.add((after_call_ip) / 4) }
                                         as usize);
                                 self.frames[frame_index].ip = after_call_ip + 6;
                             } else {
@@ -20904,11 +23788,11 @@ impl VM {
                 }
                 Op::REF_CAST_EXACT | Op::REF_CAST_EXACT_NULL => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
-                    let val = self.peek(0).clone();
+                    let val = self.peek(0);
                     let ok = if val.is_null_ref() {
                         op == Op::REF_CAST_EXACT_NULL
                     } else {
-                        self.ref_test_exact(&val, ht)
+                        self.ref_test_exact(val, ht)
                     };
                     if !ok {
                         // `trap: ` prefixes every trap — `VMError::is_trap`
@@ -20919,8 +23803,8 @@ impl VM {
                 }
                 Op::REF_CAST => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
-                    let val = self.peek(0).clone();
-                    if !self.ref_test(&val, ht) {
+                    let val = self.peek(0);
+                    if !self.ref_test(val, ht) {
                         // `trap: ` is not decoration — `VMError::is_trap`
                         // classifies solely on that prefix, and only a message
                         // carrying it is offered to a host-level handler at the
@@ -21034,7 +23918,7 @@ impl VM {
                 }
                 Op::STRING_MEASURE_UTF8 | Op::STRING_MEASURE_WTF8 => {
                     let s = self.pop_stringref()?;
-                    self.push_fast(Value::I32(s.len() as i32));
+                    self.push_fast(Value::I32(crate::string_lengths::measure_utf8_bytes(s.len())));
                 }
                 Op::STRING_MEASURE_WTF16 => {
                     let s = self.pop_stringref()?;
@@ -21287,12 +24171,14 @@ impl VM {
                 }
 
                 // ── Codepoint iterators ──────────────────────────────────────
-                // `string.as_iter` yields a cursor object: an ordinary object
-                // carrying the string plus a codepoint index in its properties
-                // (`__iter_str` / `__iter_pos`). The iter ops read/advance it.
+                // `string.as_iter` owns byte/scalar cursors. Compatibility
+                // properties remain; modified/property-bag views fall back.
                 Op::STRING_AS_ITER => {
                     let s = self.pop_stringref()?;
                     let mut obj = crate::value::Object::new();
+                    obj.kind = ObjectKind::StringViewIter {
+                        source: s.clone(), byte_offset: 0, scalar_offset: 0,
+                    };
                     obj.properties
                         .insert("__iter_str".to_string(), Value::String(s));
                     obj.properties
@@ -21301,19 +24187,27 @@ impl VM {
                 }
                 Op::STRINGVIEW_ITER_NEXT => {
                     let view = self.pop_fast();
+                    if let Some(value) = self.try_string_iter_cursor(&view, op, 0) {
+                        self.push_fast(value);
+                        continue;
+                    }
                     let (s, pos) = self.read_string_iter(&view)?;
-                    let total = s.chars().count();
-                    if pos >= total {
-                        self.push_fast(Value::I32(-1));
-                    } else {
-                        let cp = s.chars().nth(pos).unwrap() as i32;
+                    // nth already reports exhaustion. Counting the entire
+                    // string first rescanned its unused suffix on every step.
+                    if let Some(cp) = s.chars().nth(pos) {
                         self.write_string_iter_pos(&view, pos + 1)?;
-                        self.push_fast(Value::I32(cp));
+                        self.push_fast(Value::I32(cp as i32));
+                    } else {
+                        self.push_fast(Value::I32(-1));
                     }
                 }
                 Op::STRINGVIEW_ITER_ADVANCE => {
                     let n = self.pop_i32_fast() as u32 as usize;
                     let view = self.pop_fast();
+                    if let Some(value) = self.try_string_iter_cursor(&view, op, n) {
+                        self.push_fast(value);
+                        continue;
+                    }
                     let (s, pos) = self.read_string_iter(&view)?;
                     let total = s.chars().count();
                     let new_pos = pos.saturating_add(n).min(total);
@@ -21323,6 +24217,10 @@ impl VM {
                 Op::STRINGVIEW_ITER_REWIND => {
                     let n = self.pop_i32_fast() as u32 as usize;
                     let view = self.pop_fast();
+                    if let Some(value) = self.try_string_iter_cursor(&view, op, n) {
+                        self.push_fast(value);
+                        continue;
+                    }
                     let (_s, pos) = self.read_string_iter(&view)?;
                     let new_pos = pos.saturating_sub(n);
                     self.write_string_iter_pos(&view, new_pos)?;
@@ -21333,6 +24231,10 @@ impl VM {
                     // advance the iterator.
                     let n = self.pop_i32_fast() as u32 as usize;
                     let view = self.pop_fast();
+                    if let Some(value) = self.try_string_iter_cursor(&view, op, n) {
+                        self.push_fast(value);
+                        continue;
+                    }
                     let (s, pos) = self.read_string_iter(&view)?;
                     let out: String = s.chars().skip(pos).take(n).collect();
                     self.push_fast(Value::String(Arc::from(out)));
@@ -21623,6 +24525,26 @@ impl VM {
                 // -- Tail call --
                 Op::RETURN_CALL => {
                     let operand = cached_operand!();
+                    if operand & DECODED_DEFINED_CALL != 0 {
+                        let edge = self.chunks[chunk_index].direct_defined_calls.get(&opcode_start)
+                            .ok_or_else(|| VMError::new("trap: direct-call cache metadata missing"))?;
+                        let owner = self.chunk_import_owner.get(chunk_index).copied().unwrap_or(0);
+                        let target = owner.checked_add(edge.target as usize).ok_or_else(|| VMError::new("trap: direct tail target overflow"))?;
+                        if self.func_switches.contains_key(&target) { return Err(VMError::new("call: a func_switch has no type — use call_with_tag")); }
+                        // RETURN_CALL keeps its validated argc in the low byte.
+                        let argc = (operand & 0xff) as usize;
+                        let old_base = self.frame().base;
+                        let args_start = self.stack.len().checked_sub(argc).ok_or_else(||VMError::new("trap: direct tail arguments"))?;
+                        if args_start < old_base {
+                            return Err(VMError::new("trap: direct tail arguments cross frame base"));
+                        }
+                        // No callee cell in this standard direct-call operand window.
+                        for i in 0..argc { self.stack[old_base+i] = self.stack[args_start+i].clone(); }
+                        self.stack.truncate(old_base+argc);
+                        self.pop_frame_for_tail_call();
+                        self.call_chunk_function(target, argc as u8, argc)?;
+                        continue;
+                    }
                     let argc = (operand & 0xff) as usize;
                     let _results = ((operand >> 8) & 0xff) as u8; // writer-facing functype info
                     self.frames[frame_index].ip = opcode_start + 6;
@@ -22322,6 +25244,26 @@ impl VM {
                         // under the result.
                         stack_height: self.stack.len().saturating_sub(param_arity),
                     });
+                    // Preserve every standard label, but avoid redispatching
+                    // each member of a cached run of adjacent void blocks.
+                    // Instrumented execution must still visit every opcode.
+                    let count = (operand >> 16) as usize;
+                    let batch = count > 1 && !self.instrumented;
+                    #[cfg(feature = "primitive-benchmarks")]
+                    let batch = batch && self.batch_void_blocks;
+                    if batch {
+                        let height = self.stack.len();
+                        for offset in 1..count {
+                            let start = opcode_start + offset * 6;
+                            let end_ip = self.block_targets_at(chunk_index, start)
+                                .map_or(start + 6, |target| target.end_ip);
+                            self.label_stack.push(LabelEntry {
+                                target: end_ip, is_loop: false, is_try: false,
+                                try_group: 0, result_arity: 0, stack_height: height,
+                            });
+                        }
+                        self.frames[frame_index].ip = opcode_start + count * 6;
+                    }
                 }
                 Op::LOOP => {
                     // Blocktype = (param_count, result_count). Spec: a `br`
@@ -22367,10 +25309,16 @@ impl VM {
                                 cursor_slot,
                                 len_slot,
                                 i_slot,
+                                batch,
+                                scratch_slot,
                             } => {
                                 if self.try_canonical_linear_to_byte_array_batch(
-                                    arr_slot, cursor_slot, len_slot, i_slot,
+                                    arr_slot, cursor_slot, len_slot, i_slot, batch,
                                 )? {
+                                    if let Some(slot) = scratch_slot {
+                                        let base = self.frame().base;
+                                        self.stack[base + slot as usize] = Value::I32(batch as i32);
+                                    }
                                     continue;
                                 }
                             }
@@ -22544,6 +25492,19 @@ impl VM {
                                     len_slot,
                                     i_slot,
                                     value_slot,
+                                )? {
+                                    continue;
+                                }
+                            }
+                            LoopSuperop::LinearMemoryV128Copy {
+                                src_slot, src_offset_slot, dst_slot, dst_offset_slot,
+                                len_slot, i_slot, value_slot,
+                                load_mem_offset, store_mem_offset,
+                            } => {
+                                if self.try_linear_memory_v128_copy_loop(
+                                    src_slot, src_offset_slot, dst_slot, dst_offset_slot,
+                                    len_slot, i_slot, value_slot,
+                                    load_mem_offset, store_mem_offset,
                                 )? {
                                     continue;
                                 }
@@ -24065,43 +27026,8 @@ impl VM {
                     // Operands are UNSIGNED (dst is the memory's index
                     // type), and a zero count still bounds-checks both ends.
                     let is64 = self.mem_is_64(memidx);
-                    let count = self.pop_i32_fast() as u32 as usize;
-                    let src = self.pop_i32_fast() as u32 as usize;
-                    let dst = self.pop_mem_index(is64);
-                    let seg_len = if self.dropped_data.contains(&data_idx) {
-                        0
-                    } else {
-                        self.data_segments
-                            .get(data_idx as usize)
-                            .map(|d| d.len())
-                            .unwrap_or(0)
-                    };
-                    if src.saturating_add(count) > seg_len {
-                        return Err(VMError::new(
-                            "trap: out of bounds memory access (memory.init source)",
-                        ));
-                    }
-                    if dst.saturating_add(count) > self.mem_len(memidx) {
-                        return Err(VMError::new(
-                            "trap: out of bounds memory access (memory.init destination)",
-                        ));
-                    }
-                    if count > 0 {
-                        let bytes = &self.data_segments[data_idx as usize][src..src + count];
-                        if memidx == 0 {
-                            if let Some(()) = self.memory.with_buffer_mut_exclusive(|memory| {
-                                memory[dst..dst + count].copy_from_slice(bytes)
-                            }) {
-                                continue;
-                            }
-                            self.memory.with_buffer_mut(|memory| {
-                                memory[dst..dst + count].copy_from_slice(bytes)
-                            });
-                        } else {
-                            self.extra_memories[memidx - 1][dst..dst + count]
-                                .copy_from_slice(bytes);
-                        }
-                    }
+                    let (dst, src, count) = self.pop_bulk_memory_operands(is64, false, false)?;
+                    self.init_memory_bytes(data_idx, memidx, dst, src, count)?;
                 }
                 // ── reference-types: table operations ─────────────────
                 // Each op reads a `u8 table_idx` operand per spec. Tables
@@ -24359,11 +27285,12 @@ impl VM {
                     } else {
                         (self.read_leb_u32() as usize, self.read_leb_u32() as usize)
                     };
-                    // memory64: operands are i64 if either memory is 64-bit.
-                    let is64 = self.mem_is_64(dst_mem) || self.mem_is_64(src_mem);
-                    let count = self.pop_mem_index(is64);
-                    let src = self.pop_mem_index(is64);
-                    let dst = self.pop_mem_index(is64);
+                    // Each address follows its own memory type; the count
+                    // follows min(dst address type, src address type).
+                    let dst64 = self.mem_is_64(dst_mem);
+                    let src64 = self.mem_is_64(src_mem);
+                    let (dst, src, count) =
+                        self.pop_bulk_memory_operands(dst64, src64, dst64 && src64)?;
                     self.copy_memory_bytes(dst_mem, dst, src_mem, src, count)?;
                     if let Some(counters) = self.perf_counters.as_mut() {
                         counters.record_memory_copy_bytes(count);
@@ -24379,9 +27306,8 @@ impl VM {
                         self.read_leb_u32() as usize
                     };
                     let is64 = self.mem_is_64(memidx);
-                    let count = self.pop_mem_index(is64);
-                    let val = self.pop_i32_fast() as u8;
-                    let dst = self.pop_mem_index(is64);
+                    let (dst, val, count) = self.pop_bulk_memory_operands(is64, false, is64)?;
+                    let val = val as u8;
                     self.fill_memory_bytes(memidx, dst, count, val)?;
                     if let Some(counters) = self.perf_counters.as_mut() {
                         counters.record_memory_fill_bytes(count);
@@ -24424,9 +27350,11 @@ impl VM {
                 Op::ARRAY_FILL => {
                     // Spec `array.fill $t`: stack `[arrayref, index, value, count]`,
                     // so popping off the top yields count, value, index, arrayref.
-                    let count = self.pop_i32_fast().max(0) as usize;
+                    let count_arg = self.pop_i32_fast();
+                    let count = count_arg.max(0) as usize;
                     let val = self.pop_fast();
-                    let start = self.pop_i32_fast().max(0) as usize;
+                    let start_arg = self.pop_i32_fast();
+                    let start = start_arg.max(0) as usize;
                     let arr = self.pop_fast();
                     if matches!(arr, Value::TypedNull(_)) {
                         return Err(VMError::new("trap: null array reference (array.fill)"));
@@ -24443,23 +27371,28 @@ impl VM {
                                 .get(o.type_id)
                                 .is_some_and(|td| td.is_array());
                         if let ObjectKind::Array(ref mut a) = o.kind {
-                            if is_gc_array && start + count > a.len() {
-                                return Err(VMError::new(
-                                    "trap: out of bounds array access (array.fill)",
-                                ));
-                            }
-                            let end = (start + count).min(a.len());
-                            if start < end {
-                                a[start..end].fill(val);
+                            let range = if is_gc_array {
+                                Self::checked_gc_array_range(start_arg, count_arg, a.len())
+                                    .ok_or_else(|| VMError::new(
+                                        "trap: out of bounds array access (array.fill)",
+                                    ))?
+                            } else {
+                                start..start.saturating_add(count).min(a.len())
+                            };
+                            if !range.is_empty() {
+                                a[range].fill(val);
                             }
                         }
                     }
                 }
                 Op::ARRAY_COPY => {
-                    let len = self.pop_i32_fast().max(0) as usize;
-                    let src_off = self.pop_i32_fast().max(0) as usize;
+                    let len_arg = self.pop_i32_fast();
+                    let len = len_arg.max(0) as usize;
+                    let src_off_arg = self.pop_i32_fast();
+                    let src_off = src_off_arg.max(0) as usize;
                     let src = self.pop_fast();
-                    let dst_off = self.pop_i32_fast().max(0) as usize;
+                    let dst_off_arg = self.pop_i32_fast();
+                    let dst_off = dst_off_arg.max(0) as usize;
                     let dst = self.pop_fast();
                     if matches!(src, Value::TypedNull(_)) || matches!(dst, Value::TypedNull(_)) {
                         return Err(VMError::new("trap: null array reference (array.copy)"));
@@ -24474,15 +27407,17 @@ impl VM {
                                     .is_some_and(|td| td.is_array());
                             if let ObjectKind::Array(ref mut a) = o.kind {
                                 if is_gc
-                                    && (src_off.checked_add(len).map_or(true, |end| end > a.len())
-                                        || dst_off
-                                            .checked_add(len)
-                                            .map_or(true, |end| end > a.len()))
+                                    && (Self::checked_gc_array_range(src_off_arg, len_arg, a.len()).is_none()
+                                        || Self::checked_gc_array_range(dst_off_arg, len_arg, a.len()).is_none())
                                 {
                                     return Err(VMError::new(
                                         "trap: out of bounds array access (array.copy)",
                                     ));
                                 }
+                                let (src_off, dst_off, len) = if is_gc {
+                                    (src_off_arg as u32 as usize, dst_off_arg as u32 as usize,
+                                        len_arg as u32 as usize)
+                                } else { (src_off, dst_off, len) };
                                 let src_start = src_off.min(a.len());
                                 let src_end = src_off.saturating_add(len).min(a.len());
                                 let count = src_end.saturating_sub(src_start);
@@ -24491,22 +27426,7 @@ impl VM {
                                 if count == 0 {
                                     continue;
                                 }
-                                if dst_off > src_start && dst_off < src_start + count {
-                                    for i in (0..count).rev() {
-                                        a[dst_off + i] = a[src_start + i].clone();
-                                    }
-                                } else if dst_off < src_start {
-                                    let (dst_region, src_region) = a.split_at_mut(src_start);
-                                    dst_region[dst_off..dst_off + count]
-                                        .clone_from_slice(&src_region[..count]);
-                                } else if dst_off > src_start {
-                                    let (src_region, dst_region) = a.split_at_mut(dst_off);
-                                    dst_region[..count].clone_from_slice(
-                                        &src_region[src_start..src_start + count],
-                                    );
-                                } else {
-                                    // Source and destination are identical.
-                                }
+                                Self::copy_array_values_within(a, dst_off, src_start, count);
                             }
                         } else {
                             let copy_distinct =
@@ -24529,18 +27449,17 @@ impl VM {
                                     ) = (&src_guard.kind, &mut dst_guard.kind)
                                     {
                                         if (src_is_gc
-                                            && src_off
-                                                .checked_add(len)
-                                                .map_or(true, |end| end > src_arr.len()))
+                                            && Self::checked_gc_array_range(src_off_arg, len_arg, src_arr.len()).is_none())
                                             || (dst_is_gc
-                                                && dst_off
-                                                    .checked_add(len)
-                                                    .map_or(true, |end| end > dst_arr.len()))
+                                                && Self::checked_gc_array_range(dst_off_arg, len_arg, dst_arr.len()).is_none())
                                         {
                                             return Err(VMError::new(
                                                 "trap: out of bounds array access (array.copy)",
                                             ));
                                         }
+                                        let src_off = if src_is_gc { src_off_arg as u32 as usize } else { src_off };
+                                        let dst_off = if dst_is_gc { dst_off_arg as u32 as usize } else { dst_off };
+                                        let len = if src_is_gc || dst_is_gc { len_arg as u32 as usize } else { len };
                                         let src_start = src_off.min(src_arr.len());
                                         let src_end =
                                             src_off.saturating_add(len).min(src_arr.len());
@@ -24587,11 +27506,12 @@ impl VM {
                     }
                     let state = crate::value::ContinuationState {
                         entry: func_val,
-                        saved: std::sync::Mutex::new(None),
+                        saved: Box::new(std::sync::Mutex::new(None)),
                         state: std::sync::Mutex::new(crate::value::ContinuationPhase::Ready),
                     };
                     let obj = Object {
-                        properties: indexmap::IndexMap::new(),
+                        descriptor: None,
+            properties: indexmap::IndexMap::new(),
                         kind: ObjectKind::Continuation(state),
                         type_id: 0,
                         fields: Vec::new(),
@@ -24812,10 +27732,11 @@ impl VM {
                             // continuation's properties and apply them on
                             // first resume.
                             let mut new_obj = Object {
-                                properties: indexmap::IndexMap::new(),
+                                descriptor: None,
+            properties: indexmap::IndexMap::new(),
                                 kind: ObjectKind::Continuation(crate::value::ContinuationState {
                                     entry,
-                                    saved: std::sync::Mutex::new(None),
+                                    saved: Box::new(std::sync::Mutex::new(None)),
                                     state: std::sync::Mutex::new(
                                         crate::value::ContinuationPhase::Ready,
                                     ),
@@ -24842,7 +27763,8 @@ impl VM {
                             // keyed `__bound_args`; RESUME sees this on
                             // first fire.
                             let bound = Object {
-                                properties: indexmap::IndexMap::new(),
+                                descriptor: None,
+            properties: indexmap::IndexMap::new(),
                                 kind: ObjectKind::Array(args),
                                 type_id: 0,
                                 fields: Vec::new(),
@@ -25052,12 +27974,12 @@ impl VM {
                 // implementation), and join is helper BYTECODE futex-waiting
                 // the task's status word. No thread opcodes exist.
                 Op::V128_LOAD => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<16>(memidx, addr)?;
                     self.push_fast(Value::V128(bytes));
                 }
                 Op::V128_LOAD8X8_S => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<8>(memidx, addr)?;
                     let mut out = [0u8; 16];
                     for i in 0..8 {
@@ -25068,7 +27990,7 @@ impl VM {
                     self.push_fast(Value::V128(out));
                 }
                 Op::V128_LOAD8X8_U => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<8>(memidx, addr)?;
                     let mut out = [0u8; 16];
                     for i in 0..8 {
@@ -25079,7 +28001,7 @@ impl VM {
                     self.push_fast(Value::V128(out));
                 }
                 Op::V128_LOAD16X4_S => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<8>(memidx, addr)?;
                     let mut out = [0u8; 16];
                     for i in 0..4 {
@@ -25091,7 +28013,7 @@ impl VM {
                     self.push_fast(Value::V128(out));
                 }
                 Op::V128_LOAD16X4_U => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<8>(memidx, addr)?;
                     let mut out = [0u8; 16];
                     for i in 0..4 {
@@ -25103,7 +28025,7 @@ impl VM {
                     self.push_fast(Value::V128(out));
                 }
                 Op::V128_LOAD32X2_S => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<8>(memidx, addr)?;
                     let mut out = [0u8; 16];
                     for i in 0..2 {
@@ -25119,7 +28041,7 @@ impl VM {
                     self.push_fast(Value::V128(out));
                 }
                 Op::V128_LOAD32X2_U => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<8>(memidx, addr)?;
                     let mut out = [0u8; 16];
                     for i in 0..2 {
@@ -25135,12 +28057,12 @@ impl VM {
                     self.push_fast(Value::V128(out));
                 }
                 Op::V128_LOAD8_SPLAT => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let b = self.read_memory_u8(memidx, addr)?;
                     self.push_fast(Value::V128([b; 16]));
                 }
                 Op::V128_LOAD16_SPLAT => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<2>(memidx, addr)?;
                     let lo = bytes[0];
                     let hi = bytes[1];
@@ -25152,7 +28074,7 @@ impl VM {
                     self.push_fast(Value::V128(out));
                 }
                 Op::V128_LOAD32_SPLAT => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<4>(memidx, addr)?;
                     let v = i32::from_le_bytes(bytes);
                     let mut out = [0u8; 16];
@@ -25162,7 +28084,7 @@ impl VM {
                     self.push_fast(Value::V128(out));
                 }
                 Op::V128_LOAD64_SPLAT => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<8>(memidx, addr)?;
                     let v = i64::from_le_bytes(bytes);
                     let mut out = [0u8; 16];
@@ -25172,7 +28094,7 @@ impl VM {
                 }
                 Op::V128_STORE => {
                     let val = self.pop_v128_fast();
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     if let Some(bytes) = val {
                         self.write_memory_array(memidx, addr, &bytes)?;
                     }
@@ -25290,7 +28212,7 @@ impl VM {
                     }
                 }
                 Op::V128_LOAD32_ZERO => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<4>(memidx, addr)?;
                     let v = i32::from_le_bytes(bytes);
                     let mut out = [0u8; 16];
@@ -25298,7 +28220,7 @@ impl VM {
                     self.push_fast(Value::V128(out));
                 }
                 Op::V128_LOAD64_ZERO => {
-                    let (memidx, addr) = self.pop_simd_addr()?;
+                    let (memidx, addr) = self.pop_cached_simd_addr(cached_operand!())?;
                     let bytes = self.read_memory_array::<8>(memidx, addr)?;
                     let v = i64::from_le_bytes(bytes);
                     let mut out = [0u8; 16];
@@ -25324,16 +28246,7 @@ impl VM {
                     }
                 }
                 Op::I8X16_SWIZZLE => {
-                    if let Some((va, vb)) = self.pop_v128_pair_fast() {
-                        let mut out = [0u8; 16];
-                        for i in 0..16 {
-                            let n = vb[i] as usize;
-                            out[i] = if n < 16 { va[n] } else { 0 };
-                        }
-                        self.push_fast(Value::V128(out));
-                    } else {
-                        self.push_fast(Value::V128([0; 16]));
-                    }
+                    self.simd_i8x16_swizzle()?;
                 }
                 // Splat
                 Op::I8X16_SPLAT => {
@@ -25514,10 +28427,10 @@ impl VM {
                 }
                 // i8x16 comparisons
                 Op::I8X16_EQ => {
-                    self.simd_i8x16_binop(|a, b| if a == b { 0xFF } else { 0 })?;
+                    self.simd_i8x16_eq()?;
                 }
                 Op::I8X16_NE => {
-                    self.simd_i8x16_binop(|a, b| if a != b { 0xFF } else { 0 })?;
+                    self.simd_i8x16_ne()?;
                 }
                 Op::I8X16_LT_S => {
                     self.simd_i8x16_binop(|a, b| if (a as i8) < (b as i8) { 0xFF } else { 0 })?;
@@ -25545,7 +28458,7 @@ impl VM {
                 }
                 // i16x8 comparisons
                 Op::I16X8_EQ => {
-                    self.simd_i16x8_binop(|a, b| if a == b { -1 } else { 0 })?;
+                    self.simd_i16x8_eq()?;
                 }
                 Op::I16X8_NE => {
                     self.simd_i16x8_binop(|a, b| if a != b { -1 } else { 0 })?;
@@ -25576,7 +28489,7 @@ impl VM {
                 }
                 // i32x4 comparisons
                 Op::I32X4_EQ => {
-                    self.simd_i32x4_binop(|a, b| if a == b { -1 } else { 0 })?;
+                    self.simd_i32x4_eq()?;
                 }
                 Op::I32X4_NE => {
                     self.simd_i32x4_binop(|a, b| if a != b { -1 } else { 0 })?;
@@ -25759,17 +28672,7 @@ impl VM {
                     self.simd_i8x16_testop(|a| a != 0)?;
                 }
                 Op::I8X16_BITMASK => {
-                    if let Some(a) = self.pop_v128_fast() {
-                        let mut mask = 0i32;
-                        for i in 0..16 {
-                            if (a[i] as i8) < 0 {
-                                mask |= 1 << i;
-                            }
-                        }
-                        self.push_fast(Value::I32(mask));
-                    } else {
-                        self.push_fast(Value::I32(0));
-                    }
+                    self.simd_i8x16_bitmask_native()?;
                 }
                 Op::I8X16_NARROW_I16X8_S => {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
@@ -25831,22 +28734,22 @@ impl VM {
                 }
                 // i8x16 arithmetic
                 Op::I8X16_ADD => {
-                    self.simd_i8x16_binop(|a, b| a.wrapping_add(b))?;
+                    self.simd_i8x16_add()?;
                 }
                 Op::I8X16_ADD_SAT_S => {
-                    self.simd_i8x16_binop(|a, b| ((a as i8).saturating_add(b as i8)) as u8)?;
+                    self.simd_i8x16_add_sat_s()?;
                 }
                 Op::I8X16_ADD_SAT_U => {
-                    self.simd_i8x16_binop(|a, b| a.saturating_add(b))?;
+                    self.simd_i8x16_add_sat_u()?;
                 }
                 Op::I8X16_SUB => {
-                    self.simd_i8x16_binop(|a, b| a.wrapping_sub(b))?;
+                    self.simd_i8x16_sub()?;
                 }
                 Op::I8X16_SUB_SAT_S => {
-                    self.simd_i8x16_binop(|a, b| ((a as i8).saturating_sub(b as i8)) as u8)?;
+                    self.simd_i8x16_sub_sat_s()?;
                 }
                 Op::I8X16_SUB_SAT_U => {
-                    self.simd_i8x16_binop(|a, b| a.saturating_sub(b))?;
+                    self.simd_i8x16_sub_sat_u()?;
                 }
                 Op::I8X16_MIN_S => {
                     self.simd_i8x16_binop(|a, b| if (a as i8) < (b as i8) { a } else { b })?;
@@ -25944,17 +28847,7 @@ impl VM {
                     self.simd_i16x8_testop(|a| a != 0)?;
                 }
                 Op::I16X8_BITMASK => {
-                    if let Some(a) = self.pop_v128_fast() {
-                        let mut mask = 0i32;
-                        for i in 0..8 {
-                            if v128_i16_lane(&a, i) < 0 {
-                                mask |= 1 << i;
-                            }
-                        }
-                        self.push_fast(Value::I32(mask));
-                    } else {
-                        self.push_fast(Value::I32(0));
-                    }
+                    self.simd_i16x8_bitmask()?;
                 }
                 Op::I16X8_NARROW_I32X4_S => {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
@@ -26045,25 +28938,25 @@ impl VM {
                     self.simd_i16x8_unop(|a| (a as u16).wrapping_shr(sh) as i16)?;
                 }
                 Op::I16X8_ADD => {
-                    self.simd_i16x8_binop(|a, b| a.wrapping_add(b))?;
+                    self.simd_i16x8_add()?;
                 }
                 Op::I16X8_ADD_SAT_S => {
-                    self.simd_i16x8_binop(|a, b| a.saturating_add(b))?;
+                    self.simd_i16x8_add_sat_s()?;
                 }
                 Op::I16X8_ADD_SAT_U => {
-                    self.simd_i16x8_binop(|a, b| ((a as u16).saturating_add(b as u16)) as i16)?;
+                    self.simd_i16x8_add_sat_u()?;
                 }
                 Op::I16X8_SUB => {
-                    self.simd_i16x8_binop(|a, b| a.wrapping_sub(b))?;
+                    self.simd_i16x8_sub()?;
                 }
                 Op::I16X8_SUB_SAT_S => {
-                    self.simd_i16x8_binop(|a, b| a.saturating_sub(b))?;
+                    self.simd_i16x8_sub_sat_s()?;
                 }
                 Op::I16X8_SUB_SAT_U => {
-                    self.simd_i16x8_binop(|a, b| ((a as u16).saturating_sub(b as u16)) as i16)?;
+                    self.simd_i16x8_sub_sat_u()?;
                 }
                 Op::I16X8_MUL => {
-                    self.simd_i16x8_binop(|a, b| a.wrapping_mul(b))?;
+                    self.simd_i16x8_mul()?;
                 }
                 Op::I16X8_MIN_S => {
                     self.simd_i16x8_binop(|a, b| a.min(b))?;
@@ -26078,9 +28971,7 @@ impl VM {
                     self.simd_i16x8_binop(|a, b| if (a as u16) > (b as u16) { a } else { b })?;
                 }
                 Op::I16X8_AVGR_U => {
-                    self.simd_i16x8_binop(|a, b| {
-                        (((a as u16 as u32) + (b as u16 as u32) + 1) / 2) as i16
-                    })?;
+                    self.simd_i16x8_avgr_u()?;
                 }
                 Op::I16X8_EXTMUL_LOW_I8X16_S => {
                     if let Some((va, vb)) = self.pop_v128_pair_fast() {
@@ -26214,10 +29105,10 @@ impl VM {
                     self.simd_i32x4_unop(|a| (a as u32).wrapping_shr(sh) as i32)?;
                 }
                 Op::I32X4_ADD => {
-                    self.simd_i32x4_binop(|a, b| a.wrapping_add(b))?;
+                    self.simd_i32x4_add()?;
                 }
                 Op::I32X4_SUB => {
-                    self.simd_i32x4_binop(|a, b| a.wrapping_sub(b))?;
+                    self.simd_i32x4_sub()?;
                 }
                 Op::I32X4_MUL => {
                     self.simd_i32x4_binop(|a, b| a.wrapping_mul(b))?;
@@ -26392,10 +29283,10 @@ impl VM {
                     self.simd_i64x2_unop(|a| (a as u64).wrapping_shr(sh) as i64)?;
                 }
                 Op::I64X2_ADD => {
-                    self.simd_i64x2_binop(|a, b| a.wrapping_add(b))?;
+                    self.simd_i64x2_add()?;
                 }
                 Op::I64X2_SUB => {
-                    self.simd_i64x2_binop(|a, b| a.wrapping_sub(b))?;
+                    self.simd_i64x2_sub()?;
                 }
                 Op::I64X2_MUL => {
                     self.simd_i64x2_binop(|a, b| a.wrapping_mul(b))?;
@@ -27039,9 +29930,598 @@ pub(crate) fn canon_marshal_bump() -> &'static str {
 }
 
 #[cfg(test)]
+mod canon_forward_tests {
+    use super::*;
+    use crate::handle_table::{CopyState, HandleEntry, StreamEnd};
+
+    fn pair(vm: &mut VM, stream: bool, type_id: Option<u32>) -> (u32, u32, u64) {
+        let id = if stream {
+            vm.event_loop.borrow_mut().create_stream()
+        } else {
+            vm.event_loop.borrow_mut().create_future()
+        };
+        let read = if stream { HandleEntry::ReadableStreamEnd(StreamEnd::typed(id, type_id)) }
+            else { HandleEntry::ReadableFutureEnd(StreamEnd::typed(id, type_id)) };
+        let write = if stream { HandleEntry::WritableStreamEnd(StreamEnd::typed(id, type_id)) }
+            else { HandleEntry::WritableFutureEnd(StreamEnd::typed(id, type_id)) };
+        (vm.handle_table.insert(read).unwrap(), vm.handle_table.insert(write).unwrap(), id)
+    }
+
+    #[test]
+    fn stream_forward_moves_chunks_and_preserves_surviving_handles() {
+        let mut vm = VM::new();
+        let (read_a, write_a, id_a) = pair(&mut vm, true, None);
+        let (_read_b, write_b, id_b) = pair(&mut vm, true, None);
+        vm.event_loop.borrow_mut().stream_push_bytes(id_b, vec![9]);
+        vm.event_loop.borrow_mut().stream_push_bytes(id_a, vec![1, 2]);
+        vm.push(Value::I32(read_a as i32)).unwrap();
+        vm.push(Value::I32(write_b as i32)).unwrap();
+        vm.exec_canon_builtin(crate::vm::CanonBuiltin::StreamForward).unwrap();
+        assert!(vm.handle_table.get(read_a).is_none());
+        assert!(vm.handle_table.get(write_b).is_none());
+        let Some(HandleEntry::WritableStreamEnd(end)) = vm.handle_table.get(write_a) else { panic!("writer lost") };
+        assert_eq!(end.id, id_b);
+        assert!(!vm.event_loop.borrow().stream_buffers.contains_key(&id_a));
+        assert_eq!(vm.event_loop.borrow_mut().stream_read_bytes(id_b, 3), [9, 1, 2]);
+        vm.event_loop.borrow_mut().stream_push_bytes(end.id, vec![3]);
+        assert_eq!(vm.event_loop.borrow_mut().stream_read_bytes(id_b, 1), [3]);
+    }
+
+    #[test]
+    fn self_forward_consumes_both_ends() {
+        let mut vm = VM::new();
+        let (read, write, id) = pair(&mut vm, true, None);
+        vm.push(Value::I32(read as i32)).unwrap();
+        vm.push(Value::I32(write as i32)).unwrap();
+        vm.exec_canon_builtin(crate::vm::CanonBuiltin::StreamForward).unwrap();
+        assert!(vm.handle_table.get(read).is_none());
+        assert!(vm.handle_table.get(write).is_none());
+        assert!(!vm.event_loop.borrow().stream_buffers.contains_key(&id));
+    }
+
+    #[test]
+    fn stream_forward_preserves_partial_bytes_producer_and_handle_index() {
+        let mut vm = VM::new();
+        let (read_a, write_a, id_a) = pair(&mut vm, true, None);
+        let (read_b, write_b, id_b) = pair(&mut vm, true, None);
+        {
+            let mut events = vm.event_loop.borrow_mut();
+            events.stream_push_bytes(id_b, vec![8, 9]);
+            events.stream_push_bytes(id_a, vec![1, 2, 3]);
+            assert_eq!(events.stream_read_bytes(id_a, 1), [1]);
+            events.set_stream_producer(id_a, "wasi:io/streams", "read");
+        }
+        if let Some(HandleEntry::WritableStreamEnd(end)) = vm.handle_table.get_mut(write_a) {
+            end.state = CopyState::Copying;
+        }
+        vm.push(Value::I32(read_a as i32)).unwrap();
+        vm.push(Value::I32(write_b as i32)).unwrap();
+        vm.exec_canon_builtin(crate::vm::CanonBuiltin::StreamForward).unwrap();
+        assert_eq!(vm.event_loop.borrow_mut().stream_read_bytes(id_b, 4), [8, 9, 2, 3]);
+        assert_eq!(vm.event_loop.borrow().stream_producer(id_b),
+            Some(("wasi:io/streams".to_string(), "read".to_string())));
+        assert!(vm.event_loop.borrow().stream_producer(id_a).is_none());
+        vm.handle_table.release_copying(id_b, false);
+        assert!(matches!(vm.handle_table.get(write_a),
+            Some(HandleEntry::WritableStreamEnd(end)) if end.id == id_b && end.state == CopyState::Idle));
+        assert!(vm.handle_table.get(read_b).is_some());
+    }
+
+    #[test]
+    fn future_forward_relinks_the_pending_writer() {
+        let mut vm = VM::new();
+        let (read_a, write_a, id_a) = pair(&mut vm, false, None);
+        let (_read_b, write_b, id_b) = pair(&mut vm, false, None);
+        vm.push(Value::I32(read_a as i32)).unwrap();
+        vm.push(Value::I32(write_b as i32)).unwrap();
+        vm.exec_canon_builtin(crate::vm::CanonBuiltin::FutureForward).unwrap();
+        let Some(HandleEntry::WritableFutureEnd(end)) = vm.handle_table.get(write_a) else { panic!("writer lost") };
+        assert_eq!(end.id, id_b);
+        assert!(!vm.event_loop.borrow().future_states.contains_key(&id_a));
+        vm.event_loop.borrow_mut().resolve_future(end.id, Value::I32(17));
+        assert!(matches!(vm.event_loop.borrow().future_states[&id_b].value, Some(Value::I32(17))));
+    }
+
+    #[test]
+    fn invalid_forward_keeps_handles_and_buffers() {
+        for invalid in ["type", "copying", "waitable", "kind"] {
+            let mut vm = VM::new();
+            let (read_a, _write_a, id_a) = pair(&mut vm, true, None);
+            let (_read_b, write_b, id_b) = pair(&mut vm, true, None);
+            let target = match invalid {
+                "type" => {
+                    if let Some(HandleEntry::WritableStreamEnd(end)) = vm.handle_table.get_mut(write_b) {
+                        end.type_id = Some(1);
+                    }
+                    write_b
+                }
+                "copying" => {
+                    if let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get_mut(read_a) {
+                        end.state = CopyState::Copying;
+                    }
+                    write_b
+                }
+                "waitable" => {
+                    let set = vm.waitable_sets.create();
+                    vm.waitable_sets.get_mut(set).unwrap().join_handle(
+                        read_a, crate::waitable::Waitable::Stream(id_a));
+                    if let Some(HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get_mut(read_a) {
+                        end.in_waitable_set = true;
+                    }
+                    write_b
+                }
+                _ => read_a,
+            };
+            vm.push(Value::I32(read_a as i32)).unwrap();
+            vm.push(Value::I32(target as i32)).unwrap();
+            assert!(vm.exec_canon_builtin(crate::vm::CanonBuiltin::StreamForward).is_err(), "{invalid}");
+            assert!(vm.handle_table.get(read_a).is_some(), "{invalid}");
+            assert!(vm.handle_table.get(write_b).is_some(), "{invalid}");
+            assert!(vm.event_loop.borrow().stream_buffers.contains_key(&id_a), "{invalid}");
+            assert!(vm.event_loop.borrow().stream_buffers.contains_key(&id_b), "{invalid}");
+        }
+    }
+
+    #[test]
+    #[ignore = "microbenchmark; run explicitly on a quiet machine"]
+    fn bench_stream_forward_against_materialized_copy() {
+        const CHUNKS: usize = 128;
+        const CHUNK_BYTES: usize = 64 * 1024;
+        const ROUNDS: usize = 20;
+        let mut forward_elapsed = std::time::Duration::ZERO;
+        let mut copy_elapsed = std::time::Duration::ZERO;
+        for _ in 0..ROUNDS {
+            let mut events = crate::event_loop::EventLoop::new();
+            let source = events.create_stream();
+            let destination = events.create_stream();
+            for _ in 0..CHUNKS {
+                events.stream_push_bytes(source, vec![7; CHUNK_BYTES]);
+            }
+            let start = std::time::Instant::now();
+            assert!(events.forward_stream(source, destination));
+            forward_elapsed += start.elapsed();
+            std::hint::black_box(events.stream_has_bytes(destination));
+
+            let mut events = crate::event_loop::EventLoop::new();
+            let source = events.create_stream();
+            let destination = events.create_stream();
+            for _ in 0..CHUNKS {
+                events.stream_push_bytes(source, vec![7; CHUNK_BYTES]);
+            }
+            let start = std::time::Instant::now();
+            let bytes = events.stream_read_bytes(source, CHUNKS * CHUNK_BYTES);
+            events.stream_push_bytes(destination, bytes);
+            copy_elapsed += start.elapsed();
+            std::hint::black_box(events.stream_has_bytes(destination));
+        }
+        eprintln!("forward {forward_elapsed:?}; materialized copy {copy_elapsed:?} for {ROUNDS} x {} MiB", CHUNKS * CHUNK_BYTES / (1024 * 1024));
+    }
+}
+
+#[cfg(test)]
 mod thread_block_tests {
     use super::*;
     use crate::vm::VM;
+
+    #[test]
+    fn canonical_worker_type_matches_width_not_only_arity() {
+        use crate::canon_flat::CoreType;
+        use crate::Chunk;
+        for expected in [CoreType::I32, CoreType::I64] {
+            for actual in ["i32", "i64"] {
+                let mut vm = VM::new();
+                let mut worker = Chunk::new("worker");
+                worker.param_count = 1;
+                worker.result_arity = 0;
+                worker.func_sig = Some((actual.into(), String::new()));
+                vm.chunks.push(worker);
+                vm.canon_defs.push(crate::canon_def::CanonDef {
+                    worker_param: Some(expected),
+                    ..Default::default()
+                });
+                vm.canon_type_immediate = Some(0);
+                let mut function = Object::new();
+                function.kind = ObjectKind::Function(Function {
+                    name: Some("worker".into()), arity: 1, chunk_index: 0, upvalues: Vec::new(),
+                });
+                let function = Value::Object(crate::heap::alloc(function));
+                let matches = (expected == CoreType::I32) == (actual == "i32");
+                let result = vm.require_thread_func_type("thread.new-indirect", &function);
+                assert_eq!(result.is_ok(), matches);
+                if let Err(error) = result { assert!(error.is_trap(), "{error}"); }
+                for signature in [
+                    None,
+                    Some((format!("{actual},{actual}"), String::new())),
+                    Some((actual.into(), "i32".into())),
+                ] {
+                    vm.chunks[0].func_sig = signature;
+                    let error = vm.require_thread_func_type("thread.new-indirect", &function).unwrap_err();
+                    assert!(error.is_trap(), "{error}");
+                }
+                vm.chunks[0].func_sig = Some((actual.into(), String::new()));
+                vm.canon_defs[0].worker_param = None;
+                let error = vm.require_thread_func_type("thread.new-indirect", &function).unwrap_err();
+                assert!(error.is_trap(), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_task_survives_implicit_exit_until_its_last_explicit_thread() {
+        let mut vm = VM::new();
+        let mut task = crate::cm_task::CMTask::new(7);
+        task.return_(Value::I32(42)).unwrap();
+        vm.cm_tasks.push(task);
+        let implicit = vm.cm_instance.threads.register(crate::cm_thread::Thread::new(7, Value::Null));
+        let explicit = vm.cm_instance.threads.register(crate::cm_thread::Thread::new(7, Value::Null));
+        vm.retire_cm_thread(implicit, None).unwrap();
+        assert_eq!(vm.cm_tasks.len(), 1);
+        assert_eq!(vm.cm_tasks[0].result, Some(Value::I32(42)));
+        assert!(vm.cm_instance.threads.has_task(7));
+        vm.retire_cm_thread(explicit, None).unwrap();
+        assert!(vm.cm_tasks.is_empty());
+        assert!(!vm.cm_instance.threads.has_task(7));
+    }
+
+    #[test]
+    fn last_thread_exit_requires_task_resolution_and_zero_borrows() {
+        for resolved in [false, true] {
+            let mut vm = VM::new();
+            let mut task = crate::cm_task::CMTask::new(7);
+            if resolved {
+                task.return_(Value::Undefined).unwrap();
+                task.num_borrows = 1;
+            }
+            vm.cm_tasks.push(task);
+            let thread = vm.cm_instance.threads.register(crate::cm_thread::Thread::new(7, Value::Null));
+            let error = vm.retire_cm_thread(thread, None).unwrap_err();
+            assert!(error.is_trap(), "{error}");
+            assert!(error.message.contains(if resolved { "outstanding borrows" }
+                else { "before task resolution" }));
+        }
+    }
+
+    #[test]
+    fn callback_result_retention_reclaims_after_the_awaiting_boundary() {
+        let mut vm = VM::new();
+        let mut task = crate::cm_task::CMTask::new(7);
+        task.return_(Value::I32(42)).unwrap();
+        vm.cm_tasks.push(task);
+        let thread = vm.cm_instance.threads.register(crate::cm_thread::Thread::new(7, Value::Null));
+        vm.retire_cm_thread(thread, Some(7)).unwrap();
+        assert_eq!(vm.cm_tasks[0].result, Some(Value::I32(42)));
+        vm.reclaim_cm_task(7, None).unwrap();
+        assert!(vm.cm_tasks.is_empty());
+    }
+
+    fn scheduled_copy_vm(trap: bool) -> (VM, u32, u32, u32) {
+        let mut setup = crate::Chunk::new("setup");
+        setup.emit_op(Op::RETURN, 0);
+        let mut read = crate::Chunk::new("read");
+        read.arity = 1;
+        read.param_count = 1;
+        read.local_count = 1;
+        read.result_arity = 1;
+        let copy = read.add_import("canon", "stream.read@0");
+        read.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        read.emit_i32_const(16, 0);
+        read.emit_i32_const(3, 0);
+        read.emit_call(copy, 3, 0);
+        read.emit_op(Op::RETURN, 0);
+        let mut producer = crate::Chunk::new("producer");
+        producer.arity = 1;
+        producer.param_count = 1;
+        producer.local_count = 1;
+        producer.result_arity = 0;
+        if trap {
+            producer.emit_op(Op::UNREACHABLE, 0);
+        } else {
+            let context = producer.add_import("canon", "context.get@1");
+            producer.emit_call(context, 0, 0);
+            let key = producer.add_constant(Value::String(Arc::from("producer-context")));
+            producer.emit_op_u32(Op::GLOBAL_SET, key, 0);
+            let copy = producer.add_import("canon", "stream.write@0");
+            producer.emit_op_u16(Op::LOCAL_GET, 0, 0);
+            producer.emit_i32_const(32, 0);
+            producer.emit_i32_const(3, 0);
+            producer.emit_call(copy, 3, 0);
+            producer.emit_op(Op::DROP, 0);
+            let drop = producer.add_import("canon", "stream.drop-writable@0");
+            producer.emit_op_u16(Op::LOCAL_GET, 0, 0);
+            producer.emit_call(drop, 1, 0);
+            producer.emit_op(Op::DROP, 0);
+        }
+        producer.emit_op(Op::RETURN, 0);
+        let mut vm = VM::new();
+        vm.set_global("producer-context", Value::Undefined);
+        vm.run(vec![setup, read, producer]).unwrap();
+        vm.memory.grow(1);
+        vm.memory.store_i32(32, 41 | (43 << 8) | (47 << 16)).unwrap();
+        vm.canon_defs = vec![
+            crate::canon_def::CanonDef::default(),
+            crate::canon_def::CanonDef {
+                context: Some((crate::component::ValType::I32, 0)),
+                ..crate::canon_def::CanonDef::default()
+            },
+        ];
+        vm.canon_type_immediate = Some(0);
+        vm.exec_canon_builtin(crate::vm::CanonBuiltin::StreamNew).unwrap();
+        let pair = vm.pop().as_i64() as u64;
+        let readable = pair as u32;
+        let writable = (pair >> 32) as u32;
+        vm.cm_tasks.push(crate::cm_task::CMTask::new(7));
+        let mut thread = crate::cm_thread::Thread::new(7, Value::Undefined);
+        thread.storage[0] = Value::I32(99);
+        thread.take_cont();
+        let implicit = vm.cm_instance.threads.register(thread);
+        vm.current_thread = Some(implicit);
+        let mut function = Object::new();
+        function.kind = ObjectKind::Function(Function {
+            name: Some("producer".into()), arity: 1, chunk_index: 2, upvalues: Vec::new(),
+        });
+        let explicit = vm.create_thread_over("test", Value::Object(crate::heap::alloc(function)),
+            Value::I32(writable as i32)).unwrap();
+        vm.resume_thread_later("test", explicit).unwrap();
+        (vm, readable, implicit, explicit)
+    }
+
+    fn attach_scheduled_sink(vm: &mut VM, readable: u32)
+        -> std::rc::Rc<std::cell::RefCell<Vec<u8>>>
+    {
+        let output = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = output.clone();
+        let future = vm.event_loop.borrow_mut().create_future();
+        vm.make_host_context().consume_byte_stream(&Value::I32(readable as i32), future,
+            Box::new(move |bytes| {
+                if let Some(bytes) = bytes { captured.borrow_mut().extend_from_slice(bytes); }
+                Ok(())
+            })).unwrap();
+        output
+    }
+
+    #[test]
+    fn synchronous_copy_runs_ready_producer_and_restores_thread_context() {
+        let (mut vm, readable, implicit, explicit) = scheduled_copy_vm(false);
+        assert!(vm.cm_instance.threads.get(explicit).unwrap().ready());
+        vm.push(Value::I32(readable as i32)).unwrap();
+        let result = vm.call_canon_callee("test", crate::canon_def::CalleeRef::Core(1), 1).unwrap();
+        assert_eq!(result.as_i32(), 3 << 4);
+        vm.run_event_loop().unwrap();
+        assert_eq!(vm.memory.load_i32(16).unwrap() & 0x00ff_ffff, 41 | (43 << 8) | (47 << 16));
+        assert_eq!(vm.current_thread, Some(implicit));
+        assert_eq!(vm.cm_instance.threads.get(implicit).unwrap().storage[0], Value::I32(99));
+        assert!(vm.cm_instance.threads.get(explicit).is_none());
+        assert_eq!(vm.globals[vm.global_index["producer-context"] as usize], Value::I32(0));
+        assert!(vm.stack.is_empty());
+        assert_eq!(vm.event_loop.borrow().parked_sync_copies(), 0);
+    }
+
+    #[test]
+    fn store_tick_runs_deferred_producer_after_factory_return() {
+        let (mut vm, readable, implicit, explicit) = scheduled_copy_vm(false);
+        let output = attach_scheduled_sink(&mut vm, readable);
+        vm.cm_tasks[0].return_(Value::I32(42)).unwrap();
+        vm.retire_cm_thread(implicit, None).unwrap();
+        vm.current_thread = None;
+        vm.push(Value::I32(123)).unwrap();
+        vm.run_event_loop().unwrap();
+        assert_eq!(vm.stack, vec![Value::I32(123)]);
+        assert_eq!(vm.current_thread, None);
+        assert_eq!(vm.canon_type_immediate, Some(0));
+        assert!(vm.cm_instance.threads.get(explicit).is_none());
+        assert!(vm.cm_tasks.is_empty());
+        assert_eq!(*output.borrow(), [41, 43, 47]);
+        assert_eq!(vm.globals[vm.global_index["producer-context"] as usize], Value::I32(0));
+    }
+
+    #[test]
+    fn store_tick_does_not_reenter_an_active_core_call() {
+        let (mut vm, _, _, explicit) = scheduled_copy_vm(false);
+        vm.exec_floors.push(0);
+        assert!(!vm.tick_component_threads().unwrap());
+        assert!(vm.cm_instance.threads.get(explicit).unwrap().ready());
+        assert_eq!(vm.globals[vm.global_index["producer-context"] as usize], Value::Undefined);
+        vm.exec_floors.pop();
+    }
+
+    #[test]
+    fn store_tick_drives_threads_with_an_idle_host_scheduler() {
+        struct IdleScheduler;
+        impl crate::scheduler::Scheduler for IdleScheduler {
+            fn turn(&self, _: &mut VM) -> Result<bool, VMError> {
+                panic!("idle scheduler must not be polled for a turn");
+            }
+            fn has_pending(&self, _: &VM) -> bool { false }
+            fn wait(&self, _: &VM) { panic!("ready CM work must not wait"); }
+        }
+        let (mut vm, readable, implicit, explicit) = scheduled_copy_vm(false);
+        let output = attach_scheduled_sink(&mut vm, readable);
+        vm.cm_tasks[0].return_(Value::I32(42)).unwrap();
+        vm.retire_cm_thread(implicit, None).unwrap();
+        vm.current_thread = None;
+        vm.scheduler = Some(Arc::new(IdleScheduler));
+        vm.run_event_loop().unwrap();
+        assert!(vm.cm_instance.threads.get(explicit).is_none());
+        assert!(vm.cm_tasks.is_empty());
+        assert_eq!(*output.borrow(), [41, 43, 47]);
+    }
+
+    #[test]
+    fn store_tick_restores_caller_state_after_producer_trap() {
+        let (mut vm, _, implicit, _) = scheduled_copy_vm(true);
+        vm.push(Value::I32(123)).unwrap();
+        let error = vm.tick_component_threads().unwrap_err();
+        assert!(error.is_trap(), "{error}");
+        assert_eq!(vm.stack, vec![Value::I32(123)]);
+        assert_eq!(vm.current_thread, Some(implicit));
+        assert_eq!(vm.canon_type_immediate, Some(0));
+    }
+
+    #[test]
+    fn scheduled_stream_writer_reparks_then_finishes_after_host_sink_attaches() {
+        let (mut vm, readable, implicit, explicit) = scheduled_copy_vm(false);
+        let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(end)) = vm.handle_table.get(readable) else {
+            unreachable!()
+        };
+        let id = end.id;
+        let fiber_id = vm.next_fiber_id;
+        assert!(vm.tick_component_threads().unwrap());
+        let fiber = vm.event_loop.borrow_mut().take_parked_copy(id, fiber_id, Some(explicit)).unwrap();
+        assert!(fiber.cm_exit_on_completion);
+        vm.push(Value::I32(123)).unwrap();
+        vm.resume_fiber(fiber).unwrap();
+        assert_eq!(vm.current_thread, Some(implicit));
+        assert_eq!(vm.stack, [Value::I32(123)]);
+        assert!(vm.cm_instance.threads.get(explicit).unwrap().waiting());
+        assert!(!vm.cm_instance.threads.get(explicit).unwrap().ready());
+        let output = attach_scheduled_sink(&mut vm, readable);
+        vm.run_event_loop().unwrap();
+        assert_eq!(*output.borrow(), [41, 43, 47]);
+        assert_eq!(vm.current_thread, Some(implicit));
+        assert_eq!(vm.stack, [Value::I32(123)]);
+        assert!(vm.cm_instance.threads.get(explicit).is_none());
+        assert!(vm.guest_stream_writes.is_empty());
+        assert_eq!(vm.event_loop.borrow().parked_sync_copies(), 0);
+    }
+
+    #[test]
+    fn synchronous_copy_propagates_producer_trap_without_losing_caller_context() {
+        let (mut vm, readable, implicit, _) = scheduled_copy_vm(true);
+        vm.push(Value::I32(readable as i32)).unwrap();
+        let error = vm.call_canon_callee("test", crate::canon_def::CalleeRef::Core(1), 1).unwrap_err();
+        assert!(error.is_trap(), "{error}");
+        assert_eq!(vm.current_thread, Some(implicit));
+        assert_eq!(vm.canon_type_immediate, Some(0));
+        assert_eq!(vm.event_loop.borrow().parked_sync_copies(), 0);
+        assert_eq!(vm.frames.last().map(|frame| frame.chunk_index), Some(1));
+    }
+
+    #[test]
+    fn saved_fiber_restores_component_thread_identity() {
+        let mut vm = VM::new();
+        vm.current_thread = Some(12);
+        let fiber = vm.save_fiber();
+        vm.current_thread = Some(24);
+        vm.resume_fiber_with(fiber, None).unwrap();
+        assert_eq!(vm.current_thread, Some(12));
+        let fiber = crate::fiber::Fiber::new(Vec::new(), Vec::new(), Vec::new());
+        vm.resume_fiber_with(fiber, None).unwrap();
+        assert_eq!(vm.current_thread, None);
+    }
+
+    #[test]
+    fn parked_copy_thread_is_waiting_until_its_buffer_is_ready() {
+        let mut vm = VM::new();
+        let mut thread = crate::cm_thread::Thread::new(1, Value::Undefined);
+        thread.take_cont();
+        let index = vm.cm_instance.threads.register(thread);
+        vm.current_thread = Some(index);
+        let id = vm.event_loop.borrow_mut().create_stream();
+        vm.park_sync_copy(crate::fiber::PendingCopy {
+            handle: 1, end_id: id, ptr: 0, memory: 0, realloc: None, n: 1,
+            kind: crate::fiber::PendingCopyKind::StreamBytes,
+        });
+        assert!(vm.cm_instance.threads.get(index).unwrap().waiting());
+        assert!(!vm.cm_instance.threads.get(index).unwrap().ready());
+        vm.event_loop.borrow_mut().stream_push_bytes(id, vec![42]);
+        let fiber = vm.event_loop.borrow_mut().take_ready_copy(vm.cur_fiber_id, Some(index)).unwrap();
+        vm.resume_fiber_with(fiber, None).unwrap();
+        assert!(vm.cm_instance.threads.get(index).unwrap().running());
+        assert_eq!(vm.current_thread, Some(index));
+    }
+
+    #[test]
+    fn copy_wakeup_matches_thread_identity_without_consuming_other_jobs() {
+        let mut events = crate::event_loop::EventLoop::new();
+        let first = events.create_stream();
+        let second = events.create_stream();
+        for (id, thread) in [(first, 1), (second, 2)] {
+            let mut fiber = crate::fiber::Fiber::new(Vec::new(), Vec::new(), Vec::new());
+            fiber.cm_thread = Some(thread);
+            fiber.pending_copy = Some(crate::fiber::PendingCopy {
+                handle: thread, end_id: id, ptr: 0, memory: 0, realloc: None, n: 1,
+                kind: crate::fiber::PendingCopyKind::StreamBytes,
+            });
+            events.suspend_stream_sync_reader(id, fiber);
+        }
+        events.stream_push_bytes(second, vec![2]);
+        events.stream_push_bytes(first, vec![1]);
+        assert_eq!(events.take_ready_copy(0, Some(1)).unwrap().cm_thread, Some(1));
+        assert_eq!(events.immediate.len(), 1);
+        assert_eq!(events.take_ready_copy(0, Some(2)).unwrap().cm_thread, Some(2));
+        assert!(events.immediate.is_empty());
+    }
+
+    #[test]
+    fn an_unwoken_sync_thread_reports_a_wasm_trap_after_callback_exit() {
+        let mut setup = crate::Chunk::new("setup");
+        setup.emit_op(Op::RETURN, 0);
+        let mut callback = crate::Chunk::new("exit callback");
+        callback.arity = 3;
+        callback.local_count = 3;
+        callback.result_arity = 1;
+        callback.emit_i32_const(0, 0);
+        callback.emit_op(Op::RETURN, 0);
+        let mut vm = VM::new();
+        vm.run(vec![setup, callback]).unwrap();
+        vm.cm_tasks.push(crate::cm_task::CMTask::new(1));
+        let mut callback_task = crate::cm_task::CMTask::new(2);
+        callback_task.return_(Value::Undefined).unwrap();
+        vm.cm_tasks.push(callback_task);
+        let mut implicit = crate::cm_thread::Thread::new(1, Value::Undefined);
+        implicit.take_cont();
+        let me = vm.cm_instance.threads.register(implicit);
+        vm.current_thread = Some(me);
+        let mut pending = crate::cm_thread::Thread::new(2, Value::Undefined);
+        pending.resume_later().unwrap();
+        let target = vm.cm_instance.threads.register(pending);
+        vm.pending_cm_callbacks.push(crate::cm_task::PendingCallback {
+            task_id: 2, thread_index: target, callback: 1,
+            waiting: crate::cm_task::CallbackWait::Yield,
+        });
+        let error = vm.run_pending_cm_callback("test", me, target).unwrap_err();
+        assert!(error.is_trap(), "{error}");
+        assert!(error.message.contains("cannot block a synchronous task before returning"));
+        assert_eq!(vm.current_thread, Some(me));
+        assert!(vm.pending_cm_callbacks.is_empty());
+    }
+
+    #[test]
+    fn current_task_follows_thread_instead_of_last_created_task() {
+        let mut vm = VM::new();
+        vm.cm_tasks.push(crate::cm_task::CMTask::new(1));
+        vm.cm_tasks.push(crate::cm_task::CMTask::new(2));
+        let mut thread = crate::cm_thread::Thread::new(1, Value::Undefined);
+        thread.take_cont();
+        vm.current_thread = Some(vm.cm_instance.threads.register(thread));
+
+        assert_eq!(vm.current_cm_task_mut().map(|task| task.id), Some(1));
+    }
+
+    #[test]
+    fn warm_reset_restores_pending_callback_with_its_thread() {
+        let mut vm = VM::new();
+        vm.cm_tasks.push(crate::cm_task::CMTask::new(4));
+        let mut thread = crate::cm_thread::Thread::new(4, Value::Undefined);
+        thread.resume_later().unwrap();
+        let thread_index = vm.cm_instance.threads.register(thread);
+        vm.pending_cm_callbacks.push(crate::cm_task::PendingCallback {
+            task_id: 4,
+            thread_index,
+            callback: 9,
+            waiting: crate::cm_task::CallbackWait::Yield,
+        });
+        let snapshot = vm.snapshot();
+
+        vm.pending_cm_callbacks.clear();
+        vm.cm_tasks.clear();
+        vm.cm_instance.threads.unregister(thread_index);
+        vm.reset_to(&snapshot);
+
+        assert_eq!(vm.pending_cm_callbacks.len(), 1);
+        assert_eq!(vm.cm_tasks[0].id, 4);
+        assert!(vm.cm_instance.threads.get(thread_index).unwrap().ready());
+    }
 
     /// The two non-switching outcomes of `block(switch_to = None)` must be
     /// DISTINGUISHABLE, and both must be reachable.
@@ -27113,6 +30593,357 @@ mod thread_block_tests {
             !err.contains("no host work is pending"),
             "a ready thread must be switched to, never reported as a deadlock: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod canon_realloc_tests {
+    use super::*;
+
+    fn returning_allocator(name: &str, address: i32) -> crate::chunk::Chunk {
+        let mut chunk = crate::chunk::Chunk::new(name);
+        chunk.arity = 4;
+        chunk.local_count = 4;
+        chunk.emit_i32_const(address, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        chunk
+    }
+
+    #[test]
+    fn rejects_invalid_guest_allocations_and_restores_call_state() {
+        let mut vm = VM::new();
+        vm.run(vec![
+            crate::chunk::Chunk::new("script"),
+            returning_allocator("misaligned", 1025),
+            returning_allocator("out of bounds", 65532),
+            returning_allocator("valid", 1024),
+        ])
+        .unwrap();
+        assert_ne!(vm.memory.grow(1), usize::MAX);
+
+        let bad_alignment = vm.call_canon_realloc(1, 8, 4, 0).unwrap_err();
+        assert!(bad_alignment.is_trap());
+        assert!(bad_alignment.message.contains("unaligned"));
+        assert!(vm.cm_instance.may_leave);
+        assert!(vm.stack.is_empty());
+
+        let bad_bounds = vm.call_canon_realloc(2, 8, 4, 0).unwrap_err();
+        assert!(bad_bounds.is_trap());
+        assert!(bad_bounds.message.contains("outside memory"));
+        assert!(vm.cm_instance.may_leave);
+        assert!(vm.stack.is_empty());
+
+        assert_eq!(vm.call_canon_realloc(3, 8, 4, 0).unwrap(), 1024);
+        assert!(vm.cm_instance.may_leave);
+        assert!(vm.stack.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod canon_handle_drop_tests {
+    use super::*;
+    use crate::canon_def::{CalleeRef, CanonDef};
+    use crate::cm_task::CMTask;
+    use crate::handle_table::{HandleEntry, StreamEnd};
+    use crate::vm::CanonBuiltin;
+
+    #[test]
+    fn wrong_end_drop_traps_without_consuming_the_handle() {
+        let mut vm = VM::new();
+        let handle = vm
+            .handle_table
+            .insert(HandleEntry::WritableStreamEnd(StreamEnd::new(1)))
+            .unwrap();
+        vm.push(Value::I32(handle as i32)).unwrap();
+        assert!(vm
+            .exec_canon_builtin(CanonBuiltin::StreamDropReadable)
+            .is_err());
+        assert!(matches!(
+            vm.handle_table.get(handle),
+            Some(HandleEntry::WritableStreamEnd(_))
+        ));
+        let next = vm
+            .handle_table
+            .insert(HandleEntry::ErrorContext {
+                debug_message: String::new(),
+            })
+            .unwrap();
+        assert_eq!(next, handle + 1);
+    }
+
+    #[test]
+    fn wrong_future_drop_traps_without_consuming_a_resource() {
+        let mut vm = VM::new();
+        let handle = vm
+            .handle_table
+            .insert(HandleEntry::OwnedResource {
+                type_id: 1,
+                value: Value::I32(42),
+                num_lends: 0,
+            })
+            .unwrap();
+        vm.push(Value::I32(handle as i32)).unwrap();
+        assert!(vm
+            .exec_canon_builtin(CanonBuiltin::FutureDropReadable)
+            .is_err());
+        assert!(matches!(
+            vm.handle_table.get(handle),
+            Some(HandleEntry::OwnedResource { .. })
+        ));
+    }
+
+    #[test]
+    fn owning_resource_drop_calls_its_core_destructor() {
+        let mut vm = VM::new();
+        let mut dtor = crate::chunk::Chunk::new("resource destructor");
+        dtor.arity = 1;
+        dtor.local_count = 1;
+        dtor.emit_op(Op::UNREACHABLE, 1);
+        vm.run(vec![crate::chunk::Chunk::new("script"), dtor]).unwrap();
+        vm.canon_defs.push(CanonDef {
+            ty: Some(7),
+            resource_dtor: Some(CalleeRef::Core(1)),
+            ..Default::default()
+        });
+        vm.canon_type_immediate = Some(0);
+        let handle = vm
+            .handle_table
+            .insert(HandleEntry::OwnedResource {
+                type_id: 7,
+                value: Value::I32(42),
+                num_lends: 0,
+            })
+            .unwrap();
+        vm.push(Value::I32(handle as i32)).unwrap();
+        assert!(vm.exec_canon_builtin(CanonBuiltin::ResourceDrop).is_err());
+        assert!(vm.handle_table.get(handle).is_none());
+    }
+
+    #[test]
+    fn borrowed_resource_drop_decrements_scope_without_destructor() {
+        let mut vm = VM::new();
+        let mut dtor = crate::chunk::Chunk::new("must not run");
+        dtor.arity = 1;
+        dtor.local_count = 1;
+        dtor.emit_op(Op::UNREACHABLE, 1);
+        vm.run(vec![crate::chunk::Chunk::new("script"), dtor])
+            .unwrap();
+        vm.canon_defs.push(CanonDef {
+            ty: Some(7),
+            resource_dtor: Some(CalleeRef::Core(1)),
+            ..Default::default()
+        });
+        vm.canon_type_immediate = Some(0);
+        let mut task = CMTask::new(9);
+        task.num_borrows = 1;
+        vm.cm_tasks.push(task);
+        let handle = vm
+            .handle_table
+            .insert(HandleEntry::BorrowedResource {
+                type_id: 7,
+                value: Value::I32(42),
+                scope_task: 9,
+                num_lends: 0,
+            })
+            .unwrap();
+        vm.push(Value::I32(handle as i32)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::ResourceDrop).unwrap();
+        assert_eq!(vm.cm_tasks[0].num_borrows, 0);
+        assert!(vm.handle_table.get(handle).is_none());
+    }
+
+    #[test]
+    fn outstanding_lend_blocks_resource_drop() {
+        let mut vm = VM::new();
+        let handle = vm
+            .handle_table
+            .insert(HandleEntry::OwnedResource {
+                type_id: 7,
+                value: Value::I32(42),
+                num_lends: 1,
+            })
+            .unwrap();
+        vm.push(Value::I32(handle as i32)).unwrap();
+        assert!(vm.exec_canon_builtin(CanonBuiltin::ResourceDrop).is_err());
+        assert!(vm.handle_table.get(handle).is_some());
+    }
+
+    #[test]
+    fn resource_i64_representation_round_trips_without_truncation() {
+        let mut vm = VM::new();
+        vm.canon_defs.push(CanonDef {
+            ty: Some(7),
+            resource_rep: Some(crate::canon_flat::CoreType::I64),
+            ..Default::default()
+        });
+        vm.canon_type_immediate = Some(0);
+        let rep = 0x1_0000_0042_i64;
+        vm.push(Value::I64(rep)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::ResourceNew).unwrap();
+        let handle = vm.pop_i32_fast();
+        vm.push(Value::I32(handle)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::ResourceRep).unwrap();
+        assert!(matches!(vm.pop(), Value::I64(actual) if actual == rep));
+        vm.push(Value::I32(handle)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::ResourceDrop).unwrap();
+        assert!(vm.handle_table.get(handle as u32).is_none());
+    }
+
+    #[test]
+    fn host_resource_integer_ids_are_normalized_to_core_i32() {
+        let mut vm = VM::new();
+        let handle = {
+            let mut ctx = vm.make_host_context();
+            ctx.create_own_resource(7, Value::F64(42.0)).unwrap()
+        };
+        let Some(HandleEntry::OwnedResource { value, .. }) =
+            vm.handle_table.get(handle.as_i32() as u32)
+        else {
+            panic!("host resource handle was not inserted");
+        };
+        assert!(matches!(value, Value::I32(42)));
+        assert!(vm.pending_host_trap.is_none());
+
+        let bad = {
+            let mut ctx = vm.make_host_context();
+            ctx.create_own_resource(7, Value::F64(42.5))
+        };
+        assert!(bad.is_none());
+        assert!(vm.pending_host_trap.is_some());
+    }
+}
+
+#[cfg(test)]
+mod canon_context_tests {
+    use super::*;
+    use crate::canon_def::CanonDef;
+    use crate::cm_thread::Thread;
+    use crate::component::ValType;
+    use crate::opcode::Op;
+    use crate::vm::CanonBuiltin;
+
+    #[test]
+    fn canonical_core_callee_returns_and_cleans_its_stack_window() {
+        let mut chunk = crate::chunk::Chunk::new("canonical callee");
+        chunk.arity = 1;
+        chunk.emit_i32_const(37, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        let mut vm = VM::new();
+        let mut script = crate::chunk::Chunk::new("setup");
+        script.emit_op(Op::RETURN, 0);
+        vm.run(vec![script, chunk]).unwrap();
+        for arg in [Value::I32(1), Value::I32(2)] {
+            vm.push(arg).unwrap();
+            let result = vm.call_canon_callee("lift", crate::canon_def::CalleeRef::Core(1), 1)
+                .unwrap();
+            assert!(matches!(result, Value::I32(37)));
+            assert!(vm.stack.is_empty());
+            assert!(vm.frames.is_empty());
+        }
+    }
+
+    #[test]
+    fn canonical_core_callee_preserves_trap() {
+        let mut chunk = crate::chunk::Chunk::new("trapping canonical callee");
+        chunk.emit_op(Op::UNREACHABLE, 0);
+        let mut vm = VM::new();
+        let mut script = crate::chunk::Chunk::new("setup");
+        script.emit_op(Op::RETURN, 0);
+        vm.run(vec![script, chunk]).unwrap();
+        assert!(vm.call_canon_callee("lift", crate::canon_def::CalleeRef::Core(1), 0).is_err());
+    }
+
+    fn assert_integer_value(actual: Value, expected: &Value) {
+        match (actual, expected) {
+            (Value::I32(actual), Value::I32(expected)) => assert_eq!(actual, *expected),
+            (Value::I64(actual), Value::I64(expected)) => assert_eq!(actual, *expected),
+            (actual, expected) => panic!("expected {expected:?}, got {actual:?}"),
+        }
+    }
+
+    fn check_thread_local_slots(ty: ValType, first_value: Value, second_value: Value) {
+        let mut vm = VM::new();
+        vm.canon_defs = vec![
+            CanonDef {
+                context: Some((ty.clone(), 0)),
+                ..Default::default()
+            },
+            CanonDef {
+                context: Some((ty.clone(), 1)),
+                ..Default::default()
+            },
+        ];
+        let first_cont = vm.new_parked_continuation();
+        let first = vm.cm_instance.threads.register(Thread::new(0, first_cont));
+        let second_cont = vm.new_parked_continuation();
+        let second = vm.cm_instance.threads.register(Thread::new(0, second_cont));
+
+        vm.current_thread = Some(first);
+        vm.canon_type_immediate = Some(1);
+        vm.push(first_value.clone()).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::ContextSet).unwrap();
+        assert!(vm.stack.is_empty(), "set consumes only its value");
+
+        vm.push(Value::I32(123)).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::ContextGet).unwrap();
+        assert_eq!(vm.stack.len(), 2, "get has no stack operand");
+        assert_integer_value(vm.pop(), &first_value);
+        assert!(matches!(vm.pop(), Value::I32(123)));
+
+        vm.canon_type_immediate = Some(0);
+        vm.exec_canon_builtin(CanonBuiltin::ContextGet).unwrap();
+        match ty {
+            ValType::I32 => assert!(matches!(vm.pop(), Value::I32(0))),
+            ValType::I64 => assert!(matches!(vm.pop(), Value::I64(0))),
+            _ => unreachable!(),
+        }
+
+        vm.current_thread = Some(second);
+        vm.canon_type_immediate = Some(1);
+        vm.exec_canon_builtin(CanonBuiltin::ContextGet).unwrap();
+        match ty {
+            ValType::I32 => assert!(matches!(vm.pop(), Value::I32(0))),
+            ValType::I64 => assert!(matches!(vm.pop(), Value::I64(0))),
+            _ => unreachable!(),
+        }
+        vm.push(second_value.clone()).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::ContextSet).unwrap();
+        vm.exec_canon_builtin(CanonBuiltin::ContextGet).unwrap();
+        assert_integer_value(vm.pop(), &second_value);
+
+        vm.current_thread = Some(first);
+        vm.exec_canon_builtin(CanonBuiltin::ContextGet).unwrap();
+        assert_integer_value(vm.pop(), &first_value);
+    }
+
+    #[test]
+    fn i32_context_slots_are_immediate_and_thread_local() {
+        check_thread_local_slots(ValType::I32, Value::I32(42), Value::I32(59));
+    }
+
+    #[test]
+    fn i64_context_slots_are_immediate_and_thread_local() {
+        check_thread_local_slots(ValType::I64, Value::I64(42), Value::I64(59));
+    }
+
+    #[test]
+    fn context_requires_a_valid_declared_immediate() {
+        let mut vm = VM::new();
+        let cont = vm.new_parked_continuation();
+        vm.current_thread = Some(vm.cm_instance.threads.register(Thread::new(0, cont)));
+        assert!(vm.exec_canon_builtin(CanonBuiltin::ContextGet).is_err());
+        vm.canon_defs = vec![CanonDef {
+            context: Some((ValType::I32, 2)),
+            ..Default::default()
+        }];
+        vm.canon_type_immediate = Some(0);
+        assert!(vm.exec_canon_builtin(CanonBuiltin::ContextGet).is_err());
+
+        vm.canon_defs[0].context = Some((ValType::I64, 1));
+        vm.push(Value::I32(7)).unwrap();
+        assert!(vm.exec_canon_builtin(CanonBuiltin::ContextSet).is_err());
+        let thread = vm.cm_instance.threads.get(vm.current_thread.unwrap()).unwrap();
+        assert!(matches!(thread.storage[1], Value::I32(0)));
     }
 }
 
@@ -27311,6 +31142,7 @@ mod canon_call_cache_tests {
         vm.canon_functypes.push(Some(CanonFuncType {
             params: vec![variant.clone()],
             result: Some(variant.clone()),
+            is_async: false,
         }));
         vm.canon_type_immediate = Some(0);
         let first = vm.canon_call_shape("lift").unwrap();
@@ -27360,6 +31192,28 @@ mod canon_call_cache_tests {
     }
 
     #[test]
+    fn async_canonical_option_requires_async_function_type() {
+        let mut vm = VM::new();
+        vm.canon_defs.push(CanonDef {
+            callee: Some(CalleeRef::Core(0)),
+            functype: Some(0),
+            opts: crate::canon_def::CanonOpts {
+                is_async: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        vm.canon_functypes.push(Some(CanonFuncType::default()));
+        vm.canon_type_immediate = Some(0);
+        let err = vm.canon_call_shape("lift").unwrap_err();
+        assert!(err.message.contains("requires an async function type"));
+        assert!(vm.canon_call_shapes.is_empty());
+
+        vm.canon_functypes[0].as_mut().unwrap().is_async = true;
+        assert!(vm.canon_call_shape("lift").is_ok());
+    }
+
+    #[test]
     fn nested_any_is_rejected_before_layout_is_cached() {
         let mut vm = VM::new();
         vm.canon_defs.push(CanonDef {
@@ -27373,6 +31227,7 @@ mod canon_call_cache_tests {
                 ValType::Variant(vec![("bad".into(), Some(ValType::Any))]),
             )])],
             result: None,
+            is_async: false,
         }));
         vm.canon_type_immediate = Some(0);
         let err = vm.canon_call_shape("lift").unwrap_err();
@@ -27391,6 +31246,7 @@ mod canon_call_cache_tests {
         let ft = CanonFuncType {
             params: vec![ValType::I32],
             result: Some(ValType::I32),
+            is_async: false,
         };
         vm.canon_defs.push(def.clone());
         vm.canon_functypes.push(Some(ft.clone()));
@@ -27409,3 +31265,612 @@ mod canon_call_cache_tests {
         assert_eq!(first.lower, second.lower);
     }
 }
+
+#[cfg(test)]
+mod repeated_pattern_fill_tests {
+    use super::*;
+
+    #[test]
+    fn destination_doubling_matches_all_supported_pattern_widths() {
+        for width in [1usize, 2, 4, 8, 16] {
+            for repetitions in [0usize, 1, 2, 3, 15, 16, 17, 255, 256, 257, 4095, 4096, 4097] {
+                for uniform in [false, true] {
+                    let pattern: Vec<u8> = (0..width).map(|i|
+                        if uniform { 0xa5 } else { (i * 37 + 3) as u8 }).collect();
+                    let mut bytes = vec![0xcc; repetitions * width + 6];
+                    VM::fill_linear_memory_pattern(&mut bytes[3..3 + repetitions * width], &pattern);
+                    assert_eq!(&bytes[..3], &[0xcc; 3]);
+                    assert_eq!(&bytes[3 + repetitions * width..], &[0xcc; 3]);
+                    for (index, &byte) in bytes[3..3 + repetitions * width].iter().enumerate() {
+                        assert_eq!(byte, pattern[index % width]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pattern_fill_perf_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn small_pattern_fill_preserves_unaligned_boundaries_and_tails() {
+        for width in [2usize, 4, 8, 16] {
+            for length in (0..=1024).filter(|length| length % width == 0) {
+                for offset in [0usize, 1, 3, 15] {
+                    for uniform in [false, true] {
+                        let pattern: Vec<u8> = (0..width).map(|i|
+                            if uniform { 0xa5 } else { (i * 37 + 3) as u8 }).collect();
+                        let mut bytes = vec![0xcc; offset + length + 17];
+                        VM::fill_linear_memory_pattern(&mut bytes[offset..offset + length], &pattern);
+                        assert!(bytes[..offset].iter().all(|&byte| byte == 0xcc));
+                        assert!(bytes[offset + length..].iter().all(|&byte| byte == 0xcc));
+                        assert!(bytes[offset..offset + length].iter().enumerate()
+                            .all(|(i, &byte)| byte == pattern[i % width]));
+                    }
+                }
+            }
+        }
+    }
+
+    fn previous_block_fill(dst: &mut [u8], pattern: &[u8]) {
+        let width = pattern.len();
+        if width == 1 { dst.fill(pattern[0]); return; }
+        let block_len = 4096 - 4096 % width;
+        let mut block = [0u8; 4096];
+        block[..width].copy_from_slice(pattern);
+        let mut written = width;
+        while written < block_len {
+            let n = written.min(block_len - written);
+            block.copy_within(0..n, written);
+            written += n;
+        }
+        let mut offset = 0;
+        while offset + block_len <= dst.len() {
+            dst[offset..offset + block_len].copy_from_slice(&block[..block_len]);
+            offset += block_len;
+        }
+        let n = dst.len() - offset;
+        dst[offset..].copy_from_slice(&block[..n]);
+    }
+
+    #[test]
+    #[ignore = "paired old-block/new-pattern kernels; excludes VM dispatch"]
+    fn paired_pattern_fill_kernel_benchmark() {
+        for width in [1usize, 2, 4, 8] {
+            for uniform in [false, true] {
+                for (size, iterations) in [(16usize, 8192), (256, 8192), (4096, 256), (1048576, 8)] {
+                    let pattern: Vec<u8> = (0..width).map(|i|
+                        if uniform { 0xa5 } else { (i * 37 + 3) as u8 }).collect();
+                    let mut dst = vec![0xcc; size];
+                    let mut samples = [Vec::new(), Vec::new()];
+                    for round in 0..15 {
+                        for step in 0..2 {
+                            let index = (round + step) % 2;
+                            let clock = Instant::now();
+                            for _ in 0..iterations {
+                                let dst = std::hint::black_box(dst.as_mut_slice());
+                                let pattern = std::hint::black_box(pattern.as_slice());
+                                if index == 0 { previous_block_fill(dst, pattern); }
+                                else { VM::fill_linear_memory_pattern(dst, pattern); }
+                            }
+                            let ns = clock.elapsed().as_nanos() as f64 / iterations as f64;
+                            assert!(dst.iter().enumerate().all(|(i, &byte)| byte == pattern[i % width]));
+                            if round >= 2 { samples[index].push(ns); }
+                        }
+                    }
+                    for samples in &mut samples { samples.sort_by(f64::total_cmp); }
+                    eprintln!("pattern-fill width={width} uniform={uniform} size={size} old_ns={:.1} new_ns={:.1} new_over_old={:.3}",
+                        samples[0][6], samples[1][6], samples[1][6] / samples[0][6]);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod array_assignment_bulk_tests {
+    use super::*;
+
+    fn same_value(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::I32(a), Value::I32(b)) => a == b,
+            (Value::F32(a), Value::F32(b)) => a.to_bits() == b.to_bits(),
+            (Value::V128(a), Value::V128(b)) => a == b,
+            (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
+            (Value::TypedNull(a), Value::TypedNull(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn every_small_copy_range_preserves_overlap_values_and_reference_identity() {
+        let original: Vec<Value> = (0..18).map(|i| match i % 5 {
+            0 => Value::I32(i),
+            1 => Value::F32(f32::from_bits(0x7f80_0001 + i as u32)),
+            2 => Value::V128([i as u8; 16]),
+            3 => Value::Object(Arc::new(std::sync::Mutex::new(Object::new()))),
+            _ => Value::TypedNull(i as usize),
+        }).collect();
+        for src in 0..=original.len() {
+            for dst in 0..=original.len() {
+                for count in 0..=original.len().saturating_sub(src.max(dst)) {
+                    let mut expected = original.clone();
+                    let snapshot = original[src..src + count].to_vec();
+                    expected[dst..dst + count].clone_from_slice(&snapshot);
+                    let mut actual = original.clone();
+                    let allocation = actual.as_ptr();
+                    VM::copy_array_values_within(&mut actual, dst, src, count);
+                    assert_eq!(allocation, actual.as_ptr());
+                    assert!(actual.iter().zip(&expected).all(|(a, b)| same_value(a, b)),
+                        "src={src} dst={dst} count={count}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gc_ranges_are_unsigned_and_validate_empty_endpoints() {
+        assert_eq!(VM::checked_gc_array_range(0, 0, 0), Some(0..0));
+        assert_eq!(VM::checked_gc_array_range(5, 0, 5), Some(5..5));
+        assert_eq!(VM::checked_gc_array_range(2, 3, 5), Some(2..5));
+        for (index, count) in [(-1, 0), (0, -1), (-1, 1), (6, 0), (4, 2)] {
+            assert!(VM::checked_gc_array_range(index, count, 5).is_none());
+        }
+        for index in 0..=9 {
+            for count in 0..=9 {
+                assert_eq!(VM::checked_gc_array_range(index, count, 8).is_some(),
+                    index as u64 + count as u64 <= 8);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "paired managed-array copy helper benchmark; excludes VM dispatch"]
+    fn overlap_copy_assignment_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        fn previous(values: &mut [Value], dst: usize, src: usize, count: usize) {
+            if dst > src {
+                for i in (0..count).rev() { values[dst + i] = values[src + i].clone(); }
+            } else {
+                for i in 0..count { values[dst + i] = values[src + i].clone(); }
+            }
+        }
+        type Copy = fn(&mut [Value], usize, usize, usize);
+        fn time(copy: Copy, values: &mut [Value], dst: usize, src: usize, count: usize) -> f64 {
+            let start = Instant::now();
+            for _ in 0..1024 {
+                black_box(copy)(black_box(&mut *values), dst, src, count);
+            }
+            start.elapsed().as_secs_f64()
+        }
+        let object = Value::Object(Arc::new(std::sync::Mutex::new(Object::new())));
+        for reference in [false, true] {
+            for (name, dst, src, count) in [
+                ("left-overlap", 0, 1, 1023), ("right-overlap", 1, 0, 1023),
+                ("disjoint", 0, 512, 512), ("identical", 0, 0, 1024),
+            ] {
+                let seed: Vec<Value> = (0..1024).map(|i| if reference {
+                    object.clone()
+                } else { Value::I32(i) }).collect();
+                let mut old = seed.clone();
+                let mut new = seed;
+                let mut ratios = Vec::new();
+                for pair in 0..9 {
+                    let (before, after) = if pair & 1 == 0 {
+                        (time(previous, &mut old, dst, src, count),
+                            time(VM::copy_array_values_within, &mut new, dst, src, count))
+                    } else {
+                        let after = time(VM::copy_array_values_within, &mut new, dst, src, count);
+                        (time(previous, &mut old, dst, src, count), after)
+                    };
+                    assert!(old.iter().zip(&new).all(|(a, b)| same_value(a, b)));
+                    if pair != 0 { ratios.push(before / after); }
+                }
+                ratios.sort_by(f64::total_cmp);
+                eprintln!("array-copy {name} reference={reference} previous/current median {:.3}x; pairs {ratios:?}",
+                    (ratios[3] + ratios[4]) / 2.0);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cached_simd_load_family_execution_tests {
+    use crate::chunk::Chunk;
+    use crate::opcode::Op;
+    use crate::value::Value;
+    use crate::{VM, VMError};
+
+    #[derive(Clone, Copy)]
+    enum Family {
+        Widen(usize, bool),
+        Splat(usize),
+        Zero(usize),
+    }
+
+    fn cases() -> [(Op, Family); 12] {
+        [
+            (Op::V128_LOAD8X8_S, Family::Widen(1, true)),
+            (Op::V128_LOAD8X8_U, Family::Widen(1, false)),
+            (Op::V128_LOAD16X4_S, Family::Widen(2, true)),
+            (Op::V128_LOAD16X4_U, Family::Widen(2, false)),
+            (Op::V128_LOAD32X2_S, Family::Widen(4, true)),
+            (Op::V128_LOAD32X2_U, Family::Widen(4, false)),
+            (Op::V128_LOAD8_SPLAT, Family::Splat(1)),
+            (Op::V128_LOAD16_SPLAT, Family::Splat(2)),
+            (Op::V128_LOAD32_SPLAT, Family::Splat(4)),
+            (Op::V128_LOAD64_SPLAT, Family::Splat(8)),
+            (Op::V128_LOAD32_ZERO, Family::Zero(4)),
+            (Op::V128_LOAD64_ZERO, Family::Zero(8)),
+        ]
+    }
+
+    fn leb(code: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let low = (value & 0x7f) as u8;
+            value >>= 7;
+            code.push(low | if value == 0 { 0 } else { 0x80 });
+            if value == 0 { break; }
+        }
+    }
+
+    fn program(op: Op, base: i32, flags: Option<u32>, offset: u64) -> Chunk {
+        let mut chunk = Chunk::new("cached SIMD load family");
+        chunk.result_arity = 1;
+        if flags.is_some_and(|flags| flags & 0x100 != 0) {
+            let name = chunk.add_constant(Value::String(std::sync::Arc::from("address64")));
+            chunk.emit_op_u32(Op::GLOBAL_GET, name, 1);
+        } else {
+            chunk.emit_i32_const(base, 1);
+        }
+        chunk.emit_op(op, 1);
+        if let Some(flags) = flags {
+            leb(&mut chunk.code, flags as u64);
+            leb(&mut chunk.code, offset);
+            if flags & 0x40 != 0 { leb(&mut chunk.code, 0); }
+        }
+        chunk.emit_op(Op::RETURN, 1);
+        chunk
+    }
+
+    fn initialized_vm() -> (VM, Vec<u8>) {
+        let vm = VM::new();
+        let input: Vec<u8> = (0..512).map(|i| ((i * 73 + 131) & 255) as u8).collect();
+        vm.memory.with_buffer_mut(|memory| {
+            memory.clear();
+            memory.extend_from_slice(&input);
+            Ok::<(), VMError>(())
+        }).unwrap();
+        (vm, input)
+    }
+
+    fn expected(family: Family, input: &[u8]) -> [u8; 16] {
+        let mut out = [0; 16];
+        match family {
+            Family::Widen(width, signed) => {
+                for (source, destination) in input[..8].chunks_exact(width)
+                    .zip(out.chunks_exact_mut(width * 2)) {
+                    destination.fill(if signed && source[width - 1] & 0x80 != 0 { 0xff } else { 0 });
+                    destination[..width].copy_from_slice(source);
+                }
+            }
+            Family::Splat(width) => {
+                for destination in out.chunks_exact_mut(width) {
+                    destination.copy_from_slice(&input[..width]);
+                }
+            }
+            Family::Zero(width) => out[..width].copy_from_slice(&input[..width]),
+        }
+        out
+    }
+
+    #[test]
+    fn extended_loads_preserve_bytes_for_cached_and_fallback_encodings() {
+        for (op, family) in cases() {
+            for (flags, offset) in [(None, 0), (Some(0x80), 7), (Some(0xc0), 11), (Some(0x180), 13)] {
+                for aliased in [false, true] {
+                    let (mut vm, input) = initialized_vm();
+                    let alias = aliased.then(|| vm.memory.clone());
+                    vm.set_global("address64", Value::I64(3));
+                    let result = vm.run(vec![program(op, 3, flags, offset)]).unwrap();
+                    let reference = expected(family, &input[3 + offset as usize..]);
+                    assert!(matches!(result, Value::V128(bytes) if bytes == reference),
+                        "op={op:?} flags={flags:?} offset={offset} aliased={aliased}");
+                    assert_eq!(vm.memory.read_array::<16>(0), Ok(input[..16].try_into().unwrap()));
+                    drop(alias);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "paired extended SIMD execution benchmark"]
+    fn paired_extended_load_execution_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const OPERATIONS: usize = 16_384;
+        const PAIRS: usize = 9;
+
+        fn workload(op: Op, explicit: bool) -> Chunk {
+            let mut chunk = Chunk::new("extended SIMD execution benchmark");
+            chunk.result_arity = 1;
+            for _ in 0..OPERATIONS {
+                chunk.emit_i32_const(128, 1);
+                chunk.emit_i32_const(3, 1);
+                chunk.emit_op(op, 1);
+                leb(&mut chunk.code, if explicit { 0xc0 } else { 0x80 });
+                leb(&mut chunk.code, 7);
+                if explicit {
+                    leb(&mut chunk.code, 0);
+                }
+                chunk.emit_op(Op::V128_STORE, 1);
+                leb(&mut chunk.code, 0x80);
+                leb(&mut chunk.code, 0);
+            }
+            chunk.emit_i32_const(128, 1);
+            chunk.emit_op(Op::V128_LOAD, 1);
+            leb(&mut chunk.code, 0x80);
+            leb(&mut chunk.code, 0);
+            chunk.emit_op(Op::RETURN, 1);
+            chunk
+        }
+
+        for (op, family) in cases() {
+            for shared in [false, true] {
+                let mut ratios = Vec::with_capacity(PAIRS);
+                let mut cached_times = Vec::with_capacity(PAIRS);
+                let mut fallback_times = Vec::with_capacity(PAIRS);
+                for pair in 0..PAIRS {
+                    let mut times = [0.0; 2];
+                    for explicit in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                        let chunk = workload(op, explicit);
+                        let (mut vm, input) = initialized_vm();
+                        let alias = shared.then(|| vm.memory.clone());
+                        let start = Instant::now();
+                        let result = black_box(vm.run(vec![chunk]).unwrap());
+                        times[usize::from(explicit)] = start.elapsed().as_secs_f64();
+                        match result {
+                            Value::V128(bytes) => assert_eq!(bytes, expected(family, &input[10..])),
+                            other => panic!("unexpected SIMD benchmark result: {other:?}"),
+                        }
+                        drop(alias);
+                    }
+                    assert!(times.iter().all(|time| time.is_finite() && *time > 0.0));
+                    ratios.push(times[0] / times[1]);
+                    cached_times.push(times[0]);
+                    fallback_times.push(times[1]);
+                }
+                ratios.sort_by(f64::total_cmp);
+                cached_times.sort_by(f64::total_cmp);
+                fallback_times.sort_by(f64::total_cmp);
+                println!(
+                    "extended SIMD op={op:?} shared={shared} operations={OPERATIONS} cached_ms={:.3} fallback_ms={:.3} paired_ratio={:.6}; VM run includes decode/setup, explicit fallback has one additional immediate byte",
+                    cached_times[PAIRS / 2] * 1000.0,
+                    fallback_times[PAIRS / 2] * 1000.0,
+                    ratios[PAIRS / 2],
+                );
+            }
+        }
+    }
+
+    fn compact_extended_load_workload(op: Op, explicit: bool) -> Chunk {
+        let mut chunk = Chunk::new("compact extended SIMD loop");
+        chunk.result_arity = 1;
+        let counter = chunk.add_constant(Value::String(std::sync::Arc::from("simd_iterations")));
+        chunk.emit_op(Op::LOOP, 1);
+        // Normalized blocktype is (parameter arity, result arity), not
+        // the standard binary format's signed blocktype immediate.
+        chunk.emit(0, 1);
+        chunk.emit(0, 1);
+        chunk.emit_i32_const(128, 1);
+        chunk.emit_i32_const(3, 1);
+        chunk.emit_op(op, 1);
+        leb(&mut chunk.code, if explicit { 0xc0 } else { 0x80 });
+        leb(&mut chunk.code, 7);
+        if explicit {
+            leb(&mut chunk.code, 0);
+        }
+        chunk.emit_op(Op::V128_STORE, 1);
+        leb(&mut chunk.code, 0x80);
+        leb(&mut chunk.code, 0);
+        chunk.emit_op_u32(Op::GLOBAL_GET, counter, 1);
+        chunk.emit_i32_const(1, 1);
+        chunk.emit_op(Op::I32_SUB, 1);
+        chunk.emit_op_u32(Op::GLOBAL_SET, counter, 1);
+        chunk.emit_op_u32(Op::GLOBAL_GET, counter, 1);
+        chunk.emit_op(Op::BR_IF, 1);
+        leb(&mut chunk.code, 0);
+        chunk.emit_op(Op::END, 1);
+        chunk.emit_op_u32(Op::GLOBAL_GET, counter, 1);
+        chunk.emit_op(Op::RETURN, 1);
+        chunk
+    }
+
+    #[test]
+    fn compact_extended_load_loop_preserves_iteration_count_and_bytes() {
+        for (op, family) in cases() {
+            for explicit in [false, true] {
+                for iterations in [1, 2, 17] {
+                    let (mut vm, input) = initialized_vm();
+                    vm.set_global("simd_iterations", Value::I32(iterations));
+                    let result = vm.run(vec![compact_extended_load_workload(op, explicit)]).unwrap();
+                    match result {
+                        Value::I32(counter) => assert_eq!(counter, 0),
+                        other => panic!("unexpected compact SIMD result: {other:?}"),
+                    }
+                    assert_eq!(vm.memory.read_array::<16>(128).unwrap(), expected(family, &input[10..]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "compact-loop SIMD execution benchmark"]
+    fn paired_compact_extended_load_execution_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        const ITERATIONS: i32 = 65_536;
+        const PAIRS: usize = 7;
+
+        for (op, family) in cases() {
+            for shared in [false, true] {
+                let mut ratios = Vec::with_capacity(PAIRS);
+                let mut cached_times = Vec::with_capacity(PAIRS);
+                let mut fallback_times = Vec::with_capacity(PAIRS);
+                for pair in 0..PAIRS {
+                    let mut times = [0.0; 2];
+                    for explicit in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                        let chunk = compact_extended_load_workload(op, explicit);
+                        assert!(chunk.code.len() < 128, "fixture must stay compact");
+                        let (mut vm, input) = initialized_vm();
+                        vm.set_global("simd_iterations", Value::I32(ITERATIONS));
+                        let alias = shared.then(|| vm.memory.clone());
+                        let start = Instant::now();
+                        let result = black_box(vm.run(vec![chunk]).unwrap());
+                        times[usize::from(explicit)] = start.elapsed().as_secs_f64();
+                        assert!(matches!(result, Value::I32(0)));
+                        assert_eq!(vm.memory.read_array::<16>(128).unwrap(), expected(family, &input[10..]));
+                        drop(alias);
+                    }
+                    assert!(times.iter().all(|time| time.is_finite() && *time > 0.0));
+                    ratios.push(times[0] / times[1]);
+                    cached_times.push(times[0]);
+                    fallback_times.push(times[1]);
+                }
+                ratios.sort_by(f64::total_cmp);
+                cached_times.sort_by(f64::total_cmp);
+                fallback_times.sort_by(f64::total_cmp);
+                println!(
+                    "compact SIMD op={op:?} shared={shared} iterations={ITERATIONS} cached_ms={:.3} fallback_ms={:.3} paired_ratio={:.6}; includes constant-size setup and global-counter loop overhead",
+                    cached_times[PAIRS / 2] * 1000.0,
+                    fallback_times[PAIRS / 2] * 1000.0,
+                    ratios[PAIRS / 2],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn extended_loads_trap_on_end_crossing_and_wide_displacements() {
+        for (op, family) in cases() {
+            let width = match family { Family::Widen(_, _) => 8, Family::Splat(n) | Family::Zero(n) => n };
+            for (base, offset) in [(512 - width as i32 + 1, 0), (3, 0x8000_0000)] {
+                let (mut vm, input) = initialized_vm();
+                assert!(vm.run(vec![program(op, base, Some(0x80), offset)]).is_err(), "op={op:?}");
+                assert_eq!(vm.memory.read_array::<16>(0), Ok(input[..16].try_into().unwrap()));
+            }
+        }
+    }
+}
+
+#[path = "v128_copy.rs"]
+mod v128_copy;
+
+#[cfg(test)]
+#[path = "value_assignment.rs"]
+mod owned_value_assignment;
+
+#[cfg(test)]
+mod masked_byte_prefix_reuse_tests {
+    use super::*;
+
+    #[test]
+    fn cache_hot_pattern_reuse_preserves_partial_tails_and_last_values() {
+        for period in [1usize, 2, 4, 8, 16, 256, 1024, 4096, 8192] {
+            let values: Vec<Value> = (0..period).map(|i| Value::I32(i as i32 * 37 - 513)).collect();
+            let mask = period as u32 - 1;
+            for len in [period, period + 1, period * 3 + 7, 16_387, 1_048_583] {
+                if len < period { continue; }
+                for start in [0, period as u32, 0u32.wrapping_sub(period as u32)] {
+                    let mut actual = vec![0xa5; len];
+                    let last = copy_power2_masked_values_to_bytes(&mut actual, &values, start, mask);
+                    for (offset, byte) in actual.iter().enumerate() {
+                        let index = (start.wrapping_add(offset as u32) & mask) as usize;
+                        assert_eq!(*byte, (index as i32 * 37 - 513) as u8);
+                    }
+                    let index = (start.wrapping_add((len - 1) as u32) & mask) as usize;
+                    assert!(matches!(last, Some(Value::I32(value)) if value == index as i32 * 37 - 513));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ineligible_masked_copy_does_not_mutate_destination() {
+        let values = vec![Value::I32(7); 8];
+        for (len, start, mask) in [(0, 0, 0), (3, 0, 7), (16, 1, 7), (16, 0, 5), (16, 0, 15), (16, 0, u32::MAX)] {
+            let mut bytes = vec![0xa5; len];
+            assert!(copy_power2_masked_values_to_bytes(&mut bytes, &values, start, mask).is_none());
+            assert!(bytes.iter().all(|byte| *byte == 0xa5));
+        }
+    }
+
+    #[test]
+    #[ignore = "paired managed-byte repeated-pattern throughput measurement"]
+    fn paired_masked_byte_prefix_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        type Copier = fn(&mut [u8], &[Value], u32, u32) -> Option<Value>;
+        #[inline(never)]
+        fn previous(dst: &mut [u8], values: &[Value], start: u32, mask: u32) -> Option<Value> {
+            let period = mask.checked_add(1)? as usize;
+            if period == 0 || !period.is_power_of_two() || period > values.len()
+                || dst.len() < period || start & mask != 0 { return None; }
+            for i in 0..period { dst[i] = value_to_i32_byte(&values[i]); }
+            let mut filled = period;
+            while filled < dst.len() {
+                let n = (dst.len() - filled).min(filled);
+                let (prefix, tail) = dst.split_at_mut(filled);
+                tail[..n].copy_from_slice(&prefix[..n]);
+                filled += n;
+            }
+            values.get((start.wrapping_add((dst.len() - 1) as u32) & mask) as usize).cloned()
+        }
+        fn sample(copier: Copier, dst: &mut [u8], values: &[Value], mask: u32) -> f64 {
+            let start = Instant::now();
+            black_box(black_box(copier)(black_box(dst), black_box(values), 0, mask));
+            start.elapsed().as_secs_f64()
+        }
+        for period in [1usize, 2, 4, 8, 16, 128, 256, 512, 1024, 2048, 4096, 8192] {
+            let values: Vec<Value> = (0..period).map(|i| Value::I32(i as i32 * 37 - 513)).collect();
+            for len in [32_768usize, 1_048_576, 16_777_216] {
+                let mut dst = vec![0u8; len];
+                let mask = period as u32 - 1;
+                let old = black_box(previous as Copier);
+                let new = black_box(copy_power2_masked_values_to_bytes as Copier);
+                sample(old, &mut dst, &values, mask);
+                sample(new, &mut dst, &values, mask);
+                let mut ratios = Vec::new();
+                for pair in 0..21 {
+                    let mut times = [0.0; 2];
+                    for candidate in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                        times[usize::from(candidate)] = sample(if candidate { new } else { old }, &mut dst, &values, mask);
+                        assert_eq!(dst[0], 255);
+                        assert_eq!(dst[len - 1], (((len - 1) & (period - 1)) as i32 * 37 - 513) as u8);
+                    }
+                    assert!(times.iter().all(|time| time.is_finite() && *time > 0.0));
+                    ratios.push(times[1] / times[0]);
+                }
+                ratios.sort_by(f64::total_cmp);
+                println!("masked-byte period={period} bytes={len} candidate/previous={:.6}; helper only, no new scratch allocation", ratios[10]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "gc_vector_data_tests.rs"]
+mod gc_vector_data_tests;
+
+#[cfg(test)]
+#[path = "gc_reference_data_tests.rs"]
+mod gc_reference_data_tests;
+
+#[cfg(test)]
+#[path = "gc_uniform_init_tests.rs"]
+mod gc_uniform_init_tests;

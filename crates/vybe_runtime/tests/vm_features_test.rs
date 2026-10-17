@@ -267,7 +267,8 @@ fn call_indirect_basic() {
         upvalues: vec![],
     };
     let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: indexmap::IndexMap::new(),
+        descriptor: None,
+            properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(func),
         type_id: 0,
         fields: Vec::new(),

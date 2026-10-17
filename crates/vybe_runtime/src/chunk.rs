@@ -201,6 +201,8 @@ pub enum CompositeKind {
     Array,
     /// `(func …)` — a function signature type.
     Func,
+    /// `(cont …)` — a stack-switching continuation type.
+    Cont,
 }
 
 /// A compile-time type definition — WASM GC type section entry.
@@ -215,6 +217,8 @@ pub enum CompositeKind {
 #[derive(Debug, Clone, Default)]
 pub struct TypeEntry {
     pub name: String,
+    /// Native Wasm structural identity; names remain diagnostic for these rows.
+    pub native_identity: Option<crate::native_gc::TypeIdentity>,
     /// WASM GC composite shape (struct / array / func). Determines the runtime
     /// rtt kind stamped onto instances so `array.*` ops trap per spec.
     pub kind: CompositeKind,
@@ -273,8 +277,14 @@ pub enum ConstExpr {
     /// Create a function reference from a chunk index.
     /// Evaluated at load time — produces a callable Function object.
     RefFunc(usize),
+    /// A function in the native module's imported-function index space.
+    ImportedRefFunc(u32),
     /// `ref.i31 c` — an unboxed i31ref (WASM 3.0 GC).
     RefI31(Box<ConstExpr>),
+    /// Standard GC allocation in a constant expression. Field expressions are
+    /// immutable definition data; instances allocate their own field values.
+    StructNew { typeidx: u16, fields: std::sync::Arc<[ConstExpr]> },
+    StructNewDefault { typeidx: u16 },
     /// `array.new_default $t n` — a defaulted GC array. `typeidx` is the
     /// 1-based script-chunk type-table index (0 = dynamic), the same
     /// immediate `Op::ARRAY_NEW_DEFAULT` carries, so both paths resolve the
@@ -324,6 +334,49 @@ pub struct ActiveElementSegment {
     pub table_index: u32,
     pub offset: u64,
     pub elem_index: u32,
+}
+
+#[derive(Debug, Clone)]
+pub enum NativeSegmentMode {
+    Passive,
+    Declarative,
+    Active { index: u32, offset: ConstExpr },
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeElementSegment {
+    pub mode: NativeSegmentMode,
+    /// Heap type, nullability, exactness, and sharedness, in native type space.
+    pub reference_type: (crate::opcode::heaptype::HeapType, bool, bool, bool),
+    pub items: std::sync::Arc<[ConstExpr]>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NativeSegments {
+    /// Declared native type index for each function import, in import order.
+    pub function_import_types: Vec<u32>,
+    /// Imported globals followed by definitions, in native global-index order.
+    pub global_types: Vec<NativeGlobalType>,
+    /// Data bytes remain in `Chunk::data_segments`, in the same index order.
+    pub data_modes: Vec<NativeSegmentMode>,
+    pub elements: Vec<NativeElementSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeValueType {
+    I32,
+    I64,
+    F32,
+    F64,
+    V128,
+    Ref((crate::opcode::heaptype::HeapType, bool, bool, bool)),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeGlobalType {
+    pub value_type: NativeValueType,
+    pub mutable: bool,
+    pub shared: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,6 +433,17 @@ impl LocalName {
     }
 }
 
+/// Truthful standard defined-function call edge, independent of public funcref
+/// carrier allocation. Target is MODULE-RELATIVE Chunk index, not VM-wide.
+/// The signature is copied from the target and validated before execution/write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectDefinedCall {
+    pub target: u32,
+    pub source: bool,
+    pub params: String,
+    pub results: String,
+}
+
 /// A compiled chunk of bytecode — one per function/script.
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -393,12 +457,17 @@ pub struct Chunk {
     /// whole pool on every call, and since every global access and every
     /// string constant now routes through it, that was quadratic in the
     /// number of constants.
-    string_constants: std::collections::HashMap<String, u32, FxBuildHasher>,
-    pub lines: Vec<u32>,
+    /// Clones share this emission index; later emission takes a private copy.
+    /// Cache replay therefore avoids copying every interned string key.
+    string_constants: std::sync::Arc<std::collections::HashMap<String, u32, FxBuildHasher>>,
+    pub lines: crate::source_lines::LineTable,
     pub name: String,
     /// Compilation-unit provenance for file-qualified debugger breakpoints.
     /// Shared by the unit's chunks; never consulted by normal execution.
     pub source_path: Option<std::sync::Arc<str>>,
+    /// Trusted compiler admission identity for a fixed shared runtime recipe.
+    /// Process-local only: binary/debug metadata readers must leave this None.
+    pub runtime_helper_receipt: Option<crate::shared_provider::RuntimeHelperReceipt>,
     pub arity: u8,
     pub local_count: u16,
     /// Debug metadata: every local the compiler defined in this chunk (params
@@ -417,21 +486,13 @@ pub struct Chunk {
     /// Import table — only on the script chunk (chunk 0).
     /// Each entry is a (module, name) pair.
     /// CallHost operand indexes into this table.
-    pub imports: Vec<Import>,
-    /// Deduplication index for `imports`; the vector remains the ordered ABI.
-    import_indices: std::collections::HashMap<
-        String, std::collections::HashMap<String, u16, FxBuildHasher>, FxBuildHasher,
-    >,
-    indexed_import_count: usize,
+    pub imports: crate::import_table::ImportTable,
     /// Imported **globals** — a separate index space from `imports`, exactly
     /// as in WASM, where each import kind numbers independently and only
     /// function imports are reachable by `call`. Keeping them apart is what
     /// stops a declared global from shifting the function indices that
     /// `CALL_IMPORT` operands carry.
-    pub global_imports: Vec<Import>,
-    /// Lookup index for the ordered global import table. Unlike `imports`,
-    /// global imports are only extended through `add_global_import`.
-    global_import_indices: std::collections::HashMap<(String, String), u16, FxBuildHasher>,
+    pub global_imports: crate::import_table::ImportTable,
     /// The module's GLOBAL INDEX SPACE — `global_imports` first, then
     /// module-defined globals, exactly as WASM numbers them.
     /// `GLOBAL_GET`/`GLOBAL_SET` operands index THIS, not a per-chunk constant
@@ -451,7 +512,11 @@ pub struct Chunk {
     /// was handed, and the fix was threading the table through every caller,
     /// which dragged `cli.rs` in. An `Arc` clone per chunk costs a pointer and
     /// removes the parameter entirely.
-    pub globals: Arc<Vec<String>>,
+    pub globals: Arc<crate::segmented_global_names::SegmentedGlobalNames>,
+    /// Native core modules own their defined globals per instantiation.
+    /// Imported globals remain shared; source-language shared bindings do not
+    /// set this marker. The count is in the original module global index space.
+    pub native_global_import_count: Option<u32>,
     /// The module's CANON SECTION — `canonidx -> CanonDef`.
     ///
     /// Shared by every chunk exactly as [`Self::globals`] is, and for the same
@@ -480,6 +545,9 @@ pub struct Chunk {
     /// The component FUNCTION index space: comp funcidx -> defining canonidx.
     /// What `CalleeRef::Component` resolves through.
     pub component_funcs: Arc<Vec<Option<u32>>>,
+    pub component_func_links: Arc<Vec<crate::canon_def::ComponentFuncLink>>,
+    /// Instantiation-only binding metadata; absent on programs without instance imports.
+    pub component_instance_links: Option<Arc<crate::component_instance_link::InstanceLinkMetadata>>,
     /// Type table — WASM GC type section. Only on the script chunk (chunk 0).
     /// Each entry defines a class type with fields and vtable methods.
     /// Loaded into VM's TypeRegistry before execution.
@@ -526,6 +594,10 @@ pub struct Chunk {
     /// desynchronised every bytecode walker past a call tag. A side table keyed
     /// by opcode offset touches the writer only: no VM change, no walker
     /// change, no width change.
+    /// Actual source callable environment fact, separate from reserved capture
+    /// local storage. None means the producer supplied no such proof.
+    pub direct_entry_has_captures: Option<bool>,
+    pub direct_defined_calls: std::collections::BTreeMap<usize, DirectDefinedCall>,
     pub block_i32_results: std::collections::HashSet<usize>,
 
     /// Local SLOTS that hold a raw `i64` for their whole life.
@@ -615,6 +687,9 @@ pub struct Chunk {
     /// Declared reference tables for modules decoded from standard WASM.
     /// Entries are minimum element counts, in spec table-index order.
     pub table_min_sizes: Vec<u64>,
+    /// Reference type per declared table: heap type, nullable, exact, shared heap.
+    pub table_element_types: Vec<(crate::opcode::heaptype::HeapType, bool, bool, bool)>,
+    pub table_is_shared: Vec<bool>,
     /// Optional maximum element count per table (aligns with `table_min_sizes`).
     /// `table.grow` past this returns -1 (WASM spec). `None` = unbounded.
     pub table_max_sizes: Vec<Option<u64>>,
@@ -649,6 +724,8 @@ pub struct Chunk {
     pub active_data_segments: Vec<ActiveDataSegment>,
     /// Active element segments to instantiate before executing decoded WASM.
     pub active_elem_segments: Vec<ActiveElementSegment>,
+    /// Standard native declarations, shared across immutable module copies.
+    pub native_segments: Option<std::sync::Arc<NativeSegments>>,
     /// Stack-switching handler vectors keyed by bytecode opcode offset.
     pub stack_switch_handlers: BTreeMap<usize, Vec<StackSwitchHandler>>,
     /// Does argument 0 of this function bind the RECEIVER — ECMA-262 §10.2.1
@@ -743,6 +820,7 @@ pub struct Chunk {
     /// `None` for chunks that are not wast functions — those never carry a
     /// declared WASM function type.
     pub func_sig: Option<(String, String)>,
+    pub native_func_type: Option<crate::native_gc::TypeIdentity>,
     /// The NAME of the function type this wast function was DECLARED with —
     /// `(func $f (type $t) …)` → `$t`, module-qualified.
     ///
@@ -881,25 +959,26 @@ impl Chunk {
         Chunk {
             code: Vec::new(),
             constants: Vec::new(),
-            string_constants: std::collections::HashMap::default(),
-            lines: Vec::new(),
+            string_constants: Default::default(),
+            lines: crate::source_lines::LineTable::for_emission(),
             name: name.into(),
             source_path: None,
+            runtime_helper_receipt: None,
             arity: 0,
             local_count: 0,
             local_names: Vec::new(),
             user_code_offset: None,
             dup_slot: None,
-            imports: Vec::new(),
-            import_indices: std::collections::HashMap::default(),
-            indexed_import_count: 0,
-            global_imports: Vec::new(),
-            global_import_indices: std::collections::HashMap::default(),
-            globals: Arc::new(Vec::new()),
+            imports: Default::default(),
+            global_imports: Default::default(),
+            globals: Arc::new(Default::default()),
+            native_global_import_count: None,
             canon_section: Arc::new(Vec::new()),
             canon_functypes: Arc::new(Vec::new()),
             canon_valtypes: Arc::new(Vec::new()),
             component_funcs: Arc::new(Vec::new()),
+            component_func_links: Arc::new(Vec::new()),
+            component_instance_links: None,
             types: Vec::new(),
             exception_tags: Vec::new(),
             tags: Vec::new(),
@@ -911,6 +990,8 @@ impl Chunk {
             module_receiver_abi: ReceiverAbi::Ambient,
             module_members_on_prototype: false,
             module_instance_fields_are_own_properties: false,
+            direct_entry_has_captures: None,
+            direct_defined_calls: std::collections::BTreeMap::new(),
             block_i32_results: std::collections::HashSet::new(),
             i64_locals: std::collections::HashSet::new(),
             i64_scratch_slot: None,
@@ -925,6 +1006,8 @@ impl Chunk {
             memory_max_pages: Vec::new(),
             memory_is_64: Vec::new(),
             table_min_sizes: Vec::new(),
+            table_element_types: Vec::new(),
+            table_is_shared: Vec::new(),
             table_max_sizes: Vec::new(),
             table_is_64: Vec::new(),
             data_segments: Vec::new(),
@@ -932,11 +1015,13 @@ impl Chunk {
             passive_elem_items: Vec::new(),
             active_data_segments: Vec::new(),
             active_elem_segments: Vec::new(),
+            native_segments: None,
             stack_switch_handlers: BTreeMap::new(),
             result_arity: 1,
             is_method: false,
             param_count: 0,
             func_sig: None,
+            native_func_type: None,
             type_rec_shape: std::collections::HashMap::new(),
             declared_func_type: None,
             is_async: false,
@@ -960,47 +1045,21 @@ impl Chunk {
     }
 
     pub fn add_import(&mut self, module: impl AsRef<str>, name: impl AsRef<str>) -> u16 {
-        // Linkers and tests may replace the public vector directly. Rebuild
-        // after a length change, while the normal emission path stays O(1).
-        if self.indexed_import_count != self.imports.len() {
-            self.import_indices.clear();
-            for (i, import) in self.imports.iter().enumerate() {
-                self.import_indices
-                    .entry(import.module.clone())
-                    .or_default()
-                    .entry(import.name.clone())
-                    .or_insert(i as u16);
-            }
-            self.indexed_import_count = self.imports.len();
-        }
-        let module = module.as_ref();
-        let name = name.as_ref();
-        // Most emission sites reuse an import. Borrow both keys so a hit
-        // allocates no strings; the ordered vector still owns the ABI names.
-        if let Some(&index) = self.import_indices.get(module).and_then(|names| names.get(name)) {
-            return index;
-        }
-        let index = self.imports.len() as u16;
-        self.imports.push(Import { module: module.to_owned(), name: name.to_owned() });
-        self.import_indices.entry(module.to_owned()).or_default().insert(name.to_owned(), index);
-        self.indexed_import_count = self.imports.len();
-        index
+        self.imports.intern(module.as_ref(), name.as_ref())
     }
 
-    /// Declare an imported **global** and return its index in the global
-    /// import space. Deduplicated on `(module, name)` — two references to the
-    /// same import are the same global, as in WASM.
+    /// Declare an imported global in its separate ordered index space.
+    /// Public mutable table access invalidates the interning index before use.
     pub fn add_global_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
         let module = module.into();
         let name = name.into();
-        let key = (module.clone(), name.clone());
-        if let Some(&index) = self.global_import_indices.get(&key) {
-            return index;
-        }
-        let index = self.global_imports.len() as u16;
-        self.global_imports.push(Import { module, name });
-        self.global_import_indices.insert(key, index);
-        index
+        self.global_imports.intern(&module, &name)
+    }
+
+    /// Borrowed-name entry point: a hit allocates no lookup keys and does not
+    /// rescan the table unless a public mutable borrow invalidated its index.
+    pub fn intern_global_import(&mut self, module: &str, name: &str) -> u16 {
+        self.global_imports.intern(module, name)
     }
 
     /// Intern a string in the constant pool. The pool is read-only at run
@@ -1012,7 +1071,7 @@ impl Chunk {
             return i;
         }
         let idx = self.add_constant(Value::String(std::sync::Arc::from(s)));
-        self.string_constants.insert(s.to_string(), idx);
+        std::sync::Arc::make_mut(&mut self.string_constants).insert(s.to_string(), idx);
         idx
     }
 
@@ -1123,7 +1182,7 @@ impl Chunk {
 
     fn emit_bytes<const N: usize>(&mut self, bytes: [u8; N], line: u32) {
         self.code.extend_from_slice(&bytes);
-        self.lines.extend_from_slice(&[line; N]);
+        self.lines.extend_repeated::<N>(line);
     }
 
     /// Emit an opcode's 4 bytes. Ops WITH immediates legitimately come through
@@ -1397,7 +1456,7 @@ impl Chunk {
     /// Get the source line number for a bytecode offset.
     /// Returns None if no line info is available for that offset.
     pub fn get_line(&self, offset: usize) -> Option<u32> {
-        self.lines.get(offset).copied().filter(|&l| l > 0)
+        self.lines.value_at(offset).copied().filter(|&l| l > 0)
     }
 
     pub fn emit_loop(&mut self, target_offset: usize, line: u32) {
@@ -1610,6 +1669,31 @@ impl Chunk {
     /// Emit spec `call`: [op, funcidx_hi, funcidx_lo, argc]. The funcidx is
     /// chunk-scoped (this chunk's import table); argc is VM-internal — the
     /// .wasm writer drops it and serializes `0x10` + LEB(funcidx).
+    /// Emit a standard direct defined-function edge. No funcref is pushed,
+    /// canonicalized or added to a language-observable table.
+    pub fn emit_direct_defined_call(&mut self, target: u32, callee: &Chunk, tail: bool, line: u32) -> Result<(), String> {
+        if (callee.direct_entry_has_captures == Some(true) || (callee.capture_count != 0 && callee.direct_entry_has_captures != Some(false))) || callee.is_async || callee.is_generator {
+            return Err("direct defined call requires an explicit environment/continuation adapter".into());
+        }
+        let (params, results) = callee.func_sig.clone().unwrap_or_else(|| (
+            vec!["externref"; usize::from(callee.arity)].join(","),
+            vec!["externref"; usize::from(callee.result_arity)].join(",")));
+        let caller_results = self.func_sig.as_ref().map(|(_,r)|r.clone()).unwrap_or_else(||
+            vec!["externref"; usize::from(self.result_arity)].join(","));
+        if tail && caller_results != results {
+            return Err("return_call result signature differs from caller".into());
+        }
+        let argc=u8::try_from(params.split(',').filter(|s|!s.is_empty()).count()).map_err(|_|"direct arity exceeds current IR u8")?;
+        let output=u8::try_from(results.split(',').filter(|s|!s.is_empty()).count()).map_err(|_|"direct result count exceeds current IR u8")?;
+        let at = self.code.len();
+        if tail { self.emit_op_u8_u8(Op::RETURN_CALL, argc, output, line); }
+        else { self.emit_call_bytes(0, argc, line); }
+        self.direct_defined_calls.insert(at, DirectDefinedCall {
+            target, source: callee.func_sig.is_none(), params, results,
+        });
+        Ok(())
+    }
+
     pub fn emit_call(&mut self, import_idx: u16, argc: u8, line: u32) {
         // Every host call funnels through here — the 282 `emit_host_call`
         // sites and the 181 that reach for `emit_call` directly. Checking at
@@ -1629,10 +1713,15 @@ impl Chunk {
                 );
             }
         }
-        self.emit_op(Op::CALL, line);
-        self.emit((import_idx >> 8) as u8, line);
-        self.emit((import_idx & 0xff) as u8, line);
-        self.emit(argc, line);
+        self.emit_call_bytes(import_idx, argc, line);
+    }
+
+    // A direct defined-function edge carries a placeholder import operand;
+    // it must not validate that placeholder against a host declaration.
+    fn emit_call_bytes(&mut self, import_idx: u16, argc: u8, line: u32) {
+        let [a, b, c, d] = Op::CALL.encode();
+        let [hi, lo] = import_idx.to_be_bytes();
+        self.emit_bytes([a, b, c, d, hi, lo, argc], line);
     }
 
     /// Emit DUP via local.tee + local.get with a shared scratch local.
@@ -1663,18 +1752,16 @@ impl Chunk {
 
     /// Emit f32.const (4 raw LE bytes).
     pub fn emit_f32_const(&mut self, value: f32, line: u32) {
-        self.emit_op(Op::F32_CONST, line);
-        for b in value.to_le_bytes() {
-            self.emit(b, line);
-        }
+        let [a, b, c, d] = Op::F32_CONST.encode();
+        let [e, f, g, h] = value.to_le_bytes();
+        self.emit_bytes([a, b, c, d, e, f, g, h], line);
     }
 
     /// Emit f64.const (8 raw LE bytes).
     pub fn emit_f64_const(&mut self, value: f64, line: u32) {
-        self.emit_op(Op::F64_CONST, line);
-        for b in value.to_le_bytes() {
-            self.emit(b, line);
-        }
+        let [a, b, c, d] = Op::F64_CONST.encode();
+        let [e, f, g, h, i, j, k, l] = value.to_le_bytes();
+        self.emit_bytes([a, b, c, d, e, f, g, h, i, j, k, l], line);
     }
 
     /// Emit `ref.test` / `ref.cast` / their `_null` variants with a HEAPTYPE
@@ -1695,7 +1782,7 @@ impl Chunk {
     /// The import's field name IS the value, so nothing is called and nothing
     /// is encoded: the constant reaches the module through its own import.
     pub fn emit_string_const(&mut self, s: &str, line: u32) {
-        self.add_global_import(STRING_CONSTANTS_MODULE, s);
+        self.intern_global_import(STRING_CONSTANTS_MODULE, s);
         let key = imported_global_key(STRING_CONSTANTS_MODULE, s);
         let ci = self.intern_string_constant(&key);
         self.emit_op_u32(Op::GLOBAL_GET, ci, line);
@@ -1706,5 +1793,159 @@ impl Chunk {
         self.emit_i32_const(if value { 1 } else { 0 }, line);
         let idx = self.add_import("wasm:js-boolean", "fromI32");
         self.emit_call(idx, 1, line);
+    }
+}
+
+#[cfg(test)]
+mod global_import_cache_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_and_owned_imports_share_indices_and_keep_namespaces_distinct() {
+        let mut chunk = Chunk::new("imports");
+        assert_eq!(chunk.intern_global_import("module-a", "value"), 0);
+        assert_eq!(chunk.add_global_import("module-a".to_owned(), "value".to_owned()), 0);
+        assert_eq!(chunk.intern_global_import("module-b", "value"), 1);
+        assert_eq!(chunk.intern_global_import("module-a", "other"), 2);
+        chunk.emit_string_const("value", 0);
+        let first_constant = chunk.read_u32(4);
+        chunk.emit_string_const("value", 0);
+        assert_eq!(chunk.read_u32(12), first_constant);
+        assert_eq!(chunk.global_imports.len(), 4);
+        assert_eq!(chunk.global_imports[3].module, STRING_CONSTANTS_MODULE);
+        assert_eq!(chunk.global_imports[3].name, "value");
+    }
+
+    #[test]
+    fn extending_a_clone_keeps_the_original_import_indices() {
+        let mut original = Chunk::new("original");
+        original.intern_global_import("module", "first");
+        let mut cloned = original.clone();
+        assert_eq!(cloned.intern_global_import("module", "first"), 0);
+        assert!(original.global_imports.shares_index(&cloned.global_imports));
+        assert_eq!(cloned.intern_global_import("module", "second"), 1);
+        assert_eq!(original.global_imports.len(), 1);
+        assert_eq!(original.intern_global_import("other-module", "second"), 1);
+        assert_eq!(cloned.global_imports.len(), 2);
+        assert_eq!(cloned.intern_global_import("module", "second"), 1);
+    }
+}
+
+#[cfg(test)]
+mod call_emission_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_width_call_matches_individual_writes_and_preserves_metadata() {
+        for import_idx in [0, 1, 255, 256, u16::MAX] {
+            for argc in [0, 1, 127, u8::MAX] {
+                for line in [0, 1, u32::MAX] {
+                    let mut expected = Chunk::new("call");
+                    expected.emit_op(Op::NOP, 42);
+                    let mut actual = expected.clone();
+                    expected.emit_op(Op::CALL, line);
+                    expected.emit((import_idx >> 8) as u8, line);
+                    expected.emit(import_idx as u8, line);
+                    expected.emit(argc, line);
+                    actual.emit_call(import_idx, argc, line);
+                    assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod float_constant_emission_tests {
+    use super::*;
+
+    #[test]
+    fn batched_payloads_preserve_bits_lines_and_chunk_metadata() {
+        for compact in [false, true] {
+            let _scope = crate::source_lines::LineEmissionScope::enter(compact);
+            let mut actual = Chunk::new("float-payloads");
+            let mut reference = Chunk::new("float-payloads");
+            // Include signed zero, subnormals, infinities and NaN payloads.
+            for (i, bits) in [0, 1, 0x8000_0000_0000_0000,
+                0x7ff0_0000_0000_0000, 0xfff0_0000_0000_0000,
+                0x7ff8_0000_0000_0123, 0xfff8_0000_0000_0123, u64::MAX]
+                .into_iter().enumerate()
+            {
+                let value = f64::from_bits(bits);
+                let line = i as u32;
+                actual.emit_f64_const(value, line);
+                reference.emit_op(Op::F64_CONST, line);
+                for byte in value.to_le_bytes() { reference.emit(byte, line); }
+            }
+            for (i, bits) in [0, 1, 0x8000_0000, 0x7f80_0000,
+                0xff80_0000, 0x7fc0_0123, u32::MAX].into_iter().enumerate()
+            {
+                let value = f32::from_bits(bits);
+                let line = 20 + i as u32;
+                actual.emit_f32_const(value, line);
+                reference.emit_op(Op::F32_CONST, line);
+                for byte in value.to_le_bytes() { reference.emit(byte, line); }
+            }
+            actual.emit_i32_const(-1, 99);
+            reference.emit_i32_const(-1, 99);
+            assert_eq!(actual.code, reference.code);
+            assert_eq!(actual.lines, reference.lines);
+            assert_eq!(format!("{actual:?}"), format!("{reference:?}"));
+            for offset in 0..=actual.code.len() {
+                assert_eq!(actual.lines.value_at(offset), reference.lines.value_at(offset));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod public_import_mutation_tests {
+    use super::*;
+
+    #[test]
+    fn same_length_function_rename_does_not_return_stale_row() {
+        let mut chunk = Chunk::new("rename");
+        assert_eq!(chunk.add_import("m", "old"), 0);
+        chunk.imports[0].name = "replacement".into();
+        assert_eq!(chunk.add_import("m", "old"), 1);
+        assert_eq!(chunk.imports[1].name, "old");
+        assert_eq!(chunk.add_import("m", "replacement"), 0);
+    }
+
+    #[test]
+    fn earlier_duplicates_win_even_when_cached_row_still_matches() {
+        let mut chunk = Chunk::new("duplicates");
+        chunk.add_import("m", "a");
+        chunk.add_import("m", "b");
+        chunk.imports[0].name = "b".into();
+        assert_eq!(chunk.add_import("m", "b"), 0);
+        chunk.intern_global_import("m", "a");
+        chunk.intern_global_import("m", "b");
+        chunk.global_imports[0].name = "b".into();
+        assert_eq!(chunk.intern_global_import("m", "b"), 0);
+        assert_eq!(chunk.add_global_import("m", "b"), 0);
+    }
+
+    #[test]
+    fn global_replacement_and_clear_do_not_return_stale_indices() {
+        let mut chunk = Chunk::new("globals");
+        chunk.intern_global_import("m", "old");
+        chunk.global_imports[0].name = "new".into();
+        assert_eq!(chunk.intern_global_import("m", "new"), 0);
+        assert_eq!(chunk.intern_global_import("m", "old"), 1);
+        chunk.global_imports.clear();
+        assert_eq!(chunk.add_global_import("m", "old"), 0);
+        assert_eq!(chunk.global_imports.len(), 1);
+    }
+
+    #[test]
+    fn cloned_tables_remain_independent_after_public_mutation() {
+        let mut original = Chunk::new("original");
+        original.add_import("m", "old");
+        let mut cloned = original.clone();
+        cloned.imports[0].module = "other".into();
+        assert_eq!(cloned.add_import("m", "old"), 1);
+        assert_eq!(original.add_import("m", "old"), 0);
+        assert_eq!(original.imports.len(), 1);
     }
 }

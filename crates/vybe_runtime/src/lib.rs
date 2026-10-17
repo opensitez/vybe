@@ -1,14 +1,29 @@
 pub mod bigint;
 pub mod capabilities;
 pub mod chunk;
+pub mod source_lines;
+pub mod import_table;
+pub mod native_gc;
+pub mod jit;
+pub mod link_preparation;
+pub mod shared_provider;
+pub mod global_name_index;
+pub mod segmented_global_names;
+mod link_timing;
+pub use link_preparation::PreparedLinkedCode;
 pub mod js_builtins; // wasm:js-* CG proposals (dispatcher)
 pub mod js_primitive_builtins;
 pub mod js_prototype_builtins; // wasm:js-{number,boolean,undefined,symbol,bigint}
+pub mod string_concat;
 pub mod js_string_builtins; // wasm:js-string (merged js-string-builtins)
 pub mod opcode;
 pub mod scheduler;
 pub mod type_recorder;
+pub(crate) mod string_lengths;
+// Shared native adapter utility; not a guest import or runtime opcode.
+pub use string_lengths::utf16_units;
 pub mod value;
+pub(crate) mod stack_values;
 pub mod vm;
 // `impl VM` partials — extracted from vm.rs for readability. Each file is
 // its own `impl VM { ... }` block operating on the same struct defined in
@@ -28,6 +43,7 @@ pub mod debugger;
 pub(crate) mod dispatch;
 pub mod error;
 pub mod event_loop;
+mod guest_stream;
 pub mod fiber;
 pub mod handle_table;
 pub mod heap;
@@ -53,6 +69,7 @@ pub use value::Properties;
 pub use value::Value;
 pub use vm::{HostContext, HostFn, ImportTarget, VM, VmSnapshot};
 pub mod component;
+pub mod component_instance_link;
 pub mod project;
 
 // Plugin SDK + registry (folded in from the former `vybe_plugin` crate).
@@ -86,15 +103,15 @@ pub use project::ProjectConfig;
 // Nothing infers a signature from absence — an undeclared call is left alone,
 // not assumed to take zero arguments.
 
-static HOST_SIGNATURES: std::sync::OnceLock<
-    std::sync::RwLock<
-        std::collections::HashMap<(String, String), (FuncSig, Option<crate::vm::ResourceBinding>)>,
-    >,
-> = std::sync::OnceLock::new();
+type HostSignatures = std::collections::HashMap<
+    String,
+    std::collections::HashMap<String, (FuncSig, Option<crate::vm::ResourceBinding>)>,
+>;
 
-fn host_signatures() -> &'static std::sync::RwLock<
-    std::collections::HashMap<(String, String), (FuncSig, Option<crate::vm::ResourceBinding>)>,
-> {
+static HOST_SIGNATURES: std::sync::OnceLock<std::sync::RwLock<HostSignatures>> =
+    std::sync::OnceLock::new();
+
+fn host_signatures() -> &'static std::sync::RwLock<HostSignatures> {
     HOST_SIGNATURES.get_or_init(Default::default)
 }
 
@@ -107,7 +124,8 @@ pub fn declare_host_signature(
     resource: Option<crate::vm::ResourceBinding>,
 ) {
     if let Ok(mut map) = host_signatures().write() {
-        map.insert((module.to_string(), name.to_string()), (sig, resource));
+        map.entry(module.to_string()).or_default()
+            .insert(name.to_string(), (sig, resource));
     }
 }
 
@@ -115,7 +133,7 @@ pub fn declare_host_signature(
 /// one. `None` means UNKNOWN — never zero.
 pub fn declared_host_arity(module: &str, name: &str) -> Option<u8> {
     let map = host_signatures().read().ok()?;
-    let (sig, _) = map.get(&(module.to_string(), name.to_string()))?;
+    let (sig, _) = map.get(module)?.get(name)?;
     u8::try_from(sig.params.len()).ok()
 }
 
@@ -125,7 +143,7 @@ pub fn declared_host_signature(
     name: &str,
 ) -> Option<(FuncSig, Option<crate::vm::ResourceBinding>)> {
     let map = host_signatures().read().ok()?;
-    map.get(&(module.to_string(), name.to_string())).cloned()
+    map.get(module)?.get(name).cloned()
 }
 
 /// The declared arity, when it CONTRADICTS `argc`. `None` means "no
@@ -135,7 +153,10 @@ pub fn declared_host_signature(
 /// that prints has no return value to assert on, and "no warning appeared" is
 /// equally consistent with "the check passed" and "the check never ran".
 pub fn host_arity_mismatch(module: &str, name: &str, argc: u8) -> Option<u8> {
-    let (sig, resource) = declared_host_signature(module, name)?;
+    // Emission needs only two declaration facts. Borrow them directly rather
+    // than allocate lookup keys and clone the full signature at each CALL.
+    let map = host_signatures().read().ok()?;
+    let (sig, resource) = map.get(module)?.get(name)?;
     let declared = u8::try_from(sig.params.len()).ok()?;
     if declared == argc {
         return None;
@@ -273,3 +294,7 @@ mod host_signature_tests {
 /// one-parameter setter is a one-parameter setter. This names the difference so
 /// property dispatch can ASK instead of inferring it from the parameter count.
 pub const RECEIVER_FIRST_ACCESSOR_TAG: &str = "vybe:accessor-receiver-first";
+
+#[cfg(all(test, feature = "primitive-benchmarks"))]
+#[path = "stringref_iter_optimization_tests.rs"]
+mod stringref_iter_optimization_tests;

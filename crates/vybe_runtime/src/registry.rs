@@ -9,6 +9,8 @@
 
 pub mod emitter_results;
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -89,10 +91,73 @@ pub fn all() -> Vec<LanguageDef> {
     registry().lock().unwrap().clone()
 }
 
+thread_local! {
+    // Registration is first-wins, with no replacement/removal API. Cache only
+    // successful resolutions: a miss must still see a subsequently loaded plugin.
+    // Static registered names bound storage to the number of actual dispatchers.
+    static EMIT_DISPATCHERS: RefCell<HashMap<&'static str, EmitDispatchFn, crate::chunk::FxBuildHasher>> =
+        RefCell::new(HashMap::default());
+}
+
 /// The emit-dispatcher that owns the `common:<prefix>.*` namespace, if a
 /// language registered one.
 pub fn emit_dispatch_for(prefix: &str) -> Option<EmitDispatchFn> {
-    find(prefix).and_then(|p| p.emit_dispatch)
+    EMIT_DISPATCHERS.with(|cache| {
+        if let Some(dispatch) = cache.borrow().get(prefix).copied() {
+            return Some(dispatch);
+        }
+        let language = find(prefix)?;
+        let dispatch = language.emit_dispatch?;
+        cache.borrow_mut().insert(language.name, dispatch);
+        Some(dispatch)
+    })
+}
+
+#[cfg(test)]
+mod dispatch_cache_tests {
+    use super::*;
+
+    const NAME: &str = "__registry_dispatch_cache_test";
+
+    fn dispatch(_: &str, _: &mut Vec<Chunk>, _: usize, _: u8, _: u32) -> bool {
+        // Calling a resolved dispatcher must not retain a TLS cache borrow.
+        emit_dispatch_for(NAME).is_some()
+    }
+
+    fn replacement(_: &str, _: &mut Vec<Chunk>, _: usize, _: u8, _: u32) -> bool {
+        false
+    }
+
+    #[test]
+    fn successful_dispatch_cache_preserves_late_registration_and_first_wins() {
+        assert!(emit_dispatch_for(NAME).is_none());
+        let def = LanguageDef {
+            name: NAME,
+            parse: |_| Err("registry test has no parser".into()),
+            profile_source: || "",
+            emit_dispatch: Some(dispatch),
+            normalize_class: None,
+            register_tree: None,
+            expand_source: None,
+        };
+        register_language(def);
+        let resolved = emit_dispatch_for(NAME).unwrap();
+        assert!(std::ptr::fn_addr_eq(resolved, dispatch as EmitDispatchFn));
+        register_language(LanguageDef {
+            emit_dispatch: Some(replacement),
+            ..def
+        });
+        let cached = emit_dispatch_for(NAME).unwrap();
+        assert!(std::ptr::fn_addr_eq(cached, resolved));
+        assert!(cached("test", &mut Vec::new(), 0, 0, 0));
+        // A fresh compiler worker resolves the same first registered producer.
+        std::thread::spawn(|| {
+            let resolved = emit_dispatch_for(NAME).unwrap();
+            assert!(std::ptr::fn_addr_eq(resolved, dispatch as EmitDispatchFn));
+        })
+        .join()
+        .unwrap();
+    }
 }
 
 /// Dispatch class normalisation to the registered language, or `None` if the
@@ -296,6 +361,28 @@ pub struct VariableNamespace {
     pub global_key: fn(&str, &str) -> Option<String>,
 }
 
+/// Explicit frontend compiler accelerators. Defaults preserve ordinary behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompilerOptimizations {
+    pub symbol_membership_index: bool,
+    pub user_namespace_cache: bool,
+    /// Lower eligible include units on their preparation worker. This is
+    /// independent of lookup acceleration and requires certified foreground reuse.
+    pub completion_worker_lowering: bool,
+    /// Exact run-compressed byte-to-source-line maps. Explicit frontend opt-in;
+    /// unregistered/default compilation keeps dense maps.
+    pub compact_source_lines: bool,
+    /// Admit exact Array identity in existing shared conditional call tails.
+    /// Explicit opt-in; false preserves the original supported-node matcher.
+    pub array_call_tail_identity: bool,
+    /// Admit exact interpolation identity independently of Array identity.
+    /// This never hoists or caches evaluation/conversion of interpolated parts.
+    pub interpolation_call_tail_identity: bool,
+    /// Fuse closure-capture and receiver discovery for selected function bodies.
+    /// False retains the original two analyses and their call positions.
+    pub fused_closure_analysis: bool,
+}
+
 #[derive(Clone, Copy, Default)]
 /// # Four value-semantics hooks were REMOVED, 2026-07-31
 ///
@@ -315,6 +402,8 @@ pub struct VariableNamespace {
 /// See `builtinslotplan.md` §3i. Do not re-add a hook for a question of the
 /// form "what does operator X do to built-in type Y" — that is a slot.
 pub struct LanguageHooks {
+    /// Pure capability of this selected parser; no hook means no accelerators.
+    pub compiler_optimizations: Option<fn(ParseFn) -> CompilerOptimizations>,
     /// Convert a compiled function literal into a language closure object.
     /// The input and output are callable values on the operand stack.
     pub function_literal: Option<fn(&mut Chunk, u32)>,
@@ -378,5 +467,13 @@ pub fn hooks(name: &str) -> LanguageHooks {
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, h)| *h)
+        .unwrap_or_default()
+}
+
+/// Resolve only the explicit capability registered by this frontend.
+pub fn compiler_optimizations(language: LanguageDef) -> CompilerOptimizations {
+    hooks(language.name)
+        .compiler_optimizations
+        .map(|capability| capability(language.parse))
         .unwrap_or_default()
 }
