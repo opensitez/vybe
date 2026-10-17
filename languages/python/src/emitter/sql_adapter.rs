@@ -19,10 +19,8 @@
 //! rewrites their methods to the collision-free `__sql_*` builtins routed here,
 //! so generic `.close()`/`.execute()` on files/sockets are never intercepted.
 
-use std::sync::Arc;
-
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,

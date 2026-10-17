@@ -166,7 +166,10 @@ fn emit_maps_equal(chunks: &mut Vec<Chunk>, current: usize, with_func: bool, lin
     lget(chunks, current, right, line);
     lget(chunks, current, key, line);
     reflection::emit_has_own(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // hasOwn produces a boolean, not an arbitrary Go value. Avoid expanding
+    // the generic truthiness/coercion ladder inside every comparison loop.
+    let cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast, 1, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(false, line);
@@ -372,3 +375,55 @@ fn lget(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 fn lset(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
 }
+
+// Owner-authorized unary map-values snapshot. No caller-owned output is passed
+// into this body; the existing algorithm and inline fallback are unchanged.
+use vybe_compiler::primitives::helper_templates::{Contract, Definition};
+const MAP_VALUES_BODY: &str = "\0go.owned.maps.values.v1";
+fn map_values_context(c: &[Chunk], _: u32) -> Vec<u8> {
+    vec![match class_context::module_receiver_abi(c) {
+        vybe_runtime::chunk::ReceiverAbi::Ambient => 0,
+        vybe_runtime::chunk::ReceiverAbi::Parameter => 1,
+    }]
+}
+fn unused_map_values_factory() -> Chunk { unreachable!("contextual recipe only") }
+fn unused_map_values_caller(_: &mut Chunk, _: usize, _: u32) { unreachable!("contextual recipe only") }
+fn build_map_values(c: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut body = Chunk::new(MAP_VALUES_BODY);
+    body.arity = 1;
+    body.param_count = 1;
+    body.local_count = 1;
+    body.takes_receiver = false;
+    body.direct_entry_has_captures = Some(false);
+    body.module_receiver_abi = class_context::module_receiver_abi(c);
+    body.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let target = c.len();
+    c.push(body);
+    emit_maps_values(c, target, line);
+    c[target].emit_op(Op::RETURN, line);
+    target
+}
+fn invoke_map_values(c: &mut Vec<Chunk>, current: usize, target: usize, line: u32) {
+    let abi = class_context::module_receiver_abi(c);
+    let valid = c.get(target).is_some_and(|b| b.name == MAP_VALUES_BODY
+        && b.arity == 1 && b.param_count == 1 && b.result_arity == 1 && b.local_count >= 1
+        && b.capture_count == 0 && b.direct_entry_has_captures == Some(false)
+        && !b.takes_receiver && !b.is_method && !b.is_async && !b.is_generator
+        && b.module_receiver_abi == abi && b.func_sig.is_none() && b.native_func_type.is_none());
+    if !valid || current == target { emit_maps_values(c, current, line); return; }
+    let (caller, callee) = if current < target {
+        let (a,b) = c.split_at_mut(target); (&mut a[current], &b[0])
+    } else {
+        let (a,b) = c.split_at_mut(current); (&mut b[0], &a[target])
+    };
+    caller.emit_direct_defined_call(target as u32, callee, false, line)
+        .expect("plain owned map-values body");
+}
+pub static HELPER_DEFINITIONS: &[Definition] = &[
+    Definition { contract: Contract::ContextualAppendOnlyUnit {
+        key: map_values_context, build: build_map_values, invoke: invoke_map_values,
+    }, operation: "go.maps_values", namespace: "go", version: 1,
+        parser: crate::parse, producer: super::dispatch::dispatch, arity: 1,
+        helper_name: MAP_VALUES_BODY, factory: unused_map_values_factory,
+        caller: unused_map_values_caller },
+];

@@ -51,33 +51,7 @@ fn null_lit() -> Expression {
     Expression::new(ExprKind::Lit(Literal::Null))
 }
 
-fn local_param(name: &str) -> Param {
-    Param {
-        name: name.to_string(),
-        type_hint: None,
-        default: None,
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false,
-    }
-}
 
-fn statement_expr(stmts: Vec<Statement>, result: Expression) -> Expression {
-    let mut body = stmts;
-    body.push(Statement::new(StmtKind::Return(Some(result))));
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Lambda {
-            params: Vec::new(),
-            body: LambdaBody::Block(body),
-            is_async: false,
-            captures: Vec::new(),
-        })),
-        args: Vec::new(),
-        optional: false,
-    })
-}
 
 fn contains_key_expr(object: &Expression, key: &Expression) -> Expression {
     call_expr(

@@ -16,8 +16,7 @@ use std::sync::Arc;
 
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops::{
-    emit_dyn_add_into, emit_dyn_eq_into, emit_dyn_ge_into, emit_dyn_gt_into, emit_dyn_lt_into,
-    emit_dyn_not_into,
+    emit_dyn_eq_into, emit_dyn_ge_into, emit_dyn_gt_into, emit_dyn_lt_into,
 };
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -37,8 +36,8 @@ fn emit_str_char_code_at(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(idx, 2, line);
 }
 
-fn emit_str_concat(imports: &mut Chunk, chunk: &mut Chunk, line: u32) {
-    emit_dyn_add_into(imports, chunk, line);
+fn emit_str_concat(_imports: &mut Chunk, chunk: &mut Chunk, line: u32) {
+    vybe_compiler::primitives::strings::emit_str_concat(chunk, line);
 }
 
 fn emit_str_index_of(chunk: &mut Chunk, line: u32) {
@@ -113,7 +112,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let has_format = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, format, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(to_str, 1, 0);
@@ -134,8 +133,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
     emit_str_length(&mut c, 0);
     core_wasm::i32_const(&mut c, 0, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(to_str, 1, 0);
@@ -150,8 +149,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
     emit_str_length(&mut c, 0);
     core_wasm::i32_const(&mut c, 0, 1);
-    emit_dyn_gt_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_GT_S, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
     core_wasm::i32_const(&mut c, 0, 1);
@@ -163,7 +162,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let precision_is_number = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, precision, 0);
     c.emit_op_u16(Op::LOCAL_GET, precision, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::F64_EQ, 0);
     c.emit_br_if(0, 0);
     emit_const_index(&mut c, zero_num, 0);
     c.emit_op_u16(Op::LOCAL_SET, precision, 0);
@@ -185,7 +184,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_str_index_of(&mut c, 0);
     emit_const_index(&mut c, zero_num, 0);
     emit_dyn_ge_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     emit_const_index(&mut c, zero_num, 0);
@@ -218,8 +217,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let not_currency = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
     emit_const_index(&mut c, c_code, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(number, 1, 0);
@@ -240,8 +239,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let not_number = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
     emit_const_index(&mut c, n_code, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(number, 1, 0);
@@ -258,8 +257,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let not_exponential = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
     emit_const_index(&mut c, e_code, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(number, 1, 0);
@@ -304,8 +303,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let not_general = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
     emit_const_index(&mut c, g_code, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(number, 1, 0);
@@ -355,9 +354,9 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_dyn_eq_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
     emit_const_index(&mut c, hash_code, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
     c.emit_op(Op::I32_OR, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
     emit_const_index(&mut c, dot_str, 0);
@@ -396,8 +395,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let not_decimal = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
     emit_const_index(&mut c, d_code, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(parse_int, 1, 0);
@@ -409,14 +408,14 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_str_length(&mut c, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     emit_dyn_gt_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
     core_wasm::i32_const(&mut c, 0, 0);
     emit_str_char_code_at(&mut c, 0);
     emit_const_index(&mut c, minus_code, 0);
     emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     emit_const_index(&mut c, minus_str, 0);
     c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
@@ -445,8 +444,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let not_hex = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
     emit_const_index(&mut c, x_code, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(number, 1, 0);
@@ -464,8 +463,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let not_fixed = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
     emit_const_index(&mut c, f_code, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(number, 1, 0);
@@ -479,8 +478,8 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let not_percent = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
     emit_const_index(&mut c, p_code, 0);
-    emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(number, 1, 0);
@@ -516,7 +515,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, width, 0);
     emit_const_index(&mut c, zero_num, 0);
     emit_dyn_eq_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
     c.emit_op(Op::RETURN, 0);
@@ -529,7 +528,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, width, 0);
     emit_const_index(&mut c, zero_num, 0);
     emit_dyn_lt_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     emit_const_index(&mut c, zero_num, 0);
     c.emit_op_u16(Op::LOCAL_GET, width, 0);
@@ -543,7 +542,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_str_length(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, abs_width, 0);
     emit_dyn_ge_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
     c.emit_op(Op::RETURN, 0);
@@ -554,7 +553,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, width, 0);
     emit_const_index(&mut c, zero_num, 0);
     emit_dyn_lt_into(imports, &mut c, 0);
-    emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
     c.emit_op_u16(Op::LOCAL_GET, abs_width, 0);

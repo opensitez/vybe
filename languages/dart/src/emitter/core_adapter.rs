@@ -1,17 +1,13 @@
 //! Dart core library adapters for Duration, DateTime, and Uri.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{collections, invoke, reflection, url};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
-fn key(chunk: &mut Chunk, name: &str) -> u32 {
-    chunk.add_constant(Value::String(Arc::from(name)))
-}
 
 fn set_field(chunk: &mut Chunk, name: &ClassSlot, line: u32) {
     let slot = class_slots::resolve(name, &PlainNames);
@@ -29,11 +25,6 @@ fn emit_slot_is_bigint(chunk: &mut Chunk, slot: u16, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
 }
 
-#[allow(dead_code)]
-fn emit_bigint_i32(chunks: &mut [Chunk], current: usize, value: i32, line: u32) {
-    chunks[current].emit_i32_const(value, line);
-    host::emit(&mut chunks[current], "ecma:bigint", "BigInt", 1, line);
-}
 
 fn set_string(chunk: &mut Chunk, name: &str, value: &str, line: u32) {
     core_wasm::dup(chunk, line);
@@ -41,12 +32,6 @@ fn set_string(chunk: &mut Chunk, name: &str, value: &str, line: u32) {
     set_field(chunk, &ClassSlot::internal(name), line);
 }
 
-#[allow(dead_code)]
-fn set_bool(chunk: &mut Chunk, name: &str, value: bool, line: u32) {
-    core_wasm::dup(chunk, line);
-    chunk.emit_bool_const(value, line);
-    set_field(chunk, &ClassSlot::internal(name), line);
-}
 
 fn obj_new(chunk: &mut Chunk, line: u32) {
     host::emit(chunk, "ecma:object", "new", 0, line);
@@ -63,11 +48,6 @@ fn stamp_runtime_type(
     set_string(chunk, reflection::FIELD_KIND, kind.as_str(), line);
 }
 
-#[allow(dead_code)]
-fn date_get(chunks: &mut [Chunk], current: usize, ms_slot: u16, getter: &'static str, line: u32) {
-    chunks[current].emit_op_u16(Op::LOCAL_GET, ms_slot, line);
-    host::emit(&mut chunks[current], "ecma:date", getter, 1, line);
-}
 
 fn wrap_duration_ms(chunk: &mut Chunk, line: u32) {
     let ms = chunk.alloc_scratch(1);
@@ -151,10 +131,14 @@ pub fn emit_duration_abs(chunks: &mut [Chunk], current: usize, line: u32) {
 /// question, so it has to recognise both.
 fn emit_slot_is_type(chunks: &mut [Chunk], current: usize, slot: u16, type_name: &str, line: u32) {
     reflection::emit_is_instance_of(chunks, current, slot, type_name, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     get_field(&mut chunks[current], &ClassSlot::TypeIdentity, line);
     chunks[current].emit_string_const(type_name, line);
-    chunks[current].emit_op(Op::EQ, line);
+    // I32_EQ coerces both strings/missing fields to zero, falsely tagging
+    // ordinary numbers as Duration. Compare dynamic identities as strings.
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_OR, line);
 }
 
@@ -266,47 +250,6 @@ pub fn emit_duration_negate(chunks: &mut [Chunk], current: usize, line: u32) {
     wrap_duration_ms(&mut chunks[current], line);
 }
 
-/// Lower `DateTime(year[, month[, day[, hour[, minute[, second]]]]])` onto
-/// `ecma:date.UTC`. Dart §`DateTime` gives every component after `year` a
-/// default — `month` and `day` are **1**, the time parts are 0 — so only the
-/// `argc` values actually on the stack may be popped; popping a fixed six (or
-/// even a fixed three) would consume operands that were never pushed and read
-/// whatever happened to be underneath (`DateTime(2000)` → undefined,
-/// `DateTime(2000, 1)` → year 2066).
-#[allow(dead_code)]
-fn utc_from_stack(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let base = chunks[current].alloc_scratch(6);
-    // Slots in ARGUMENT order, so index i is the i-th constructor parameter.
-    let slots = [
-        base,     // year
-        base + 1, // month
-        base + 2, // day
-        base + 3, // hour
-        base + 4, // minute
-        base + 5, // second
-    ];
-    let supplied = (argc as usize).min(slots.len());
-    // The last argument is on top, so pop right-to-left.
-    for i in (0..supplied).rev() {
-        chunks[current].emit_op_u16(Op::LOCAL_SET, slots[i], line);
-    }
-    // Fill in the omitted components with Dart's defaults.
-    for (i, slot) in slots.iter().enumerate().skip(supplied) {
-        // month/day are 1-based; hour/minute/second start at 0.
-        let default = if i <= 2 { 1.0 } else { 0.0 };
-        chunks[current].emit_f64_const(default, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, *slot, line);
-    }
-    chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
-    // `ecma:date.UTC` takes a 0-based month; Dart's is 1-based.
-    chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
-    chunks[current].emit_f64_const(1.0, line);
-    chunks[current].emit_op(Op::F64_SUB, line);
-    for slot in &slots[2..] {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, *slot, line);
-    }
-    host::emit(&mut chunks[current], "ecma:date", "UTC", 6, line);
-}
 
 // `wrap_datetime_ms` is GONE. It built an anonymous `ecma:object`, stamped a
 // `__type` STRING of "DateTime" on it, and eagerly filled seven calendar parts
@@ -315,11 +258,6 @@ fn utc_from_stack(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 // constructor, and the type is an rtt rather than a string two other emits had
 // to read to find out what they were holding.
 
-#[allow(dead_code)]
-fn datetime_ms_from_obj(chunk: &mut Chunk, slot: u16, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    get_field(chunk, &ClassSlot::internal("millisecondsSinceEpoch"), line);
-}
 
 fn emit_compare_slots(chunk: &mut Chunk, left: u16, right: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, left, line);
@@ -429,7 +367,6 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right, line);
-    let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     invoke::emit_invoke_method(chunks, current, "compareTo", 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);

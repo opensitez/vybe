@@ -15,15 +15,6 @@ fn contains(haystack: Expr, needle: Expr) -> Expr {
     call_global("__py_contains__", vec![haystack, needle])
 }
 
-fn dict_get(dict: Expr, key: &str, default: Expr) -> Expr {
-    let key_expr = str_lit(key);
-    ternary(
-        contains(dict.clone(), key_expr.clone()),
-        index(dict, key_expr),
-        default,
-    )
-}
-
 fn list_arg(args: Expr, at: f64) -> Expr {
     index(args, num(at))
 }

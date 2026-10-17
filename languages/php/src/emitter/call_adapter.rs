@@ -22,11 +22,9 @@ pub fn emit_php_dynamic_method_call(chunks: &mut [Chunk], current: usize, argc: 
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_call(lookup, 3, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, target_slot, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, target_slot, line);
     vybe_compiler::primitives::reflection::emit_typeof_is(chunk, "function", line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
@@ -40,11 +38,9 @@ pub fn emit_php_dynamic_method_call(chunks: &mut [Chunk], current: usize, argc: 
     chunk.emit_string_const(&Arc::<str>::from("__call"), line);
     chunk.emit_bool_const(false, line);
     chunk.emit_call(lookup, 3, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, call_slot, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, call_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, call_slot, line);
     vybe_compiler::primitives::reflection::emit_typeof_is(chunk, "function", line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, call_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
@@ -102,7 +98,7 @@ pub fn emit_php_call_user_func_array(chunks: &mut [Chunk], current: usize, argc:
     chunk.emit_call(is_array, 1, line);
     let boolean_cast = chunk.add_import("wasm:js-boolean", "cast");
     chunk.emit_call(boolean_cast, 1, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, callable_slot, line);
     chunk.emit_f64_const(0.0, line);
@@ -130,9 +126,7 @@ pub fn emit_php_call_user_func_array(chunks: &mut [Chunk], current: usize, argc:
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_call(method_lookup, 3, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, target_slot, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, target_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
     chunk.emit_call(apply, 3, line);
@@ -175,9 +169,7 @@ pub fn emit_php_method_exists(chunks: &mut [Chunk], current: usize, argc: u8, li
     let receiver_slot = chunk.alloc_scratch(1);
 
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, receiver_slot, line);
     let is_string = chunk.add_import("wasm:js-string", "test");
     chunk.emit_call(is_string, 1, line);
     chunk.emit_if_value(line);
@@ -203,6 +195,37 @@ mod tests {
     use vybe_compiler::primitives::{bundle, globals, platforms, reflection};
     use vybe_runtime::value::{Object, ObjectKind};
     use vybe_runtime::{VM, Value};
+
+    #[test]
+    fn method_exists_tests_the_receiver_without_a_reload() {
+        let mut chunks = vec![Chunk::new("script")];
+        emit_php_method_exists(&mut chunks, 0, 2, 0);
+        let mut prefix = Chunk::new("prefix");
+        prefix.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        prefix.emit_op_u16(Op::LOCAL_TEE, 1, 0);
+        let is_string = prefix.add_import("wasm:js-string", "test");
+        prefix.emit_call(is_string, 1, 0);
+        assert!(chunks[0].code.starts_with(&prefix.code));
+        assert_eq!(chunks[0].local_count, 2);
+    }
+
+    #[test]
+    fn dynamic_method_lookup_keeps_its_result_for_the_predicate() {
+        let mut chunks = vec![Chunk::new("script")];
+        emit_php_dynamic_method_call(&mut chunks, 0, 3, 0);
+        let mut prefix = Chunk::new("prefix");
+        prefix.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        prefix.emit_op_u16(Op::LOCAL_SET, 1, 0);
+        prefix.emit_op_u16(Op::LOCAL_SET, 2, 0);
+        let lookup = prefix.add_import("ecma:value", "getMethodForCall");
+        prefix.emit_op_u16(Op::LOCAL_GET, 2, 0);
+        prefix.emit_op_u16(Op::LOCAL_GET, 1, 0);
+        prefix.emit_bool_const(false, 0);
+        prefix.emit_call(lookup, 3, 0);
+        prefix.emit_op_u16(Op::LOCAL_TEE, 3, 0);
+        assert!(chunks[0].code.starts_with(&prefix.code));
+        assert_eq!(chunks[0].local_count, 5);
+    }
 
     fn array(values: Vec<Value>) -> Value {
         Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)))

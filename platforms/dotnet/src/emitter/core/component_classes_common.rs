@@ -3,18 +3,6 @@ use vybe_compiler::component_classes::{
     ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
 };
 
-pub(super) fn constructor_class(
-    interface: &'static str,
-    name: &'static str,
-    module: &'static str,
-    ctor: &'static str,
-) -> DotnetClassExport {
-    DotnetClassExport::new(
-        interface,
-        ClassType::new(name)
-            .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new(module, ctor))),
-    )
-}
 
 pub(super) fn common_constructor_class(
     interface: &'static str,

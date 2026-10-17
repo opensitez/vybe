@@ -44,7 +44,6 @@ materialize_bool_results = true
 # and adds numerically otherwise — the same string-aware `+` as C#/Java/Dart.
 # `&` is the dedicated concat operator (BinOp::Concat); `+` still needs this so
 # `"A" + "B"` yields "AB" instead of NaN from a purely-numeric add.
-dynamic_add = true
 string_indexing = "one_based"          # Mid(), InStr() are 1-based
 array_upper_bound_inclusive = true     # Dim arr(5) means 0..5 inclusive (6 elements)
 parens_for_index = true                # arr(i) not arr[i] — () is both call and index

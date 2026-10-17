@@ -180,6 +180,7 @@ pub fn normalize_class(
                 // no initializer had written, so a validated property answered
                 // empty and accepted any assignment.
                 out.properties.push(NormalProperty {
+                    raw_setter: None,
                     span: span.clone(),
                     canonical_name: pname.to_lowercase(),
                     source_name: pname.clone(),

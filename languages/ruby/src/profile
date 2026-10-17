@@ -26,7 +26,6 @@ enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
 base_keyword = "super"
-dynamic_add = true
 # Ruby is over wasm/js — `h[key]` must dispatch polymorphically (Map/Object
 # property get for string/hash keys, array index for ints). Without this,
 # `h["a"]` numeric-coerces the string key → `toF64` crash on every Hash read.

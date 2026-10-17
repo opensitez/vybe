@@ -17,20 +17,9 @@ coerces_value_to_type_hint = true
 # `Foo`. Was a `profile.name == "pascal"` check in shared `expressions.rs`.
 bare_name_invokes_parameterless_function = true
 # Pascal spells concatenation `+`, which is `BinOp::Add` and arithmetic. The
-# walker emits `BinOp::Concat` for ONE thing — stringifying a receiver for
-# `X.ToString` — and this flag is what makes that node resolve a `to_string`
-# binding per operand instead of coercing numerically. Nothing else in Pascal
-# produces a `Concat` node, so this changes nothing that already worked.
-concat_stringifies_operands = true
-# `a xor b` is bitwise when both operands are integers and LOGICAL otherwise —
-# one token, two meanings, resolved by operand type. Replaces a
-# `profile.name == "pascal"` check in the shared binary-operator path
-# (builtinslotplan.md §3c).
-xor_is_logical_for_non_integers = true
 # `and`/`or`/`not` are bitwise on integer operands, logical on booleans — the
 # same dual meaning `xor` already declared. Was `profile.name == "pascal"` in
 # shared `expressions.rs` and `type_inference.rs`.
-logical_ops_bitwise_for_integers = true
 # `+`/`*`/`-` on two sets are union/intersection/difference.
 set_arithmetic_operators = true
 # `TShape.Circle` and `obj.Method` invoke a parameterless routine without `()`.
@@ -39,7 +28,6 @@ member_invokes_parameterless_method = true
 const_without_init_is_type_alias = true
 # `s[1]` is the first character; `Integer(9.7)` truncates to 9.
 string_index_is_one_based = true
-integer_cast_truncates = true
 # `value.Helper(x)` resolves to a free function from the receiver's type, and a
 # bare `Field(x)` calls a callable field of the enclosing class.
 type_helper_methods = true
@@ -63,7 +51,6 @@ entry_point = "main"                   # program body is the entry point
 # Pascal `+` is overloaded: string concat (`'a' + 'b'`) AND numeric addition.
 # DYN_ADD checks for string operands first; F64_ADD would coerce strings
 # to NaN. Object Pascal / Delphi / Free Pascal all expose this overload.
-dynamic_add = true
 materialize_bool_results = true
 commonjs_require = false
 byref_boxing = false

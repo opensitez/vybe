@@ -19,6 +19,42 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
 /// `ob_start()`.
 const ECHO_WRITE_CHUNK: &str = "__stdlib_php_echo_write_one";
 const VAR_DUMP_WRITE_CHUNK: &str = "__stdlib_php_var_dump_write_one";
+const STRING_WRITE_CHUNK: &str = "__stdlib_php_string_write_one";
+const STRING_WRITE_RECEIPT: &str = "<php-string-output:v1:line0>";
+
+/// A physically proven String needs buffering/output, but no PHP coercion.
+/// Share the writer body instead of expanding buffer checks at each literal.
+pub fn emit_php_string_output(chunks: &mut Vec<Chunk>, current: usize, print: bool, line: u32) {
+    use vybe_runtime::chunk::{LocalName, LocalOrigin};
+    let helper = if let Some(index) = chunks.iter().position(|chunk|
+        chunk.name == STRING_WRITE_CHUNK && chunk.source_path.is_none()
+        && chunk.arity == 1 && chunk.result_arity == 1 && chunk.func_sig.is_none()
+        && !chunk.takes_receiver && !chunk.is_async && !chunk.is_generator
+        && chunk.capture_count == 0 && chunk.direct_entry_has_captures != Some(true)
+        && chunk.local_names.iter().any(|local| local.slot == 0
+            && local.origin == LocalOrigin::Compiler && local.name == STRING_WRITE_RECEIPT))
+    {
+        index
+    } else {
+        let index = chunks.len();
+        let mut chunk = Chunk::new(STRING_WRITE_CHUNK);
+        chunk.arity = 1;
+        chunk.local_count = 1;
+        chunk.local_names.push(LocalName::new(0, STRING_WRITE_RECEIPT, LocalOrigin::Compiler));
+        chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        chunks.push(chunk);
+        vybe_compiler::primitives::io::emit_write_or_buffer(chunks, index, 0);
+        chunks[index].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        chunks[index].emit_op(Op::RETURN, 0);
+        index
+    };
+    call_void_helper_from_stack(chunks, current, helper, line);
+    if print {
+        chunks[current].emit_i32_const(1, line);
+    } else {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    }
+}
 
 fn ensure_echo_write_chunk(chunks: &mut Vec<Chunk>) -> usize {
     if let Some(index) = chunks
@@ -63,13 +99,20 @@ fn ensure_var_dump_write_chunk(chunks: &mut Vec<Chunk>) -> usize {
     index
 }
 
-fn call_void_helper_from_slot(
+fn call_void_helper_from_stack(
     chunks: &mut [Chunk],
     current: usize,
     helper: usize,
-    val_slot: u16,
     line: u32,
 ) {
+    if vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+        chunks, current, helper, 1, line,
+    ) {
+        chunks[current].emit_op(Op::DROP, line);
+        return;
+    }
+    let val_slot = alloc_local(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, val_slot, line);
     chunks[current].emit_op_u16(Op::REF_FUNC, helper as u16, line);
     chunks[current].emit(0u8, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, val_slot, line);
@@ -77,14 +120,28 @@ fn call_void_helper_from_slot(
     chunks[current].emit_op(Op::DROP, line);
 }
 
-fn direct_stdout_value_from_slot(
-    chunks: &mut Vec<Chunk>,
+fn write_helper_arguments(
+    chunks: &mut [Chunk],
     current: usize,
-    val_slot: u16,
+    helper: usize,
+    argc: u8,
     line: u32,
 ) {
-    let helper = ensure_echo_write_chunk(chunks);
-    call_void_helper_from_slot(chunks, current, helper, val_slot, line);
+    if argc == 0 {
+        return;
+    }
+    // Keep the first argument on the stack. Only later arguments must be
+    // parked while earlier values are stringified/written in source order.
+    let count = u16::from(argc - 1);
+    let base = chunks[current].alloc_scratch(count);
+    for offset in (0..count).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
+    }
+    call_void_helper_from_stack(chunks, current, helper, line);
+    for offset in 0..count {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + offset, line);
+        call_void_helper_from_stack(chunks, current, helper, line);
+    }
 }
 
 pub fn emit_php_stdout_write(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -93,16 +150,14 @@ pub fn emit_php_stdout_write(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_php_echo(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    let mut slots = Vec::with_capacity(argc as usize);
-    for _ in 0..argc {
-        let s = alloc_local(&mut chunks[current]);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
-        slots.push(s);
+    if argc != 0 {
+        let helper = ensure_echo_write_chunk(chunks);
+        write_helper_arguments(chunks, current, helper, argc, line);
     }
-    slots.reverse();
-    for s in slots {
-        direct_stdout_value_from_slot(chunks, current, s, line);
-    }
+    // The PHP walker emits echo as an expression-statement call. Its
+    // statement owns the final DROP; the per-value helper result was already
+    // discarded above, so retain the adapter's expression result here.
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `var_dump($a, $b, …)` — one type-annotated dump record per argument.
@@ -113,23 +168,13 @@ pub fn emit_php_echo(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
 /// captures. It previously wrote straight to `wasi:logging` and escaped every
 /// active buffer.
 pub fn emit_php_var_dump(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    let mut slots = Vec::with_capacity(argc as usize);
-    for _ in 0..argc {
-        let s = alloc_local(&mut chunks[current]);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
-        slots.push(s);
-    }
-    slots.reverse();
     let helper = ensure_var_dump_write_chunk(chunks);
-    for s in slots {
-        call_void_helper_from_slot(chunks, current, helper, s, line);
-    }
+    write_helper_arguments(chunks, current, helper, argc, line);
 }
 
 pub fn emit_php_print_expr(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let slot = alloc_local(&mut chunks[current]);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
-    direct_stdout_value_from_slot(chunks, current, slot, line);
+    let helper = ensure_echo_write_chunk(chunks);
+    call_void_helper_from_stack(chunks, current, helper, line);
     chunks[current].emit_i32_const(1, line);
 }
 

@@ -5,11 +5,9 @@
 //! can alias; this adapter provides the PHP leaf behind that marker without a
 //! PHP copy-on-assign and strict-equality adapter.
 
-use std::sync::Arc;
-
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -21,22 +19,6 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-}
-
-fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    match &val {
-        Value::F64(v) => chunk.emit_f64_const(*v, line),
-        Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
-        Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
-        Value::String(s) => chunk.emit_string_const(s, line),
-        Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        _ => unreachable!("push_const: unsupported constant"),
-    }
-}
-
-fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
-    push_const(chunk, Value::String(Arc::from(value)), line);
 }
 
 fn call_import(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
@@ -87,18 +69,23 @@ fn helper_loop_end(
 pub(crate) fn emit_php_arrayish_slot(chunk: &mut Chunk, slot: u16, line: u32) {
     lget(chunk, slot, line);
     call_import(chunk, "php:array", "isArray", 1, line);
+    // The existing PHP array predicate returns I32. Its generic native host
+    // boundary boxes the value; recover that exact checked I32 for consumers.
+    call_import(chunk, "wasm:js-number", "toI32", 1, line);
 }
 
 fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
-    if let Some(index) = chunks
-        .iter()
-        .position(|chunk| chunk.name.as_bytes() == b"__php_strict_eq_impl")
-    {
-        return index;
-    }
     let helper_idx = chunks.len();
     let mut c = create_function_chunk("__php_strict_eq_impl", 2);
     c.local_count = c.local_count.max(2);
+    c.param_count = 2;
+    c.takes_receiver = false;
+    c.direct_entry_has_captures = Some(false);
+    c.module_receiver_abi =
+        vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
+    // Capture only the empty helper's declaration before its sizeable body is
+    // emitted. Recursive comparisons have this exact capture-free signature.
+    let recursive_signature = c.clone();
     let a_slot = 0;
     let b_slot = 1;
     let a_is_slot = alloc_local(&mut c);
@@ -119,13 +106,13 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut c, a_is_slot, line);
     lget(&mut c, b_is_slot, line);
     c.emit_op(Op::I32_OR, line);
-    c.emit_if_i32(line);
+    c.emit_if_value(line);
 
     lget(&mut c, a_is_slot, line);
     lget(&mut c, b_is_slot, line);
     c.emit_op(Op::I32_AND, line);
     c.emit_op(Op::I32_EQZ, line);
-    c.emit_if_i32(line);
+    c.emit_if(line);
     c.emit_bool_const(false, line);
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
@@ -144,7 +131,7 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut c, entries_b_slot, line);
     c.emit_op(Op::ARRAY_LENGTH, line);
     c.emit_op(Op::I32_NE, line);
-    c.emit_if_i32(line);
+    c.emit_if(line);
     c.emit_bool_const(false, line);
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
@@ -182,21 +169,23 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::ARRAY_GET, line);
     vybe_compiler::primitives::ops::emit_js_strict_eq(&mut c, line);
     c.emit_op(Op::I32_EQZ, line);
-    c.emit_if_i32(line);
+    c.emit_if(line);
     c.emit_i32_const(0, line);
     lset(&mut c, result_slot, line);
     c.emit_end(line);
 
     lget(&mut c, result_slot, line);
-    c.emit_if_i32(line);
-    ref_func(&mut c, helper_idx, line);
+    c.emit_if(line);
     lget(&mut c, pair_a_slot, line);
     c.emit_i32_const(1, line);
     c.emit_op(Op::ARRAY_GET, line);
     lget(&mut c, pair_b_slot, line);
     c.emit_i32_const(1, line);
     c.emit_op(Op::ARRAY_GET, line);
-    call_ref(&mut c, 2, line);
+    c.emit_direct_defined_call(
+        u32::try_from(helper_idx).expect("strict equality helper index exceeds u32"),
+        &recursive_signature, false, line,
+    ).expect("strict equality helper requires a fixed capture-free signature");
     // This recursive helper always returns a boolean, not a PHP truthy value.
     call_import(&mut c, "wasm:js-boolean", "cast", 1, line);
     lset(&mut c, result_slot, line);
@@ -229,6 +218,11 @@ pub fn emit_php_copy_on_assign(chunks: &mut Vec<Chunk>, current: usize, _argc: u
 
 pub fn emit_php_strict_eq(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let helper_idx = build_strict_eq_helper(chunks, line);
+    if vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+        chunks, current, helper_idx, 2, line,
+    ) {
+        return;
+    }
     let b_slot = alloc_local(&mut chunks[current]);
     let a_slot = alloc_local(&mut chunks[current]);
     lset(&mut chunks[current], b_slot, line);
@@ -237,4 +231,43 @@ pub fn emit_php_strict_eq(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, li
     lget(&mut chunks[current], a_slot, line);
     lget(&mut chunks[current], b_slot, line);
     call_ref(&mut chunks[current], 2, line);
+}
+
+#[cfg(test)]
+mod compact_strict_equality_tests {
+    use super::*;
+
+    #[test]
+    fn strict_equality_outer_and_recursive_edges_are_direct() {
+        let mut chunks = vec![Chunk::new("strict-equality-caller")];
+        emit_php_strict_eq(&mut chunks, 0, 2, 1);
+        assert_eq!(chunks[0].code.len(), 7);
+        assert_eq!(chunks[0].local_count, 0);
+        assert_eq!(chunks[0].direct_defined_calls.len(), 1);
+        assert_eq!(chunks[1].direct_defined_calls.len(), 1);
+        assert_eq!(chunks[1].direct_defined_calls.values().next().unwrap().target, 1);
+    }
+
+}
+
+fn strict_eq_context_key(chunks: &[Chunk], _: u32) -> Vec<u8> {
+    vec![match vybe_compiler::primitives::class_context::module_receiver_abi(chunks) {
+        vybe_runtime::chunk::ReceiverAbi::Ambient => 0,
+        vybe_runtime::chunk::ReceiverAbi::Parameter => 1,
+    }]
+}
+fn unused_strict_eq_factory() -> Chunk { unreachable!("strict equality uses its unit-owned contextual builder") }
+fn unused_strict_eq_caller(_: &mut Chunk, _: usize, _: u32) { unreachable!("strict equality uses its checked direct invocation") }
+pub(crate) fn strict_eq_definition() -> vybe_compiler::primitives::helper_templates::Definition {
+    use vybe_compiler::primitives::helper_templates::{Contract, Definition};
+    Definition {
+        contract: Contract::ContextualTypedDirectCallAppendOnlyUnit {
+            key: strict_eq_context_key, build: build_strict_eq_helper,
+            result: vybe_runtime::registry::emitter_results::ResultRepresentation::BoxedBoolean,
+        },
+        operation: "php.strict_eq", namespace: "php", version: 1,
+        parser: crate::parse, producer: super::dispatch::dispatch, arity: 2,
+        helper_name: "__php_strict_eq_impl",
+        factory: unused_strict_eq_factory, caller: unused_strict_eq_caller,
+    }
 }

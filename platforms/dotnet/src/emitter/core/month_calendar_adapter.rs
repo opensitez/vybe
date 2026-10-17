@@ -1,6 +1,6 @@
 //! WinForms MonthCalendar on ordinary HTML elements.
 
-use vybe_compiler::primitives::{ops, strings};
+use vybe_compiler::primitives::{functions, globals, ops, strings};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::{Op, heaptype::HT_EXTERN};
 
@@ -37,6 +37,7 @@ fn style(c: &mut Chunk, node: u16, property: &str, value: &str, line: u32) {
 
 fn bool_property(c: &mut Chunk, calendar: u16, name: &str, line: u32) -> u16 {
     object_get(c, calendar, name, line);
+    ops::emit_dyn_to_bool(c, line);
     let value = c.alloc_scratch(1);
     c.emit_op_u16(Op::LOCAL_SET, value, line);
     value
@@ -402,7 +403,44 @@ fn event_node(c: &mut Chunk, key: &str, line: u32) -> u16 {
     node
 }
 
-fn advance(c: &mut Chunk, calendar: u16, direction: f64, line: u32) {
+const RENDER_NAME: &str = "__dotnet_monthcalendar_render";
+const RENDER_MARKER: &str = "<dotnet:monthcalendar-render>";
+
+fn ensure_render(chunks: &mut Vec<Chunk>, line: u32) -> Option<usize> {
+    use vybe_runtime::chunk::{LocalName, LocalOrigin};
+    if let Some(index) = chunks.iter().position(|c| {
+        c.name == RENDER_NAME && c.arity == 1 && c.param_count == 1
+            && c.local_names.iter().any(|n| n.slot == 0
+                && n.origin == LocalOrigin::Compiler && n.name == RENDER_MARKER)
+    }) {
+        return u16::try_from(index).ok().map(usize::from);
+    }
+    // Existing ref.func emitter takes a u16 module index. Retain the inline
+    // path when this additional helper cannot be represented, never truncate.
+    let index = u16::try_from(chunks.len()).ok()? as usize;
+    let mut helper = functions::create_function_chunk(RENDER_NAME, 1);
+    helper.param_count = 1;
+    helper.local_count = 1;
+    helper.local_names.push(LocalName::new(0, RENDER_MARKER, LocalOrigin::Compiler));
+    render(&mut helper, 0, line);
+    helper.emit_ref_null(HT_EXTERN, line);
+    helper.emit_op(Op::RETURN, line);
+    chunks.push(helper);
+    Some(index)
+}
+
+fn render_call(c: &mut Chunk, calendar: u16, helper: Option<usize>, line: u32) {
+    if let Some(helper) = helper {
+        functions::emit_ref_func(c, helper, 0, line);
+        c.emit_op_u16(Op::LOCAL_GET, calendar, line);
+        functions::emit_call(c, 1, line);
+        c.emit_op(Op::DROP, line);
+    } else {
+        render(c, calendar, line);
+    }
+}
+
+fn advance(c: &mut Chunk, calendar: u16, direction: f64, helper: Option<usize>, line: u32) {
     let year = number_attribute(c, calendar, "data-year", line);
     let month = number_attribute(c, calendar, "data-month", line);
     c.emit_op_u16(Op::LOCAL_GET, month, line);
@@ -419,41 +457,74 @@ fn advance(c: &mut Chunk, calendar: u16, direction: f64, line: u32) {
     let new_month = date_part(c, ms, "getUTCMonth", line);
     set_number(c, calendar, "data-year", new_year, line);
     set_number(c, calendar, "data-month", new_month, line);
-    render(c, calendar, line);
+    render_call(c, calendar, helper, line);
 }
 
-fn callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+// Event node wrappers contain only __node, not the control's settings.
+// Retain the actual control per DOM node so clicks use its current properties.
+const CALENDARS: &str = "__dotnet_monthcalendar_controls";
+
+fn retain_calendar(c: &mut Chunk, calendar: u16, line: u32) {
+    let registry = c.alloc_scratch(1);
+    globals::emit_read(c, CALENDARS, line);
+    c.emit_op_u16(Op::LOCAL_SET, registry, line);
+    c.emit_op_u16(Op::LOCAL_GET, registry, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op_u16(Op::LOCAL_GET, registry, line);
+    let undefined = c.add_import("wasm:js-undefined", "test");
+    c.emit_call(undefined, 1, line);
+    c.emit_op(Op::I32_OR, line);
+    c.emit_if(line);
+    let new = c.add_import("ecma:object", "new");
+    c.emit_call(new, 0, line);
+    c.emit_op_u16(Op::LOCAL_SET, registry, line);
+    c.emit_op_u16(Op::LOCAL_GET, registry, line);
+    globals::emit_write(c, CALENDARS, line);
+    c.emit_end(line);
+    c.emit_op_u16(Op::LOCAL_GET, registry, line);
+    object_get(c, calendar, "__node", line);
+    c.emit_op_u16(Op::LOCAL_GET, calendar, line);
+    let set = c.add_import("ecma:object", "set");
+    c.emit_call(set, 3, line);
+    c.emit_op(Op::DROP, line);
+}
+
+fn callback(chunks: &mut Vec<Chunk>, helper: Option<usize>, line: u32) -> usize {
     let mut c = vybe_compiler::primitives::functions::create_function_chunk(
         "__dotnet_monthcalendar_click",
         1,
     );
     c.local_count = 1;
-    let calendar = event_node(&mut c, "currentTarget", line);
+    globals::emit_read(&mut c, CALENDARS, line);
+    object_get(&mut c, 0, "currentTarget", line);
+    let get = c.add_import("ecma:object", "get");
+    c.emit_call(get, 2, line);
+    let calendar = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, calendar, line);
     let target = event_node(&mut c, "target", line);
     let action = attribute(&mut c, target, "data-action", line);
     c.emit_op_u16(Op::LOCAL_GET, action, line);
     c.emit_string_const("prev", line);
     ops::emit_dyn_eq(&mut c, line);
     c.emit_if(line);
-    advance(&mut c, calendar, -1.0, line);
+    advance(&mut c, calendar, -1.0, helper, line);
     c.emit_else(line);
     c.emit_op_u16(Op::LOCAL_GET, action, line);
     c.emit_string_const("next", line);
     ops::emit_dyn_eq(&mut c, line);
     c.emit_if(line);
-    advance(&mut c, calendar, 1.0, line);
+    advance(&mut c, calendar, 1.0, helper, line);
     c.emit_else(line);
     let day_text = attribute(&mut c, target, "data-day", line);
     c.emit_op_u16(Op::LOCAL_GET, day_text, line);
-    let truthy = c.add_import("ecma:boolean", "toBoolean");
-    c.emit_call(truthy, 1, line);
+    ops::emit_dyn_to_bool(&mut c, line);
     c.emit_if(line);
     set_attribute(&mut c, calendar, "data-selected", day_text, line);
     let year = attribute(&mut c, calendar, "data-year", line);
     let month = attribute(&mut c, calendar, "data-month", line);
     set_attribute(&mut c, calendar, "data-selected-year", year, line);
     set_attribute(&mut c, calendar, "data-selected-month", month, line);
-    render(&mut c, calendar, line);
+    render_call(&mut c, calendar, helper, line);
     c.emit_end(line);
     c.emit_end(line);
     c.emit_end(line);
@@ -465,9 +536,11 @@ fn callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
 /// Stack: [calendar] -> [null].
 pub fn emit_init(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let helper = ensure_render(chunks, line);
     let c = &mut chunks[current];
     let calendar = c.alloc_scratch(1);
     c.emit_op_u16(Op::LOCAL_SET, calendar, line);
+    retain_calendar(c, calendar, line);
     for (key, value) in [
         ("showtoday", true),
         ("showtodaycircle", true),
@@ -500,8 +573,8 @@ pub fn emit_init(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     set_number(c, calendar, "data-selected", day, line);
     set_number(c, calendar, "data-selected-year", year, line);
     set_number(c, calendar, "data-selected-month", month, line);
-    render(c, calendar, line);
-    let handler = callback(chunks, line);
+    render_call(c, calendar, helper, line);
+    let handler = callback(chunks, helper, line);
     vybe_compiler::primitives::gui::emit_add_event_listener(
         &mut chunks[current],
         calendar,
@@ -520,7 +593,9 @@ pub fn emit_property_get(c: &mut Chunk, property: &str, line: u32) {
 }
 
 /// Stack: [calendar, value] -> [null].
-pub fn emit_property_set(c: &mut Chunk, property: &str, line: u32) {
+pub fn emit_property_set(chunks: &mut Vec<Chunk>, current: usize, property: &str, line: u32) {
+    let helper = if matches!(property, "showtoday" | "showtodaycircle" | "showweeknumbers" | "firstdayofweek") { ensure_render(chunks, line) } else { None };
+    let c = &mut chunks[current];
     let value = c.alloc_scratch(1);
     c.emit_op_u16(Op::LOCAL_SET, value, line);
     let calendar = c.alloc_scratch(1);
@@ -530,7 +605,7 @@ pub fn emit_property_set(c: &mut Chunk, property: &str, line: u32) {
         property,
         "showtoday" | "showtodaycircle" | "showweeknumbers" | "firstdayofweek"
     ) {
-        render(c, calendar, line);
+        render_call(c, calendar, helper, line);
     }
     c.emit_ref_null(HT_EXTERN, line);
 }

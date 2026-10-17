@@ -65,7 +65,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -106,8 +106,8 @@ where
         lget(chunk, name_slot, line);
         push_str(chunk, name, line);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if(line);
+
+        chunk.emit_if_value(line);
         emit_known(chunk, name, global, default, line);
         chunk.emit_else(line);
     }
@@ -254,7 +254,7 @@ pub fn emit_php_get_cfg_var(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     lget(&mut chunks[current], name_slot, line);
     push_str(&mut chunks[current], "PHP_VERSION", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+
     chunks[current].emit_if(line);
     push_str(&mut chunks[current], "8.0.0", line);
     chunks[current].emit_else(line);

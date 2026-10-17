@@ -1,3 +1,18 @@
+// @grameo choice_heads statement primary
+// @grameo optimize ascii_xid
+// @grameo optimize nullable_failure_heads
+// @grameo pratt logical_expr atom=unary trailing=consume operator_trivia=op_nl
+// @grameo operator logical_expr logical_op precedence=5 fixity=infix_left
+// @grameo operator logical_expr comparison_op precedence=8 fixity=infix_left
+// @grameo operator logical_expr additive_op precedence=10 fixity=infix_left
+// @grameo operator logical_expr multiplicative_op precedence=20 fixity=infix_left
+// @grameo operator logical_expr exp_op precedence=30 fixity=infix_right
+// @grameo optimize native_choices native_rule_heads
+// @grameo pratt additive atom=unary trailing=consume operator_trivia=op_nl
+// @grameo operator additive additive_op precedence=10 fixity=infix_left
+// @grameo operator additive multiplicative_op precedence=20 fixity=infix_left
+// @grameo operator additive exp_op precedence=30 fixity=infix_right
+
 // JavaScript Grammar for pest parser
 // Covers ES2025 — full syntax supported by Vybe's JS walker.
 //
@@ -76,34 +91,34 @@ block_statement = { "{" ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}"
 // ── Variable declarations ───────────────────────────────────────────────────
 
 variable_declaration = {
-    var_kind ~ var_declarator ~ ("," ~ var_declarator)* ~ terminator
+    var_kind ~ op_nl ~ var_declarator ~ ("," ~ op_nl ~ var_declarator)* ~ terminator
 }
 
 var_kind = { "var" | "let" | "const" }
 
-var_declarator = { binding_pattern ~ ("=" ~ assignment_expression)? }
+var_declarator = { binding_pattern ~ ("=" ~ op_nl ~ assignment_expression)? }
 
 binding_pattern = { object_pattern | array_pattern | ident_name }
 
 object_pattern = {
-    "{" ~ (object_pattern_prop ~ ("," ~ object_pattern_prop)*)? ~ ","? ~ "}"
+    "{" ~ op_nl ~ (object_pattern_prop ~ (op_nl ~ "," ~ op_nl ~ object_pattern_prop)*)? ~ op_nl ~ ","? ~ op_nl ~ "}"
 }
 
 object_pattern_prop = {
     "..." ~ ident_name                                             // rest: { ...rest }
-    | "[" ~ assignment_expression ~ "]" ~ ":" ~ binding_pattern ~ ("=" ~ assignment_expression)?  // computed: { [key]: val }
-    | ident_name ~ ":" ~ binding_pattern ~ ("=" ~ assignment_expression)?  // rename: { a: b }
-    | ident_name ~ ("=" ~ assignment_expression)?                  // shorthand: { a } or { a = default }
+    | "[" ~ op_nl ~ assignment_expression ~ op_nl ~ "]" ~ ":" ~ binding_pattern ~ ("=" ~ op_nl ~ assignment_expression)?  // computed: { [key]: val }
+    | ident_name ~ ":" ~ binding_pattern ~ ("=" ~ op_nl ~ assignment_expression)?  // rename: { a: b }
+    | ident_name ~ ("=" ~ op_nl ~ assignment_expression)?                  // shorthand: { a } or { a = default }
 }
 
 array_pattern = {
-    "[" ~ (array_pattern_elem ~ ("," ~ array_pattern_elem)*)? ~ ","? ~ "]"
+    "[" ~ op_nl ~ (array_pattern_elem ~ (op_nl ~ "," ~ op_nl ~ array_pattern_elem)*)? ~ op_nl ~ ","? ~ op_nl ~ "]"
 }
 
 array_pattern_elem = {
     "..." ~ ident_name           // rest: [...rest]
     | array_hole                 // hole: skip
-    | binding_pattern ~ ("=" ~ assignment_expression)?
+    | binding_pattern ~ ("=" ~ op_nl ~ assignment_expression)?
 }
 
 array_hole = { &"," }   // empty slot before comma
@@ -127,11 +142,11 @@ await_using_declaration = {
 // ── Function declaration ────────────────────────────────────────────────────
 
 function_declaration = {
-    "function" ~ generator_marker? ~ ident_name ~ "(" ~ param_list? ~ ")" ~ function_body
+    "function" ~ generator_marker? ~ ident_name ~ "(" ~ op_nl ~ param_list? ~ op_nl ~ ")" ~ function_body
 }
 
 async_function_declaration = {
-    "async" ~ "function" ~ generator_marker? ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+    "async" ~ "function" ~ generator_marker? ~ ident_name? ~ "(" ~ op_nl ~ param_list? ~ op_nl ~ ")" ~ function_body
 }
 
 /// `function*` marks a generator declaration — the walker uses the
@@ -141,16 +156,16 @@ generator_marker = { "*" }
 
 function_body = { "{" ~ statement* ~ "}" }
 
-param_list = { param ~ ("," ~ param)* ~ ","? }
+param_list = { op_nl ~ param ~ ("," ~ op_nl ~ param)* ~ ","? ~ op_nl }
 
-param = { "..."? ~ binding_pattern ~ ("=" ~ assignment_expression)? }
+param = { "..."? ~ binding_pattern ~ ("=" ~ op_nl ~ assignment_expression)? }
 
 // ── Class declaration ───────────────────────────────────────────────────────
 
 // TC39 stage-3 decorators: @name, @name.method, @name(args), @name.method(args).
 // eat_terminators inside decorator consumes the trailing newline so that
 // `decorator* ~ eat_terminators ~ "class"` works for multi-decorator stacks.
-decorator = { "@" ~ ident_name ~ ("." ~ ident_or_keyword)* ~ ("(" ~ argument_list? ~ ")")? ~ eat_nl }
+decorator = { "@" ~ ident_name ~ ("." ~ ident_or_keyword)* ~ ("(" ~ op_nl ~ argument_list? ~ op_nl ~ ")")? ~ eat_nl }
 
 class_declaration = {
     decorator* ~ "class" ~ ident_name? ~ ("extends" ~ assignment_expression)? ~ class_body
@@ -160,7 +175,7 @@ class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
 
 // TC39 accessor keyword for auto-accessor fields (@decorator + accessor field).
 accessor_kw = @{ "accessor" ~ !(ASCII_ALPHANUMERIC | "_") }
-accessor_property = { accessor_kw ~ property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
+accessor_property = { accessor_kw ~ property_name ~ ("=" ~ op_nl ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
 
 class_member = {
     decorator* ~ eat_nl ~ (static_block | static_kw? ~ (getter_method | setter_method | accessor_property | class_method | class_property))
@@ -180,11 +195,11 @@ set_keyword = @{ "set" ~ !(ASCII_ALPHANUMERIC | "_") }
 getter_method = { get_keyword ~ property_name ~ "(" ~ ")" ~ function_body }
 setter_method = { set_keyword ~ property_name ~ "(" ~ param ~ ")" ~ function_body }
 // ES2015 generator methods (`*name()`) and async generator methods (`async *name()`).
-class_method = { async_kw? ~ generator_marker? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body }
-class_property = { property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
+class_method = { async_kw? ~ generator_marker? ~ property_name ~ "(" ~ op_nl ~ param_list? ~ op_nl ~ ")" ~ function_body }
+class_property = { property_name ~ ("=" ~ op_nl ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
 
 property_name = { computed_property_name | string_literal | numeric_literal | private_name | ident_or_keyword }
-computed_property_name = { "[" ~ assignment_expression ~ "]" }
+computed_property_name = { "[" ~ op_nl ~ assignment_expression ~ op_nl ~ "]" }
 // PHP/JS class private fields: #name. Lexed as a single token so the
 // "#" cannot be eaten as a comment marker (JS has no `#` comment).
 private_name = @{ "#" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
@@ -192,7 +207,7 @@ private_name = @{ "#" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 // ── If ──────────────────────────────────────────────────────────────────────
 
 if_statement = {
-    "if" ~ "(" ~ expression ~ ")" ~ statement ~ eat_terminators ~ ("else" ~ statement)?
+    "if" ~ "(" ~ op_nl ~ expression ~ op_nl ~ ")" ~ op_nl ~ statement ~ eat_terminators ~ ("else" ~ op_nl ~ statement)?
 }
 
 // ── For / For-in / For-of ───────────────────────────────────────────────────
@@ -236,14 +251,14 @@ variable_declaration_no_semi = {
 
 // ── While / Do-while ────────────────────────────────────────────────────────
 
-while_statement = { "while" ~ "(" ~ expression ~ ")" ~ statement }
+while_statement = { "while" ~ "(" ~ op_nl ~ expression ~ op_nl ~ ")" ~ statement }
 
-do_while_statement = { "do" ~ statement ~ eat_terminators ~ "while" ~ "(" ~ expression ~ ")" ~ terminator }
+do_while_statement = { "do" ~ statement ~ eat_terminators ~ "while" ~ "(" ~ op_nl ~ expression ~ op_nl ~ ")" ~ terminator }
 
 // ── Switch ──────────────────────────────────────────────────────────────────
 
 switch_statement = {
-    "switch" ~ "(" ~ expression ~ ")" ~ "{" ~ eat_terminators ~ switch_case* ~ eat_terminators ~ "}"
+    "switch" ~ "(" ~ op_nl ~ expression ~ op_nl ~ ")" ~ "{" ~ eat_terminators ~ switch_case* ~ eat_terminators ~ "}"
 }
 
 switch_case = {
@@ -332,13 +347,13 @@ expression_statement = { expression ~ terminator }
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 
-expression = { assignment_expression ~ ("," ~ assignment_expression)* }
+expression = { assignment_expression ~ ("," ~ op_nl ~ assignment_expression)* }
 
 assignment_expression = {
     yield_expression
     | arrow_function
     | async_arrow_function
-    | conditional_expression ~ (assignment_op ~ assignment_expression)?
+    | conditional_expression ~ (assignment_op ~ op_nl ~ assignment_expression)?
 }
 
 assignment_op = {
@@ -392,7 +407,7 @@ mul_op = { "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
 exp_op = { "**" ~ !"=" }
 
 unary = {
-    unary_op ~ unary
+    unary_op ~ op_nl ~ unary
     | postfix
 }
 
@@ -447,11 +462,11 @@ call_expression = {
     (&new_keyword_lookahead ~ new_expression | primary) ~ call_chain*
 }
 
-new_expression = { "new" ~ primary ~ call_chain* }
+new_expression = { "new" ~ op_nl ~ primary ~ call_chain* }
 
 import_meta = { "import" ~ "." ~ "meta" }
 new_target = { "new" ~ "." ~ "target" }
-dynamic_import = { "import" ~ "(" ~ argument_list? ~ ")" }
+dynamic_import = { "import" ~ "(" ~ op_nl ~ argument_list? ~ op_nl ~ ")" }
 
 // `chain_lead` lets a method/property access continue across newlines:
 //   arr
@@ -463,11 +478,11 @@ chain_lead = _{ NEWLINE* }
 
 call_chain = {
     chain_lead ~ (
-        "?." ~ ("(" ~ argument_list? ~ ")" | "[" ~ expression ~ "]" | ident_or_keyword)
-        | "." ~ (private_name | ident_or_keyword)
+        "?." ~ op_nl ~ ("(" ~ op_nl ~ argument_list? ~ op_nl ~ ")" | "[" ~ op_nl ~ expression ~ op_nl ~ "]" | ident_or_keyword)
+        | "." ~ op_nl ~ (private_name | ident_or_keyword)
     )
-    | "(" ~ argument_list? ~ ")"
-    | "[" ~ expression ~ "]"
+    | "(" ~ op_nl ~ argument_list? ~ op_nl ~ ")"
+    | "[" ~ op_nl ~ expression ~ op_nl ~ "]"
     | template_literal
 }
 
@@ -478,7 +493,7 @@ argument = { "..." ~ assignment_expression | assignment_expression }
 // Arrow functions tried BEFORE grouped expression (ordered choice with backtracking)
 
 primary = {
-    "(" ~ expression ~ ")"
+    "(" ~ op_nl ~ expression ~ op_nl ~ ")"
     | async_function_expression
     | function_expression
     | class_expression
@@ -507,11 +522,11 @@ primary = {
 // pest tries these first due to ordered choice. If "=>" is not found, backtracks.
 
 arrow_function = {
-    ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ arrow_body
+    ("(" ~ op_nl ~ param_list? ~ op_nl ~ ")" | ident_name) ~ "=>" ~ arrow_body
 }
 
 async_arrow_function = {
-    async_kw ~ ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ arrow_body
+    async_kw ~ ("(" ~ op_nl ~ param_list? ~ op_nl ~ ")" | ident_name) ~ "=>" ~ arrow_body
 }
 
 arrow_body = { eat_nl ~ (function_body | assignment_expression) }
@@ -519,11 +534,11 @@ arrow_body = { eat_nl ~ (function_body | assignment_expression) }
 // ── Function / Class expressions ────────────────────────────────────────────
 
 function_expression = {
-    "function" ~ generator_marker? ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+    "function" ~ generator_marker? ~ ident_name? ~ "(" ~ op_nl ~ param_list? ~ op_nl ~ ")" ~ function_body
 }
 
 async_function_expression = {
-    async_kw ~ "function" ~ generator_marker? ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+    async_kw ~ "function" ~ generator_marker? ~ ident_name? ~ "(" ~ op_nl ~ param_list? ~ op_nl ~ ")" ~ function_body
 }
 
 class_expression = {
@@ -548,11 +563,11 @@ object_literal = {
 
 object_property = {
     "..." ~ assignment_expression                                     // spread
-    | computed_property_name ~ ":" ~ assignment_expression             // computed key
-    | async_kw? ~ generator_marker? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body // method shorthand (before get/set to avoid get/set prefix match)
+    | computed_property_name ~ ":" ~ op_nl ~ assignment_expression             // computed key
+    | async_kw? ~ generator_marker? ~ property_name ~ "(" ~ op_nl ~ param_list? ~ op_nl ~ ")" ~ function_body // method shorthand (before get/set to avoid get/set prefix match)
     | "get" ~ (property_name | computed_property_name) ~ "(" ~ ")" ~ function_body               // getter
     | "set" ~ (property_name | computed_property_name) ~ "(" ~ param ~ ")" ~ function_body       // setter
-    | property_name ~ ":" ~ assignment_expression                      // key: value
+    | property_name ~ ":" ~ op_nl ~ assignment_expression                      // key: value
     | ident_name                                                       // shorthand { x }
 }
 
@@ -606,10 +621,9 @@ numeric_literal = @{
     | dec_digits ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digits)? ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
-string_literal = @{
-    "'" ~ ("\\'" | "\\\\" | (!"'" ~ !NEWLINE ~ ANY))* ~ "'"
-    | "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ !NEWLINE ~ ANY))* ~ "\""
-}
+string_literal = @{ single_quoted_string | double_quoted_string }
+single_quoted_string = _{ "'" ~ ("\\'" | "\\\\" | (!"'" ~ !NEWLINE ~ ANY))* ~ "'" }
+double_quoted_string = _{ "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ !NEWLINE ~ ANY))* ~ "\"" }
 
 // ── Identifiers ─────────────────────────────────────────────────────────────
 // ident_name: any identifier including contextual keywords (get, set, from, of, as, async)
@@ -640,3 +654,7 @@ strict_keyword = _{
      "false" | "null" | "undefined" | "import" | "export")
     ~ !(ASCII_ALPHANUMERIC | "_" | "$")
 }
+
+// @grameo empty_success_heads op_nl eat_nl
+
+// @grameo empty_suffix_heads conditional_expression assignment_expression

@@ -7,7 +7,6 @@ pub mod normalize_class;
 pub mod protocol;
 pub mod walker;
 
-#[allow(dead_code)]
 mod native_grammar {
     include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
 }
@@ -21,7 +20,24 @@ impl PythonParser {
 
 /// Parse Python source into the common AST.
 pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
+    walker::parse_with_direct_literals(source)
+}
+
+/// Explicit PEG comparison frontend. Registration uses the owned hybrid path.
+pub fn parse_with_peg(source: &str) -> Result<vybe_ast::Module, String> {
     walker::parse(source)
+}
+
+/// Deferred Pratt expression recipes lower common AST in the current scope.
+/// Rich operands and statements retain their original captures and walker.
+/// This is the same frontend used by the registered [`parse`] entry point.
+pub fn parse_with_direct_ast(source: &str) -> Result<vybe_ast::Module, String> {
+    walker::parse_with_direct_literals(source)
+}
+
+/// Compatibility entry point for the original literal-list experiment.
+pub fn parse_with_direct_literals(source: &str) -> Result<vybe_ast::Module, String> {
+    parse_with_direct_ast(source)
 }
 
 /// Embedded profile TOML source.
@@ -63,3 +79,6 @@ impl vybe_runtime::Plugin for Plugin {
 // Link-time registration: this crate submits its plugin to the one registry.
 // Nothing lists plugins in code — linking this crate IS the registration.
 vybe_runtime::register_plugin!(Plugin);
+
+/// Explicit eager comparison frontend for the optimized grammar.
+pub fn parse_with_eager_ast(source: &str) -> Result<vybe_ast::Module, String> { walker::parse_with_backend(source, true, false) }

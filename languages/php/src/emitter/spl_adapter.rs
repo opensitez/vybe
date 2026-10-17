@@ -12,13 +12,12 @@
 //! `SplObjectStorage` / `WeakMap` are Map-backed (object-identity keys).
 //! SplFixedArray is handled entirely by the walker (→ `array_fill`).
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ResolvedSlot, ValueSource,
 };
 use vybe_compiler::primitives::heap;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 fn sconst(c: &mut Chunk, s: &str) -> ResolvedSlot {
     class_slots::resolve_interned(c, &ClassSlot::internal(s), &PlainNames)
@@ -48,7 +47,7 @@ fn emit_empty_guard(chunks: &mut Vec<Chunk>, idx: usize, msg: &str, line: u32) {
         c.emit_op(Op::ARRAY_LENGTH, line);
         c.emit_f64_const(0.0, line);
         vybe_compiler::primitives::ops::emit_dyn_eq(c, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+
         c.emit_if(line);
     }
     super::type_guard::emit_throw_const(chunks, idx, "RuntimeException", msg, line);
@@ -78,7 +77,7 @@ fn build_array_method(
         emit_empty_guard(chunks, idx, "Can't pop from an empty datastructure", line);
     }
     let c = &mut chunks[idx];
-    let fn_i = c.add_import("ecma:array".to_string(), ecma_fn.to_string());
+    let fn_i = c.add_import("ecma:array", ecma_fn);
     // this (the array) is slot 0
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     for slot in 1..arity {
@@ -316,7 +315,7 @@ fn build_iter_set_mode_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_iter_set_mode");
     c.arity = 2;
     c.local_count = c.local_count.max(2);
-    c.emit_op(Op::DROP, line);
+    // Arguments live in locals; the function starts with an empty operand stack.
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
@@ -328,7 +327,7 @@ fn build_iter_sort_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.arity = 1;
     c.local_count = c.local_count.max(1);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    let sort_i = c.add_import("ecma:array".to_string(), "sort".to_string());
+    let sort_i = c.add_import("ecma:array", "sort");
     c.emit_call(sort_i, 1, line);
     c.emit_op(Op::DROP, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -444,7 +443,7 @@ fn build_top_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let idx = chunks.len() - 1;
     emit_empty_guard(chunks, idx, "Peek at an empty datastructure", line);
     let c = &mut chunks[idx];
-    let at_i = c.add_import("ecma:array".to_string(), "at".to_string());
+    let at_i = c.add_import("ecma:array", "at");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_f64_const(-1.0, line);
     c.emit_call(at_i, 2, line);
@@ -461,7 +460,7 @@ fn build_bottom_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let idx = chunks.len() - 1;
     emit_empty_guard(chunks, idx, "Peek at an empty datastructure", line);
     let c = &mut chunks[idx];
-    let at_i = c.add_import("ecma:array".to_string(), "at".to_string());
+    let at_i = c.add_import("ecma:array", "at");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_f64_const(0.0, line);
     c.emit_call(at_i, 2, line);
@@ -542,7 +541,7 @@ fn build_pq_extract_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let pair_slot = chunks[idx].alloc_scratch(1);
     emit_empty_guard(chunks, idx, "Can't extract from an empty heap", line);
     let c = &mut chunks[idx];
-    let pop_i = c.add_import("ecma:array".to_string(), "pop".to_string());
+    let pop_i = c.add_import("ecma:array", "pop");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_call(pop_i, 1, line); // → [priority, value]
     lset(c, pair_slot, line);
@@ -560,7 +559,7 @@ fn build_pq_current_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let pair_slot = chunks[idx].alloc_scratch(1);
     emit_empty_guard(chunks, idx, "Peek at an empty heap", line);
     let c = &mut chunks[idx];
-    let at_i = c.add_import("ecma:array".to_string(), "at".to_string());
+    let at_i = c.add_import("ecma:array", "at");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_f64_const(-1.0, line);
     c.emit_call(at_i, 2, line);
@@ -606,7 +605,7 @@ fn emit_pq_project_pair(chunk: &mut Chunk, receiver_slot: u16, pair_slot: u16, l
     lget(chunk, flags_slot, line);
     chunk.emit_f64_const(2.0, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
     chunk.emit_if_value(line);
     emit_pq_pair_value(chunk, pair_slot, 0.0, line);
     chunk.emit_else(line);
@@ -614,10 +613,10 @@ fn emit_pq_project_pair(chunk: &mut Chunk, receiver_slot: u16, pair_slot: u16, l
     lget(chunk, flags_slot, line);
     chunk.emit_f64_const(3.0, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
     chunk.emit_if_value(line);
-    let map_new = chunk.add_import("ecma:map".to_string(), "new".to_string());
-    let map_set = chunk.add_import("ecma:map".to_string(), "set".to_string());
+    let map_new = chunk.add_import("ecma:map", "new");
+    let map_set = chunk.add_import("ecma:map", "set");
     chunk.emit_call(map_new, 0, line);
     let map_slot = chunk.alloc_scratch(1);
     lset(chunk, map_slot, line);
@@ -646,6 +645,16 @@ fn emit_spl_helper_call(
     build: fn(&mut Vec<Chunk>, u32) -> usize,
 ) {
     let idx = build(chunks, line);
+    // These helpers already have a concrete module-local definition. Preserve
+    // the generic path for arity adaptation or an environment/continuation,
+    // but do not spill arguments and construct a callable for a proven direct
+    // edge. The shared emitter records a standard Wasm call and its signature.
+    if vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+        chunks, current, idx, argc, line,
+    )
+    {
+        return;
+    }
     let mut slots = Vec::with_capacity(argc as usize);
     for _ in 0..argc {
         slots.push(chunks[current].alloc_scratch(1));
@@ -663,6 +672,27 @@ fn emit_spl_helper_call(
 
 pub fn emit_spl_iter_rewind(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     emit_spl_helper_call(chunks, current, argc, line, build_iter_rewind_method);
+}
+
+#[cfg(test)]
+mod direct_helper_emission_tests {
+    use super::*;
+
+    #[test]
+    fn exact_spl_helper_call_emits_one_direct_edge_without_scratch() {
+        let mut chunks = vec![Chunk::new("spl-direct-root")];
+        emit_spl_iter_rewind(&mut chunks, 0, 1, 1);
+        assert_eq!(chunks[0].direct_defined_calls.len(), 1);
+        assert_eq!(chunks[0].code.len(), 7);
+        assert_eq!(chunks[0].local_count, 0);
+    }
+
+    #[test]
+    fn spl_helper_arity_adaptation_keeps_the_indirect_path() {
+        let mut chunks = vec![Chunk::new("spl-adapted-root")];
+        emit_spl_iter_rewind(&mut chunks, 0, 0, 1);
+        assert!(chunks[0].direct_defined_calls.is_empty());
+    }
 }
 
 pub fn emit_spl_iter_rewind_lifo(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -796,7 +826,7 @@ fn build_map_method(
 ) -> usize {
     let mut c = Chunk::new(name);
     c.arity = arity;
-    let fn_i = c.add_import("ecma:map".to_string(), map_fn.to_string());
+    let fn_i = c.add_import("ecma:map", map_fn);
     // this (the Map) is slot 0
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     for slot in 1..arity {
@@ -817,7 +847,7 @@ fn build_map_method(
 fn build_map_count_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_map_count");
     c.arity = 1;
-    let size_i = c.add_import("ecma:map".to_string(), "size".to_string());
+    let size_i = c.add_import("ecma:map", "size");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_call(size_i, 1, line);
     c.emit_op(Op::RETURN, line);
@@ -830,7 +860,7 @@ fn build_map_attach_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_attach");
     c.arity = 3;
     c.local_count = c.local_count.max(3);
-    let set_i = c.add_import("ecma:map".to_string(), "set".to_string());
+    let set_i = c.add_import("ecma:map", "set");
     lget(&mut c, 0, line);
     lget(&mut c, 1, line);
     lget(&mut c, 2, line);
@@ -857,15 +887,16 @@ fn build_map_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     {
         let c = &mut chunks[idx];
         lget(c, 0, line);
-        let entries_i = c.add_import("ecma:map".to_string(), "entries".to_string());
+        let entries_i = c.add_import("ecma:map", "entries");
         c.emit_call(entries_i, 1, line);
         lset(c, entries_slot, line);
         lget(c, entries_slot, line);
         c.emit_op(Op::ARRAY_LENGTH, line);
         c.emit_f64_const(0.0, line);
         vybe_compiler::primitives::ops::emit_dyn_gt(c, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
-        c.emit_if_value(line);
+
+        // Both arms store the selected entry; neither leaves a block result.
+        c.emit_if(line);
         lget(c, entries_slot, line);
         c.emit_f64_const(0.0, line);
         c.emit_op(Op::ARRAY_GET, line);
@@ -904,7 +935,7 @@ fn build_map_add_all_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     {
         let c = &mut chunks[current];
         lget(c, 1, line);
-        let entries_i = c.add_import("ecma:map".to_string(), "entries".to_string());
+        let entries_i = c.add_import("ecma:map", "entries");
         c.emit_call(entries_i, 1, line);
         lset(c, entries_slot, line);
         lget(c, entries_slot, line);
@@ -920,7 +951,7 @@ fn build_map_add_all_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(c, len_slot, line);
         c.emit_op(Op::F64_LT, line);
     }
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     {
         let c = &mut chunks[current];
         lget(c, entries_slot, line);
@@ -938,7 +969,7 @@ fn build_map_add_all_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(c, 0, line);
         lget(c, key_slot, line);
         lget(c, value_slot, line);
-        let set_i = c.add_import("ecma:map".to_string(), "set".to_string());
+        let set_i = c.add_import("ecma:map", "set");
         c.emit_call(set_i, 3, line);
         c.emit_op(Op::DROP, line);
         lget(c, index_slot, line);
@@ -970,7 +1001,7 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
     {
         let c = &mut chunks[current];
         lget(c, 0, line);
-        let entries_i = c.add_import("ecma:map".to_string(), "entries".to_string());
+        let entries_i = c.add_import("ecma:map", "entries");
         c.emit_call(entries_i, 1, line);
         lset(c, entries_slot, line);
         lget(c, entries_slot, line);
@@ -986,7 +1017,7 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
         lget(c, len_slot, line);
         c.emit_op(Op::F64_LT, line);
     }
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     {
         let c = &mut chunks[current];
         lget(c, entries_slot, line);
@@ -999,7 +1030,7 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
         lset(c, key_slot, line);
         lget(c, 1, line);
         lget(c, key_slot, line);
-        let has_i = c.add_import("ecma:map".to_string(), "has".to_string());
+        let has_i = c.add_import("ecma:map", "has");
         c.emit_call(has_i, 2, line);
         if keep_matches {
             vybe_compiler::primitives::ops::emit_dyn_not(c, line);
@@ -1007,7 +1038,7 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
         c.emit_if(line);
         lget(c, 0, line);
         lget(c, key_slot, line);
-        let del_i = c.add_import("ecma:map".to_string(), "delete".to_string());
+        let del_i = c.add_import("ecma:map", "delete");
         c.emit_call(del_i, 2, line);
         c.emit_op(Op::DROP, line);
         c.emit_end(line);
@@ -1093,7 +1124,7 @@ pub fn emit_spl_objectstorage_new(
     }
     let this_slot = chunk.alloc_scratch(1);
     // this = ecma:map.new() — the instance IS the Map
-    let map_new_i = chunk.add_import("ecma:map".to_string(), "new".to_string());
+    let map_new_i = chunk.add_import("ecma:map", "new");
     chunk.emit_call(map_new_i, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     // Map-backed SPL instances still have their declared PHP class identity.
@@ -1394,19 +1425,19 @@ fn bind_methods(chunk: &mut Chunk, this_slot: u16, binds: Vec<(&'static str, usi
 fn init_iterator_state(chunk: &mut Chunk, this_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_f64_const(0.0, line);
-    let idx = class_slots::resolve(&ClassSlot::Internal(("__idx".to_string())), &PlainNames);
+    let idx = class_slots::resolve(&ClassSlot::Internal("__idx".to_string()), &PlainNames);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &idx, ValueSource::Stack, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_bool_const(false, line);
-    let lifo = class_slots::resolve(&ClassSlot::Internal(("__lifo".to_string())), &PlainNames);
+    let lifo = class_slots::resolve(&ClassSlot::Internal("__lifo".to_string()), &PlainNames);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &lifo, ValueSource::Stack, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let keys_i = chunk.add_import("ecma:object".to_string(), "keys".to_string());
+    let keys_i = chunk.add_import("ecma:object", "keys");
     chunk.emit_call(keys_i, 1, line);
-    let keys = class_slots::resolve(&ClassSlot::Internal(("__keys".to_string())), &PlainNames);
+    let keys = class_slots::resolve(&ClassSlot::Internal("__keys".to_string()), &PlainNames);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &keys, ValueSource::Stack, line);
 }
 
@@ -1501,7 +1532,7 @@ fn finish_buffer_file_object(
     }
 
     let this_slot = chunk.alloc_scratch(1);
-    let object_new_i = chunk.add_import("ecma:object".to_string(), "new".to_string());
+    let object_new_i = chunk.add_import("ecma:object", "new");
     chunk.emit_call(object_new_i, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
@@ -1555,21 +1586,21 @@ fn finish_array_iterator_instance(
         let source_slot = chunk.alloc_scratch(1);
         chunk.emit_op_u16(Op::LOCAL_SET, source_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, source_slot, line);
-        let values_i = chunk.add_import("ecma:object".to_string(), "values".to_string());
+        let values_i = chunk.add_import("ecma:object", "values");
         chunk.emit_call(values_i, 1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, source_slot, line);
-        let keys_i = chunk.add_import("ecma:object".to_string(), "keys".to_string());
+        let keys_i = chunk.add_import("ecma:object", "keys");
         chunk.emit_call(keys_i, 1, line);
-        let keys = class_slots::resolve(&ClassSlot::Internal(("__keys".to_string())), &PlainNames);
+        let keys = class_slots::resolve(&ClassSlot::Internal("__keys".to_string()), &PlainNames);
         class_slots::emit_class_set(chunk, ObjSource::Stack, &keys, ValueSource::Stack, line);
     } else {
         chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_array_new_fixed(0, 0, line);
-        let keys = class_slots::resolve(&ClassSlot::Internal(("__keys".to_string())), &PlainNames);
+        let keys = class_slots::resolve(&ClassSlot::Internal("__keys".to_string()), &PlainNames);
         class_slots::emit_class_set(chunk, ObjSource::Stack, &keys, ValueSource::Stack, line);
     }
 
@@ -1580,7 +1611,7 @@ fn finish_array_iterator_instance(
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_bool_const(false, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__lifo".to_string())), &PlainNames);
+    let cs_slot = class_slots::resolve(&ClassSlot::Internal("__lifo".to_string()), &PlainNames);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);

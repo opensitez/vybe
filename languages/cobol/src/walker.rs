@@ -32,6 +32,8 @@
 //!   is passed as a string literal argument to `__exec_sql` / `__exec_cics`
 //!   / `__exec_dli` helper calls.
 
+#[path = "walker/generated_helpers.rs"]
+mod generated_helpers;
 use super::{CobolParser, Rule};
 
 use grameo::compat::{Pair, Pairs};
@@ -80,6 +82,7 @@ impl CobolFileBinding {
 }
 
 struct CobolWalkerContext {
+    generated_helpers: generated_helpers::Requests,
     file_bindings: HashMap<String, CobolFileBinding>,
     record_to_file: HashMap<String, String>,
     /// Folded key → the file's SOURCE spelling. `file_bindings` is keyed by
@@ -183,6 +186,7 @@ enum CobolSignFmt {
 impl CobolWalkerContext {
     fn new() -> Self {
         Self {
+            generated_helpers: Default::default(),
             file_bindings: HashMap::new(),
             record_to_file: HashMap::new(),
             file_names: HashMap::new(),
@@ -1330,6 +1334,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         .map_err(|e| format!("COBOL parse error: {}", e))?;
     let program = pairs.next().ok_or("empty parse")?;
     let mut ctx = CobolWalkerContext::new();
+    ctx.generated_helpers = generated_helpers::Requests::for_source(source);
 
     let mut module = Module {
         canon: Default::default(),
@@ -1607,6 +1612,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
             ))));
     }
 
+    ctx.generated_helpers.publish(&mut module);
     Ok(module)
 }
 
@@ -2475,7 +2481,6 @@ fn walk_screen_data_item(
     let mut init_value: Option<Expression> = None;
     let mut nested_items: Vec<Pair<Rule>> = Vec::new();
     let mut source_field: Option<String> = None;
-    #[allow(unused_assignments)]
     for child in children {
         match child.as_rule() {
             Rule::screen_item_name => {
@@ -5461,6 +5466,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             let mut nested_body = Vec::new();
             let mut nested_local = Vec::new();
             let mut nested_ctx = CobolWalkerContext::new();
+            nested_ctx.generated_helpers = ctx.generated_helpers.clone();
             for child in pair.into_inner() {
                 match child.as_rule() {
                     Rule::procedure_division => {
@@ -5674,14 +5680,14 @@ fn walk_accept_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
             match source.as_deref() {
                 // `wasi:cli/environment` hands back the WHOLE (name, value)
                 // list and takes no arguments; the lookup by name is ours.
-                Some("ENVIRONMENT") => cobol_env_lookup(
+                Some("ENVIRONMENT") => ctx.generated_helpers.environment(
                     args.first()
                         .map(|a| a.value.clone())
                         .unwrap_or_else(|| Expression::string("")),
                 ),
                 // COMMAND-LINE is the arguments as ONE field, space separated —
                 // COBOL hands the caller a field, not a vector.
-                Some("COMMAND-LINE") => cobol_join_args(),
+                Some("COMMAND-LINE") => ctx.generated_helpers.command_line(),
                 // The X/Open two-step reads whichever name the last
                 // `DISPLAY ... UPON ENVIRONMENT-NAME` selected. The holder is
                 // re-declared WITHOUT an initialiser so a program that reads
@@ -5731,7 +5737,7 @@ const COBOL_ENV_NAME: &str = "__cobol_env_name";
 /// Built by concatenation rather than `.join`: indexing and `.length` are
 /// dispatched for an array here, a member CALL on one is not, and the
 /// difference shows up only at run time as "undefined is not callable".
-fn cobol_join_args() -> Expression {
+fn cobol_join_args_inline() -> Expression {
     let id = Expression::ident;
     let dim = |n: &str, init: Expression| {
         Statement::new(StmtKind::VarDecl {
@@ -12791,39 +12797,6 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
             }),
             Expression::float(10_000_000_000.0),
         )
-    };
-    let fmt2 = |v: Expression| -> Expression {
-        let ncall = |fname: &str, arg: Expression| -> Expression {
-            Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(fname)),
-                args: vec![Argument::positional(arg)],
-                optional: false,
-            })
-        };
-        // Binary floats can't represent e.g. 1.10 exactly, so raw truncation of
-        // 1.0999999 yields 1.09. Round to 6 dp first to erase that noise, then
-        // truncate to 2 dp (COBOL fixed-point behaviour).
-        let denoise = binary(
-            BinOp::Div,
-            ncall(
-                "f64_nearest",
-                binary(BinOp::Mul, v, Expression::float(1_000_000.0)),
-            ),
-            Expression::float(1_000_000.0),
-        );
-        let scaled = ncall(
-            "f64_trunc",
-            binary(BinOp::Mul, denoise, Expression::int(100)),
-        );
-        let back = binary(BinOp::Div, scaled, Expression::int(100));
-        Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::ident("__to_fixed2")),
-            args: vec![
-                Argument::positional(back),
-                Argument::positional(Expression::int(2)),
-            ],
-            optional: false,
-        })
     };
     // Population variance: mean of squared deviations from the mean.
     let pop_variance = |vals: &[Expression]| -> Expression {

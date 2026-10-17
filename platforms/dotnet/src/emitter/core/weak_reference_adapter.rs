@@ -18,12 +18,11 @@
 //! `trackResurrection` is accepted and dropped for the same reason: it selects
 //! whether the target survives finalisation, and no finaliser runs here.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ResolvedSlot, ValueSource};
 use vybe_compiler::primitives::{globals, ops};
 
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 const TYPE_KEY: &str = "__type";
 const TARGET_KEY: &str = "__wr_target";

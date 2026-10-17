@@ -1,4 +1,19 @@
+// @grameo code_space request
+// @grameo optimize native_token_failures
+// @grameo choice_heads statement primary_expression
 // PHP grammar for pest — full PHP 8 surface.
+// @grameo optimize native_choices native_rule_heads nullable_failure_heads
+// @grameo source_unit include_expression target=include_operand selector=kw_include loader=source phase=execute repeat=always missing=warning scope=caller
+// @grameo source_unit include_expression target=include_operand selector=kw_include_once loader=source phase=execute repeat=once missing=warning scope=caller
+// @grameo source_unit include_expression target=include_operand selector=kw_require loader=source phase=execute repeat=always missing=error scope=caller
+// @grameo source_unit include_expression target=include_operand selector=kw_require_once loader=source phase=execute repeat=once missing=error scope=caller
+// @grameo pratt comparison_expression atom=boolean_not_expression trailing=consume
+// @grameo operator comparison_expression mul_op precedence=50 fixity=infix_left
+// @grameo operator comparison_expression additive_op precedence=40 fixity=infix_left
+// @grameo operator comparison_expression shift_op precedence=30 fixity=infix_left
+// @grameo operator comparison_expression concat_op precedence=20 fixity=infix_left
+// @grameo operator comparison_expression cmp_op precedence=10 fixity=infix_left
+
 //
 // Notes:
 // - PHP terminates statements with `;` (no ASI). NEWLINE is whitespace.
@@ -1017,3 +1032,28 @@ arrow_function = {
 }
 
 parenthesized_expression = { "(" ~ expression ~ ")" }
+
+
+// @grameo pratt bit_or_expression atom=boolean_not_expression trailing=consume rhs_atom=equality_assignment_operand rhs_operator=eq_op
+// @grameo operator bit_or_expression mul_op precedence=50 fixity=infix_left
+// @grameo operator bit_or_expression additive_op precedence=40 fixity=infix_left
+// @grameo operator bit_or_expression shift_op precedence=30 fixity=infix_left
+// @grameo operator bit_or_expression concat_op precedence=20 fixity=infix_left
+// @grameo operator bit_or_expression cmp_op precedence=10 fixity=infix_left
+// @grameo operator bit_or_expression eq_op precedence=5 fixity=infix_left
+// @grameo operator bit_or_expression bit_and_op precedence=4 fixity=infix_left
+// @grameo operator bit_or_expression bit_xor_op precedence=3 fixity=infix_left
+// @grameo operator bit_or_expression bit_or_op precedence=2 fixity=infix_left
+
+// @grameo pratt logic_or_expression atom=boolean_not_expression trailing=consume
+// @grameo operator logic_or_expression mul_op precedence=50 fixity=infix_left
+// @grameo operator logic_or_expression additive_op precedence=40 fixity=infix_left
+// @grameo operator logic_or_expression shift_op precedence=30 fixity=infix_left
+// @grameo operator logic_or_expression concat_op precedence=20 fixity=infix_left
+// @grameo operator logic_or_expression cmp_op precedence=10 fixity=infix_left
+// @grameo operator logic_or_expression eq_op precedence=5 fixity=infix_left rhs_atom=equality_assignment_operand
+// @grameo operator logic_or_expression bit_and_op precedence=4 fixity=infix_left
+// @grameo operator logic_or_expression bit_xor_op precedence=3 fixity=infix_left
+// @grameo operator logic_or_expression bit_or_op precedence=2 fixity=infix_left
+// @grameo operator logic_or_expression logic_and_op precedence=1 fixity=infix_left rhs_atom=logic_and_assignment_operand
+// @grameo operator logic_or_expression logic_or_op precedence=0 fixity=infix_left rhs_atom=logic_or_assignment_operand

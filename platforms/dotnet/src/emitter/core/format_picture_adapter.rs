@@ -52,6 +52,17 @@ pub fn emit_format_picture(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         return;
     }
 
+    // The format grammar belongs to this adapter. Emit its helper once
+    // in this module, using a direct reference instead of a stdlib global.
+    let picture_idx = if let Some(index) = chunks.iter()
+        .position(|chunk| chunk.name == "__dotnet_vb_picture_format") {
+        index
+    } else {
+        chunks.push(super::picture_format::build_picture_format());
+        chunks.len() - 1
+    };
+    let chunk = &mut chunks[current];
+
     // Two-arg path: [value, picture].
     // Trailing args beyond 2 are dropped (defensive — VB Format is
     // strictly 1-or-2-arity in practice).
@@ -71,7 +82,10 @@ pub fn emit_format_picture(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         Dest::Stack,
         line,
     );
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    // Missing dynamic fields are undefined; both nullish results mean
+    // this value has no DateTime representation and must use numeric formatting.
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq_null_operand(chunk, false, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -81,7 +95,7 @@ pub fn emit_format_picture(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     let chunk = &mut chunks[current];
     chunk.emit_else(line);
 
-    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_vb_format", line);
+    vybe_compiler::primitives::functions::emit_ref_func(chunk, picture_idx, 0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, picture_slot, line);
     chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);

@@ -11,10 +11,9 @@
 //!
 //! No new host fns; no polyfills.  Pure bytecode over ecma:regexp.*.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 // ── helpers ─────────────────────────────────────────────────────────
 
@@ -76,7 +75,6 @@ fn emit_str_eq_const(chunk: &mut Chunk, slot: u16, value: &str, line: u32) {
     chunk.emit_op(Op::I32_EQ, line);
 }
 
-#[allow(dead_code)]
 fn emit_slot_eq_bool(chunk: &mut Chunk, slot: u16, value: bool, line: u32) {
     lget(chunk, slot, line);
     chunk.emit_bool_const(value, line);
@@ -867,7 +865,6 @@ fn emit_lua_char_code_at_zero(
     );
 }
 
-#[allow(dead_code)]
 fn emit_lua_unpack_u16(
     chunks: &mut Vec<Chunk>,
     current: usize,

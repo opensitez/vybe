@@ -12,7 +12,6 @@
 //! `ecma:number.parseInt` plus string opcodes.
 
 use std::sync::Arc;
-use vybe_compiler::primitives::class_slots::{self};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -57,13 +56,11 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
 pub fn emit_php_floatval(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let parse_float = chunks[current].add_import("ecma:number", "parseFloat");
     let test_bool = chunks[current].add_import("wasm:js-boolean", "test");
-    let is_nan = chunks[current].add_import("ecma:number", "isNaN");
+    let boolean_cast = chunks[current].add_import("wasm:js-boolean", "cast");
     let chunk = &mut chunks[current];
     let v_slot = alloc_local(chunk);
     let n_slot = alloc_local(chunk);
-    lset(chunk, v_slot, line);
-
-    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, v_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
@@ -73,20 +70,17 @@ pub fn emit_php_floatval(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     chunk.emit_call(test_bool, 1, line);
     chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_else(line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_end(line);
+    chunk.emit_call(boolean_cast, 1, line);
+    // A successful Boolean test guarantees the cast is canonical 0 or 1.
+    chunk.emit_op(Op::F64_CONVERT_I32_U, line);
     chunk.emit_else(line);
 
     lget(chunk, v_slot, line);
     chunk.emit_call(parse_float, 1, line);
-    lset(chunk, n_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, n_slot, line);
+    // parseFloat produces a Number: only NaN differs from itself.
     lget(chunk, n_slot, line);
-    chunk.emit_call(is_nan, 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::F64_NE, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -108,7 +102,6 @@ pub fn emit_pack_float_bytes(chunks: &mut [Chunk], current: usize, _argc: u8, li
     let b_slot = alloc_local(chunk);
     let v_slot = alloc_local(chunk);
     let buf_slot = alloc_local(chunk);
-    let dv_slot = alloc_local(chunk);
 
     lset(chunk, b_slot, line); // bytes (top)
     lset(chunk, v_slot, line); // value
@@ -117,20 +110,18 @@ pub fn emit_pack_float_bytes(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lget(chunk, b_slot, line);
     let ab_new = chunk.add_import("ecma:arraybuffer", "new");
     chunk.emit_call(ab_new, 1, line);
-    lset(chunk, buf_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, buf_slot, line);
 
     // dv = new DataView(buf)
-    lget(chunk, buf_slot, line);
     let dv_new = chunk.add_import("ecma:dataview", "new");
     chunk.emit_call(dv_new, 1, line);
-    lset(chunk, dv_slot, line);
 
     // invokeMethod(dv, bytes==4 ? "setFloat32" : "setFloat64", 0, v, true)
-    lget(chunk, dv_slot, line);
+    // Keep the DataView on the operand stack until the call consumes it.
     lget(chunk, b_slot, line);
     push_const(chunk, Value::F64(4.0), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
     chunk.emit_if_value(line);
     push_str(chunk, "setFloat32", line);
     chunk.emit_else(line);
@@ -164,30 +155,28 @@ pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     let number_is_integer = chunk.add_import("ecma:number", "isInteger");
     let to_f64 = chunk.add_import("wasm:js-number", "toF64");
 
-    lset(chunk, v_slot, line);
-
-    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, v_slot, line);
     chunk.emit_call(test_bigint, 1, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::Bool(true), line);
+    chunk.emit_if_i32(line);
+    chunk.emit_i32_const(1, line);
     chunk.emit_else(line);
 
     lget(chunk, v_slot, line);
     chunk.emit_call(number_is_integer, 1, line);
     let boolean_cast = chunk.add_import("wasm:js-boolean", "cast");
     chunk.emit_call(boolean_cast, 1, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_i32(line);
     lget(chunk, v_slot, line);
     chunk.emit_call(to_f64, 1, line);
     chunk.emit_op(Op::F64_ABS, line);
     push_const(chunk, Value::F64(9_223_372_036_854_774_784.0), line);
     chunk.emit_op(Op::F64_LE, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
-    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
 
     chunk.emit_end(line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 pub fn emit_php_is_float(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -199,10 +188,9 @@ pub fn emit_php_is_float(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     let test_number = chunk.add_import("wasm:js-number", "test");
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
 
-    lset(chunk, v_slot, line);
-
+    // Retain the input while testing it, without a store/reload pair.
+    chunk.emit_op_u16(Op::LOCAL_TEE, v_slot, line);
     // BigInt → false
-    lget(chunk, v_slot, line);
     chunk.emit_call(test_bigint, 1, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(false), line);
@@ -220,15 +208,15 @@ pub fn emit_php_abs(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     let bigint_lt = chunk.add_import("ecma:bigint", "lt");
     let bigint_neg = chunk.add_import("ecma:bigint", "neg");
 
-    lset(chunk, v_slot, line);
-
-    lget(chunk, v_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, v_slot, line);
     chunk.emit_call(test_bigint, 1, line);
     chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
-    push_const(chunk, Value::bigint_i64(0), line);
+    // Exact Number zero preserves this guarded BigInt sign comparison.
+    push_const(chunk, Value::I32(0), line);
     chunk.emit_call(bigint_lt, 2, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    let cast = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast, 1, line);
     chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
     chunk.emit_call(bigint_neg, 1, line);
@@ -252,17 +240,16 @@ pub fn emit_php_intdiv(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     lget(chunk, b_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
     chunk.emit_if(line);
-    class_slots::emit_class_alloc(chunk, line);
-    chunk.emit_dup(line);
-    push_str(chunk, "Division by zero", line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
-        chunk,
+    super::type_guard::emit_throw_const(
+        chunks,
+        current,
         "DivisionByZeroError",
+        "Division by zero",
         line,
     );
-    vybe_compiler::primitives::errors::emit_throw(chunk, line);
+    let chunk = &mut chunks[current];
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
@@ -299,22 +286,20 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     let test_str = chunk.add_import("wasm:js-string", "test");
     let number = chunk.add_import("ecma:number", "Number");
-    let is_nan = chunk.add_import("ecma:number", "isNaN");
 
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
     chunk.emit_call(test_str, 1, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
 
     // A numeric string steps as its NUMBER (PHP checks is_numeric first).
     let n_slot = alloc_local(chunk);
     lget(chunk, v_slot, line);
     chunk.emit_call(number, 1, line);
-    lset(chunk, n_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, n_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_call(is_nan, 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::F64_NE, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(if plus { Op::F64_ADD } else { Op::F64_SUB }, line);
@@ -334,11 +319,77 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     chunk.emit_end(line);
 }
 
+/// String protocol Inc. The profile binds ONLY builtin_slots.string.inc here.
+/// Its ordinary operator caller has already tested wasm:js-string.test; keep
+/// generic php.inc available separately with its original complete semantics.
+pub fn emit_php_string_inc_proven(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let helper = php_string_increment_helper(chunks, line);
+    let chunk = &mut chunks[current];
+    let v_slot = alloc_local(chunk);
+    lset(chunk, v_slot, line);
+    let number = chunk.add_import("ecma:number", "Number");
+    let n_slot = alloc_local(chunk);
+    lget(chunk, v_slot, line);
+    chunk.emit_call(number, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, n_slot, line);
+    lget(chunk, n_slot, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    lget(chunk, n_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_else(line);
+    if let Some(index) = helper {
+        lget(chunk, v_slot, line);
+        let _ = chunk;
+        if !vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+            chunks, current, index, 1, line,
+        ) {
+            let chunk = &mut chunks[current];
+            chunk.emit_op(Op::DROP, line);
+            vybe_compiler::primitives::functions::emit_ref_func(chunk, index, 0, line);
+            lget(chunk, v_slot, line);
+            vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+        }
+    } else {
+        emit_zend_string_increment(chunk, v_slot, line);
+    }
+    chunks[current].emit_end(line);
+}
+
+const PHP_STRING_INCREMENT_BODY: &str = "primitive.php.string_increment";
+const PHP_STRING_INCREMENT_PROVENANCE: &str = "<php-private-string-increment-body>";
+
+fn php_string_increment_helper(chunks: &mut Vec<Chunk>, line: u32) -> Option<usize> {
+    use vybe_runtime::chunk::{LocalName, LocalOrigin};
+    if let Some(index) = chunks.iter().position(|c| {
+        c.name == PHP_STRING_INCREMENT_BODY && c.arity == 1
+            && c.local_names.iter().any(|n| n.slot == 0
+                && n.origin == LocalOrigin::Compiler
+                && n.name == PHP_STRING_INCREMENT_PROVENANCE)
+    }) {
+        return (index <= usize::from(u16::MAX)).then_some(index);
+    }
+    // Existing ordinary ref.func operand is u16. Preserve old inline behavior
+    // for modules beyond that boundary; never truncate or alter runtime ABI.
+    if chunks.len() > usize::from(u16::MAX) { return None; }
+    let index = chunks.len();
+    let mut body = vybe_compiler::primitives::functions::create_function_chunk(PHP_STRING_INCREMENT_BODY, 1);
+    body.local_count = 1;
+    body.param_count = 1;
+    body.local_names.push(LocalName::new(0, PHP_STRING_INCREMENT_PROVENANCE, LocalOrigin::Compiler));
+    emit_zend_string_increment(&mut body, 0, line);
+    body.emit_op(Op::RETURN, line);
+    chunks.push(body);
+    Some(index)
+}
+
 /// Zend `increment_string`, scanning right to left. Stack: `[]` → `[string]`
 /// (reads the string from `v_slot`).
 fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
-    let char_code_at = chunk.add_import("ecma:string", "charCodeAt");
-    let from_char_code = chunk.add_import("ecma:string", "fromCharCode");
+    let char_code_at = chunk.add_import("wasm:js-string", "charCodeAt");
+    let from_char_code = chunk.add_import("wasm:js-string", "fromCharCode");
     let substring = chunk.add_import("wasm:js-string", "substring");
     let length = chunk.add_import("wasm:js-string", "length");
 
@@ -350,8 +401,8 @@ fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
     // pos = len - 1; tail accumulates the RESET characters ('z' → 'a', …).
     lget(chunk, v_slot, line);
     chunk.emit_call(length, 1, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_SUB, line);
     lset(chunk, pos, line);
     push_str(chunk, "", line);
     lset(chunk, tail, line);
@@ -364,8 +415,10 @@ fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
     let (loop_patch, _) = chunk.emit_loop_s(line);
 
     lget(chunk, pos, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::F64_LT, line);
+    // -1 is the exhausted unsigned index, including an initial empty range.
+    // Do not use a signed comparison that would reject a high-bit index.
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_op(Op::I32_EQ, line);
     chunk.emit_br_if(1, line);
 
     lget(chunk, v_slot, line);
@@ -375,14 +428,14 @@ fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
 
     // a–y, A–Y, 0–8: increment in place, done.
     let mut first = true;
-    for (lo, hi) in [(97.0, 121.0), (65.0, 89.0), (48.0, 56.0)] {
+    for (lo, hi) in [(97, 121), (65, 89), (48, 56)] {
         lget(chunk, ch, line);
-        push_const(chunk, Value::F64(lo), line);
-        chunk.emit_op(Op::F64_GE, line);
-        lget(chunk, ch, line);
-        push_const(chunk, Value::F64(hi), line);
-        chunk.emit_op(Op::F64_LE, line);
-        chunk.emit_op(Op::I32_AND, line);
+        // Unsigned subtraction folds both bounds into one comparison. Codes
+        // below lo wrap above the small accepted range instead of matching it.
+        chunk.emit_i32_const(lo, line);
+        chunk.emit_op(Op::I32_SUB, line);
+        chunk.emit_i32_const(hi - lo, line);
+        chunk.emit_op(Op::I32_LE_U, line);
         if first {
             first = false;
         } else {
@@ -391,12 +444,12 @@ fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
     }
     chunk.emit_if(line);
     lget(chunk, v_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_i32_const(0, line);
     lget(chunk, pos, line);
     chunk.emit_call(substring, 3, line);
     lget(chunk, ch, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_call(from_char_code, 1, line);
     vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
     lget(chunk, tail, line);
@@ -406,18 +459,18 @@ fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
     chunk.emit_end(line);
 
     // z / Z / 9: reset, carry one position left.
-    for (code, reset) in [(122.0, "a"), (90.0, "A"), (57.0, "0")] {
+    for (code, reset) in [(122, "a"), (90, "A"), (57, "0")] {
         lget(chunk, ch, line);
-        push_const(chunk, Value::F64(code), line);
-        chunk.emit_op(Op::F64_EQ, line);
+        chunk.emit_i32_const(code, line);
+        chunk.emit_op(Op::I32_EQ, line);
         chunk.emit_if(line);
         push_str(chunk, reset, line);
         lget(chunk, tail, line);
         vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
         lset(chunk, tail, line);
         lget(chunk, pos, line);
-        push_const(chunk, Value::F64(1.0), line);
-        chunk.emit_op(Op::F64_SUB, line);
+        chunk.emit_i32_const(1, line);
+        chunk.emit_op(Op::I32_SUB, line);
         lset(chunk, pos, line);
         chunk.emit_br(1, line);
         chunk.emit_end(line);
@@ -425,10 +478,10 @@ fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
 
     // Non-alphanumeric: carry STOPS — the resets already made stay.
     lget(chunk, v_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_i32_const(0, line);
     lget(chunk, pos, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_call(substring, 3, line);
     lget(chunk, tail, line);
     vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
@@ -444,18 +497,18 @@ fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
     // ('z…' → "a" + resets, 'Z…' → "A", '9…' → "1"; z→a and Z→A are both
     // −25 in char codes).
     lget(chunk, v_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_i32_const(0, line);
     chunk.emit_call(char_code_at, 2, line);
     lset(chunk, ch, line);
     lget(chunk, ch, line);
-    push_const(chunk, Value::F64(57.0), line);
-    chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_if(line);
+    chunk.emit_i32_const(57, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if_value(line);
     push_str(chunk, "1", line);
     chunk.emit_else(line);
     lget(chunk, ch, line);
-    push_const(chunk, Value::F64(25.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_i32_const(25, line);
+    chunk.emit_op(Op::I32_SUB, line);
     chunk.emit_call(from_char_code, 1, line);
     chunk.emit_end(line);
     lget(chunk, tail, line);
@@ -472,9 +525,9 @@ fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
 ///
 /// `wasi:random` returns a raw u64; PHP returns an integer uniformly in
 /// `[$min, $max]`. Scale via `$min + floor((r / 2^64) * ($max - $min + 1))`.
-/// Because `r / 2^64` lies in `[0, 1)`, the floored product is always in
-/// `[0, range - 1]`, so the result never escapes `[$min, $max]` regardless
-/// of f64 rounding. With no args, PHP `rand()` spans `[0, getrandmax()]`
+/// Floating-point rounding can turn the largest `u64` into `2^64`, so clamp
+/// the scaled offset to `range - 1` before adding the minimum. With no args,
+/// PHP `rand()` spans `[0, getrandmax()]`
 /// (2147483647). Composes only `wasi:random` + arithmetic opcodes — no new
 /// host fns.
 pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -507,18 +560,22 @@ pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lget(chunk, min_slot, line);
     chunk.emit_op(Op::F64_SUB, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, range_slot, line);
 
-    // result = min + floor( (abs(r) / 2^64) * range )
+    // result = min + floor( (unsigned r / 2^64) * range )
     lget(chunk, min_slot, line);
     chunk.emit_call(rand_idx, 0, line);
-    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_op(Op::F64_CONVERT_I64_U, line);
     push_const(chunk, Value::F64(18446744073709551616.0), line); // 2^64
     chunk.emit_op(Op::F64_DIV, line);
     lget(chunk, range_slot, line);
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_FLOOR, line);
+    lget(chunk, range_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op(Op::F64_MIN, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 }
 
@@ -531,11 +588,13 @@ pub fn emit_lcg_value(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
         "get-insecure-random-u64".to_string(),
     );
     let chunk = &mut chunks[current];
-    // abs(r) / 2^64  ∈ [0, 1)
+    // Convert the full unsigned bit pattern, then clamp the rounded endpoint.
     chunk.emit_call(rand_idx, 0, line);
-    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_op(Op::F64_CONVERT_I64_U, line);
     push_const(chunk, Value::F64(18446744073709551616.0), line); // 2^64
     chunk.emit_op(Op::F64_DIV, line);
+    push_const(chunk, Value::F64(f64::from_bits(0x3fef_ffff_ffff_ffff)), line);
+    chunk.emit_op(Op::F64_MIN, line);
 }
 
 /// PHP numeric comparison: coerce both sides to f64 via parseFloat,
@@ -544,12 +603,9 @@ pub fn emit_lcg_value(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 pub fn emit_php_compare_gt(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let b_slot = alloc_local(chunk);
-    let a_slot = alloc_local(chunk);
     let number_fn = chunk.add_import("ecma:number", "Number");
 
     lset(chunk, b_slot, line);
-    lset(chunk, a_slot, line);
-    lget(chunk, a_slot, line);
     chunk.emit_call(number_fn, 1, line);
     lget(chunk, b_slot, line);
     chunk.emit_call(number_fn, 1, line);
@@ -561,12 +617,9 @@ pub fn emit_php_compare_gt(chunks: &mut [Chunk], current: usize, _argc: u8, line
 pub fn emit_php_compare_lt(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let b_slot = alloc_local(chunk);
-    let a_slot = alloc_local(chunk);
     let number_fn = chunk.add_import("ecma:number", "Number");
 
     lset(chunk, b_slot, line);
-    lset(chunk, a_slot, line);
-    lget(chunk, a_slot, line);
     chunk.emit_call(number_fn, 1, line);
     lget(chunk, b_slot, line);
     chunk.emit_call(number_fn, 1, line);

@@ -24,4 +24,5 @@ vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 
 [build-dependencies]
+grameo = { path = "../../crates/grameo" }
 grameo_codegen = { path = "../../crates/grameo/codegen" }

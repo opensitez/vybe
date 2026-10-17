@@ -9,7 +9,6 @@
 //! (`plus`, `minus`, `count`) dispatch on the RECEIVER at runtime via
 //! `ecma:array.isArray`, because one Kotlin spelling covers both.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
@@ -18,7 +17,6 @@ use vybe_compiler::primitives::{
     callable, collections as common_collections, dict, loops, ops, sets,
 };
 use vybe_runtime::Chunk;
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
 /// `[dict, key, value]` → `[]`, appending the key to `__keys` when NEW.

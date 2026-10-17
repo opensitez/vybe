@@ -32,8 +32,14 @@ fn emit_string_to_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 fn emit_string_byte_len(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_string_to_bytes(chunks, current, line);
-    collections::emit_len(chunks, current, line);
+    let s = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+    host::emit(&mut chunks[current], "web:encoding", "encoderNew", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    host::emit(&mut chunks[current], "web:encoding", "encode", 2, line);
+    // The fresh UTF-8 Uint8Array is already array-like. Its length needs
+    // neither an Array.from copy nor polymorphic string/map/object dispatch.
+    host::emit(&mut chunks[current], "ecma:array", "length", 1, line);
     convert::emit_to_int(&mut chunks[current], line);
 }
 

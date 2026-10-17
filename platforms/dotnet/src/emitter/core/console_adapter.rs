@@ -177,3 +177,14 @@ pub fn emit_console_error(chunks: &mut [Chunk], current: usize, line: u32) {
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
+
+/// The fixed F12 numeric normalization used before Console stringification.
+/// Stack: `[number] -> [number]`. Equivalent to numeric_format(value, "F12", 0)
+/// followed by parseFloat, without the general format interpreter.
+pub fn emit_console_numeric_value(chunk: &mut Chunk, line: u32) {
+    use vybe_compiler::primitives::instructions::host;
+    host::emit(chunk, "ecma:number", "Number", 1, line);
+    chunk.emit_f64_const(12.0, line);
+    host::emit(chunk, "ecma:number", "toFixed", 2, line);
+    host::emit(chunk, "ecma:number", "parseFloat", 1, line);
+}

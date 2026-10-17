@@ -188,6 +188,8 @@ fn callback(chunks: &mut Vec<Chunk>, name: &str, line: u32) -> usize {
         c.emit_op_u16(Op::LOCAL_GET, start, line);
         let truthy = c.add_import("ecma:boolean", "toBoolean");
         c.emit_call(truthy, 1, line);
+        let checked_bool = c.add_import("wasm:js-boolean", "cast");
+        c.emit_call(checked_bool, 1, line);
         c.emit_if(line);
         let x = event_coordinate(&mut c, line);
         c.emit_op_u16(Op::LOCAL_GET, x, line);

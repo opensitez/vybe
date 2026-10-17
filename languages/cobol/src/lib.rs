@@ -12,7 +12,6 @@ pub mod emitter;
 pub mod normalize_class;
 pub mod walker;
 
-#[allow(dead_code)]
 mod native_grammar {
     include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
 }

@@ -665,9 +665,6 @@ fn assign(target: Expression, value: Expression) -> Statement {
     })))
 }
 
-fn expr_stmt(expr: Expression) -> Statement {
-    Statement::new(StmtKind::Expr(expr))
-}
 
 fn index(object: Expression, index: Expression) -> Expression {
     Expression::new(ExprKind::Index {

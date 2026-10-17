@@ -485,7 +485,7 @@ pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunk.emit_call(lower, 1, line);
     let symbol = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol, line);
-    let mut infinite_symbol = |chunk: &mut Chunk, text: &str| {
+    let infinite_symbol = |chunk: &mut Chunk, text: &str| {
         chunk.emit_op_u16(Op::LOCAL_GET, symbol, line);
         chunk.emit_string_const(text, line);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);

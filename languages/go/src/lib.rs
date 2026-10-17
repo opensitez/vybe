@@ -8,7 +8,6 @@ pub mod protocol;
 pub mod tree_register;
 pub mod walker;
 
-#[allow(dead_code)]
 mod native_grammar {
     include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
 }
@@ -32,6 +31,13 @@ pub fn profile_source() -> &'static str {
 
 /// Register this language with the shared plugin registry (dylib entry point).
 pub fn register() {
+    // Exact-parser defaults preserve an explicit caller's capability selection,
+    // including disabling shared helpers. Other capabilities remain unchanged.
+    vybe_compiler::frontend_preparation::register_default(parse,
+        vybe_compiler::frontend_preparation::Capabilities {
+            helper_definitions: emitter::dispatch::helper_definitions(),
+            ..Default::default()
+        });
     vybe_runtime::registry::register_language(vybe_runtime::registry::LanguageDef {
         name: "go",
         parse,

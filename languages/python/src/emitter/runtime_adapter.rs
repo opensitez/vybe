@@ -579,6 +579,8 @@ pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
     // if isArray(a)
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(is_array, 1, line);
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast_bool, 1, line);
     chunk.emit_if_value(line);
     // array concat: concat(a, b)
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
@@ -1054,8 +1056,7 @@ fn emit_unary_dunder_or(
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     class_slots::emit_class_get(chunk, ObjSource::Stack, &key, Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(chunk, method, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method, line);
@@ -1100,8 +1101,7 @@ fn emit_object_binop_or(
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     class_slots::emit_class_get(chunk, ObjSource::Stack, &key, Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(chunk, method, line);
     chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if present
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method, line);
@@ -1138,13 +1138,83 @@ fn emit_object_binop_or(
     chunk.emit_end(line);
 }
 
-fn emit_slot_is_null_or_undefined(chunk: &mut Chunk, slot: u16, line: u32) {
+pub(super) fn emit_slot_is_null_or_undefined(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     let is_undefined = chunk.add_import("wasm:js-undefined", "test");
     chunk.emit_call(is_undefined, 1, line);
     chunk.emit_op(Op::I32_OR, line);
+}
+
+#[cfg(test)]
+mod absent_dunder_regressions {
+    #[test]
+    fn ordinary_containers_use_builtin_formatting_and_operator_fallbacks() {
+        // Compiler-as-a-service uses the application's larger compilation
+        // stack; Rust's default test-thread stack is too small for lowering.
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(run_container_regression)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn run_container_regression() {
+        crate::register();
+        let mut vm = vybe_runtime::VM::new();
+        vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+        let language = vybe_compiler::languages::find_by_name("python").unwrap();
+        let mut service = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm);
+        service.compile_and_run_source(
+            r#"
+assert str([1, 2, 3]) == '[1, 2, 3]'
+assert repr([1, 2]) == '[1, 2]'
+assert str({'a': 1}) == "{'a': 1}"
+assert repr((1, 2)) == '(1, 2)'
+assert bool([]) == False
+assert bool([1]) == True
+assert [1] + [2] == [1, 2]
+class HasBool:
+    def __bool__(self):
+        return False
+assert bool(HasBool()) == False
+class HasStr:
+    def __str__(self):
+        return 'custom'
+assert str(HasStr()) == 'custom'
+def __line(*args):
+    output = ''
+    for value in args:
+        output += str(value)
+    return output
+mapping = {}
+mapping['a'] = 1
+assert __line(mapping) == "{'a': 1}"
+import inspect
+def is_function(value):
+    return inspect.isfunction(value)
+def is_class(value):
+    return inspect.isclass(value)
+assert is_function(__line) == True
+assert is_class(__line) == False
+assert is_function(HasStr) == False
+assert is_class(HasStr) == True
+assert is_class(HasStr()) == False
+assert is_class(None) == False
+assert is_function(None) == False
+assert next(iter([1, 2]), None) == 1
+assert next(iter('ab')) == 'a'
+assert next(iter((3, 4))) == 3
+assert next(iter(range(2))) == 0
+assert next(enumerate(['a'])) == (0, 'a')
+assert next(zip([1], [2])) == (1, 2)
+"#,
+            language,
+            "absent-dunder-regression.py",
+        ).expect("missing dunders must use fallbacks while declared dunders still dispatch");
+    }
 }
 
 fn emit_is_notimplemented_slot(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -1216,8 +1286,7 @@ fn emit_right_object_binop_or(
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     class_slots::emit_class_get(chunk, ObjSource::Stack, &key, Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(chunk, method, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method, line);
@@ -1392,6 +1461,7 @@ fn emit_py_repr(
     // array → JSON stringify then fix spacing + Python bool/None literals
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_call(is_array, 1, line);
+    chunk.emit_call(cast_bool, 1, line);
     chunk.emit_if_value(line);
     // Recurse through the shared `__py_repr` chunk so NESTED tuples/lists/dicts
     // render correctly. `JSON.stringify` flattened every nested array to `[...]`
@@ -2535,8 +2605,7 @@ pub fn emit_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     reflection::emit_get_property_in_chunk(chunk, line);
     let cls = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, cls, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, cls, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(chunk, cls, line);
     chunk.emit_if_value(line);
     chunk.emit_i32_const(0, line);
     chunk.emit_call(new_len, 1, line);
@@ -3121,8 +3190,7 @@ fn emit_id_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     class_slots::emit_class_get(chunk, ObjSource::Stack, &id_key, Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_SET, existing, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, existing, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(chunk, existing, line);
     chunk.emit_if_value(line);
     let random = chunk.add_import("ecma:math", "random");
     chunk.emit_call(random, 0, line);

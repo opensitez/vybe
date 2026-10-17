@@ -690,7 +690,6 @@ fn get_field(chunk: &mut Chunk, obj: u16, key: &str, line: u32) {
 }
 
 fn throw_invalid_operation(chunks: &mut [Chunk], current: usize, message: &str, line: u32) {
-    let chunk = &mut chunks[current];
     crate::emitter::core::exceptions::emit_new_typed(
         chunks,
         current,

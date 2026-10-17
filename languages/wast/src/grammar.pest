@@ -674,6 +674,9 @@ assert_trap = { "(" ~ "assert_trap" ~ action ~ string ~ ")" }
 // (assert_trap (module …) "message")  — instantiation trap
 assert_instantiation_trap = { "(" ~ "assert_trap" ~ module ~ string ~ ")" }
 
+// (assert_trap (component …) "message")  — component instantiation trap
+assert_component_instantiation_trap = { "(" ~ "assert_trap" ~ component ~ string ~ ")" }
+
 // (assert_exception action)  — the action must throw an EXCEPTION.
 //
 // Carries no message, unlike `assert_trap`: the spec asserts only that an
@@ -682,11 +685,12 @@ assert_instantiation_trap = { "(" ~ "assert_trap" ~ module ~ string ~ ")" }
 // unparseable without it, which is why none of them had ever run.
 assert_exception = { "(" ~ "assert_exception" ~ action ~ ")" }
 
-// (assert_invalid (module …) "message")  — validation error
-assert_invalid = { "(" ~ "assert_invalid" ~ module_or_binary ~ string ~ ")" }
+// (assert_invalid (module|component …) "message") — validation error
+assert_invalid = { "(" ~ "assert_invalid" ~ (component | module_or_binary) ~ string ~ ")" }
 
-// (assert_malformed (module …) "message")  — parse/decode error
-assert_malformed = { "(" ~ "assert_malformed" ~ module_or_binary ~ string ~ ")" }
+// (assert_malformed (module|component quote …) "message") — parse/decode error
+component_quote = { "(" ~ "component" ~ id? ~ "quote" ~ string* ~ ")" }
+assert_malformed = { "(" ~ "assert_malformed" ~ (component_quote | component | module_or_binary) ~ string ~ ")" }
 
 // (assert_unlinkable (module …) "message")  — link error
 assert_unlinkable = { "(" ~ "assert_unlinkable" ~ module_or_binary ~ string ~ ")" }
@@ -709,9 +713,22 @@ action = { invoke_cmd | get_cmd }
 // ── Result values (expected in assert_return) ─────────────────────────────────
 
 result_val = {
-    "(" ~ "i32.const" ~ integer ~ ")"
+    component_const
+  | "(" ~ "str.const" ~ string ~ ")"
+  | "(" ~ "enum.const" ~ string ~ ")"
+  | "(" ~ "i32.const" ~ integer ~ ")"
+  | "(" ~ "u8.const" ~ integer ~ ")"
+  | "(" ~ "s8.const" ~ integer ~ ")"
+  | "(" ~ "u16.const" ~ integer ~ ")"
+  | "(" ~ "s16.const" ~ integer ~ ")"
   | "(" ~ "u32.const" ~ integer ~ ")"
+  | "(" ~ "s32.const" ~ integer ~ ")"
   | "(" ~ "i64.const" ~ integer ~ ")"
+  | "(" ~ "u64.const" ~ integer ~ ")"
+  | "(" ~ "s64.const" ~ integer ~ ")"
+  | "(" ~ "bool.const" ~ bool_literal ~ ")"
+  | "(" ~ "char.const" ~ string ~ ")"
+  | "(" ~ "flags.const" ~ string* ~ ")"
   | "(" ~ "f32.const" ~ (float | integer) ~ ")"
   | "(" ~ "f64.const" ~ (float | integer) ~ ")"
   // Lanes may be FLOATS, not only integers: an `f32x4`/`f64x2` expectation is
@@ -749,8 +766,22 @@ val_lane_type = @{
 // ── Inline expressions (invoke arguments) ─────────────────────────────────────
 
 expr = {
-    "(" ~ "i32.const" ~ integer ~ ")"
+    component_const
+  | "(" ~ "str.const" ~ string ~ ")"
+  | "(" ~ "enum.const" ~ string ~ ")"
+  | "(" ~ "i32.const" ~ integer ~ ")"
+  | "(" ~ "u8.const" ~ integer ~ ")"
+  | "(" ~ "s8.const" ~ integer ~ ")"
+  | "(" ~ "u16.const" ~ integer ~ ")"
+  | "(" ~ "s16.const" ~ integer ~ ")"
+  | "(" ~ "u32.const" ~ integer ~ ")"
+  | "(" ~ "s32.const" ~ integer ~ ")"
   | "(" ~ "i64.const" ~ integer ~ ")"
+  | "(" ~ "u64.const" ~ integer ~ ")"
+  | "(" ~ "s64.const" ~ integer ~ ")"
+  | "(" ~ "bool.const" ~ bool_literal ~ ")"
+  | "(" ~ "char.const" ~ string ~ ")"
+  | "(" ~ "flags.const" ~ string* ~ ")"
   | "(" ~ "f32.const" ~ (float | integer) ~ ")"
   | "(" ~ "f64.const" ~ (float | integer) ~ ")"
   // Float lanes — see the note on `result_val`'s v128.const.
@@ -760,6 +791,30 @@ expr = {
   | "(" ~ "ref.host"   ~ integer ~ ")"
   | "(" ~ "ref.func"   ~ index ~ ")"
 }
+
+component_const = _{ list_const | tuple_const | variant_const | record_const | option_some_const | option_none_const | result_ok_const | result_err_const }
+list_const = { "(" ~ "list.const" ~ expr* ~ ")" }
+tuple_const = { "(" ~ "tuple.const" ~ expr* ~ ")" }
+variant_const = { "(" ~ "variant.const" ~ string ~ expr? ~ ")" }
+record_const = { "(" ~ "record.const" ~ record_field_const* ~ ")" }
+option_some_const = { "(" ~ "option.some" ~ expr ~ ")" }
+option_none_const = { "(" ~ "option.none" ~ ")" }
+result_ok_const = { "(" ~ "result.ok" ~ expr? ~ ")" }
+result_err_const = { "(" ~ "result.err" ~ expr? ~ ")" }
+record_field_const = { "(" ~ "field" ~ string ~ (expr | field_scalar | field_list_const) ~ ")" }
+field_list_const = { "list.const" ~ expr* }
+field_scalar = {
+    "u8.const" ~ integer | "s8.const" ~ integer
+  | "u16.const" ~ integer | "s16.const" ~ integer
+  | "u32.const" ~ integer | "s32.const" ~ integer
+  | "u64.const" ~ integer | "s64.const" ~ integer
+  | "i32.const" ~ integer | "i64.const" ~ integer
+  | "f32.const" ~ (float | integer) | "f64.const" ~ (float | integer)
+  | "bool.const" ~ bool_literal | "char.const" ~ string
+  | "str.const" ~ string | "enum.const" ~ string
+}
+
+bool_literal = @{ "true" | "false" }
 
 // ── Module or binary/quote (for assert_malformed/invalid/unlinkable) ──────────
 // The binary/quote forms must precede plain `module`: the plain rule cannot
@@ -785,9 +840,14 @@ module_or_binary = {
 module_binary_cmd = { "(" ~ "module" ~ module_definition_kw? ~ id? ~ "binary" ~ string+ ~ ")" }
 module_quote_cmd  = { "(" ~ "module" ~ module_definition_kw? ~ id? ~ "quote"  ~ string+ ~ ")" }
 
+// Script harness command: instantiate a previously named component. The
+// optional first id names this instance; the final id names its definition.
+script_component_instance = { "(" ~ "component" ~ "instance" ~ (id ~ id | id) ~ ")" }
+
 script_cmd = {
     module_binary_cmd
   | module_quote_cmd
+  | script_component_instance
   // A COMPONENT is a top-level definition in its own right, not a module
   // field. It must precede `module`: `(component (core module …))` nests a
   // module inside itself, and the plain module rule cannot consume the
@@ -796,6 +856,7 @@ script_cmd = {
   | module
   | assert_return
   | assert_instantiation_trap
+  | assert_component_instantiation_trap
   | assert_trap
   | assert_invalid
   | assert_malformed
@@ -846,12 +907,15 @@ program = { SOI ~ script_cmd* ~ EOI }
 
 // ── §2 component / definition ────────────────────────────────────────────────
 
-component = { "(" ~ "component" ~ id? ~ component_definition* ~ ")" }
+component = { "(" ~ "component" ~ module_definition_kw? ~ id? ~ component_definition* ~ ")" }
 
 component_definition = {
     core_module_def
   | core_instance_def
   | core_type_def
+  | core_func_inline_alias
+  | core_func_inline_lower
+  | core_func_inline_builtin
   | component
   | comp_instance
   | comp_alias
@@ -869,6 +933,10 @@ component_definition = {
 core_module_def   = { "(" ~ "core" ~ "module" ~ module_definition_kw? ~ id? ~ (module_field | rec_group)* ~ ")" }
 core_instance_def = { "(" ~ "core" ~ "instance" ~ id? ~ core_instanceexpr ~ ")" }
 core_type_def     = { "(" ~ "core" ~ "type" ~ id? ~ (core_moduletype | sub_type | composite_type) ~ ")" }
+core_func_inline_alias = { "(" ~ "core" ~ "func" ~ id? ~ "(" ~ "alias" ~ "core" ~ "export" ~ index ~ string ~ ")" ~ ")" }
+core_func_inline_lower = { "(" ~ "core" ~ "func" ~ id? ~ "(" ~ "canon" ~ canon_lower_inline ~ ")" ~ ")" }
+core_func_inline_builtin = { "(" ~ "core" ~ "func" ~ id? ~ "(" ~ "canon" ~ canon_builtin ~ ")" ~ ")" }
+canon_lower_inline = { "lower" ~ funcidx_ref ~ canonopt* }
 
 // ── §3 core:instance ─────────────────────────────────────────────────────────
 
@@ -925,13 +993,13 @@ deftype = { resourcetype | functype_c | componenttype | instancetype | defvaltyp
 
 defvaltype = {
     prim_valtype
-  | "(" ~ "record"  ~ record_field+ ~ ")"
-  | "(" ~ "variant" ~ variant_case+ ~ ")"
+  | "(" ~ "record"  ~ record_field* ~ ")"
+  | "(" ~ "variant" ~ variant_case* ~ ")"
   // 🔧 fixed-length list: `(list <valtype> <u32>)`.
   | "(" ~ "list"    ~ valtype ~ integer? ~ ")"
-  | "(" ~ "tuple"   ~ valtype+ ~ ")"
-  | "(" ~ "flags"   ~ labellit+ ~ ")"
-  | "(" ~ "enum"    ~ labellit+ ~ ")"
+  | "(" ~ "tuple"   ~ valtype* ~ ")"
+  | "(" ~ "flags"   ~ labellit* ~ ")"
+  | "(" ~ "enum"    ~ labellit* ~ ")"
   | "(" ~ "option"  ~ valtype ~ ")"
   | "(" ~ "result"  ~ valtype? ~ result_err? ~ ")"
   | "(" ~ "map"     ~ keytype ~ valtype ~ ")"     // 🗺️
@@ -998,7 +1066,8 @@ exportdecl    = { "(" ~ "export" ~ externnamelit ~ attribute* ~ externtype ~ ")"
 //
 // functype_c / componenttype / instancetype already carry their own `id?`.
 externtype = {
-    "(" ~ "core" ~ "module" ~ id? ~ core_moduledecl* ~ ")"
+    core_module_type_ref
+  | "(" ~ "core" ~ "module" ~ id? ~ core_moduledecl* ~ ")"
   | "(" ~ "value" ~ id? ~ valuebound ~ ")"                 // 🪙
   | "(" ~ "type"  ~ id? ~ typebound  ~ ")"
   | "(" ~ comp_sort_kw ~ id? ~ "(" ~ "type" ~ index ~ ")" ~ ")"
@@ -1006,6 +1075,7 @@ externtype = {
   | componenttype
   | instancetype
 }
+core_module_type_ref = { "(" ~ "core" ~ "module" ~ id? ~ "(" ~ "type" ~ index ~ ")" ~ ")" }
 
 typebound  = { "(" ~ "eq" ~ index ~ ")" | "(" ~ "sub" ~ "resource" ~ ")" }
 valuebound = { "(" ~ "eq" ~ index ~ ")" | valtype }         // 🪙
@@ -1072,7 +1142,7 @@ canon_builtin = {
 }
 
 // `<name> (core func $id?)`
-canon_nullary = { canon_nullary_op ~ core_func_bind }
+canon_nullary = { canon_nullary_op ~ core_func_bind? }
 canon_nullary_op = @{
     ("backpressure.inc" | "backpressure.dec" | "task.cancel"
    | "waitable-set.new" | "waitable-set.drop" | "waitable.join"
@@ -1081,47 +1151,49 @@ canon_nullary_op = @{
 }
 
 // `<name> <typeidx> (core func $id?)`
-canon_ty = { canon_ty_op ~ index ~ core_func_bind }
+canon_ty = { canon_ty_op ~ index ~ core_func_bind? }
 canon_ty_op = @{
     ("resource.new" | "resource.drop" | "resource.rep"
    | "stream.drop-readable" | "stream.drop-writable" | "stream.new"
-   | "future.drop-readable" | "future.drop-writable" | "future.new") ~ !name_char
+   | "stream.forward"
+   | "future.drop-readable" | "future.drop-writable" | "future.new"
+   | "future.forward") ~ !name_char
 }
 
 // `<name> <typeidx> <canonopt>* (core func $id?)`
-canon_ty_opts = { canon_ty_opts_op ~ index ~ canonopt* ~ core_func_bind }
+canon_ty_opts = { canon_ty_opts_op ~ index ~ canonopt* ~ core_func_bind? }
 canon_ty_opts_op = @{
     ("stream.read" | "stream.write" | "future.read" | "future.write") ~ !name_char
 }
 
 // `<name> <typeidx> async? (core func $id?)`
-canon_ty_async = { canon_ty_async_op ~ index ~ async_kw? ~ core_func_bind }
+canon_ty_async = { canon_ty_async_op ~ index ~ async_kw? ~ core_func_bind? }
 canon_ty_async_op = @{
     ("stream.cancel-read" | "stream.cancel-write"
    | "future.cancel-read" | "future.cancel-write") ~ !name_char
 }
 
 // `<name> <valtype> <u32> (core func $id?)`
-canon_ctx = { canon_ctx_op ~ valtype ~ integer ~ core_func_bind }
+canon_ctx = { canon_ctx_op ~ val_type ~ integer ~ core_func_bind? }
 canon_ctx_op = @{ ("context.get" | "context.set") ~ !name_char }
 
 // `task.return (result <valtype>)? <canonopt>* (core func $id?)`
-canon_task_return    = { canon_task_return_op ~ func_result_c? ~ canonopt* ~ core_func_bind }
+canon_task_return    = { canon_task_return_op ~ func_result_c? ~ canonopt* ~ core_func_bind? }
 canon_task_return_op = @{ "task.return" ~ !name_char }
 
 // `<name> cancellable? (memory …) (core func $id?)`
-canon_ws_mem = { canon_ws_mem_op ~ cancellable_kw? ~ "(" ~ "memory" ~ core_memidx_ref ~ ")" ~ core_func_bind }
+canon_ws_mem = { canon_ws_mem_op ~ cancellable_kw? ~ "(" ~ "memory" ~ core_memidx_ref ~ ")" ~ core_func_bind? }
 canon_ws_mem_op = @{ ("waitable-set.wait" | "waitable-set.poll") ~ !name_char }
 
 // `subtask.cancel async? (core func $id?)`
-canon_async_only    = { canon_async_only_op ~ async_kw? ~ core_func_bind }
+canon_async_only    = { canon_async_only_op ~ async_kw? ~ core_func_bind? }
 canon_async_only_op = @{ "subtask.cancel" ~ !name_char }
 
 // `<name> cancellable? (core func $id?)` — the 🧵 handoff family. Ordered
 // LONGEST FIRST: `thread.suspend` is a proper prefix of
 // `thread.suspend-then-resume`, so a shortest-first list would match the head
 // of the compound row and then fail on the tail.
-canon_cancellable = { canon_cancellable_op ~ cancellable_kw? ~ core_func_bind }
+canon_cancellable = { canon_cancellable_op ~ cancellable_kw? ~ core_func_bind? }
 canon_cancellable_op = @{
     ("thread.suspend-then-resume" | "thread.suspend-then-promote"
    | "thread.yield-then-resume"   | "thread.yield-then-promote"
@@ -1129,19 +1201,19 @@ canon_cancellable_op = @{
 }
 
 // `<name> <canonopt>* (core func $id?)` — 📝
-canon_errctx_opts = { canon_errctx_op ~ canonopt* ~ core_func_bind }
+canon_errctx_opts = { canon_errctx_op ~ canonopt* ~ core_func_bind? }
 canon_errctx_op = @{ ("error-context.new" | "error-context.debug-message") ~ !name_char }
 
 // 🧵 `thread.new-indirect <core:typeidx> <core:tableidx> (core func $id?)`
-canon_thread_new_indirect    = { canon_thread_new_indirect_op ~ core_typeidx_ref ~ core_tableidx_ref ~ core_func_bind }
+canon_thread_new_indirect    = { canon_thread_new_indirect_op ~ core_typeidx_ref ~ core_tableidx_ref ~ core_func_bind? }
 canon_thread_new_indirect_op = @{ "thread.new-indirect" ~ !name_char }
 
 // 🧵② the spawn family — `shared?` comes BEFORE the type immediate.
-canon_spawn_ref      = { canon_spawn_ref_op ~ shared_kw? ~ core_typeidx_ref ~ core_func_bind }
+canon_spawn_ref      = { canon_spawn_ref_op ~ shared_kw? ~ core_typeidx_ref ~ core_func_bind? }
 canon_spawn_ref_op   = @{ "thread.spawn-ref" ~ !name_char }
-canon_spawn_indirect = { canon_spawn_indirect_op ~ shared_kw? ~ core_typeidx_ref ~ core_tableidx_ref ~ core_func_bind }
+canon_spawn_indirect = { canon_spawn_indirect_op ~ shared_kw? ~ core_typeidx_ref ~ core_tableidx_ref ~ core_func_bind? }
 canon_spawn_indirect_op = @{ "thread.spawn-indirect" ~ !name_char }
-canon_avail_par      = { canon_avail_par_op ~ shared_kw? ~ core_func_bind }
+canon_avail_par      = { canon_avail_par_op ~ shared_kw? ~ core_func_bind? }
 canon_avail_par_op   = @{ "thread.available-parallelism" ~ !name_char }
 
 // ── §11 value 🪙 ─────────────────────────────────────────────────────────────
@@ -1189,24 +1261,22 @@ externid_attr   = { "(" ~ "external-id" ~ string ~ ")" }        // 🏷️
 
 // ── §14 names ────────────────────────────────────────────────────────────────
 //
-// An externname is NOT an arbitrary string. `label` is kebab-case with a
-// same-case rule per fragment, and `interfacename` carries the namespace and
-// the OPTIONAL VERSION. That version is why this block matters here: the spec
-// spells it `'@' <valid semver>`, and this tree has been using `@N` as a
-// canonidx smuggled through an import name. Once the canon section is real,
-// `@` means a version and nothing else.
-
-externnamelit = ${ "\"" ~ externname ~ "\"" }
+// Keep the quoted spelling parseable even when it is invalid: component
+// `assert_invalid` must test validation rather than fail in the grammar.
+// The walker validates the contents against the lexical rules below.
+externnamelit = { string }
 externname    = { interfacename | plainname }
 
 plainname = {
     "[constructor]" ~ label
-  | "[method]" ~ label ~ "." ~ label
-  | "[static]" ~ label ~ "." ~ label
+  | "[method]" ~ ("[get]" | "[set]")? ~ label ~ "." ~ label
+  | "[static]" ~ ("[get]" | "[set]")? ~ label ~ "." ~ label
+  | "[get]" ~ label
+  | "[set]" ~ label
   | label
 }
 
-labellit = ${ "\"" ~ label ~ "\"" }
+labellit = { string }
 label    = @{ first_fragment ~ ("-" ~ fragment)* }
 
 first_fragment = _{ first_acronym | first_word }
@@ -1221,6 +1291,7 @@ acronym        = _{ (ASCII_DIGIT | ASCII_ALPHA_UPPER)+ }
 interfacename    = @{ namespace+ ~ words ~ projection+ ~ interfaceversion? }
 namespace        = _{ words ~ ":" }
 words            = _{ first_word ~ ("-" ~ word)* }
+words_checked    = @{ first_word ~ ("-" ~ word)* }
 projection       = _{ "/" ~ label }
 interfaceversion = _{ "@" ~ (ASCII_DIGIT | ASCII_ALPHA | "." | "-" | "+")+ }
 

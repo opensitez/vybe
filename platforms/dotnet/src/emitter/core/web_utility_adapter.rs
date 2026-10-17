@@ -47,7 +47,7 @@ use std::sync::Arc;
 use vybe_compiler::primitives::ops;
 use vybe_compiler::primitives::url::{self, PercentOptions};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 /// .NET's `UrlEncode` differs from `encodeURIComponent` on exactly `~`, `'`
 /// and the space; `PercentOptions::form()` already answers the first and the

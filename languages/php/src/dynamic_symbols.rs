@@ -118,6 +118,18 @@ fn profile_builtin_exists(name: &str) -> bool {
 pub fn register(fw: &mut Framework<'_>) {
     fw.register_host_fn(
         "php:dynamic",
+        "classByName",
+        Box::new(|ctx, args| {
+            let Some(Value::String(name)) = args.first() else {
+                return Value::Undefined;
+            };
+            class_object(ctx, name)
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined)
+        }),
+    );
+    fw.register_host_fn(
+        "php:dynamic",
         "methodExists",
         Box::new(|ctx, args| {
             let (Some(Value::String(class)), Some(Value::String(method))) =

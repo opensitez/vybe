@@ -6,7 +6,7 @@
 //! fill it, and convert the result to the `Uint8Array` Python calls `bytes`.
 
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
@@ -157,23 +157,6 @@ fn push_uuid_hex(chunks: &mut [Chunk], current: usize, text: u16, line: u32) {
     chunks[current].emit_string_const("-", line);
     chunks[current].emit_string_const("", line);
     call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
-}
-
-fn push_uuid_version(chunks: &mut [Chunk], current: usize, text: u16, fallback: i32, line: u32) {
-    lget(&mut chunks[current], text, line);
-    chunks[current].emit_i32_const(14, line);
-    chunks[current].emit_i32_const(15, line);
-    call_import(chunks, current, "ecma:string", "substring", 3, line);
-    call_import(chunks, current, "ecma:number", "parseInt", 1, line);
-    let slot = chunks[current].alloc_scratch(1);
-    lset(&mut chunks[current], slot, line);
-    lget(&mut chunks[current], slot, line);
-    call_import(chunks, current, "ecma:number", "isNaN", 1, line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_i32_const(fallback, line);
-    chunks[current].emit_else(line);
-    lget(&mut chunks[current], slot, line);
-    chunks[current].emit_end(line);
 }
 
 fn push_substring(chunk: &mut Chunk, slot: u16, start: i32, end: i32, line: u32) {

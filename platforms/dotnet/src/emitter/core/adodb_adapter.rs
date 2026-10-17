@@ -483,15 +483,11 @@ pub fn emit_adodb_recordset_fields(chunks: &mut [Chunk], current: usize, line: u
             reserve_slot(chunk),
         )
     };
-    let (rows_key, pos_key) = {
+    {
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::LOCAL_SET, key_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, rs_slot, line);
-        (
-            chunk.add_constant(Value::String(Arc::from(ROWS_KEY))),
-            chunk.add_constant(Value::String(Arc::from(POS_KEY))),
-        )
-    };
+    }
     {
         let chunk = &mut chunks[current];
         class_slots::emit_class_get(

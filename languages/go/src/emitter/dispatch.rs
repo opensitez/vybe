@@ -56,3 +56,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     }
     crate::emitter::math_adapter::emit_helper(name, chunks, current, argc, line)
 }
+
+/// Stable definition addresses for this exact Go producer; retain existing
+/// sort recipes when adding encoding recipes. The published slice is immutable.
+pub fn helper_definitions() -> &'static [vybe_compiler::primitives::helper_templates::Definition] {
+    use vybe_compiler::primitives::helper_templates::Definition;
+    static DEFINITIONS: std::sync::OnceLock<Vec<Definition>>=std::sync::OnceLock::new();
+    DEFINITIONS.get_or_init(|| {
+        super::sort_adapter::HELPER_DEFINITIONS.iter()
+            .chain(super::encoding_adapter::HELPER_DEFINITIONS.iter())
+            .chain(super::maps_adapter::HELPER_DEFINITIONS.iter())
+            .map(|d|Definition {
+                contract:d.contract,operation:d.operation,namespace:d.namespace,version:d.version,
+                parser:d.parser,producer:d.producer,arity:d.arity,helper_name:d.helper_name,
+                factory:d.factory,caller:d.caller,
+            }).collect()
+    }).as_slice()
+}

@@ -206,6 +206,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // Declared in the profile's `[async]` section; see python's note.
         imports,
         directives: Directives {
+            add_concatenates_strings: Some(true),
+            integer_division_on_slash: Some(true),
             // A `new`-hiding field is a SEPARATE field from the one it hides;
             // both live on the object and a read binds to the reference's
             // declared type. Stated once for the module — whether a given
@@ -225,6 +227,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // dispatch (JS/Dart) or bind-on-access (Python).
             method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
             method_bindings_live: Some(false),
+            // Omitted arguments arrive as Undefined. Explicit null remains
+            // a supplied argument and must not select a default value.
+            missing_arg_is_undefined: Some(true),
             // Every callable declares a leading receiver parameter, not only
             // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
             // argumentsList)`. A plain `f()` passes `undefined` (§10.2.1.1).
@@ -14974,14 +14979,6 @@ fn extract_interface_default_method(
     )))))
 }
 
-fn class_member_method_name(m: &ClassMember) -> Option<String> {
-    if let ClassMember::Method(stmt) = m {
-        if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
-            return Some(name.clone());
-        }
-    }
-    None
-}
 
 /// Copy each interface's default methods into implementing classes that don't
 /// already declare them (override wins) — C# 8 default interface methods as
@@ -15052,95 +15049,7 @@ fn walk_interface_decl(
     })
 }
 
-fn walk_interface_member(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<InterfaceMember, String> {
-    let mut type_hint = None;
-    let mut name = String::new();
-    let mut has_params = false;
-    let mut params = Vec::new();
-    let mut has_getter = false;
-    let mut has_setter = false;
-    let src = pair.as_str().to_string();
-    let is_indexer = src.contains("this[");
 
-    for p in pair.into_inner() {
-        match p.as_rule() {
-            Rule::class_modifiers => {}
-            Rule::interface_operator_declaration => {
-                return walk_interface_operator_member(__w, p);
-            }
-            Rule::type_name => type_hint = Some(p.as_str().to_string()),
-            Rule::ident_name => name = p.as_str().to_string(),
-            Rule::param_list => {
-                has_params = true;
-                params = walk_params(__w, p)?;
-            }
-            _ => {
-                let s = p.as_str();
-                if s == "get" {
-                    has_getter = true;
-                }
-                if s == "set" {
-                    has_setter = true;
-                }
-            }
-        }
-    }
-
-    if is_indexer {
-        name = "__index__".into();
-    }
-
-    if !is_indexer && (has_params || src.contains('(')) {
-        let is_sub = type_hint.as_deref() == Some("void");
-        Ok(InterfaceMember::Method {
-            name,
-            params,
-            return_type: type_hint,
-            is_sub,
-            signature_source: None,
-        })
-    } else {
-        Ok(InterfaceMember::Property {
-            name,
-            type_hint,
-            is_readonly: has_getter && !has_setter,
-            is_writeonly: !has_getter && has_setter,
-        })
-    }
-}
-
-fn walk_interface_operator_member(
-    __w: &mut CsWalker,
-    pair: Pair<Rule>,
-) -> Result<InterfaceMember, String> {
-    let mut return_type = None;
-    let mut conversion_kind = None;
-    let mut symbol = String::new();
-    let mut params = Vec::new();
-
-    for p in pair.into_inner() {
-        match p.as_rule() {
-            Rule::type_name => return_type = Some(p.as_str().to_string()),
-            Rule::conversion_operator_kind => conversion_kind = Some(p.as_str().to_string()),
-            Rule::operator_symbol => symbol = p.as_str().trim().to_string(),
-            Rule::param_list => params = walk_params(__w, p)?,
-            _ => {}
-        }
-    }
-
-    let name = conversion_kind
-        .as_deref()
-        .and_then(|kind| conversion_operator_method_name(kind, return_type.as_deref()))
-        .unwrap_or_else(|| operator_method_name(&symbol, params.len()).to_string());
-    let is_sub = return_type.as_deref() == Some("void");
-    Ok(InterfaceMember::Method {
-        name,
-        params,
-        return_type,
-        is_sub,
-        signature_source: None,
-    })
-}
 
 // ── Enum ────────────────────────────────────────────────────────────────────
 
@@ -23285,11 +23194,8 @@ fn parse_interpolated_hole_text(__w: &mut CsWalker, text: &str) -> Result<Expres
 
     let value = parse_interpolated_expr_text(__w, text)?;
     Ok(Expression::new(ExprKind::Call {
-        callee: Box::new(build_dotted_expr("String.Format")),
-        args: vec![
-            Argument::positional(Expression::new(ExprKind::Lit(Literal::Str("{0}".into())))),
-            Argument::positional(value),
-        ],
+        callee: Box::new(Expression::ident("__csharp_interpolation_value")),
+        args: vec![Argument::positional(value)],
         optional: false,
     }))
 }
@@ -23510,3 +23416,7 @@ fn compound_to_binop(op: CompoundOp) -> BinOp {
         CompoundOp::Concat => BinOp::Concat,
     }
 }
+
+#[cfg(test)]
+#[path = "generated_comparer_contract_tests.rs"]
+mod generated_comparer_contract_tests;

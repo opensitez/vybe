@@ -80,7 +80,10 @@ fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, module: b
 
     emit_variable_store(chunks, current, line, module);
     lget(&mut chunks[current], key, line);
-    call_import(chunks, current, "ecma:object", "get", 2, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    // Both getters are value reads. An alias stored in either namespace must
+    // yield its referenced value; only the explicit *_ref APIs return places.
+    vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
     let value = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], value, line);
 
@@ -112,8 +115,22 @@ fn emit_ref(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, module: b
     emit_variable_store(chunks, current, line, module);
     let store = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], store, line);
-
-    vybe_compiler::primitives::references::emit_carray_new(chunks, current, store, key, line);
+    if module {
+        lget(&mut chunks[current], store, line);
+        lget(&mut chunks[current], key, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        let existing = chunks[current].alloc_scratch(1);
+        lset(&mut chunks[current], existing, line);
+        lget(&mut chunks[current], existing, line);
+        vybe_compiler::primitives::references::emit_is_reference_to_stack(chunks, current, line);
+        chunks[current].emit_if_value(line);
+        lget(&mut chunks[current], existing, line);
+        chunks[current].emit_else(line);
+        vybe_compiler::primitives::references::emit_carray_new(chunks, current, store, key, line);
+        chunks[current].emit_end(line);
+    } else {
+        vybe_compiler::primitives::references::emit_carray_new(chunks, current, store, key, line);
+    }
 }
 
 /// `__php_global_set($name, $value)` -> `$value`.
@@ -136,9 +153,55 @@ fn emit_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, module: b
     lset(&mut chunks[current], key, line);
 
     emit_variable_store(chunks, current, line, module);
+    let store = chunks[current].alloc_scratch(1);
+    lset(&mut chunks[current], store, line);
+    lget(&mut chunks[current], store, line);
+    lget(&mut chunks[current], key, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    let existing = chunks[current].alloc_scratch(1);
+    lset(&mut chunks[current], existing, line);
+    // Both branches capture the old referent before the write. Reuse the
+    // existing reference test: plain values need no autoderef probe/helper.
+    // This compiler spill is excluded by the existing program-root walk;
+    // genuine source/global/reference owners remain roots.
+    let old_value = chunks[current].alloc_scratch(1);
+    lget(&mut chunks[current], existing, line);
+    vybe_compiler::primitives::references::emit_is_reference_to_stack(chunks, current, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], existing, line);
+    vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+    lset(&mut chunks[current], old_value, line);
+    vybe_compiler::primitives::references::emit_store_through_pointer(chunks, current, existing, value, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], existing, line);
+    lset(&mut chunks[current], old_value, line);
+    lget(&mut chunks[current], store, line);
     lget(&mut chunks[current], key, line);
     lget(&mut chunks[current], value, line);
-    call_import(chunks, current, "ecma:object", "set", 3, line);
-    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::ARRAY_SET, line);
+    chunks[current].emit_end(line);
+
+    // Namespace/reference writes must be visible before the reachability
+    // check and before a destructor reenters PHP. Genuine aliases in globals,
+    // include scopes and source locals remain roots; never special-case them
+    // away. Keep this inline so no callee parameter becomes an extra owner.
+    let chunk = &mut chunks[current];
+    let destructor = vybe_compiler::primitives::class_slots::resolve_interned(
+        chunk,
+        &vybe_compiler::primitives::class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::Destructor),
+        &vybe_compiler::primitives::class_slots::PlainNames,
+    );
+    lget(chunk, old_value, line);
+    lget(chunk, old_value, line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Stack,
+        &destructor,
+        vybe_compiler::primitives::class_slots::Dest::Stack,
+        line,
+    );
+    let finalize = chunk.add_import("php:object", "finalizeUnreachable");
+    chunk.emit_call(finalize, 2, line);
+    chunk.emit_op(Op::DROP, line);
     lget(&mut chunks[current], value, line);
 }

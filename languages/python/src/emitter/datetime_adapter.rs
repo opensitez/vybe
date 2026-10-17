@@ -882,13 +882,19 @@ fn emit_has_key(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_call(typeof_fn, 1, line);
-    chunk.emit_string_const("object", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    let type_name = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, type_name, line);
+    vybe_compiler::primitives::ops::emit_string_slot_eq_literal(chunk, type_name, "object", line);
     // Both branches return the native i32 presence predicate.
     chunk.emit_if_i32(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     struct_get(chunk, &ClassSlot::internal(key), line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    let value = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    // Missing object properties return JavaScript undefined, which is a
+    // non-null externref in Wasm. It must not identify an ordinary container
+    // as a datetime value.
+    super::runtime_adapter::emit_slot_is_null_or_undefined(chunk, value, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_else(line);
     core_wasm::i32_const(chunk, line, 0);
@@ -1125,7 +1131,7 @@ fn emit_point_string_from_slot(chunk: &mut Chunk, obj: u16, sep: &str, line: u32
     chunk.emit_else(line);
     emit_date_part(chunk, obj, line);
     emit_is_type(chunk, obj, TYPE_DATETIME, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_params(line, 1, 1);
     chunk.emit_string_const(sep, line);
     let concat = chunk.add_import("wasm:js-string", "concat");
     chunk.emit_call(concat, 2, line);
@@ -1146,7 +1152,7 @@ fn emit_append_tz_offset_if_present(chunk: &mut Chunk, obj: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_params(line, 1, 1);
     emit_offset_us_from_tz(chunk, tz, line);
     chunk.emit_op_u16(Op::LOCAL_SET, us, line);
     emit_signed_offset_string(chunk, us, true, line);
@@ -1215,7 +1221,7 @@ fn emit_timedelta_time_part(chunk: &mut Chunk, seconds: u16, micros: u16, line: 
     core_wasm::f64_const(chunk, line, 0.0);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_params(line, 1, 1);
     emit_concat_const(chunk, ".", line);
     chunk.emit_op_u16(Op::LOCAL_GET, micros, line);
     emit_pad(chunk, 6, line);
@@ -1252,7 +1258,7 @@ fn emit_timedelta_string(chunk: &mut Chunk, obj: u16, line: u32) {
     core_wasm::f64_const(chunk, line, -1.0);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if_params(line, 1, 1);
     emit_concat_const(chunk, " day, ", line);
     chunk.emit_else(line);
     emit_concat_const(chunk, " days, ", line);
@@ -1305,4 +1311,52 @@ pub fn emit_date_weekday(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     chunk.emit_op(Op::I32_ADD, line);
     core_wasm::i32_const(chunk, line, 7);
     chunk.emit_op(Op::I32_REM_S, line);
+}
+
+#[cfg(test)]
+mod absent_property_tests {
+    use super::*;
+    use vybe_runtime::{Value, VM};
+
+    fn classify(value: Value) -> Value {
+        let mut chunk = Chunk::new("datetime_presence_regression");
+        vybe_compiler::primitives::globals::emit_read(&mut chunk, "value", 0);
+        let slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, 0);
+        emit_is_datetime(&mut chunk, slot, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        let mut chunks = vec![chunk];
+        vybe_compiler::primitives::globals::declare_free_globals(&mut chunks);
+        vybe_compiler::primitives::globals::normalize_global_table(&mut chunks);
+        let mut vm = VM::new();
+        vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+        vm.set_global("value", value);
+        vm.run(chunks).expect("datetime presence predicate")
+    }
+
+    #[test]
+    fn missing_datetime_fields_do_not_classify_containers_as_datetime() {
+        for value in [
+            Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new())),
+            Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new_array(Vec::new()))),
+            Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new_array(vec![Value::I32(1), Value::I32(2)]))),
+            Value::Null,
+            Value::Undefined,
+            Value::I32(3),
+        ] {
+            assert_eq!(classify(value), Value::I32(0));
+        }
+    }
+
+    #[test]
+    fn zero_datetime_fields_are_present_but_nullish_fields_are_absent() {
+        for key in [US_KEY, TIME_KEY] {
+            for value in [Value::Null, Value::Undefined, Value::I32(0)] {
+                let expected = if value == Value::I32(0) { 1 } else { 0 };
+                let mut object = vybe_runtime::value::Object::new();
+                object.set(key.into(), value);
+                assert_eq!(classify(Value::Object(vybe_runtime::heap::alloc(object))), Value::I32(expected));
+            }
+        }
+    }
 }

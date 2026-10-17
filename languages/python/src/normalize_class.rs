@@ -111,8 +111,6 @@ pub fn normalize_class(
                     });
                 }
 
-                out.push_method(m.is_static, method.clone());
-
                 // Python keeps dunder spellings public (`obj.__iter__()` is a
                 // real call), while the shared class/generator machinery looks
                 // up protocol roles by their canonical slot names
@@ -124,9 +122,15 @@ pub fn normalize_class(
                     Some(ProtocolSlot::Iterator | ProtocolSlot::Next | ProtocolSlot::Len)
                 ) && canonical != *src_name
                 {
-                    let mut alias = method;
+                    // These public protocol aliases are the only members that
+                    // need a second owned body. Ordinary methods can move the
+                    // normalized result directly into the class.
+                    let mut alias = method.clone();
                     alias.source_name = canonical.clone();
+                    out.push_method(m.is_static, method);
                     out.push_method(m.is_static, alias);
+                } else {
+                    out.push_method(m.is_static, method);
                 }
             }
             ClassMember::Constructor {
@@ -198,6 +202,7 @@ pub fn normalize_class(
                     )
                 });
                 out.properties.push(NormalProperty {
+                    raw_setter: None,
                     span: span.clone(),
                     canonical_name: canonical,
                     source_name: pname.clone(),
@@ -411,5 +416,49 @@ mod tests {
         );
         assert_eq!(nc.static_fields.len(), 1);
         assert!(!nc.instance_fields.iter().any(|field| field.name == "COUNT"));
+    }
+}
+
+#[cfg(test)]
+mod protocol_alias_tests {
+    use super::*;
+
+    #[test]
+    fn iterator_alias_retains_body_flags_and_source_name() {
+        let body = vec![vybe_ast::Statement::new(StmtKind::Return(Some(
+            vybe_ast::Expression::ident("self"),
+        )))];
+        let method = vybe_ast::Statement::new(StmtKind::FunctionDecl {
+            name: "__iter__".into(),
+            params: vec![],
+            return_type: None,
+            body,
+            modifiers: Modifiers::default(),
+            handles: vec![],
+            is_async: false,
+            is_generator: true,
+            is_sub: false,
+        });
+        let result = normalize_class(
+            Span::default(),
+            "Iterator",
+            &[],
+            &[],
+            &[ClassMember::Method(Box::new(method))],
+            &ClassModifiers::default(),
+        );
+        assert_eq!(result.instance_methods.len(), 2);
+        assert_eq!(result.instance_methods[0].source_name, "__iter__");
+        assert_eq!(result.instance_methods[1].source_name, "iterator");
+        assert_eq!(
+            format!("{:?}", result.instance_methods[0].body),
+            format!("{:?}", result.instance_methods[1].body)
+        );
+        assert!(
+            result
+                .instance_methods
+                .iter()
+                .all(|method| method.is_generator)
+        );
     }
 }

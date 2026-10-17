@@ -29,11 +29,10 @@
 //! one emitter and branch on `__tcs_done`, because a second copy of that rule
 //! is a second place for it to drift.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 use super::object_fields::{field_slot, set_both_spellings};
 

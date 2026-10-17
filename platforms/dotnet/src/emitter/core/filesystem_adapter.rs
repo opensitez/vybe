@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
-use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_compiler::primitives::instructions::{host};
 use vybe_compiler::primitives::{classes, fs_path, ops, paths};
 
 use vybe_runtime::opcode::Op;
@@ -101,13 +101,16 @@ fn emit_throw_io(
 /// `FileNotFoundException` when the value on the stack is null.
 /// Stack: `[value]` → `[value]`, or diverges.
 ///
-/// `REF_IS_NULL` reports `Undefined` as null too, which is what makes this a
-/// total test rather than a guess about which flavour of absent arrived.
+/// Both null and undefined represent an absent file result.
 fn emit_read_or_throw(chunks: &mut [Chunk], current: usize, path_slot: u16, line: u32) {
     let out = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    let undefined_test = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(undefined_test, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     emit_throw_io(
         chunks,

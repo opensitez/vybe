@@ -367,7 +367,7 @@ pub fn emit_sock_connect(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 ///
 /// 0.3.1's `send` takes `data: stream<u8>`, not a `list<u8>` — bytes are no
 /// longer handed to a sink, a stream is produced and passed.
-/// `common:stream.from_bytes` mints it.
+/// The sink starts before its producer writes, so canonical copies can rendezvous.
 pub fn emit_sock_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, count: bool) {
     let base = stash_args(chunks, current, argc, line);
     let (sock, data) = (base, base + 1);
@@ -382,10 +382,13 @@ pub fn emit_sock_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32,
     }
     chunks[current].emit_else(line);
     {
-        lget(chunks, current, sock, line);
-        lget(chunks, current, data, line);
-        vybe_compiler::primitives::io::emit_bytes_to_stream(&mut chunks[current], line);
-        call_import(chunks, current, SOCK, "[method]tcp-socket.send", 2, line);
+        let chunk = &mut chunks[current];
+        let send = chunk.add_import(SOCK, "[method]tcp-socket.send");
+        chunk.emit_op_u16(Op::LOCAL_GET, sock, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, data, line);
+        vybe_compiler::primitives::io::emit_bytes_to_receiver_sink(chunk, send, line);
+        vybe_compiler::primitives::io::emit_discard_future(chunk, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_end(line);
     chunks[current].emit_op(Op::DROP, line);

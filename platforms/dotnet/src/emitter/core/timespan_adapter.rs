@@ -124,13 +124,6 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     let seconds_slot = ms_slot + 5;
     chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
 
-    let type_key = string_key(chunk, "__type");
-    let total_ms_key = string_key(chunk, "totalmilliseconds");
-    let total_sec_key = string_key(chunk, "totalseconds");
-    let total_min_key = string_key(chunk, "totalminutes");
-    let total_hr_key = string_key(chunk, "totalhours");
-    let total_day_key = string_key(chunk, "totaldays");
-    let ticks_key = string_key(chunk, "ticks");
 
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(86_400_000.0), line);

@@ -41,16 +41,18 @@ fn source_registry(chunk: &mut Chunk, line: u32) {
     globals::emit_read(chunk, SOURCES, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let create_block = chunk.emit_block(line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(0, line);
+    // Missing sidecar globals read Undefined, a non-null Wasm externref.
+    chunk.emit_op_u16(Op::LOCAL_GET, chunk.dup_slot.expect("dup reserved its root"), line);
+    let undefined = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_params(line, 1, 1);
     chunk.emit_op(Op::DROP, line);
     let new = chunk.add_import("ecma:object", "new");
     chunk.emit_call(new, 0, line);
     core_wasm::dup(chunk, line);
     globals::emit_write(chunk, SOURCES, line);
     chunk.emit_end(line);
-    chunk.patch_block(create_block);
 }
 
 fn node_from_event(chunk: &mut Chunk, line: u32) -> u16 {
@@ -175,38 +177,89 @@ pub fn refresh_source(chunks: &mut [Chunk], current: usize, source: u16, line: u
     loops::emit_loop_end(chunks, current, loop_state, line);
 }
 
-fn callback(chunks: &mut Vec<Chunk>, mode: Move, line: u32) -> usize {
+// Keep the old generated callback display name; the unforgeable metadata
+// marker + arity distinguish the private body from all source/wrapper chunks.
+const CLICK_BODY_NAME: &str = "__dotnet_bindingnavigator_click";
+const CLICK_BODY_MARKER: &str = "<dotnet:bindingnavigator-click-body>";
+
+enum CallbackMove { Static(Move), PrivateLocal(u16) }
+
+fn emit_callback_body(chunks: &mut [Chunk], current: usize, mode: CallbackMove, line: u32) {
+    let button = node_from_event(&mut chunks[current], line);
+    document(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, button, line);
+    let parent = chunks[current].add_import("web:dom", "parentNode");
+    chunks[current].emit_call(parent, 2, line);
+    let navigator = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, navigator, line);
+    let navigator_id = attribute_get(&mut chunks[current], navigator, "id", line);
+    globals::emit_read(&mut chunks[current], SOURCES, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, navigator_id, line);
+    let get = chunks[current].add_import("ecma:object", "get");
+    chunks[current].emit_call(get, 2, line);
+    let source = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, source, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+    let truthy = chunks[current].add_import("ecma:boolean", "toBoolean");
+    chunks[current].emit_call(truthy, 1, line);
+    let checked_bool = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(checked_bool, 1, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+    match mode {
+        CallbackMove::Static(mode) => bindingsource_adapter::emit_bindingsource_move(chunks, current, mode, line),
+        CallbackMove::PrivateLocal(slot) => bindingsource_adapter::emit_bindingsource_move_from_private_mode(chunks, current, slot, line),
+    }
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_ref_null(HT_EXTERN, line);
+    chunks[current].emit_op(Op::RETURN, line);
+}
+
+fn ensure_click_body(chunks: &mut Vec<Chunk>, line: u32) -> Option<usize> {
+    use vybe_runtime::chunk::{LocalName, LocalOrigin};
+    if let Some(index) = chunks.iter().position(|c| {
+        c.name == CLICK_BODY_NAME && c.arity == 2 && c.param_count == 2
+            // Callback errors must retain each installation's original line.
+            // Share four modes at this line, never a body from another line.
+            && c.get_line(0) == Some(line)
+            && c.local_names.iter().any(|n| n.slot == 0
+                && n.origin == LocalOrigin::Compiler && n.name == CLICK_BODY_MARKER)
+    }) {
+        return u16::try_from(index).ok().map(usize::from);
+    }
+    // Reserve all FOUR new callback indices too. Adding a helper at the last
+    // representable slot must not turn formerly representable callbacks wide.
+    chunks.len().checked_add(4).filter(|last| *last <= u16::MAX as usize)?;
+    let index = chunks.len();
+    let mut helper = vybe_compiler::primitives::functions::create_function_chunk(CLICK_BODY_NAME, 2);
+    helper.param_count = 2;
+    helper.local_count = 2;
+    helper.local_names.push(LocalName::new(0, CLICK_BODY_MARKER, LocalOrigin::Compiler));
+    let mut body = vec![helper];
+    emit_callback_body(&mut body, 0, CallbackMove::PrivateLocal(1), line);
+    chunks.push(body.remove(0));
+    Some(index)
+}
+
+fn callback(chunks: &mut Vec<Chunk>, mode: Move, helper: Option<usize>, line: u32) -> usize {
     let mut function = vybe_compiler::primitives::functions::create_function_chunk(
-        "__dotnet_bindingnavigator_click",
-        1,
+        "__dotnet_bindingnavigator_click", 1,
     );
     function.local_count = 1;
-    let mut body = vec![function];
-    let button = node_from_event(&mut body[0], line);
-    document(&mut body[0], line);
-    body[0].emit_op_u16(Op::LOCAL_GET, button, line);
-    let parent = body[0].add_import("web:dom", "parentNode");
-    body[0].emit_call(parent, 2, line);
-    let navigator = body[0].alloc_scratch(1);
-    body[0].emit_op_u16(Op::LOCAL_SET, navigator, line);
-    let navigator_id = attribute_get(&mut body[0], navigator, "id", line);
-    globals::emit_read(&mut body[0], SOURCES, line);
-    body[0].emit_op_u16(Op::LOCAL_GET, navigator_id, line);
-    let get = body[0].add_import("ecma:object", "get");
-    body[0].emit_call(get, 2, line);
-    let source = body[0].alloc_scratch(1);
-    body[0].emit_op_u16(Op::LOCAL_SET, source, line);
-    body[0].emit_op_u16(Op::LOCAL_GET, source, line);
-    let truthy = body[0].add_import("ecma:boolean", "toBoolean");
-    body[0].emit_call(truthy, 1, line);
-    body[0].emit_if(line);
-    body[0].emit_op_u16(Op::LOCAL_GET, source, line);
-    bindingsource_adapter::emit_bindingsource_move(&mut body, 0, mode, line);
-    body[0].emit_op(Op::DROP, line);
-    body[0].emit_end(line);
-    body[0].emit_ref_null(HT_EXTERN, line);
-    body[0].emit_op(Op::RETURN, line);
-    chunks.push(body.remove(0));
+    if let Some(helper) = helper {
+        vybe_compiler::primitives::functions::emit_ref_func(&mut function, helper, 0, line);
+        function.emit_op_u16(Op::LOCAL_GET, 0, line);
+        function.emit_i32_const(match mode { Move::First=>0, Move::Next=>1, Move::Previous=>2, Move::Last=>3 }, line);
+        // Standard tail call replaces this wrapper frame, preserving one
+        // generated callback frame and event-root lifetime during refresh.
+        function.emit_op_u8_u8(Op::RETURN_CALL_REF, 2, 1, line);
+    } else {
+        let mut body = vec![function];
+        emit_callback_body(&mut body, 0, CallbackMove::Static(mode), line);
+        function = body.remove(0);
+    }
+    chunks.push(function);
     chunks.len() - 1
 }
 
@@ -228,6 +281,7 @@ pub fn emit_set_source(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let set = c.add_import("ecma:object", "set");
     c.emit_call(set, 3, line);
     c.emit_op(Op::DROP, line);
+    let helper = ensure_click_body(chunks, line);
     let mut button = child(&mut chunks[current], navigator, true, line);
     for (index, mode) in [
         (0, Move::First),
@@ -241,7 +295,7 @@ pub fn emit_set_source(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
                 button = child(&mut chunks[current], button, false, line);
             }
         }
-        let handler = callback(chunks, mode, line);
+        let handler = callback(chunks, mode, helper, line);
         let c = &mut chunks[current];
         vybe_compiler::primitives::gui::emit_add_event_listener(c, button, "click", handler, line);
     }

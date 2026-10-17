@@ -838,10 +838,6 @@ fn is_user_member_name(__w: &mut KtWalker, name: &str, arity: usize) -> bool {
     __w.user_member_names.contains(&(name.to_string(), arity))
 }
 
-#[allow(dead_code)]
-fn overloaded_storage_name(__w: &mut KtWalker, name: &str, arity: usize) -> Option<String> {
-    overloaded_storage_name_for_args(__w, name, arity, &[])
-}
 
 fn overloaded_storage_name_for_params(
     __w: &mut KtWalker,
@@ -1121,6 +1117,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
 /// whether `Instant` and `instant` are one name.
 fn language_directives() -> Directives {
     Directives {
+        add_concatenates_strings: Some(true),
+        integer_division_on_slash: Some(true),
         set_semantics: Some(SetSemantics {
             mutation_result: SetMutationResult::ChangedBool,
             delete_result: SetMutationResult::ChangedBool,
@@ -2507,14 +2505,6 @@ fn kotlin_digit_to_int_expr(value: Expression, nullable: bool) -> Expression {
     }
 }
 
-#[allow(dead_code)]
-fn kotlin_call_zero_arg_lambda(lambda: Expression) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(lambda),
-        args: Vec::new(),
-        optional: false,
-    })
-}
 
 /// A `val`/`var` that REUSES a bound name is a NEW binding in Kotlin — both
 /// the same-block redeclare (`var v = 1 … val v = 9`) and a nested block's
@@ -13026,23 +13016,7 @@ fn kotlin_key_expr(expr: Expression) -> Expression {
     }
 }
 
-#[allow(dead_code)]
-fn kotlin_dict_get_expr(object: Expression, key: Expression) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__dict_get")),
-        args: vec![Argument::positional(object), Argument::positional(key)],
-        optional: false,
-    })
-}
 
-#[allow(dead_code)]
-fn kotlin_dict_has_expr(object: Expression, key: Expression) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__dict_has")),
-        args: vec![Argument::positional(object), Argument::positional(key)],
-        optional: false,
-    })
-}
 
 fn kotlin_set_contains_expr(object: Expression, value: Expression) -> Expression {
     Expression::new(ExprKind::Call {
@@ -17105,29 +17079,6 @@ fn kt_interface_property_accessors(
     out
 }
 
-#[allow(dead_code)]
-fn kt_abstract_interface_method(
-    name: &str,
-    params: Vec<Param>,
-    return_type: Option<&str>,
-) -> ClassMember {
-    ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-        name: name.to_string(),
-        params,
-        return_type: return_type.map(str::to_string),
-        body: Vec::new(),
-        modifiers: Modifiers {
-            visibility: Visibility::Public,
-            is_abstract: true,
-            is_virtual: true,
-            ..Default::default()
-        },
-        handles: Vec::new(),
-        is_async: false,
-        is_generator: false,
-        is_sub: false,
-    })))
-}
 
 fn kt_promote_rebind_marker() -> Expression {
     Expression::new(ExprKind::New {
@@ -17734,82 +17685,10 @@ fn is_plain_identifier(text: &str) -> bool {
         && !text.starts_with(|c: char| c.is_ascii_digit())
 }
 
-#[allow(dead_code)]
-fn kt_this_member(field: &str) -> Expression {
-    Expression::new(ExprKind::Member {
-        object: Box::new(Expression::new(ExprKind::This)),
-        field: field.to_string(),
-        null_safe: false,
-    })
-}
 
-#[allow(dead_code)]
-fn kt_delegate_member(delegate_field: &str, field: &str) -> Expression {
-    Expression::new(ExprKind::Member {
-        object: Box::new(kt_this_member(delegate_field)),
-        field: field.to_string(),
-        null_safe: false,
-    })
-}
 
-#[allow(dead_code)]
-fn kt_return_member(expr: Expression) -> Vec<Statement> {
-    vec![Statement::new(StmtKind::Return(Some(expr)))]
-}
 
-#[allow(dead_code)]
-fn kt_delegate_property(delegate_field: &str, name: &str, readonly: bool) -> ClassMember {
-    let setter = (!readonly).then(|| {
-        let param = Param {
-            name: "__kt_value".to_string(),
-            type_hint: None,
-            default: None,
-            pass_by: PassBy::Value,
-            is_rest: false,
-            is_kwargs: false,
-            is_optional: false,
-            is_nullable: true,
-        };
-        PropertySetter {
-            param,
-            body: vec![Statement::new(StmtKind::Expr(Expression::new(
-                ExprKind::Assign {
-                    target: Box::new(kt_delegate_member(delegate_field, name)),
-                    value: Box::new(Expression::ident("__kt_value")),
-                },
-            )))],
-        }
-    });
-    ClassMember::Property {
-        name: name.to_string(),
-        type_hint: None,
-        getter: Some(kt_return_member(kt_delegate_member(delegate_field, name))),
-        setter,
-        is_auto: false,
-        modifiers: Modifiers {
-            visibility: Visibility::Public,
-            ..Default::default()
-        },
-    }
-}
 
-#[allow(dead_code)]
-fn kt_delegate_method(name: &str, params: Vec<Param>, body: Vec<Statement>) -> ClassMember {
-    ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-        name: name.to_string(),
-        params,
-        return_type: None,
-        body,
-        modifiers: Modifiers {
-            visibility: Visibility::Public,
-            ..Default::default()
-        },
-        handles: Vec::new(),
-        is_async: false,
-        is_generator: false,
-        is_sub: false,
-    })))
-}
 
 fn kt_optional_param(name: &str, default: Expression) -> Param {
     Param {
@@ -17819,192 +17698,8 @@ fn kt_optional_param(name: &str, default: Expression) -> Param {
     }
 }
 
-#[allow(dead_code)]
-fn member_exists(members: &[ClassMember], name: &str) -> bool {
-    members.iter().any(|member| match member {
-        ClassMember::Method(stmt) => {
-            matches!(&stmt.kind, StmtKind::FunctionDecl { name: n, .. } if n == name)
-        }
-        ClassMember::Property { name: n, .. } | ClassMember::Field { name: n, .. } => n == name,
-        _ => false,
-    })
-}
 
-#[allow(dead_code)]
-fn append_kotlin_collection_delegate_members(
-    members: &mut Vec<ClassMember>,
-    interface_name: &str,
-    delegate_field: &str,
-) {
-    let bare = interface_name.rsplit('.').next().unwrap_or(interface_name);
-    let delegate = || kt_this_member(delegate_field);
 
-    if matches!(bare, "List" | "MutableList" | "Collection" | "Iterable")
-        && !member_exists(members, "size")
-    {
-        members.push(ClassMember::Property {
-            name: "size".to_string(),
-            type_hint: Some("Int".to_string()),
-            getter: Some(kt_return_member(kt_call("__coll_length", vec![delegate()]))),
-            setter: None,
-            is_auto: false,
-            modifiers: Modifiers {
-                visibility: Visibility::Public,
-                is_readonly: true,
-                ..Default::default()
-            },
-        });
-    }
-
-    if matches!(bare, "List" | "MutableList") && !member_exists(members, "get") {
-        members.push(kt_delegate_method(
-            "get",
-            vec![kt_param("index")],
-            kt_return_member(Expression::new(ExprKind::Index {
-                object: Box::new(delegate()),
-                index: Box::new(Expression::ident("index")),
-                null_safe: false,
-            })),
-        ));
-    }
-
-    if matches!(bare, "List" | "MutableList" | "Collection") && !member_exists(members, "contains")
-    {
-        members.push(kt_delegate_method(
-            "contains",
-            vec![kt_param("value")],
-            kt_return_member(kt_call(
-                "__coll_contains",
-                vec![delegate(), Expression::ident("value")],
-            )),
-        ));
-    }
-
-    if matches!(bare, "Set" | "MutableSet") && !member_exists(members, "contains") {
-        members.push(kt_delegate_method(
-            "contains",
-            vec![kt_param("value")],
-            kt_return_member(kotlin_set_contains_expr(
-                delegate(),
-                Expression::ident("value"),
-            )),
-        ));
-    }
-
-    if matches!(bare, "Map" | "MutableMap") {
-        if !member_exists(members, "get") {
-            members.push(kt_delegate_method(
-                "get",
-                vec![kt_param("key")],
-                kt_return_member(kotlin_dict_get_expr(delegate(), Expression::ident("key"))),
-            ));
-        }
-        if !member_exists(members, "containsKey") {
-            members.push(kt_delegate_method(
-                "containsKey",
-                vec![kt_param("key")],
-                kt_return_member(kotlin_dict_has_expr(delegate(), Expression::ident("key"))),
-            ));
-        }
-        if !member_exists(members, "keys") {
-            members.push(ClassMember::Property {
-                name: "keys".to_string(),
-                type_hint: None,
-                getter: Some(kt_return_member(kt_call("__dict_keys", vec![delegate()]))),
-                setter: None,
-                is_auto: false,
-                modifiers: Modifiers {
-                    visibility: Visibility::Public,
-                    is_readonly: true,
-                    ..Default::default()
-                },
-            });
-        }
-        if !member_exists(members, "size") {
-            members.push(ClassMember::Property {
-                name: "size".to_string(),
-                type_hint: Some("Int".to_string()),
-                getter: Some(kt_return_member(kt_call("__dict_size", vec![delegate()]))),
-                setter: None,
-                is_auto: false,
-                modifiers: Modifiers {
-                    visibility: Visibility::Public,
-                    is_readonly: true,
-                    ..Default::default()
-                },
-            });
-        }
-    }
-
-    if matches!(bare, "Set" | "MutableSet") && !member_exists(members, "size") {
-        let raw_size = kt_call("__dict_size", vec![delegate()]);
-        members.push(ClassMember::Property {
-            name: "size".to_string(),
-            type_hint: Some("Int".to_string()),
-            getter: Some(kt_return_member(Expression::new(ExprKind::Binary {
-                op: BinOp::Sub,
-                left: Box::new(raw_size),
-                right: Box::new(Expression::int(1)),
-            }))),
-            setter: None,
-            is_auto: false,
-            modifiers: Modifiers {
-                visibility: Visibility::Public,
-                is_readonly: true,
-                ..Default::default()
-            },
-        });
-    }
-
-    if matches!(
-        bare,
-        "List" | "MutableList" | "Set" | "MutableSet" | "Collection" | "Iterable"
-    ) && !member_exists(members, "joinToString")
-    {
-        members.push(kt_delegate_method(
-            "joinToString",
-            vec![kt_optional_param(
-                "separator",
-                Expression::new(ExprKind::Lit(Literal::Str(", ".to_string()))),
-            )],
-            kt_return_member(kt_call(
-                "__coll_join",
-                vec![delegate(), Expression::ident("separator")],
-            )),
-        ));
-    }
-}
-
-#[allow(dead_code)]
-fn append_kotlin_delegate_members(
-    __w: &mut KtWalker,
-    members: &mut Vec<ClassMember>,
-    delegations: &[(String, String)],
-) {
-    for (interface_name, delegate_field) in delegations {
-        {
-            if let Some(source_props) = __w.class_properties.get(interface_name) {
-                for (prop, readonly) in source_props {
-                    if !member_exists(members, prop) {
-                        members.push(kt_delegate_property(delegate_field, prop, *readonly));
-                    }
-                }
-            }
-        };
-        append_kotlin_collection_delegate_members(members, interface_name, delegate_field);
-        if !member_exists(members, "toString") {
-            members.push(kt_delegate_method(
-                "toString",
-                Vec::new(),
-                kt_return_member(Expression::new(ExprKind::Call {
-                    callee: Box::new(kt_delegate_member(delegate_field, "toString")),
-                    args: Vec::new(),
-                    optional: false,
-                })),
-            ));
-        }
-    }
-}
 
 fn walk_delegate_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
     let source = pair.as_str();

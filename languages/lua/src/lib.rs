@@ -29,7 +29,6 @@ mod conditional_tests {
     }
 }
 
-#[allow(dead_code)]
 mod native_grammar {
     include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
 }

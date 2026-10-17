@@ -24,7 +24,6 @@ use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::tuples;
 
-#[allow(dead_code)]
 /// `substring(start, END)` runs to the end of the string.
 const END: i32 = 0x7FFF_FFFF;
 
@@ -382,7 +381,7 @@ fn emit_port_from_hostpart(chunks: &mut [Chunk], current: usize, hostpart: u16, 
     lget(chunks, current, hostpart, line);
     lget(chunks, current, after, line);
     call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
-    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+
     chunks[current].emit_i32_const(58, line);
     chunks[current].emit_op(Op::I32_EQ, line);
     chunks[current].emit_op(Op::I32_AND, line);
@@ -581,7 +580,7 @@ pub fn emit_unquote_to_bytes(chunks: &mut [Chunk], current: usize, argc: u8, lin
     lset(chunks, current, i, line);
     lget(chunks, current, text, line);
     strings::emit_length(&mut chunks[current], line);
-    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+
     lset(chunks, current, n, line);
 
     let block = chunks[current].emit_block(line);
@@ -594,7 +593,7 @@ pub fn emit_unquote_to_bytes(chunks: &mut [Chunk], current: usize, argc: u8, lin
     lget(chunks, current, text, line);
     lget(chunks, current, i, line);
     call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
-    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+
     lset(chunks, current, code, line);
 
     lget(chunks, current, code, line);

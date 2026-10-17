@@ -7,6 +7,20 @@ use vybe_runtime::{Framework, Value, heap};
 pub fn register(fw: &mut Framework<'_>) {
     fw.register_host_fn(
         "php:serialization",
+        "encodeScalarArray",
+        Box::new(|_, args| {
+            let Some(value) = args.first() else { return Value::Null; };
+            let mut out = String::new();
+            if encode_scalar_array(value, &mut out, 0).is_some() {
+                Value::String(Arc::from(out))
+            } else {
+                // Objects with serialization hooks remain in the Wasm adapter.
+                Value::Null
+            }
+        }),
+    );
+    fw.register_host_fn(
+        "php:serialization",
         "assocSet",
         Box::new(|_, args| {
             let [Value::Object(array), key, value, ..] = args else {
@@ -78,6 +92,56 @@ pub fn register(fw: &mut Framework<'_>) {
             Value::String(Arc::from(encoded))
         }),
     );
+}
+
+fn encode_scalar_array(value: &Value, out: &mut String, depth: usize) -> Option<()> {
+    use std::fmt::Write;
+    if depth >= 128 { return None; }
+    match value {
+        Value::Null => out.push_str("N;"),
+        Value::Bool(value) => out.push_str(if *value { "b:1;" } else { "b:0;" }),
+        Value::I32(value) => { write!(out, "i:{value};").ok()?; }
+        Value::I64(value) => { write!(out, "i:{value};").ok()?; }
+        Value::F64(value) if value.is_finite() && value.fract() == 0.0
+            && *value >= i64::MIN as f64 && *value < i64::MAX as f64 => {
+            write!(out, "i:{};", *value as i64).ok()?;
+        }
+        Value::F64(value) => {
+            if value.is_nan() { out.push_str("d:NAN;"); }
+            else if *value == f64::INFINITY { out.push_str("d:INF;"); }
+            else if *value == f64::NEG_INFINITY { out.push_str("d:-INF;"); }
+            else { write!(out, "d:{value};").ok()?; }
+        }
+        Value::String(value) => {
+            write!(out, "s:{}:\"", value.len()).ok()?;
+            out.push_str(value);
+            out.push_str("\";");
+        }
+        Value::Object(object) => {
+            // Release the lock before recursion, including cyclic input.
+            let entries: Vec<(Value, Value)> = {
+                let object = object.lock().unwrap();
+                match &object.kind {
+                    ObjectKind::Array(items) => items.iter().enumerate()
+                        .map(|(index, item)| (Value::I64(index as i64), item.clone())).collect(),
+                    ObjectKind::Map(items) => items.iter()
+                        .map(|(key, item)| (key.clone(), item.clone())).collect(),
+                    _ => return None,
+                }
+            };
+            write!(out, "a:{}:{{", entries.len()).ok()?;
+            for (key, item) in entries {
+                if !matches!(key, Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_)) {
+                    return None;
+                }
+                encode_scalar_array(&key, out, depth + 1)?;
+                encode_scalar_array(&item, out, depth + 1)?;
+            }
+            out.push('}');
+        }
+        _ => return None,
+    }
+    Some(())
 }
 
 struct Parser<'a> {

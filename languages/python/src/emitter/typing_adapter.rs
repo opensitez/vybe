@@ -110,14 +110,42 @@ pub fn emit_get_type_hints(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunks[current].emit_call(get_idx, 2, line);
     lset(&mut chunks[current], found, line);
 
-    lget(&mut chunks[current], found, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::runtime_adapter::emit_slot_is_null_or_undefined(&mut chunks[current], found, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
     lget(&mut chunks[current], found, line);
     chunks[current].emit_else(line);
     dict::emit_new(chunks, current, line);
     chunks[current].emit_end(line);
+}
+
+#[cfg(test)]
+mod absent_metadata_tests {
+    use super::*;
+    use vybe_runtime::{Value, VM};
+
+    fn probe(emit: fn(&mut [Chunk], usize, u8, u32)) -> Value {
+        let mut chunks = vec![Chunk::new("typing_missing_metadata")];
+        vybe_compiler::primitives::globals::emit_read(&mut chunks[0], "input", 0);
+        emit(&mut chunks, 0, 1, 0);
+        chunks[0].emit_op(Op::RETURN, 0);
+        vybe_compiler::primitives::globals::declare_free_globals(&mut chunks);
+        vybe_compiler::primitives::globals::normalize_global_table(&mut chunks);
+        let mut vm = VM::new();
+        vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+        vm.set_global("input", Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new())));
+        vm.run(chunks).expect("missing metadata fallback")
+    }
+
+    #[test]
+    fn missing_annotations_and_origin_use_defined_fallbacks() {
+        let Value::Object(hints) = probe(emit_get_type_hints) else { panic!("annotations fallback must be a dictionary"); };
+        // The shared empty dictionary primitive uses an Ordinary object with
+        // private key bookkeeping; dictionary literals may instead be Maps.
+        let hints = hints.lock().unwrap();
+        assert!(hints.properties.keys().all(|key| key.starts_with("__")));
+        assert!(probe(emit_get_origin).is_null_ref());
+    }
 }
 
 fn emit_empty_tuple(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -143,8 +171,7 @@ fn emit_property_or(
     chunks[current].emit_call(get_idx, 2, line);
     lset(&mut chunks[current], found, line);
 
-    lget(&mut chunks[current], found, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::runtime_adapter::emit_slot_is_null_or_undefined(&mut chunks[current], found, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
     lget(&mut chunks[current], found, line);

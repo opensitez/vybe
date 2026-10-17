@@ -254,7 +254,6 @@ pub fn emit_connection_open(chunks: &mut [Chunk], current: usize, line: u32) {
         lset(chunk, scratch, line);
         set_prop_local(chunk, conn_slot, "serverversion", scratch, line);
 
-        let state_idx = chunk.add_constant(Value::String(Arc::from("state")));
         lget(chunk, conn_slot, line);
         chunk.emit_string_const("Open", line);
         class_slots::emit_class_set(
@@ -313,7 +312,6 @@ pub fn emit_connection_close(chunks: &mut [Chunk], current: usize, line: u32) {
     set_prop_local(chunk, conn_slot, CONN_ID_KEY, zero_slot, line);
     set_prop_local(chunk, conn_slot, "__wasi_id", zero_slot, line);
 
-    let state_idx = chunk.add_constant(Value::String(Arc::from("state")));
     lget(chunk, conn_slot, line);
     chunk.emit_string_const("Closed", line);
     class_slots::emit_class_set(
@@ -583,8 +581,6 @@ fn emit_command_sql_and_params(
         let chunk = &mut chunks[current];
         let nm = reserve_slot(chunk);
         let vl = reserve_slot(chunk);
-        let name_idx = chunk.add_constant(Value::String(Arc::from("name")));
-        let value_idx = chunk.add_constant(Value::String(Arc::from("value")));
         let item = reserve_slot(chunk);
         lget(chunk, items, line);
         lget(chunk, k, line);
@@ -1554,7 +1550,6 @@ pub fn emit_reader_is_dbnull(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack in: `[reader]`  Stack out: `[null]`
 pub fn emit_reader_close(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let closed_idx = chunk.add_constant(Value::String(Arc::from(IS_CLOSED_KEY)));
     chunk.emit_bool_const(true, line);
     class_slots::emit_class_set(
         chunk,
@@ -1598,8 +1593,8 @@ pub fn emit_reader_get_schema_table(chunks: &mut [Chunk], current: usize, line: 
     let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], len_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    vybe_compiler::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], out_slot, line);
     {
@@ -1715,7 +1710,6 @@ pub fn emit_params_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `Parameters.Count`.
 /// Stack in: `[params]`  Stack out: `[number]`
 pub fn emit_params_count(chunks: &mut [Chunk], current: usize, line: u32) {
-    let items_idx = chunks[current].add_constant(Value::String(Arc::from(ITEMS_KEY)));
     class_slots::emit_class_get(
         &mut chunks[current],
         ObjSource::Stack,
@@ -1755,7 +1749,6 @@ fn emit_transaction_verb(chunks: &mut [Chunk], current: usize, sql: &str, line: 
     ops::emit_i32_to_bool(chunk, line);
     lset(chunk, ok_slot, line);
 
-    let closed_idx = chunk.add_constant(Value::String(Arc::from(IS_CLOSED_KEY)));
     lget(chunk, tx_slot, line);
     chunk.emit_bool_const(true, line);
     class_slots::emit_class_set(

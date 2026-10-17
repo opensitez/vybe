@@ -18,6 +18,10 @@ pub fn emit_set_value(chunk: &mut Chunk, line: u32) {
     strings::emit_to_string(chunk, line);
     let set = chunk.add_import("web:html", "setValue");
     chunk.emit_call(set, 3, line);
+    // Preserve the setter's existing VM Null as an explicit Value result.
+    // The Wasm writer consumes DROP at a declared void host call.
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_get_value(chunk: &mut Chunk, line: u32) {

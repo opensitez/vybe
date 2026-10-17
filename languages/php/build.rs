@@ -41,8 +41,15 @@ fn main() {
 fn generate_parser() {
     println!("cargo:rerun-if-changed=src/grammar.pest");
     let source = std::fs::read_to_string("src/grammar.pest").expect("read grammar");
-    let generated = grameo_codegen::generate(&source)
+    let grammar = grameo::compile_with_options(&source, grameo::CompileOptions {
+        optimizations: true,
+        ..Default::default()
+    })
         .unwrap_or_else(|errors| panic!("grammar compilation failed: {errors:?}"));
+    // PHP explicitly opts into certified native hybrid matching recipes.
+    // Ordinary PEG capture parsing still follows the original grammar.
+    let generated = grameo_codegen::emit_with_api(&grammar, grameo_codegen::ParserApi::HYBRID_CAPTURES)
+        .unwrap_or_else(|errors| panic!("grammar generation failed: {errors:?}"));
     let output = std::path::Path::new(&std::env::var_os("OUT_DIR").unwrap()).join("native_parser.rs");
     if std::fs::read_to_string(&output).ok().as_deref() != Some(&generated) {
         std::fs::write(output, generated).expect("write generated parser");

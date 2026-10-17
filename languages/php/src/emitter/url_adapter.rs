@@ -44,7 +44,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -65,7 +65,7 @@ fn emit_encoded_slot(
     lget(&mut chunks[current], encoding_slot, line);
     push_const(&mut chunks[current], Value::F64(2.0), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+
     chunks[current].emit_if_value(line);
     lget(&mut chunks[current], slot, line);
     super::string_adapter::emit_rawurlencode(chunks, current, 1, line);
@@ -137,7 +137,7 @@ fn emit_child_key(
     lget(&mut chunks[current], raw_key_slot, line);
     super::string_adapter::emit_echo_stringify(chunks, current, 1, line);
     push_str(&mut chunks[current], "]", line);
-    vybe_compiler::primitives::strings::emit_concat(&mut chunks[current], 4, line);
+    vybe_compiler::primitives::strings::emit_concat_proven_strings(&mut chunks[current], 4, line);
     let key_slot = alloc_local(&mut chunks[current]);
     lset(&mut chunks[current], key_slot, line);
     key_slot
@@ -174,7 +174,8 @@ fn emit_one_level_children(
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], len_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    // The comparison already produced the Wasm branch predicate.
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], entries_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -261,7 +262,7 @@ pub fn emit_php_http_build_query(chunks: &mut [Chunk], current: usize, argc: u8,
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], len_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], entries_slot, line);
     lget(&mut chunks[current], i_slot, line);

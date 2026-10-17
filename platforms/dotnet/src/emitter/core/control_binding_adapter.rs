@@ -1,6 +1,6 @@
 //! WinForms ControlBindingsCollection backed by BindingSource and DOM controls.
 
-use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::{collections, globals, loops, ops, strings};
 use vybe_runtime::Chunk;
@@ -12,6 +12,59 @@ use super::object_fields::field_slot;
 
 const CONTROL_BINDINGS: &str = "__dotnet_control_bindings";
 const SOURCE_BINDINGS: &str = "__bindings";
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    use std::sync::Arc;
+    use vybe_runtime::{Value, VM};
+
+    fn read_registry(vm: &mut VM) -> Value {
+        let mut entry = Chunk::new("registry-regression");
+        registry(&mut entry, 17);
+        entry.emit_op(Op::RETURN, 17);
+        let mut chunks = vec![entry];
+        globals::declare_free_globals(&mut chunks);
+        globals::normalize_global_table(&mut chunks);
+        vm.run(chunks).unwrap()
+    }
+
+    #[test]
+    fn binding_registry_initializes_missing_null_and_undefined_once() {
+        for initial in [None, Some(Value::Null), Some(Value::Undefined)] {
+            let mut vm = VM::new();
+            vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+            if let Some(value) = initial {
+                vm.set_global(CONTROL_BINDINGS, value);
+            }
+            let Value::Object(first) = read_registry(&mut vm) else {
+                panic!("missing registry must initialize an Object");
+            };
+            let Value::Object(second) = read_registry(&mut vm) else {
+                panic!("registry must retain its Object");
+            };
+            assert!(Arc::ptr_eq(&first, &second));
+            assert!(vm.last_exception.is_none());
+        }
+    }
+
+    #[test]
+    fn registry_preserves_nonmissing_values_and_wasm_null_distinction() {
+        for initial in [Value::Bool(false), Value::I32(0), Value::String("".into())] {
+            let mut vm = VM::new();
+            vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+            vm.set_global(CONTROL_BINDINGS, initial.clone());
+            assert_eq!(read_registry(&mut vm), initial);
+        }
+        let mut vm = VM::new();
+        let mut entry = Chunk::new("strict-null-regression");
+        vybe_compiler::primitives::expressions::emit_undefined(&mut entry, 17);
+        entry.emit_op(Op::REF_IS_NULL, 17);
+        entry.emit_op(Op::RETURN, 17);
+        vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+        assert_eq!(vm.run(vec![entry]).unwrap(), Value::I32(0));
+    }
+}
 
 fn document(chunk: &mut Chunk, line: u32) {
     let active = chunk.add_import("web:html", "activeDocument");
@@ -73,16 +126,19 @@ fn registry(chunk: &mut Chunk, line: u32) {
     globals::emit_read(chunk, CONTROL_BINDINGS, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let block = chunk.emit_block(line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(0, line);
+    // An uninitialized global reads Undefined, which is a non-null externref.
+    // Reuse DUP's existing root rather than reading the registry twice.
+    chunk.emit_op_u16(Op::LOCAL_GET, chunk.dup_slot.expect("dup reserved its root"), line);
+    let undefined = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_params(line, 1, 1);
     chunk.emit_op(Op::DROP, line);
     let new = chunk.add_import("ecma:object", "new");
     chunk.emit_call(new, 0, line);
     core_wasm::dup(chunk, line);
     globals::emit_write(chunk, CONTROL_BINDINGS, line);
     chunk.emit_end(line);
-    chunk.patch_block(block);
 }
 
 fn same(chunk: &mut Chunk, value: u16, literal: &str, line: u32) {

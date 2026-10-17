@@ -4,7 +4,6 @@
 //! than pulling `__vybe_*` stdlib bundle chunks. All value-method ops are now
 //! chunk-free (no `__vybe_*` fallback remains).
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
@@ -18,7 +17,7 @@ use vybe_compiler::primitives::ops;
 use vybe_compiler::primitives::sets;
 use vybe_compiler::primitives::strings;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 /// Emit `<module>.<name>(argc args)` — receiver/args already on the stack.
 fn call_import(
@@ -3974,7 +3973,6 @@ fn emit_ruby_queue_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     emit_time_set_const(chunks, current, "__max", line);
 }
 
-#[allow(dead_code)]
 fn emit_ruby_max_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if let Some(recv_s) = slots.first() {
@@ -7447,7 +7445,6 @@ fn emit_ruby_invoke_one_arg_slot(
     chunks[current].emit_end(line);
 }
 
-#[allow(dead_code)]
 fn emit_ruby_proc_compose_op(
     chunks: &mut [Chunk],
     current: usize,
@@ -9941,7 +9938,6 @@ fn emit_ruby_int_size(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     }
 }
 
-#[allow(dead_code)]
 fn emit_ruby_int_shift(chunks: &mut [Chunk], current: usize, argc: u8, right: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
@@ -15171,7 +15167,6 @@ fn emit_ruby_uniq_by(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_s, line);
 }
 
-#[allow(dead_code)]
 fn emit_min_by(chunks: &mut [Chunk], current: usize, argc: u8, as_array: bool, line: u32) {
     if argc < 2 {
         let slots = emit_store_args(chunks, current, argc, line);

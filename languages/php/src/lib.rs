@@ -8,6 +8,8 @@
 // Force-link every plugin crate in `[dependencies]` so its link-time
 // registration reaches the registry. Generated from Cargo.toml — see build.rs.
 include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
+mod committed_unit;
+pub use committed_unit::{CommittedSourceUnit, GrammarCommit, parse_committed_source_unit};
 mod array_read;
 mod cookies;
 pub(crate) mod core_exceptions;
@@ -27,12 +29,18 @@ mod regex;
 mod serialization;
 mod sodium;
 mod spl_filesystem;
+mod spl_classes;
 mod string_bytes;
+mod html_entities;
+mod html_entity_names;
 mod string_scan;
 pub mod tree_register;
 pub mod walker;
 
-#[allow(dead_code)]
+#[cfg(test)]
+#[path = "../build_support/pratt.rs"]
+mod pratt_binding_tests;
+
 mod native_grammar {
     include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
 }
@@ -44,8 +52,112 @@ impl PhpParser {
     }
 }
 
+// Verification-only baseline selection, read once when an AST builder is
+// created. No TLS or policy branch is compiled into ordinary builds.
+#[cfg(feature = "service-verification")]
+std::thread_local! {
+    static PHP_PRATT_ADMISSION_CACHE_FOR_VALIDATION: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+#[cfg(feature = "service-verification")]
+pub fn with_pratt_admission_cache_for_validation<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { PHP_PRATT_ADMISSION_CACHE_FOR_VALIDATION.with(|flag| flag.set(self.0)); }
+    }
+    let restore = Restore(PHP_PRATT_ADMISSION_CACHE_FOR_VALIDATION.with(|flag| flag.replace(enabled)));
+    let result = run();
+    drop(restore);
+    result
+}
+
+/// Actual frontend admission requests, collected only inside an explicit
+/// verification scope. Keys include the builder identity: equal offsets in
+/// different source units cannot share an admission result.
+#[cfg(feature = "service-verification")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PrattAdmissionCensus {
+    pub builders: usize,
+    pub requests: usize,
+    pub distinct_requests: usize,
+    pub repeated_requests: usize,
+    pub scans: usize,
+    pub hits: usize,
+}
+#[cfg(feature = "service-verification")]
+#[derive(Default)]
+struct PrattAdmissionCensusState {
+    census: PrattAdmissionCensus,
+    requests: std::collections::HashSet<(usize, usize, bool)>,
+}
+#[cfg(feature = "service-verification")]
+std::thread_local! {
+    static PHP_PRATT_ADMISSION_CENSUS: std::cell::RefCell<Option<PrattAdmissionCensusState>> = const { std::cell::RefCell::new(None) };
+}
+/// Observe real public-parser admission traffic. Nested scopes and unwinding
+/// restore the previous collector; ordinary builds contain no collector.
+#[cfg(feature = "service-verification")]
+pub fn with_pratt_admission_census_for_validation<T>(run: impl FnOnce() -> T) -> (T, PrattAdmissionCensus) {
+    struct Restore(Option<PrattAdmissionCensusState>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PHP_PRATT_ADMISSION_CENSUS.with(|state| { state.replace(self.0.take()); });
+        }
+    }
+    let restore = Restore(PHP_PRATT_ADMISSION_CENSUS.with(|state| state.replace(Some(PrattAdmissionCensusState::default()))));
+    let result = run();
+    let census = PHP_PRATT_ADMISSION_CENSUS.with(|state| state.borrow().as_ref().unwrap().census);
+    drop(restore);
+    (result, census)
+}
+#[cfg(feature = "service-verification")]
+fn admission_census_builder_for_validation() -> usize {
+    PHP_PRATT_ADMISSION_CENSUS.with(|state| {
+        let mut state = state.borrow_mut();
+        let Some(state) = state.as_mut() else { return 0; };
+        state.census.builders += 1;
+        state.census.builders
+    })
+}
+#[cfg(feature = "service-verification")]
+fn record_pratt_admission_for_validation(builder: usize, offset: usize, mode: bool, hit: bool) {
+    if builder == 0 { return; }
+    PHP_PRATT_ADMISSION_CENSUS.with(|state| {
+        let mut state = state.borrow_mut();
+        let Some(state) = state.as_mut() else { return; };
+        state.census.requests += 1;
+        if state.requests.insert((builder, offset, mode)) {
+            state.census.distinct_requests += 1;
+        } else {
+            state.census.repeated_requests += 1;
+        }
+        if hit { state.census.hits += 1; } else { state.census.scans += 1; }
+    });
+}
+
+/// Parse with owned common-AST hooks and certified hybrid Pratt regions.
+/// Context-dependent syntax retains its ordered contextual lowering.
 pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
+    walker::parse_direct(source)
+}
+
+/// Explicit PEG reference for compatibility checks and frontend benchmarks.
+pub fn parse_with_peg(source: &str) -> Result<vybe_ast::Module, String> {
     walker::parse(source)
+}
+
+/// Opt-in preparation receipts collected during common-AST construction.
+/// Does not resolve targets, execute includes, or publish source declarations.
+pub fn parse_with_source_units(source: &str)
+    -> Result<(vybe_ast::Module, Vec<grameo::source_units::Request<String>>), String> {
+    walker::parse_direct_with_source_units(source)
+}
+
+/// Opt-in streaming preparation boundary: committed syntax requests arrive
+/// before contextual AST normalization. Actual loads remain runtime operations.
+pub fn parse_with_source_unit_preparation(source: &str,
+    on_committed: &mut dyn FnMut(Vec<grameo::source_units::Request<String>>))
+    -> Result<vybe_ast::Module,String> {
+    walker::parse_direct_with_source_unit_preparation(source,on_committed)
 }
 
 pub(crate) fn normalize_source_for_parser(source: &str) -> String {
@@ -94,8 +206,54 @@ static VARIABLE_NAMESPACE: vybe_runtime::registry::VariableNamespace =
         global_key: variable_global_key,
     };
 
+fn compiler_optimizations(selected: vybe_runtime::registry::ParseFn) -> vybe_runtime::registry::CompilerOptimizations {
+    if std::ptr::fn_addr_eq(selected, parse as vybe_runtime::registry::ParseFn) {
+        vybe_runtime::registry::CompilerOptimizations {
+            symbol_membership_index: true,
+            user_namespace_cache: true,
+            completion_worker_lowering: true,
+            compact_source_lines: true,
+            array_call_tail_identity: true,
+            interpolation_call_tail_identity: true,
+            ..Default::default()
+        }
+    } else {
+        Default::default()
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn compiler_lookup_accelerators_require_the_selected_optimized_frontend() {
+    let optimized = compiler_optimizations(parse);
+    assert!(optimized.symbol_membership_index && optimized.user_namespace_cache);
+    assert!(optimized.completion_worker_lowering);
+    assert!(optimized.compact_source_lines);
+    assert!(optimized.array_call_tail_identity && optimized.interpolation_call_tail_identity);
+    assert_eq!(compiler_optimizations(parse_with_peg), Default::default());
+}
+
 /// Register this language with the shared plugin registry (dylib entry point).
 pub fn register() {
+    // Preparation is selected only for this parser's explicit grammar bindings.
+    use grameo::program::Program;
+    let preparation_bound = [Rule::kw_include, Rule::kw_include_once, Rule::kw_require, Rule::kw_require_once]
+        .into_iter().all(|selector| native_grammar::Parser.source_unit_binding(
+            Rule::include_expression as usize, Some(selector as usize)).is_some());
+    vybe_compiler::frontend_preparation::register_default(parse,
+        vybe_compiler::frontend_preparation::Capabilities {
+            prepare: preparation_bound.then_some(prepare_source_units_for_compiler),
+            early_hints: false,
+            resolve_path: preparation_bound.then_some(vybe_compiler::frontend_preparation::php_source_path),
+            request_setup_reuse: false,
+            request_code_space: native_grammar::Parser.code_space()==grameo::source_units::CodeSpace::Request,
+            helper_definitions: emitter::dispatch::helper_definitions(),
+            argument_emitters: emitter::argument_emission::ARGUMENT_DEFINITIONS,
+            deferred_class_bodies: Some(normalize_class::normalize_class_deferred),
+        });
+    if preparation_bound {
+        vybe_compiler::statement_codegen::register_prepared_owned(parse,&PHP_PREPARED_STATEMENTS);
+    } else { vybe_compiler::statement_codegen::register(parse,produce_grameo_statements); }
     emitter::dispatch::register_typed_results();
     vybe_runtime::registry::register_language(vybe_runtime::registry::LanguageDef {
         name: "php",
@@ -109,6 +267,7 @@ pub fn register() {
     vybe_runtime::registry::register_hooks(
         "php",
         vybe_runtime::registry::LanguageHooks {
+            compiler_optimizations: Some(compiler_optimizations),
             variable_namespace: Some(&VARIABLE_NAMESPACE),
             function_literal: Some(|chunk, line| {
                 let host = chunk.add_import("php:array", "newClosure");
@@ -152,6 +311,7 @@ impl vybe_runtime::Plugin for Plugin {
         dynamic_symbols::register(fw);
         regex::register(fw);
         string_bytes::register(fw);
+        html_entities::register(fw);
         datetime::register(fw);
         logging::register(fw);
         environment::register(fw);
@@ -376,6 +536,36 @@ mod grammar_prefix_tests {
     }
 
     #[test]
+    #[ignore = "explicit frontend phase benchmark against local WordPress sources"]
+    fn profile_wordpress_frontend_phases() {
+        use std::sync::{Arc, Mutex};
+        use vybe_runtime::debugger::{DebugReport, DebugReportScope};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/webroot/wordpress/wp-includes");
+        for name in ["functions.php", "class-wp-hook.php", "class-wp-theme-json.php",
+                     "formatting.php", "script-loader.php"] {
+            let source = std::fs::read_to_string(root.join(name)).unwrap();
+            // Warm process-wide immutable libraries outside the measured scope.
+            drop(super::parse(&source).unwrap());
+            let report = Arc::new(Mutex::new(DebugReport::default()));
+            let started = std::time::Instant::now();
+            let module = {
+                let _scope = DebugReportScope::enter(Some(report.clone()));
+                super::parse(&source).unwrap()
+            };
+            let elapsed = started.elapsed();
+            eprintln!("frontend_phases file={name} bytes={} total_ms={:.3}",
+                source.len(), elapsed.as_secs_f64() * 1000.0);
+            for (phase, duration) in &report.lock().unwrap().completed {
+                eprintln!("frontend_phase file={name} phase={phase:?} ms={:.3}",
+                    duration.as_secs_f64() * 1000.0);
+            }
+            // Tree teardown is deliberately outside construction timing.
+            drop(module);
+        }
+    }
+
+    #[test]
     #[ignore = "explicit grammar timing benchmark against local WordPress sources"]
     fn profile_wordpress_grammar_parse() {
         use std::time::Instant;
@@ -477,7 +667,7 @@ mod grammar_prefix_tests {
                     rejected += 1;
                     // Never print source text: even a corpus can contain secrets.
                     eprintln!("grammar_corpus_rejected file={} location={:?}",
-                        name.display(), error.location);
+                        name.display(), error.offset);
                 }
             }
         }
@@ -490,3 +680,80 @@ mod grammar_prefix_tests {
         }
     }
 }
+
+fn prepare_source_units_for_compiler(
+    source: &str,
+    caller: &std::path::Path,
+    sink: &mut vybe_compiler::frontend_preparation::PreparationSink<'_>,
+) -> Result<vybe_compiler::frontend_preparation::FrontendPreparation, String> {
+    prepare_source_units_common(source,caller,sink,StatementContextMode::None).map(|(prepared,_)| prepared)
+}
+static PHP_PREPARED_STATEMENTS: vybe_compiler::statement_codegen::PreparedOwnedHooks =
+    vybe_compiler::statement_codegen::PreparedOwnedHooks {
+        prepare: prepare_source_units_with_owned_context,
+        validate: walker::validate_prepared_context,
+    };
+/// Request-owned declaration discovery, extracted from the original parse.
+pub fn prepare_source_units_with_statement_context(source: &str, caller: &std::path::Path,
+    sink: &mut vybe_compiler::frontend_preparation::PreparationSink<'_>)
+    -> Result<(vybe_compiler::frontend_preparation::FrontendPreparation,
+        vybe_compiler::statement_codegen::ProducerContext),String> {
+    let (prepared,context) = prepare_source_units_common(source,caller,sink,StatementContextMode::Replay)?;
+    Ok((prepared,context.ok_or("PHP prepared statement context missing")?))
+}
+enum StatementContextMode { None, Replay, Owned }
+fn prepare_source_units_with_owned_context(source: &str, caller: &std::path::Path,
+    sink: &mut vybe_compiler::frontend_preparation::PreparationSink<'_>)
+    -> Result<(vybe_compiler::frontend_preparation::FrontendPreparation,
+        vybe_compiler::statement_codegen::ProducerContext),String> {
+    let (prepared, context) = prepare_source_units_common(source, caller, sink, StatementContextMode::Owned)?;
+    Ok((prepared, context.ok_or("PHP owned statement context missing")?))
+}
+#[cfg(feature = "service-verification")]
+pub fn verify_owned_statement_preparation(source: &str, caller: &std::path::Path)
+    -> Result<(vybe_ast::Module, usize, bool), String> {
+    let before = walker::facts_capture_count();
+    let (prepared, context) = prepare_source_units_with_owned_context(source, caller, &mut |_| {})?;
+    walker::validate_prepared_context(source, &context)?;
+    let wrong_source_rejected = walker::validate_prepared_context(&format!("{source} "), &context).is_err();
+    let wrong_type: vybe_compiler::statement_codegen::ProducerContext = std::sync::Arc::new(());
+    let checks = wrong_source_rejected && walker::validate_prepared_context(source, &wrong_type).is_err()
+        && walker::uncommitted_owned_context_rejected();
+    Ok((prepared.module, walker::facts_capture_count() - before, checks))
+}
+fn prepare_source_units_common(source: &str, caller: &std::path::Path,
+    sink: &mut vybe_compiler::frontend_preparation::PreparationSink<'_>, context_mode: StatementContextMode)
+    -> Result<(vybe_compiler::frontend_preparation::FrontendPreparation,
+        Option<vybe_compiler::statement_codegen::ProducerContext>),String> {
+    use grameo::source_units::{Missing, Phase, PreparationContext, Repetition, Scope};
+    let mut committed = |requests: Vec<grameo::source_units::Request<String>>| {
+        // The grammar defines load semantics. This adapter only prepares the
+        // supported source-execution policy; it neither evaluates operands nor
+        // publishes include_once state, declarations, or execution permissions.
+        let operands = requests.into_iter().filter(|request| {
+            request.loader == "source"
+                && request.policy.phase == Phase::Execute
+                && request.policy.scope == Scope::Caller
+                && matches!(request.policy.missing, Missing::Warning | Missing::Error)
+                && matches!(request.policy.repetition, Repetition::Always | Repetition::Once)
+                && request.preparation == PreparationContext::Immediate
+        }).map(|request| request.target);
+        sink(vybe_compiler::frontend_preparation::php_operand_hints(operands, caller));
+    };
+    let (module,context) = match context_mode {
+        StatementContextMode::Replay => {
+            let (module,context)=walker::parse_with_statement_context(source,&mut committed)?;
+            (module,Some(context))
+        }
+        StatementContextMode::Owned => {
+            let (module,context)=walker::parse_with_owned_statement_context(source,&mut committed)?;
+            (module,Some(context))
+        }
+        StatementContextMode::None => (parse_with_source_unit_preparation(source,&mut committed)?,None),
+    };
+    Ok((vybe_compiler::frontend_preparation::FrontendPreparation { module, hints: None },context))
+}
+
+
+/// Opt-in completed-capture statement producer; ordinary PEG APIs are unchanged.
+pub use walker::{produce_grameo_statements_prepared, produce_grameo_statements_prepared_with_receipt, produce_grameo_statements, produce_grameo_statements_with_receipt, StatementStreamReceipt};

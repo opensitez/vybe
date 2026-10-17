@@ -10,12 +10,11 @@
 //! need real composition: `simplexml_load_string` (parse → root element)
 //! and the SimpleXML value shape.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -25,7 +24,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -213,7 +212,7 @@ pub fn emit_simplexml_load_string(chunks: &mut Vec<Chunk>, current: usize, argc:
     struct_get_key(chunk, &ClassSlot::internal("nodeName"), line);
     chunk.emit_string_const("parsererror", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
     chunk.emit_if_value(line);
     chunk.emit_bool_const(false, line);
     chunk.emit_else(line);

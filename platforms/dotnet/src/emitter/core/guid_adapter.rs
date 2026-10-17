@@ -485,7 +485,6 @@ pub fn emit_guid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
             let to_str_idx = chunks[current].add_import("ecma:string", "String");
             let chunk = &mut chunks[current];
             let value_slot = reserve_slot(chunk);
-            let text_slot = reserve_slot(chunk);
             chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
             chunk.emit_call(is_array_idx, 1, line);

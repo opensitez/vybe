@@ -27,7 +27,6 @@ uses_normalize_class = true
 uses_common_resolver = true
 # entry_point not needed — walker injects Main.main() call directly
 # Java + on strings concatenates (auto-coercion via toString())
-dynamic_add        = true
 materialize_bool_results = true
 # BigInt needs no flag: the `__java_bigint` builtin below reaches
 # `ecma:bigint`, and the shared compiler derives the capability from it.

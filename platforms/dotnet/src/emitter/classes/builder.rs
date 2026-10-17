@@ -24,11 +24,10 @@
 //! [`push_string_const`] — NEVER `emit_string_const`, which secretly adds a
 //! `wasm:string-constants` import.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 use super::MethodOp;
 use crate::emitter::core::object_fields::field_slot;
@@ -106,7 +105,6 @@ fn compile_body_offset(
             }
             MethodOp::PushThisField(field) => {
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
-                let key = chunk.add_constant(Value::String(Arc::from(field)));
                 class_slots::emit_class_get(
                     chunk,
                     ObjSource::Stack,
@@ -123,7 +121,6 @@ fn compile_body_offset(
                     arity
                 );
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
-                let key = chunk.add_constant(Value::String(Arc::from(field)));
                 class_slots::emit_class_get(
                     chunk,
                     ObjSource::Stack,
@@ -140,7 +137,6 @@ fn compile_body_offset(
                     arity
                 );
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
-                let k1 = chunk.add_constant(Value::String(Arc::from(f1)));
                 class_slots::emit_class_get(
                     chunk,
                     ObjSource::Stack,
@@ -148,7 +144,6 @@ fn compile_body_offset(
                     Dest::Stack,
                     line,
                 );
-                let k2 = chunk.add_constant(Value::String(Arc::from(f2)));
                 class_slots::emit_class_get(
                     chunk,
                     ObjSource::Stack,
@@ -206,7 +201,6 @@ fn compile_body_offset(
                 chunk.emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
             }
             MethodOp::SetField(field) => {
-                let key = chunk.add_constant(Value::String(Arc::from(field)));
                 class_slots::emit_class_set(
                     chunk,
                     ObjSource::Stack,

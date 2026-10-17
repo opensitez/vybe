@@ -949,7 +949,6 @@ pub fn emit_datetime_add_timespan(chunks: &mut Vec<Chunk>, current: usize, line:
     let chunk = &mut chunks[current];
     let span_slot = chunk.alloc_scratch(2);
     let date_slot = span_slot + 1;
-    let total_ms_key = string_key(chunk, "TotalMilliseconds");
     chunk.emit_op_u16(Op::LOCAL_SET, span_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
@@ -1105,15 +1104,6 @@ pub fn emit_datetime_specify_kind(chunks: &mut Vec<Chunk>, current: usize, line:
     struct_set_named_field_drop(chunk, "kind", line);
 }
 
-fn emit_iso_string_from_datetime_obj(
-    chunks: &mut [Chunk],
-    current: usize,
-    obj_slot: u16,
-    line: u32,
-) {
-    emit_datetime_time_from_obj(&mut chunks[current], obj_slot, line);
-    call_import(chunks, current, "ecma:date", "toISOString", 1, line);
-}
 
 /// Stack: `[]` → `[str]` — the field named `field` of the object in
 /// `obj_slot`, as a string.
@@ -1427,13 +1417,6 @@ fn bind_datetime_date_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slo
     );
 }
 
-fn emit_substring_from_slot(chunk: &mut Chunk, str_slot: u16, start: i32, end: i32, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, str_slot, line);
-    push_const(chunk, Value::I32(start), line);
-    push_const(chunk, Value::I32(end), line);
-    let substring = chunk.add_import("wasm:js-string", "substring");
-    chunk.emit_call(substring, 3, line);
-}
 
 fn emit_concat(chunk: &mut Chunk, line: u32) {
     let concat = chunk.add_import("wasm:js-string", "concat");
@@ -1481,7 +1464,6 @@ pub fn emit_datetime_parse_exact(chunks: &mut Vec<Chunk>, current: usize, argc: 
 
 fn emit_timespan_total_ms_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    let key = string_key(chunk, "TotalMilliseconds");
     class_slots::emit_class_get(
         chunk,
         ObjSource::Stack,
@@ -1949,36 +1931,6 @@ pub fn emit_datetimeoffset_get_hash_code(chunks: &mut [Chunk], current: usize, l
     struct_get_named_field(&mut chunks[current], TIME_KEY, line);
 }
 
-fn emit_offset_text_from_slot(chunk: &mut Chunk, offset_ms_slot: u16, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, offset_ms_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::F64_GE, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::String(Arc::from("+")), line);
-    chunk.emit_else(line);
-    push_const(chunk, Value::String(Arc::from("-")), line);
-    chunk.emit_end(line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, offset_ms_slot, line);
-    chunk.emit_op(Op::F64_ABS, line);
-    push_const(
-        chunk,
-        Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR),
-        line,
-    );
-    chunk.emit_op(Op::F64_DIV, line);
-    chunk.emit_op(Op::F64_TRUNC, line);
-    push_const(chunk, Value::I32(10), line);
-    let number_to_string = chunk.add_import("ecma:number", "toString");
-    chunk.emit_call(number_to_string, 2, line);
-    push_const(chunk, Value::I32(2), line);
-    push_const(chunk, Value::String(Arc::from("0")), line);
-    let pad_start = chunk.add_import("ecma:string", "padStart");
-    chunk.emit_call(pad_start, 3, line);
-    emit_concat(chunk, line);
-    push_const(chunk, Value::String(Arc::from(":00")), line);
-    emit_concat(chunk, line);
-}
 
 /// `dto.ToString([format])` — the same interpreter as `DateTime`'s.
 ///

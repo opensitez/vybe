@@ -42,7 +42,7 @@ fn main() {
 fn generate_parser() {
     println!("cargo:rerun-if-changed=src/grammar.pest");
     let source = std::fs::read_to_string("src/grammar.pest").expect("read grammar");
-    let generated = grameo_codegen::generate(&source)
+    let generated = grameo_codegen::generate_with_api(&source, grameo_codegen::ParserApi::CAPTURE_ONLY)
         .unwrap_or_else(|errors| panic!("grammar compilation failed: {errors:?}"));
     let output = std::path::Path::new(&std::env::var_os("OUT_DIR").unwrap()).join("native_parser.rs");
     if std::fs::read_to_string(&output).ok().as_deref() != Some(&generated) {

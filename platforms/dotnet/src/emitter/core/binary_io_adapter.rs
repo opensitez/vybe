@@ -21,14 +21,13 @@
 //! width-specific spelling below. `Write` itself keeps the .NET default for an
 //! unannotated argument: `Int32` for a whole number, `Double` otherwise.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::errors;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
 use vybe_compiler::primitives::strings as shared_strings;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 use super::object_fields::field_slot;
 
@@ -84,7 +83,6 @@ fn store(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
 }
 
 fn throw(chunks: &mut [Chunk], current: usize, class: &str, message: &str, line: u32) {
-    let chunk = &mut chunks[current];
     crate::emitter::core::exceptions::emit_new_typed(
         chunks,
         current,

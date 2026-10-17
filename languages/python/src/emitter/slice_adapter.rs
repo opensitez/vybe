@@ -80,7 +80,7 @@ pub fn emit_slice_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lget(&mut chunks[current], out, line);
 }
 
-pub fn emit_getslice_obj(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_getslice_obj(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc != 2 {
         return;
     }

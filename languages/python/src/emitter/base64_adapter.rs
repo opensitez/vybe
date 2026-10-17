@@ -3,9 +3,8 @@
 //! The module surface is Python-owned, but the Base64 transform itself is the
 //! shared primitive in `crates/vybe_compiler/src/primitives/base64.rs`.
 
-use std::sync::Arc;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 use vybe_compiler::primitives::class_slots::{self, ClassSlot, ObjSource, PlainNames, ValueSource};
 use vybe_compiler::primitives::{base64, collections, errors, loops, string_encoding, strings};
@@ -66,78 +65,12 @@ fn replace_all_stack(
 }
 
 fn filter_base64_lenient(chunks: &mut [Chunk], current: usize, text_slot: u16, line: u32) {
-    let out = chunks[current].alloc_scratch(1);
-    let i = chunks[current].alloc_scratch(1);
-    let len = chunks[current].alloc_scratch(1);
-    let code = chunks[current].alloc_scratch(1);
-    let ok = chunks[current].alloc_scratch(1);
-
-    chunks[current].emit_string_const("", line);
-    lset(&mut chunks[current], out, line);
-    chunks[current].emit_i32_const(0, line);
-    lset(&mut chunks[current], i, line);
     lget(&mut chunks[current], text_slot, line);
-    call_import(chunks, current, "wasm:js-string", "length", 1, line);
-    lset(&mut chunks[current], len, line);
-
-    let loop_state = loops::emit_loop_start(chunks, current, line);
-    lget(&mut chunks[current], i, line);
-    lget(&mut chunks[current], len, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond(chunks, current, line);
-
-    lget(&mut chunks[current], text_slot, line);
-    lget(&mut chunks[current], i, line);
-    call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
-    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
-    lset(&mut chunks[current], code, line);
-
-    chunks[current].emit_i32_const(0, line);
-    lset(&mut chunks[current], ok, line);
-    for (lo, hi) in [(65, 90), (97, 122), (48, 57)] {
-        lget(&mut chunks[current], code, line);
-        chunks[current].emit_i32_const(lo, line);
-        chunks[current].emit_op(Op::I32_GE_S, line);
-        lget(&mut chunks[current], code, line);
-        chunks[current].emit_i32_const(hi, line);
-        chunks[current].emit_op(Op::I32_LE_S, line);
-        chunks[current].emit_op(Op::I32_AND, line);
-        chunks[current].emit_if(line);
-        chunks[current].emit_i32_const(1, line);
-        lset(&mut chunks[current], ok, line);
-        chunks[current].emit_end(line);
-    }
-    for codepoint in [43, 47, 61] {
-        lget(&mut chunks[current], code, line);
-        chunks[current].emit_i32_const(codepoint, line);
-        chunks[current].emit_op(Op::I32_EQ, line);
-        chunks[current].emit_if(line);
-        chunks[current].emit_i32_const(1, line);
-        lset(&mut chunks[current], ok, line);
-        chunks[current].emit_end(line);
-    }
-
-    lget(&mut chunks[current], ok, line);
-    chunks[current].emit_if(line);
-    lget(&mut chunks[current], out, line);
-    lget(&mut chunks[current], code, line);
-    call_import(chunks, current, "wasm:js-string", "fromCharCode", 1, line);
-    strings::emit_concat(&mut chunks[current], 2, line);
-    lset(&mut chunks[current], out, line);
-    chunks[current].emit_end(line);
-
-    lget(&mut chunks[current], i, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    lset(&mut chunks[current], i, line);
-    loops::emit_loop_end(chunks, current, loop_state, line);
-
-    lget(&mut chunks[current], out, line);
+    base64::emit_filter_lenient(chunks, current, line);
 }
 
 fn ascii_string_to_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
-    base64::emit_binary_string_to_byte_array(chunks, current, line);
-    call_import(chunks, current, "ecma:uint8array", "new", 1, line);
+    base64::emit_binary_string_to_uint8_array(chunks, current, line);
 }
 
 fn utf8_string_to_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -187,7 +120,7 @@ fn ascii_string_to_bytes_with_errors(
     lget(&mut chunks[current], data, line);
     lget(&mut chunks[current], i, line);
     call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
-    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+
     lset(&mut chunks[current], code, line);
 
     lget(&mut chunks[current], code, line);
@@ -277,7 +210,7 @@ fn ascii_bytes_to_text_with_errors(
     lget(&mut chunks[current], text, line);
     lget(&mut chunks[current], i, line);
     call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
-    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+
     lset(&mut chunks[current], code, line);
 
     lget(&mut chunks[current], code, line);
@@ -361,11 +294,11 @@ fn normalize_decode_padding(chunks: &mut [Chunk], current: usize, text: u16, lin
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_SUB, line);
     call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
-    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+
     chunks[current].emit_i32_const(61, line);
     chunks[current].emit_op(Op::I32_EQ, line);
     chunks[current].emit_op(Op::I32_AND, line);
-    loops::emit_loop_cond(chunks, current, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
     lget(&mut chunks[current], text, line);
     chunks[current].emit_i32_const(0, line);
     lget(&mut chunks[current], len, line);
@@ -381,8 +314,8 @@ fn normalize_decode_padding(chunks: &mut [Chunk], current: usize, text: u16, lin
     chunks[current].emit_i32_const(4, line);
     chunks[current].emit_op(Op::I32_REM_S, line);
     chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_op(Op::I32_NE, line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
     lget(&mut chunks[current], text, line);
     chunks[current].emit_string_const("=", line);
     strings::emit_concat(&mut chunks[current], 2, line);
@@ -448,7 +381,7 @@ fn slot_get_byte_or_zero(
     chunks[current].emit_op(Op::I32_ADD, line);
     lget(&mut chunks[current], len, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     lget(&mut chunks[current], bytes, line);
     lget(&mut chunks[current], i, line);
     chunks[current].emit_i32_const(offset, line);
@@ -472,7 +405,7 @@ fn base32_value_to_slot(
     lget(&mut chunks[current], text, line);
     lget(&mut chunks[current], pos, line);
     call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
-    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+
     let code = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], code, line);
 
@@ -483,7 +416,7 @@ fn base32_value_to_slot(
     chunks[current].emit_i32_const(90, line);
     chunks[current].emit_op(Op::I32_LE_S, line);
     chunks[current].emit_op(Op::I32_AND, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     lget(&mut chunks[current], code, line);
     chunks[current].emit_i32_const(65, line);
     chunks[current].emit_op(Op::I32_SUB, line);
@@ -496,7 +429,7 @@ fn base32_value_to_slot(
     chunks[current].emit_i32_const(55, line);
     chunks[current].emit_op(Op::I32_LE_S, line);
     chunks[current].emit_op(Op::I32_AND, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     lget(&mut chunks[current], code, line);
     chunks[current].emit_i32_const(24, line);
     chunks[current].emit_op(Op::I32_SUB, line);
@@ -505,14 +438,14 @@ fn base32_value_to_slot(
     lget(&mut chunks[current], code, line);
     chunks[current].emit_i32_const(48, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(14, line);
     chunks[current].emit_else(line);
 
     lget(&mut chunks[current], code, line);
     chunks[current].emit_i32_const(49, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(8, line);
     chunks[current].emit_else(line);
 
@@ -553,10 +486,6 @@ fn decode_common(chunks: &mut [Chunk], current: usize, argc: u8, urlsafe: bool, 
         replace_all_stack(chunks, current, "-", "+", line);
         replace_all_stack(chunks, current, "_", "/", line);
     }
-    replace_all_stack(chunks, current, "\n", "", line);
-    replace_all_stack(chunks, current, "\r", "", line);
-    replace_all_stack(chunks, current, "\t", "", line);
-    replace_all_stack(chunks, current, " ", "", line);
     let text = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], text, line);
     filter_base64_lenient(chunks, current, text, line);
@@ -565,7 +494,7 @@ fn decode_common(chunks: &mut [Chunk], current: usize, argc: u8, urlsafe: bool, 
     strings::emit_length(&mut chunks[current], line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("", line);
     ascii_string_to_bytes(chunks, current, line);
     chunks[current].emit_else(line);
@@ -573,8 +502,8 @@ fn decode_common(chunks: &mut [Chunk], current: usize, argc: u8, urlsafe: bool, 
     lget(&mut chunks[current], text, line);
     // CPython's default decoder ignores ASCII whitespace; `atob` does too in
     // web-compatible implementations, and the shared primitive keeps that core.
-    base64::emit_decode_binary_string(chunks, current, line);
-    ascii_string_to_bytes(chunks, current, line);
+    base64::emit_decode_byte_array(chunks, current, line);
+    call_import(chunks, current, "ecma:uint8array", "new", 1, line);
     chunks[current].emit_end(line);
 }
 
@@ -656,8 +585,8 @@ pub fn emit_b32encode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let state = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i, line);
     lget(&mut chunks[current], len, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], len, line);
     lget(&mut chunks[current], i, line);
@@ -741,25 +670,25 @@ pub fn emit_b32encode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lget(&mut chunks[current], rem, line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(2, line);
     chunks[current].emit_else(line);
     lget(&mut chunks[current], rem, line);
     chunks[current].emit_i32_const(2, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(4, line);
     chunks[current].emit_else(line);
     lget(&mut chunks[current], rem, line);
     chunks[current].emit_i32_const(3, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(5, line);
     chunks[current].emit_else(line);
     lget(&mut chunks[current], rem, line);
     chunks[current].emit_i32_const(4, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(7, line);
     chunks[current].emit_else(line);
     chunks[current].emit_i32_const(8, line);
@@ -784,8 +713,8 @@ pub fn emit_b32encode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let pad_loop = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], j, line);
     chunks[current].emit_i32_const(8, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
     push_base32_pad(chunks, current, out, line);
     lget(&mut chunks[current], j, line);
     chunks[current].emit_i32_const(1, line);
@@ -824,8 +753,8 @@ pub fn emit_b32decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let state = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i, line);
     lget(&mut chunks[current], len, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     let pos = chunks[current].alloc_scratch(1);
     for offset in 0..8 {
@@ -919,14 +848,17 @@ pub fn emit_b32decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lget(&mut chunks[current], scan, line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_if_i32(line);
     lget(&mut chunks[current], text, line);
     lget(&mut chunks[current], scan, line);
     call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
-    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+
     chunks[current].emit_i32_const(61, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_op(Op::I32_AND, line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
     lget(&mut chunks[current], pad, line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_ADD, line);
@@ -941,25 +873,25 @@ pub fn emit_b32decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lget(&mut chunks[current], pad, line);
     chunks[current].emit_i32_const(6, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(4, line);
     chunks[current].emit_else(line);
     lget(&mut chunks[current], pad, line);
     chunks[current].emit_i32_const(4, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(3, line);
     chunks[current].emit_else(line);
     lget(&mut chunks[current], pad, line);
     chunks[current].emit_i32_const(3, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(2, line);
     chunks[current].emit_else(line);
     lget(&mut chunks[current], pad, line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_EQ, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_i32(line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_i32_const(0, line);
@@ -1029,8 +961,8 @@ pub fn emit_b85decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let state = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i, line);
     lget(&mut chunks[current], len, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], data, line);
     lget(&mut chunks[current], i, line);
@@ -1081,8 +1013,8 @@ pub fn emit_crc32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let outer = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i, line);
     lget(&mut chunks[current], len, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], crc, line);
     lget(&mut chunks[current], bytes, line);
@@ -1097,8 +1029,8 @@ pub fn emit_crc32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let inner = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], bit, line);
     chunks[current].emit_i32_const(8, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], crc, line);
     chunks[current].emit_i32_const(1, line);
@@ -1231,29 +1163,29 @@ pub fn emit_codecs_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
     lget(&mut chunks[current], codec_text, line);
     stack_string_eq(chunks, current, "hex", line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     push_text_from_bytes_like(chunks, current, data, line);
     call_import(chunks, current, "ecma:uint8array", "fromHex", 1, line);
     chunks[current].emit_else(line);
 
     lget(&mut chunks[current], codec_text, line);
     stack_string_eq(chunks, current, "base64", line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     push_text_from_bytes_like(chunks, current, data, line);
-    base64::emit_decode_binary_string(chunks, current, line);
-    ascii_string_to_bytes(chunks, current, line);
+    base64::emit_decode_byte_array(chunks, current, line);
+    call_import(chunks, current, "ecma:uint8array", "new", 1, line);
     chunks[current].emit_else(line);
 
     lget(&mut chunks[current], codec_text, line);
     stack_string_eq(chunks, current, "rot_13", line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     lget(&mut chunks[current], data, line);
     string_encoding::emit_str_rot13(chunks, current, 1, line);
     chunks[current].emit_else(line);
 
     lget(&mut chunks[current], codec_text, line);
     stack_string_eq(chunks, current, "ascii", line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     let decode_errors = if argc > 2 {
         errors
     } else {
@@ -1393,8 +1325,8 @@ fn emit_codec_iter(chunks: &mut [Chunk], current: usize, argc: u8, encode: bool,
     let state = loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i, line);
     lget(&mut chunks[current], len, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], src, line);
     lget(&mut chunks[current], i, line);

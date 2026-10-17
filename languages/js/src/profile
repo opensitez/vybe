@@ -25,7 +25,6 @@ supports_dynamic_import = true        # ECMAScript import()
 ecma_strict_mode = true               # "use strict"
 ecma_lexical_declarations = true      # const/let/var lexical rules
 has_ecma_globals = true               # Object/Array/Math/JSON globals
-ecma_operator_coercion = true         # ToPrimitive/ToNumber operator coercion
 has_arguments_object = true           # arguments object (ECMA 10.4.4)
 relaxed_call_arity = true             # missing->undefined, extra ignored
 ecma_new_dispatch = true               # new = [[Construct]] model
@@ -52,11 +51,6 @@ case_sensitive = true
 string_indexing = "zero_based"
 # JS-specific: `var` declarations are hoisted to function scope
 # JS-specific: `+` is overloaded for string concatenation (dyn_add handles it)
-dynamic_add = true
-# JS values can be Number or BigInt at runtime; -,*,/,% dispatch
-# polymorphically (BigInt → ecma:bigint, else the f64 number path) when
-# operand types aren't statically known.
-dynamic_numeric_dispatch = true
 # JS-specific: support `require()` for CommonJS module loading
 commonjs_require = true
 # JS switch statements fall through unless there's an explicit break

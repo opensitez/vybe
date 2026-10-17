@@ -7,13 +7,11 @@
 //! (`PDOStatement` vs `mysqli_stmt`) is stamped from the receiver connection's
 //! `__type` — the only real difference between the two.
 
-use std::sync::Arc;
-
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -39,13 +37,8 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
-}
-
-fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
-    let slot = class_slots::resolve(key, &PlainNames);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
 fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {

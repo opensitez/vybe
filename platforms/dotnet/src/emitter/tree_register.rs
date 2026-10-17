@@ -1573,13 +1573,23 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
 /// link, so they share `namespaces::ancestry_of` / `namespaces::inherits`
 /// instead of each re-writing the walk with its own cycle guard. There were
 /// four copies of it in this file.
+fn descriptor_class(class_name: &str) -> Option<&'static vybe_compiler::component_classes::ClassType> {
+    // The surface owns an immutable process-lifetime descriptor. Preserve the
+    // old scan's first row, including duplicate leaves across interfaces.
+    static FIRST_CLASSES: OnceLock<BTreeMap<String, usize>> = OnceLock::new();
+    let descriptor = crate::emitter::surface().component_descriptor();
+    let first = FIRST_CLASSES.get_or_init(|| {
+        let mut index = BTreeMap::new();
+        for (position, class) in descriptor.classes.iter().enumerate() {
+            index.entry(class.name.to_ascii_lowercase()).or_insert(position);
+        }
+        index
+    });
+    first.get(&class_name.to_ascii_lowercase()).map(|&position| &descriptor.classes[position])
+}
+
 fn descriptor_parent(class_name: &str) -> Option<String> {
-    crate::emitter::surface()
-        .component_descriptor()
-        .classes
-        .iter()
-        .find(|c| c.name.eq_ignore_ascii_case(class_name))
-        .and_then(|c| c.parent.clone())
+    descriptor_class(class_name).and_then(|class| class.parent.clone())
 }
 
 /// The identity chain for a control, self first — `["Button", "ButtonBase",
@@ -1890,14 +1900,9 @@ fn declared_up_the_chain<T, F>(class_name: &str, select: F) -> Vec<T>
 where
     F: Fn(&vybe_compiler::component_classes::ClassType) -> Vec<T>,
 {
-    let descriptor = crate::emitter::surface().component_descriptor();
     let mut out = Vec::new();
     for name in namespaces::ancestry_of(class_name, descriptor_parent) {
-        if let Some(class) = descriptor
-            .classes
-            .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(&name))
-        {
+        if let Some(class) = descriptor_class(&name) {
             out.extend(select(class));
         }
     }

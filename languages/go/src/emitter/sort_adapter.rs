@@ -477,3 +477,78 @@ fn lget(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 fn lset(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
 }
+
+// Recipes are admitted only through the compiler's exact-parser/producer
+// unit Owner. Ordinary dispatch above remains the unchanged inline fallback.
+use vybe_compiler::primitives::helper_templates::{Contract, Definition};
+const SEARCH_BODY: &str = "\0go.owned.sort.search.v1";
+const ORDERED_BODY: &str = "\0go.owned.sort.ordered.v1";
+
+fn sort_context_key(chunks: &[Chunk], _: u32) -> Vec<u8> {
+    vec![match class_context::module_receiver_abi(chunks) {
+        vybe_runtime::chunk::ReceiverAbi::Ambient => 0,
+        vybe_runtime::chunk::ReceiverAbi::Parameter => 1,
+    }]
+}
+fn unused_sort_factory() -> Chunk { unreachable!("contextual recipe only") }
+fn unused_sort_caller(_: &mut Chunk, _: usize, _: u32) { unreachable!("contextual recipe only") }
+fn build_sort_body(chunks: &mut Vec<Chunk>, line: u32, ordered: bool) -> usize {
+    let index = chunks.len();
+    let mut body = Chunk::new(if ordered { ORDERED_BODY } else { SEARCH_BODY });
+    body.arity = 2;
+    body.param_count = 2;
+    body.local_count = 2;
+    body.takes_receiver = false;
+    body.direct_entry_has_captures = Some(false);
+    body.module_receiver_abi = class_context::module_receiver_abi(chunks);
+    // The compiler publishes unit own-field/prototype facts to all appended
+    // chunks at finalization, as for the original inline frame.
+    body.emit_op_u16(Op::LOCAL_GET, 0, line);
+    body.emit_op_u16(Op::LOCAL_GET, 1, line);
+    chunks.push(body);
+    if ordered { emit_sort_search_ordered(chunks, index, line); }
+    else { emit_sort_search(chunks, index, line); }
+    chunks[index].emit_op(Op::RETURN, line);
+    index
+}
+fn build_search_body(c: &mut Vec<Chunk>, l: u32) -> usize { build_sort_body(c,l,false) }
+fn build_ordered_body(c: &mut Vec<Chunk>, l: u32) -> usize { build_sort_body(c,l,true) }
+fn invoke_sort_body(chunks: &mut Vec<Chunk>, current: usize, target: usize, line: u32, ordered: bool) {
+    let abi = class_context::module_receiver_abi(chunks);
+    let valid = chunks.get(target).is_some_and(|c|
+        c.name == if ordered { ORDERED_BODY } else { SEARCH_BODY }
+        && c.arity == 2 && c.param_count == 2 && c.result_arity == 1
+        && c.capture_count == 0 && c.direct_entry_has_captures == Some(false)
+        && !c.takes_receiver && !c.is_method && !c.is_async && !c.is_generator
+        && c.module_receiver_abi == abi && c.func_sig.is_none()
+        && c.native_func_type.is_none() && c.local_count >= 2);
+    if !valid || current == target {
+        if ordered { emit_sort_search_ordered(chunks,current,line); }
+        else { emit_sort_search(chunks,current,line); }
+        return;
+    }
+    let (caller,callee) = if current < target {
+        let (a,b)=chunks.split_at_mut(target); (&mut a[current],&b[0])
+    } else {
+        let (a,b)=chunks.split_at_mut(current); (&mut b[0],&a[target])
+    };
+    caller.emit_direct_defined_call(target as u32,callee,false,line)
+        .expect("owned plain sort body has no captures or continuation");
+}
+fn invoke_search_body(c:&mut Vec<Chunk>,i:usize,t:usize,l:u32){invoke_sort_body(c,i,t,l,false)}
+fn invoke_ordered_body(c:&mut Vec<Chunk>,i:usize,t:usize,l:u32){invoke_sort_body(c,i,t,l,true)}
+
+pub static HELPER_DEFINITIONS: &[Definition] = &[
+    Definition {
+        contract: Contract::ContextualAppendOnlyUnit {key:sort_context_key,build:build_search_body,invoke:invoke_search_body},
+        operation:"go.sort_search",namespace:"go",version:1,
+        parser:crate::parse,producer:super::dispatch::dispatch,arity:2,
+        helper_name:SEARCH_BODY,factory:unused_sort_factory,caller:unused_sort_caller,
+    },
+    Definition {
+        contract: Contract::ContextualAppendOnlyUnit {key:sort_context_key,build:build_ordered_body,invoke:invoke_ordered_body},
+        operation:"go.sort_search_ordered",namespace:"go",version:1,
+        parser:crate::parse,producer:super::dispatch::dispatch,arity:2,
+        helper_name:ORDERED_BODY,factory:unused_sort_factory,caller:unused_sort_caller,
+    },
+];

@@ -14,10 +14,8 @@
 //!
 //! Routed via `common:python.hash_*` from the profile; there is no prelude.
 
-use std::sync::Arc;
-
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,

@@ -9,8 +9,8 @@
 //! Mirrors the inline-emit shape of the other `languages/php/emitter`
 //! adapters: writes WASM opcodes straight into the chunk, composing only
 //! core ops + `vybe_compiler::primitives::ops` dynamic helpers. The shared compiler
-//! routes here via the `string_aware_relational` profile flag — no
-//! `profile.name == "php"` branch.
+//! routes here through declared comparison slots and inherited directives,
+//! without selecting semantics by language identity.
 
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
@@ -36,7 +36,6 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         }
     }
 }
-#[allow(dead_code)]
 fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
     push_const(chunk, Value::String(Arc::from(v)), line);
 }
@@ -63,117 +62,93 @@ fn emit_numeric_fallback(
 }
 
 pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate: bool, line: u32) {
-    let parse_float = chunks[current].add_import("ecma:number", "parseFloat");
-    let str_eq = chunks[current].add_import("wasm:js-string", "equals");
-    let test_num = chunks[current].add_import("wasm:js-number", "test");
-    let to_f64 = chunks[current].add_import("wasm:js-number", "toF64");
-    let chunk = &mut chunks[current];
-    let b_slot = alloc_local(chunk);
-    let a_slot = alloc_local(chunk);
-    let a_num_slot = alloc_local(chunk);
-    let b_num_slot = alloc_local(chunk);
+    emit_php_loose_eq_condition(chunks, current, _argc, negate, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
 
-    lset(chunk, b_slot, line);
-    lset(chunk, a_slot, line);
+/// The comparison recipe is identical in value and condition contexts. Only
+/// value consumers require a boxed Boolean; condition consumers retain i32.
+pub fn emit_php_loose_eq_condition(chunks: &mut [Chunk], current: usize, _argc: u8, negate: bool, line: u32) {
+    let c = &mut chunks[current];
+    let a = alloc_local(c);
+    let b = alloc_local(c);
+    let a_number = alloc_local(c);
+    lset(c, b, line); lset(c, a, line);
+    let number = c.add_import("wasm:js-number", "test");
+    let extract = c.add_import("wasm:js-number", "toF64");
+    let string = c.add_import("wasm:js-string", "test");
+    let equal = c.add_import("wasm:js-string", "equals");
+    let boolean = c.add_import("wasm:js-boolean", "test");
+    let cast = c.add_import("wasm:js-boolean", "cast");
+    let bool_equal = c.add_import("php:value", "looseBoolEq");
+    let numeric = c.add_import("php:value", "isNumeric");
+    let to_number = c.add_import("ecma:number", "parseFloat");
+    let parse = c.add_import("ecma:number", "parseFloat");
 
-    // PHP compares both operands as booleans whenever either one is a bool.
-    // The dynamic equality fallback otherwise treats false and numeric zero
-    // as different values, which breaks common `hasChildren() == 0` checks.
-    let test_bool = chunk.add_import("wasm:js-boolean", "test");
-    lget(chunk, a_slot, line);
-    chunk.emit_call(test_bool, 1, line);
-    lget(chunk, b_slot, line);
-    chunk.emit_call(test_bool, 1, line);
-    chunk.emit_op(Op::I32_OR, line);
-    chunk.emit_if_i32(line);
-    lget(chunk, a_slot, line);
-    lget(chunk, b_slot, line);
-    let bool_eq = chunk.add_import("php:value", "looseBoolEq");
-    chunk.emit_call(bool_eq, 2, line);
-    let bool_cast = chunk.add_import("wasm:js-boolean", "cast");
-    chunk.emit_call(bool_cast, 1, line);
-    chunk.emit_else(line);
+    // A standard (block (result i32)) joins the fast paths and one shared
+    // observable fallback. Branches carry their comparison result to it.
+    c.emit_block_i32(line);
+    lget(c, a, line); c.emit_call(number, 1, line);
+    c.emit_op_u16(Op::LOCAL_TEE, a_number, line);
+    c.emit_if(line);
+    lget(c, b, line); c.emit_call(number, 1, line);
+    c.emit_if(line);
+    lget(c, a, line); c.emit_call(extract, 1, line);
+    lget(c, b, line); c.emit_call(extract, 1, line);
+    c.emit_op(Op::F64_EQ, line); c.emit_br(2, line);
+    c.emit_end(line); c.emit_end(line);
 
-    lget(chunk, a_slot, line);
-    let test_str_a = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_call(test_str_a, 1, line);
-    chunk.emit_if_i32(line);
+    // Boolean precedence remains ahead of all mixed string comparisons.
+    lget(c, a, line); c.emit_call(boolean, 1, line);
+    lget(c, b, line); c.emit_call(boolean, 1, line);
+    c.emit_op(Op::I32_OR, line); c.emit_if(line);
+    lget(c, a, line); lget(c, b, line);
+    c.emit_call(bool_equal, 2, line); c.emit_call(cast, 1, line);
+    c.emit_br(1, line);
+    c.emit_else(line);
+    lget(c, a, line); c.emit_call(string, 1, line); c.emit_if(line);
+    lget(c, b, line); c.emit_call(string, 1, line); c.emit_if(line);
+    // Identical strings bypass parsing. Differing strings compare as
+    // numbers only when both satisfy PHP's whole-string numeric grammar.
+    lget(c, a, line); lget(c, b, line); c.emit_call(equal, 2, line);
+    c.emit_if_i32(line); c.emit_i32_const(1, line);
+    c.emit_else(line);
+    lget(c, a, line); c.emit_call(numeric, 1, line); c.emit_call(cast, 1, line);
+    c.emit_if_i32(line);
+    lget(c, b, line); c.emit_call(numeric, 1, line); c.emit_call(cast, 1, line);
+    c.emit_if_i32(line);
+    lget(c, a, line); c.emit_call(to_number, 1, line);
+    lget(c, b, line); c.emit_call(to_number, 1, line);
+    // Distinct numeric strings overflowing to the same infinity must fall
+    // back to string equality, already known false above. Subtraction makes
+    // that pair NaN, while equal finite values still produce zero. This uses
+    // only standard Wasm arithmetic, with no extra host call or scratch slot.
+    c.emit_op(Op::F64_SUB, line);
+    c.emit_f64_const(0.0, line);
+    c.emit_op(Op::F64_EQ, line);
+    c.emit_else(line); c.emit_i32_const(0, line); c.emit_end(line);
+    c.emit_else(line); c.emit_i32_const(0, line); c.emit_end(line);
+    c.emit_end(line); c.emit_br(3, line);
+    c.emit_else(line);
+    lget(c, b, line); c.emit_call(number, 1, line); c.emit_if(line);
+    lget(c, a, line); c.emit_call(parse, 1, line);
+    lget(c, b, line); c.emit_call(extract, 1, line);
+    c.emit_op(Op::F64_EQ, line); c.emit_br(4, line);
+    c.emit_end(line); c.emit_end(line);
+    c.emit_else(line);
+    lget(c, b, line); c.emit_call(string, 1, line); c.emit_if(line);
+    // Reuse the pure Number classification instead of another host test.
+    lget(c, a_number, line); c.emit_if(line);
+    lget(c, a, line); c.emit_call(extract, 1, line);
+    lget(c, b, line); c.emit_call(parse, 1, line);
+    c.emit_op(Op::F64_EQ, line); c.emit_br(4, line);
+    c.emit_end(line); c.emit_end(line);
+    c.emit_end(line); c.emit_end(line);
 
-    lget(chunk, b_slot, line);
-    let test_str_b = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_call(test_str_b, 1, line);
-    chunk.emit_if_i32(line);
-
-    lget(chunk, a_slot, line);
-    chunk.emit_call(parse_float, 1, line);
-    lset(chunk, a_num_slot, line);
-    lget(chunk, b_slot, line);
-    chunk.emit_call(parse_float, 1, line);
-    lset(chunk, b_num_slot, line);
-
-    lget(chunk, a_num_slot, line);
-    lget(chunk, a_num_slot, line);
-    chunk.emit_op(Op::F64_EQ, line);
-    lget(chunk, b_num_slot, line);
-    lget(chunk, b_num_slot, line);
-    chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if_i32(line);
-    lget(chunk, a_num_slot, line);
-    lget(chunk, b_num_slot, line);
-    chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_else(line);
-    lget(chunk, a_slot, line);
-    lget(chunk, b_slot, line);
-    chunk.emit_call(str_eq, 2, line);
-    chunk.emit_end(line);
-
-    chunk.emit_else(line);
-    lget(chunk, b_slot, line);
-    chunk.emit_call(test_num, 1, line);
-    chunk.emit_if_i32(line);
-    lget(chunk, a_slot, line);
-    chunk.emit_call(parse_float, 1, line);
-    lget(chunk, b_slot, line);
-    chunk.emit_call(to_f64, 1, line);
-    chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_else(line);
-    lget(chunk, a_slot, line);
-    lget(chunk, b_slot, line);
-    emit_dyn_eq(chunk, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-
-    chunk.emit_else(line);
-    lget(chunk, b_slot, line);
-    chunk.emit_call(test_str_b, 1, line);
-    chunk.emit_if_i32(line);
-    lget(chunk, a_slot, line);
-    chunk.emit_call(test_num, 1, line);
-    chunk.emit_if_i32(line);
-    lget(chunk, a_slot, line);
-    chunk.emit_call(to_f64, 1, line);
-    lget(chunk, b_slot, line);
-    chunk.emit_call(parse_float, 1, line);
-    chunk.emit_op(Op::F64_EQ, line);
-    chunk.emit_else(line);
-    lget(chunk, a_slot, line);
-    lget(chunk, b_slot, line);
-    emit_dyn_eq(chunk, line);
-    chunk.emit_end(line);
-    chunk.emit_else(line);
-    lget(chunk, a_slot, line);
-    lget(chunk, b_slot, line);
-    emit_dyn_eq(chunk, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-
-    chunk.emit_end(line);
-
-    if negate {
-        chunk.emit_op(Op::I32_EQZ, line);
-    }
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+    // Every remaining pair used this same observable fallback before.
+    lget(c, a, line); lget(c, b, line); emit_dyn_eq(c, line);
+    c.emit_end(line); // i32 result block
+    if negate { c.emit_op(Op::I32_EQZ, line); }
 }
 
 /// Consume the top two stack values (`[a, b]`) and push `a <op> b` using
@@ -414,16 +389,16 @@ fn maybe_unbox_datetime(chunk: &mut Chunk, slot: u16, line: u32) {
     let obj_dt_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_dt_slot, line);
-    // not null
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    // AND not number
+    // Number testing is pure. Keep the original receiver scratch write,
+    // then skip the remaining pure predicates for a known Number.
     chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
     let test_num_dt = chunk.add_import("wasm:js-number", "test");
     chunk.emit_call(test_num_dt, 1, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
     // AND not string
     chunk.emit_op_u16(Op::LOCAL_GET, obj_dt_slot, line);
     let test_str_dt = chunk.add_import("wasm:js-string", "test");
@@ -451,4 +426,75 @@ fn maybe_unbox_datetime(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
+    chunk.emit_end(line); // non-Number
+}
+
+/// Specialize only a proven nonnumeric immutable RHS string literal.
+/// Return false without emitting for every unsupported literal.
+pub fn emit_php_loose_eq_string_literal(
+    chunks: &mut [Chunk], current: usize, negate: bool, line: u32, literal: &str,
+) -> bool {
+    if !literal.as_bytes().first().is_some_and(|b|
+        b.is_ascii_alphabetic() && b.to_ascii_uppercase() != b'I') {
+        return false;
+    }
+    let c = &mut chunks[current];
+    let right = c.alloc_scratch(1);
+    let left = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, right, line);
+    // Retain the evaluated value for its first pure type test while saving
+    // the same operand for every subsequent branch and observable fallback.
+    c.emit_op_u16(Op::LOCAL_TEE, left, line);
+    let bool_test = c.add_import("wasm:js-boolean", "test");
+    let bool_cast = c.add_import("wasm:js-boolean", "cast");
+    let string_test = c.add_import("wasm:js-string", "test");
+    let string_equal = c.add_import("wasm:js-string", "equals");
+    let number_test = c.add_import("wasm:js-number", "test");
+    c.emit_call(bool_test, 1, line);
+    c.emit_if_i32(line);
+    // Every eligible literal is nonempty and differs from "0": PHP casts it
+    // to true, so comparison with a Boolean is that Boolean itself.
+    c.emit_op_u16(Op::LOCAL_GET, left, line);
+    c.emit_call(bool_cast, 1, line);
+    c.emit_else(line);
+    c.emit_op_u16(Op::LOCAL_GET, left, line);
+    c.emit_call(string_test, 1, line);
+    c.emit_if_i32(line);
+    // The literal's numeric prefix is NaN. The original both-string numeric
+    // probe therefore always chooses its string equality arm.
+    c.emit_op_u16(Op::LOCAL_GET, left, line);
+    c.emit_op_u16(Op::LOCAL_GET, right, line);
+    c.emit_call(string_equal, 2, line);
+    c.emit_else(line);
+    c.emit_op_u16(Op::LOCAL_GET, left, line);
+    c.emit_call(number_test, 1, line);
+    c.emit_if_i32(line);
+    c.emit_i32_const(0, line);
+    c.emit_else(line);
+    // Preserve mutable equality aliases and observable object/Ticks reads.
+    c.emit_op_u16(Op::LOCAL_GET, left, line);
+    c.emit_op_u16(Op::LOCAL_GET, right, line);
+    emit_dyn_eq(c, line);
+    c.emit_end(line);
+    c.emit_end(line);
+    c.emit_end(line);
+    if negate { c.emit_op(Op::I32_EQZ, line); }
+    vybe_compiler::primitives::ops::emit_i32_to_bool(c, line);
+    true
+}
+
+// Both operands are already evaluated; RHS was physically emitted as null.
+// PHP eq/ne directives own this adapter. This is not a general null policy.
+pub fn emit_php_loose_eq_null_literal(chunks:&mut [Chunk],current:usize,negate:bool,line:u32) {
+ let c=&mut chunks[current];let right=c.alloc_scratch(1);let left=c.alloc_scratch(1);
+ c.emit_op_u16(Op::LOCAL_SET,right,line);c.emit_op_u16(Op::LOCAL_SET,left,line);
+ let test=c.add_import("wasm:js-boolean","test");let cast=c.add_import("wasm:js-boolean","cast");
+ c.emit_op_u16(Op::LOCAL_GET,left,line);c.emit_call(test,1,line);c.emit_if_i32(line);
+ // PHP converts null to false for the original Boolean equality arm.
+ c.emit_op_u16(Op::LOCAL_GET,left,line);c.emit_call(cast,1,line);c.emit_op(Op::I32_EQZ,line);
+ c.emit_else(line);
+ // All remaining type pairs used the same original dynamic fallback. Keep
+ // writable aliases and the complete object/Ticks observation recipe.
+ c.emit_op_u16(Op::LOCAL_GET,left,line);c.emit_op_u16(Op::LOCAL_GET,right,line);vybe_compiler::primitives::ops::emit_dyn_eq(c,line);
+ c.emit_end(line);if negate {c.emit_op(Op::I32_EQZ,line);}vybe_compiler::primitives::ops::emit_i32_to_bool(c,line);
 }

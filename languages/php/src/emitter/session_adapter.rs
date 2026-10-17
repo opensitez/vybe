@@ -51,7 +51,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -473,7 +473,7 @@ pub fn emit_php_session_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], len_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], entries_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -499,7 +499,7 @@ pub fn emit_php_session_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8
     lget(&mut chunks[current], key_slot, line);
     push_str(&mut chunks[current], "|", line);
     lget(&mut chunks[current], blob_slot, line);
-    vybe_compiler::primitives::strings::emit_concat(&mut chunks[current], 4, line);
+    vybe_compiler::primitives::strings::emit_concat_proven_strings(&mut chunks[current], 4, line);
     lset(&mut chunks[current], out_slot, line);
 
     bump_slot(&mut chunks[current], i_slot, 1.0, line);
@@ -548,7 +548,7 @@ pub fn emit_php_session_decode(chunks: &mut [Chunk], current: usize, argc: u8, l
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], len_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     emit_substring_slots(chunks, current, data_slot, i_slot, len_slot, line);
     lset(&mut chunks[current], rest_slot, line);
@@ -867,7 +867,7 @@ pub fn emit_php_session_regenerate_id(chunks: &mut [Chunk], current: usize, argc
         line,
     );
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+
     chunks[current].emit_if_value(line);
     vybe_compiler::primitives::http_session::emit_regenerate_id(chunks, current, line);
     let ok_slot = alloc_local(&mut chunks[current]);

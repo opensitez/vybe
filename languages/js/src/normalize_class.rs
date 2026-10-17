@@ -23,12 +23,9 @@
 //!   - Class fields (`x = 5` at class body) → `instance_fields` with
 //!     `init` expression; `static x = 5` → `static_fields`.
 //!
-//! # Phase 2a status
-//!
-//! This module is wired up additively — it produces a `NormalClass`
-//! but nothing consumes it yet. The JS compile path still goes through
-//! the legacy `compile_class` orchestration in `crate::primitives::classes`.
-//! Phase 2b flips the switch.
+//! The registered frontend normalizer supplies the owned `NormalClass` member
+//! data consumed by the common class compiler. Its input is borrowed, so
+//! method bodies and parameters must still be copied at this boundary.
 
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
@@ -38,10 +35,9 @@ use vybe_ast::{
 
 /// Normalise the members of a JS `class X extends Y { … }` declaration.
 ///
-/// `parents[0]` is the direct superclass name if any (the JS grammar
-/// captures `extends <Expression>` but the walker currently only
-/// forwards ident-shaped expressions — computed-super is tracked as a
-/// known limitation; see `test_class_patterns::class_extends_expression`).
+/// The common pipeline supplies the class header. The source walker resolves
+/// a nontrivial `extends` expression into a preceding synthetic binding, so
+/// this adapter only needs to normalize the borrowed member declarations.
 pub fn normalize_class(
     span: Span,
     _name: &str,
@@ -76,31 +72,24 @@ pub fn normalize_class(
                 out.push_field(modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
-                if let Some(nm) = method_from_funcdecl(span.clone(), stmt) {
-                    if is_static_method(stmt)
-                        && (nm.source_name == "__static_init"
-                            || nm.source_name == "__static_init__")
-                    {
-                        let block_index = out.static_fields.len();
-                        out.push_field(
-                            true,
-                            static_block_field(span.clone(), block_index, nm.body),
-                        );
-                        continue;
-                    }
-                    let (canon, kind) = crate::protocol::canonical_method(&nm.source_name);
-                    let nm = NormalMethod {
-                        canonical_name: canon.clone(),
-                        ..nm
-                    };
-                    if let Some(k) = kind {
+                let StmtKind::FunctionDecl { name, body, modifiers, .. } = &stmt.kind else {
+                    continue;
+                };
+                if modifiers.is_static && (name == "__static_init" || name == "__static_init__") {
+                    let block_index = out.static_fields.len();
+                    out.push_field(true, static_block_field(span.clone(), block_index, body.clone()));
+                    continue;
+                }
+                let (canonical, kind) = crate::protocol::canonical_method_ref(name);
+                if let Some(nm) = from_method_stmt(span.clone(), stmt, canonical, access_for_js(name)) {
+                    if let Some(kind) = kind {
                         out.special_methods.push(SpecialMethod {
-                            kind: k,
-                            canonical_name: canon,
+                            kind,
+                            canonical_name: nm.canonical_name.clone(),
                             source_name: nm.source_name.clone(),
                         });
                     }
-                    out.push_method(is_static_method(stmt), nm);
+                    out.push_method(modifiers.is_static, nm);
                 }
             }
             ClassMember::Constructor {
@@ -136,7 +125,7 @@ pub fn normalize_class(
                 modifiers,
                 ..
             } => {
-                let (canon, _kind) = crate::protocol::canonical_method(pname);
+                let (canon, _kind) = crate::protocol::canonical_method_ref(pname);
                 let mut prop_mods = Modifiers::default();
                 prop_mods.is_override = modifiers.is_override;
                 let getter_method = getter.as_ref().map(|body| {
@@ -170,8 +159,9 @@ pub fn normalize_class(
                     )
                 });
                 out.properties.push(NormalProperty {
+                    raw_setter: None,
                     span: span.clone(),
-                    canonical_name: canon,
+                    canonical_name: canon.to_owned(),
                     source_name: pname.clone(),
                     is_static: modifiers.is_static,
                     getter: getter_method,
@@ -227,26 +217,6 @@ fn static_block_field(span: Span, index: usize, body: Vec<Statement>) -> NormalF
     }
 }
 
-/// Build a `NormalMethod` from a `StmtKind::FunctionDecl` wrapped
-/// inside a `ClassMember::Method`. The canonical name starts as the
-/// source name; caller overwrites after applying
-/// `canonicalize_method`. Returns `None` if the inner kind is
-/// anything other than `FunctionDecl`.
-fn method_from_funcdecl(span: Span, stmt: &Statement) -> Option<NormalMethod> {
-    let StmtKind::FunctionDecl { name, .. } = &stmt.kind else {
-        return None;
-    };
-    let access = access_for_js(name);
-    from_method_stmt(span, stmt, name, access)
-}
-
-fn is_static_method(stmt: &Statement) -> bool {
-    matches!(
-        &stmt.kind,
-        StmtKind::FunctionDecl { modifiers, .. } if modifiers.is_static
-    )
-}
-
 /// JS `#private` names get `Access::Private`. Everything else is `Public`.
 /// Inner classes / sub-modules aren't a JS thing, so no `Internal`.
 fn access_for_js(name: &str) -> Access {
@@ -260,6 +230,39 @@ fn access_for_js(name: &str) -> Access {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_resolution_preserves_owned_parameter_body_and_declared_slot() {
+        let body = vec![Statement::new(StmtKind::Expr(Expression::string("use strict")))];
+        let param = Param {
+            name: "value".into(),
+            default: Some(Expression::int(7)),
+            type_hint: None,
+            pass_by: vybe_ast::PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        };
+        let modifiers = Modifiers {
+            is_static: true,
+            protocol_slot: Some(SpecialMethodKind::Iterator),
+            ..Default::default()
+        };
+        let member = ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: "ordinary".into(), params: vec![param.clone()], return_type: None,
+            body: body.clone(), modifiers: modifiers.clone(), handles: vec![],
+            is_async: true, is_generator: false, is_sub: false,
+        })));
+        let result = normalize_class(dummy_span(), "C", &[], &[], &[member], &ClassModifiers::default());
+        let method = &result.static_methods[0];
+        assert_eq!(method.canonical_name, "ordinary");
+        assert_eq!(method.source_name, "ordinary");
+        assert_eq!(format!("{:?}", method.params), format!("{:?}", vec![param]));
+        assert_eq!(format!("{:?}", method.body), format!("{body:?}"));
+        assert_eq!(format!("{:?}", method.raw_modifiers), format!("{modifiers:?}"));
+        assert!(method.is_async);
+    }
 
     fn dummy_span() -> Span {
         Span::default()
@@ -275,8 +278,8 @@ mod tests {
             &[],
             &ClassModifiers::default(),
         );
-        assert_eq!(nc.name, "Foo");
-        assert!(nc.parent.is_none());
+        // The shared normalize_class_from_ast pipeline supplies the class
+        // header. This frontend adapter owns member semantics only.
         assert!(nc.instance_methods.is_empty());
         assert!(nc.constructor.is_none());
     }
@@ -391,7 +394,11 @@ mod tests {
             nc.constructor.as_ref().unwrap().base_call,
             BaseCall::Explicit(_)
         ));
-        assert_eq!(nc.parent.as_deref(), Some("Animal"));
+        let BaseCall::Explicit(args) = &nc.constructor.as_ref().unwrap().base_call else {
+            unreachable!()
+        };
+        assert_eq!(args.len(), 1);
+        assert!(matches!(&args[0].value.kind, ExprKind::Ident(name) if name == "x"));
     }
 
     #[test]

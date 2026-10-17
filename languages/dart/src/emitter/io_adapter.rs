@@ -12,14 +12,13 @@
 //! Value-method argc INCLUDES the receiver, and arguments sit ABOVE it on
 //! the stack — so an N-argument method pops N values, then the receiver.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ResolvedSlot, ValueSource,
 };
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{collections, errors, fs_path, globals, loops, ops, strings};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 /// Must match `walker::DART_IO_KIND_KEY`.
 pub const DART_IO_KIND_KEY: &str = "__dart_io";

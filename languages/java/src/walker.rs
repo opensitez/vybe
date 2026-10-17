@@ -423,6 +423,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports,
         directives: Directives {
+            add_concatenates_strings: Some(true),
             // A subclass field repeating an ancestor's name is a SEPARATE
             // field in Java; both live on the object and a read resolves by
             // the reference's declared type (JLS 8.3, "hiding"). Stated once
@@ -9624,62 +9625,7 @@ fn erase_java_interface_params(__w: &mut JavaWalker, params: &mut [Param]) {
     }
 }
 
-/// ⛔ AN ABSTRACT METHOD IS A DECLARED MEMBER AND MUST SURVIVE.
-///
-/// This dropped every body-less non-static method from every class, so a java
-/// declaration's CONTRACT never reached the AST at all:
-///
-///     abstract class Base { public abstract int foo(); int bar(){…} }
-///     interface Shape   { double area(); default String label(){…} }
-///
-/// `--dump-ast` contained no `foo` and no `area` — `Base.members` began at
-/// `bar`. Every "does this type declare that member" question therefore
-/// answered NO for an abstract member, and since interfaces became `ClassDecl`s
-/// an interface registered only its DEFAULT methods and none of the ones it
-/// REQUIRES. C# keeps them (`members: Bar, Foo`) through the same shared
-/// pipeline, which is what made the difference visible.
-///
-/// ⚠ The predicate did not even ask `is_abstract` — `body.is_empty() &&
-/// !is_static` strips a legitimately empty method body too.
-///
-/// Keeping them is safe because the class model already knows what an abstract
-/// member is: `classes.rs` treats `is_abstract` as virtual and binds no body.
-fn strip_java_abstract_method_declarations(body: &mut [Statement]) {
-    for stmt in body {
-        match &mut stmt.kind {
-            StmtKind::ClassDecl { members, .. }
-            | StmtKind::StructDecl { members, .. }
-            | StmtKind::EnumDecl {
-                body_members: members,
-                ..
-            } => {
-                members.retain(|member| !java_is_abstract_method_declaration(member));
-                for member in members {
-                    if let ClassMember::NestedType(nested) = member {
-                        strip_java_abstract_method_declarations(std::slice::from_mut(nested));
-                    }
-                }
-            }
-            StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
-                strip_java_abstract_method_declarations(stmts);
-            }
-            _ => {}
-        }
-    }
-}
 
-fn java_is_abstract_method_declaration(member: &ClassMember) -> bool {
-    let ClassMember::Method(method) = member else {
-        return false;
-    };
-    let StmtKind::FunctionDecl {
-        body, modifiers, ..
-    } = &method.kind
-    else {
-        return false;
-    };
-    body.is_empty() && !modifiers.is_static
-}
 
 fn lower_java_abstract_runtime_modifiers(body: &mut [Statement]) {
     for stmt in body {
@@ -14844,13 +14790,6 @@ fn java_list_method_name(method: &str, argc: usize) -> Option<&'static str> {
     })
 }
 
-fn java_type_is_spliterator(type_name: Option<&str>) -> bool {
-    let Some(type_name) = type_name else {
-        return false;
-    };
-    let simple = java_type_simple_name(type_name);
-    simple.split('<').next().unwrap_or(simple) == "Spliterator"
-}
 
 fn java_type_is_random(type_name: Option<&str>) -> bool {
     let Some(type_name) = type_name else {
@@ -14880,47 +14819,9 @@ fn java_list_result_receiver(expr: &Expression) -> bool {
     )
 }
 
-fn java_map_result_receiver(expr: &Expression) -> bool {
-    matches!(
-        &expr.kind,
-        ExprKind::Call { callee, .. }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_pb_environment")
-    )
-}
 
-fn java_spliterator_receiver(expr: &Expression) -> bool {
-    matches!(
-        &expr.kind,
-        ExprKind::Call { callee, .. }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_spliterator_from_array")
-    )
-}
 
-fn java_spliterator_method_name(method: &str, argc: usize) -> Option<&'static str> {
-    Some(match method {
-        "estimateSize" if argc == 0 => "__j_spliterator_estimate_size",
-        "tryAdvance" if argc == 1 => "__j_spliterator_try_advance",
-        "forEachRemaining" if argc == 1 => "__j_spliterator_for_each_remaining",
-        "characteristics" if argc == 0 => "__j_spliterator_characteristics",
-        "trySplit" if argc == 0 => "__j_spliterator_try_split",
-        "getComparator" if argc == 0 => "__j_spliterator_get_comparator",
-        _ => return None,
-    })
-}
 
-fn java_spliterator_constant(name: &str) -> Option<i64> {
-    Some(match name {
-        "DISTINCT" => 0x0001,
-        "SORTED" => 0x0004,
-        "ORDERED" => 0x0010,
-        "SIZED" => 0x0040,
-        "NONNULL" => 0x0100,
-        "IMMUTABLE" => 0x0400,
-        "CONCURRENT" => 0x1000,
-        "SUBSIZED" => 0x4000,
-        _ => return None,
-    })
-}
 
 fn java_type_is_runtime(type_name: Option<&str>) -> bool {
     type_name
@@ -15189,27 +15090,7 @@ fn java_future_task_method_name(method: &str, argc: usize) -> Option<&'static st
     })
 }
 
-fn java_type_is_executor_service(type_name: Option<&str>) -> bool {
-    let Some(type_name) = type_name else {
-        return false;
-    };
-    matches!(
-        java_type_base_simple_name(type_name),
-        "ExecutorService" | "Executor"
-    )
-}
 
-fn java_executor_method_name(method: &str, argc: usize) -> Option<&'static str> {
-    Some(match method {
-        "submit" if argc == 1 => "__j_exec_submit",
-        "execute" if argc == 1 => "__j_exec_execute",
-        "shutdown" if argc == 0 => "__j_exec_shutdown",
-        "shutdownNow" if argc == 0 => "__j_exec_shutdown_now",
-        "isShutdown" if argc == 0 => "__j_exec_is_shutdown",
-        "awaitTermination" if argc == 2 => "__j_exec_await",
-        _ => return None,
-    })
-}
 
 fn java_properties_method_name(method: &str) -> Option<&'static str> {
     Some(match method {
@@ -15223,53 +15104,6 @@ fn java_properties_method_name(method: &str) -> Option<&'static str> {
     })
 }
 
-fn java_map_method_name(method: &str) -> Option<&'static str> {
-    Some(match method {
-        "get" => "__java_map_get",
-        "put" => "__java_map_put",
-        "putAll" => "__java_map_put_all",
-        "remove" => "__java_map_remove",
-        "getOrDefault" => "__java_map_get_or_default",
-        "containsKey" => "__java_map_contains_key",
-        "containsValue" => "__java_map_contains_value",
-        "keySet" => "__java_map_key_set",
-        "values" => "__java_map_values",
-        "entrySet" => "__java_map_entry_set",
-        "putIfAbsent" => "__java_map_put_if_absent",
-        "computeIfAbsent" => "__java_map_compute_if_absent",
-        "computeIfPresent" => "__java_map_compute_if_present",
-        "compute" => "__java_map_compute",
-        "merge" => "__java_map_merge",
-        "replace" => "__java_map_replace",
-        "replaceAll" => "__java_map_replace_all",
-        "forEach" => "__java_map_for_each",
-        "clear" => "__java_map_clear",
-        "clone" => "__java_map_clone",
-        "size" => "__java_map_size",
-        "isEmpty" => "__java_map_is_empty",
-        "equals" => "__java_map_equals",
-        "firstKey" => "__java_sorted_map_first_key",
-        "lastKey" => "__java_sorted_map_last_key",
-        "firstEntry" => "__java_sorted_map_first_entry",
-        "lastEntry" => "__java_sorted_map_last_entry",
-        "ceilingEntry" => "__java_sorted_map_ceiling_entry",
-        "floorEntry" => "__java_sorted_map_floor_entry",
-        "higherEntry" => "__java_sorted_map_higher_entry",
-        "lowerEntry" => "__java_sorted_map_lower_entry",
-        "ceilingKey" => "__java_sorted_map_ceiling_key",
-        "floorKey" => "__java_sorted_map_floor_key",
-        "higherKey" => "__java_sorted_map_higher_key",
-        "lowerKey" => "__java_sorted_map_lower_key",
-        "pollFirstEntry" => "__java_sorted_map_poll_first_entry",
-        "pollLastEntry" => "__java_sorted_map_poll_last_entry",
-        "descendingKeySet" => "__java_sorted_map_descending_key_set",
-        "descendingMap" => "__java_sorted_map_descending_map",
-        "subMap" => "__java_map_sub_map",
-        "headMap" => "__java_map_head_map",
-        "tailMap" => "__java_map_tail_map",
-        _ => return None,
-    })
-}
 
 fn java_type_is_uuid(type_name: Option<&str>) -> bool {
     let Some(type_name) = type_name else {
@@ -15756,7 +15590,6 @@ fn java_type_base_simple_name(type_name: &str) -> &str {
     java_type_simple_name(type_name).trim()
 }
 
-#[allow(dead_code)]
 fn java_print_arg_needs_tostring(
     __w: &mut JavaWalker,
     arg: &Expression,
@@ -15771,7 +15604,6 @@ fn java_print_arg_needs_tostring(
     java_expr_enum_type(__w, arg, enum_values, current_class, locals).is_some()
 }
 
-#[allow(dead_code)]
 fn java_tostring_call(receiver: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -15784,7 +15616,6 @@ fn java_tostring_call(receiver: Expression) -> Expression {
     })
 }
 
-#[allow(dead_code)]
 fn java_expr_enum_type(
     __w: &mut JavaWalker,
     expr: &Expression,
@@ -15931,7 +15762,6 @@ fn java_class_field_type(
     }
 }
 
-#[allow(dead_code)]
 fn java_expr_has_user_tostring(
     expr: &Expression,
     tostring_classes: &std::collections::HashSet<String>,
@@ -18382,7 +18212,6 @@ fn java_expr_is_thread_like_receiver(
     }
 }
 
-#[allow(dead_code)]
 fn java_resolve_runnable_target(__w: &mut JavaWalker, target: Expression) -> Expression {
     if let ExprKind::Ident(name) = &target.kind {
         if let Some(resolved) = __w.java_runnable_targets.get(name).cloned() {
@@ -18392,7 +18221,6 @@ fn java_resolve_runnable_target(__w: &mut JavaWalker, target: Expression) -> Exp
     target
 }
 
-#[allow(dead_code)]
 fn java_rewrite_spawned_thread_sleep_expr(expr: &mut Expression) {
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
@@ -18466,7 +18294,6 @@ fn java_rewrite_spawned_thread_sleep_expr(expr: &mut Expression) {
     }
 }
 
-#[allow(dead_code)]
 fn java_rewrite_spawned_thread_sleep_stmt(stmt: &mut Statement) {
     match &mut stmt.kind {
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {

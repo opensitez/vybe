@@ -32,7 +32,6 @@ case_sensitive   = true
 string_indexing  = "zero_based"
 # `+` is JS-shaped: numeric when both sides are numbers, string concat when a
 # string is involved. Needed for WAT float text formatting ($log_f32/$log_f64).
-dynamic_add      = true
 # WASM has first-class function references: `ref.func $f` tears a function off
 # into a funcref (REF_FUNC) instead of invoking it. Enables call_ref /
 # call_indirect / ref.eq on real funcrefs.
@@ -85,6 +84,8 @@ string_compare = { emit = "host:wasm:js-string:compare", min_args = 2, max_args 
 string_length    = { emit = "host:wasm:js-string:length",    min_args = 1, max_args = 1 }
 string_substring = { emit = "host:wasm:js-string:substring", min_args = 3, max_args = 3 }
 string_equals    = { emit = "host:wasm:js-string:equals",    min_args = 2, max_args = 2 }
+__wast_array_filter = { emit = "host:ecma:array:filter", min_args = 2, max_args = 2 }
+__wast_object_values = { emit = "host:ecma:object:values", min_args = 1, max_args = 1 }
 
 activeDocument   = { emit = "host:web:html:activeDocument",  min_args = 0, max_args = 0 }
 body             = { emit = "host:web:html:body",             min_args = 1, max_args = 1 }
@@ -129,6 +130,9 @@ __wasm_try         = { emit = "host:vybe:wast:try",         min_args = 0, max_ar
 # exact bit patterns. (The generic `opcode:` resolver reads these straight from
 # the VM's one opcode table.)
 
+i32_const        = { emit = "intrinsic:wasm_i32_const", min_args = 1, max_args = 1 }
+i64_const        = { emit = "intrinsic:wasm_i64_const", min_args = 1, max_args = 1 }
+__wast_u64_const = { emit = "host:ecma:bigint:BigInt", min_args = 1, max_args = 1 }
 i32_add          = { emit = "opcode:i32_add",           min_args = 2, max_args = 2 }
 i32_sub          = { emit = "opcode:i32_sub",           min_args = 2, max_args = 2 }
 i32_mul          = { emit = "opcode:i32_mul",           min_args = 2, max_args = 2 }

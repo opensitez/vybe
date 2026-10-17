@@ -44,6 +44,45 @@ const PHP_TRAIT: AugmentationPolicy = AugmentationPolicy {
     },
 };
 
+fn raw_property_writer(
+    span: &Span, name: &str, storage: &str, type_hint: Option<&str>, access: Access,
+) -> NormalMethod {
+    use vybe_ast::{ExprKind, Expression, Param, PassBy, Statement};
+    let value = Expression::ident("$value");
+    let assign = Expression::new(ExprKind::Assign {
+        target: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: storage.to_string(),
+            null_safe: false,
+        })),
+        value: Box::new(value.clone()),
+    });
+    let operation = match type_hint {
+        Some(hint) => {
+            let failure = Expression::with_span(crate::walker::php_throw_named_error_expr(
+                "TypeError", "Cannot assign value to typed property", span,
+            ), span.clone());
+            match crate::walker::php_type_check_expr(hint, value, span) {
+                Some(check) => Expression::new(ExprKind::Ternary {
+                    cond: Box::new(check), then: Box::new(assign), else_: Box::new(failure),
+                }),
+                None => failure,
+            }
+        }
+        None => assign,
+    };
+    build_normal_method(
+        span.clone(), name, name,
+        vec![Param {
+            name: "$value".to_string(), type_hint: None, default: None,
+            pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+            is_optional: false, is_nullable: false,
+        }],
+        None, vec![Statement::new(StmtKind::Expr(operation))], access,
+        false, false, false, Modifiers::default(),
+    )
+}
+
 pub fn normalize_class(
     span: Span,
     _name: &str,
@@ -52,6 +91,18 @@ pub fn normalize_class(
     members: &[ClassMember],
     _modifiers: &ClassModifiers,
 ) -> NormalClass {
+    normalize_class_impl(span, _name, _parents, _interfaces, members, _modifiers, None)
+}
+
+pub fn normalize_class_deferred(span: Span, name: &str, parents: &[String], interfaces: &[String],
+    members: &[ClassMember], modifiers: &ClassModifiers) -> vybe_compiler::primitives::deferred_class_bodies::DeferredClass {
+    let mut donations = Vec::new();
+    let class = normalize_class_impl(span, name, parents, interfaces, members, modifiers, Some(&mut donations));
+    vybe_compiler::primitives::deferred_class_bodies::DeferredClass { class, donations }
+}
+fn normalize_class_impl(span: Span, _name: &str, _parents: &[String], _interfaces: &[String],
+    members: &[ClassMember], _modifiers: &ClassModifiers,
+    mut donations: Option<&mut Vec<vybe_compiler::primitives::deferred_class_bodies::Donation>>) -> NormalClass {
     let mut out = NormalMembers::default();
     let (has_serialize, has_unserialize) = members.iter().fold(
         (false, false),
@@ -69,7 +120,7 @@ pub fn normalize_class(
         },
     );
 
-    for member in members {
+    for (member_index, member) in members.iter().enumerate() {
         match member {
             ClassMember::Field {
                 name: fname,
@@ -91,6 +142,18 @@ pub fn normalize_class(
                     storage: None,
                 };
                 out.push_field(m.is_static, field);
+                if !m.is_static {
+                    // Keep the raw operation on the declared member, while
+                    // auto_field retains ordinary plain-field semantics.
+                    out.properties.push(NormalProperty {
+                        raw_setter: Some(raw_property_writer(
+                            &span, fname, fname, type_hint.as_deref(), Access::from(m.visibility),
+                        )),
+                        span: span.clone(), canonical_name: fname.clone(),
+                        source_name: fname.clone(), is_static: false,
+                        getter: None, setter: None, auto_field: Some(fname.clone()),
+                    });
+                }
             }
             ClassMember::Method(stmt) => {
                 let StmtKind::FunctionDecl {
@@ -102,11 +165,25 @@ pub fn normalize_class(
                     continue;
                 };
 
-                let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
+                let (canonical, special_kind) = crate::protocol::canonical_method_ref(src_name);
                 let access = Access::from(m.visibility);
-                let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
-                    continue;
+                let method = if donations.is_some() {
+                    let StmtKind::FunctionDecl { name, params, return_type, modifiers, is_async, is_generator, is_sub, .. } = &stmt.kind else { unreachable!() };
+                    // Only the body is deferred. Preserve every signature,
+                    // role, source spelling, modifier, and source span now.
+                    build_normal_method(span, canonical, name, params.clone(), return_type.clone(),
+                        Vec::new(), access, *is_async, *is_generator, *is_sub, modifiers.clone())
+                } else {
+                    let Some(method) = from_method_stmt(span, stmt, canonical, access) else { continue; };
+                    method
                 };
+                if let Some(donations) = donations.as_deref_mut() {
+                    use vybe_compiler::primitives::deferred_class_bodies::{Donation, Destination};
+                    let destination = if special_kind == Some(SpecialMethodKind::Destructor) { Destination::Destructor }
+                        else if m.is_static { Destination::Static(out.static_methods.len()) }
+                        else { Destination::Instance(out.instance_methods.len()) };
+                    donations.push(Donation { member: member_index, destination });
+                }
                 // The destructor is a lifecycle member, not a method — routed
                 // by KIND, so PHP states `__destruct` once (in the shared
                 // canonical table) instead of testing for it here.
@@ -121,7 +198,7 @@ pub fn normalize_class(
                 if let Some(kind) = special_kind.filter(|_| !shadowed_legacy) {
                     out.special_methods.push(SpecialMethod {
                         kind,
-                        canonical_name: canonical,
+                        canonical_name: canonical.to_owned(),
                         source_name: src_name.clone(),
                     });
                 }
@@ -176,14 +253,16 @@ pub fn normalize_class(
                 setter,
                 is_auto,
                 modifiers: m,
+                type_hint,
                 ..
             } => {
-                let (canonical, _) = crate::protocol::canonical_method(pname);
+                let (canonical, _) = crate::protocol::canonical_method_ref(pname);
                 let access = Access::from(m.visibility);
+                let implicit_read = getter.is_none() && setter.is_some();
                 let getter_method = getter.as_ref().map(|body| {
                     build_normal_method(
                         span.clone(),
-                        &canonical,
+                        canonical,
                         pname,
                         vec![],
                         None,
@@ -194,11 +273,33 @@ pub fn normalize_class(
                         false,
                         Modifiers::default(),
                     )
-                });
+                }).or_else(|| implicit_read.then(|| {
+                    build_normal_method(
+                        span.clone(), canonical, pname, vec![], None,
+                        Vec::new(), access, false, false, false,
+                        Modifiers::default(),
+                    )
+                }));
+                if implicit_read {
+                    // A setter-only PHP hook still has an ordinary read.
+                    // Declare its backing field in the one normalized layout;
+                    // the shared default accessor owns reading that storage.
+                    out.push_field(false, NormalField {
+                        span: span.clone(),
+                        name: format!("__{pname}"),
+                        type_hint: type_hint.clone(),
+                        init: None,
+                        array_bounds: None,
+                        access,
+                        readonly: false,
+                        value_type: None,
+                        storage: None,
+                    });
+                }
                 let setter_method = setter.as_ref().map(|s: &PropertySetter| {
                     build_normal_method(
                         span.clone(),
-                        &canonical,
+                        canonical,
                         pname,
                         vec![s.param.clone()],
                         None,
@@ -211,8 +312,12 @@ pub fn normalize_class(
                     )
                 });
                 out.properties.push(NormalProperty {
+                    raw_setter: if implicit_read && !m.is_static {
+                        Some(raw_property_writer(&span, pname, &format!("__{pname}"),
+                            type_hint.as_deref(), access))
+                    } else { None },
                     span: span.clone(),
-                    canonical_name: canonical,
+                    canonical_name: canonical.to_owned(),
                     source_name: pname.clone(),
                     is_static: m.is_static,
                     getter: getter_method,
@@ -258,6 +363,8 @@ pub fn normalize_class(
     }
 
     NormalClass {
+        member_metadata: true,
+        introspection_metadata: true,
         implicit_self_fields: false, // PHP requires `$this->field`
         // Late static binding: `static::` / `get_called_class()` resolve
         // against the class the call went THROUGH, which the callee cannot
@@ -357,18 +464,16 @@ mod tests {
 
     #[test]
     fn interfaces_passed_through() {
-        let nc = normalize_class(
-            dummy_span(),
-            "Foo",
-            &[],
-            &["Countable".into(), "IteratorAggregate".into()],
-            &[],
-            &ClassModifiers::default(),
-        );
-        assert_eq!(
-            nc.interfaces,
-            vec!["Countable".to_string(), "IteratorAggregate".to_string()]
-        );
+        // The member adapter no longer owns class headers. Preserve interface
+        // ancestry in the common ClassDecl consumed by the shared compiler.
+        let source = "<?php class Foo implements Countable, IteratorAggregate {}";
+        for module in [crate::parse(source).unwrap(), crate::walker::parse_direct(source).unwrap()] {
+            let interfaces = module.body.iter().find_map(|statement| match &statement.kind {
+                StmtKind::ClassDecl { name, interfaces, .. } if name == "Foo" => Some(interfaces),
+                _ => None,
+            }).expect("Foo class declaration");
+            assert_eq!(interfaces, &["Countable".to_string(), "IteratorAggregate".to_string()]);
+        }
     }
 
     #[test]

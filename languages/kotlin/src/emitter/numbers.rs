@@ -91,23 +91,6 @@ pub fn emit_double_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     vybe_compiler::primitives::convert::emit_float_to_string(chunks, current, line);
 }
 
-/// Push i32 `1` when the rendered number already shows a fraction or exponent
-/// (`.`, `e`, `E`) or is not a finite decimal at all (`NaN`, `Infinity`).
-fn emit_contains_non_integral_mark(chunks: &mut Vec<Chunk>, current: usize, text: u16, line: u32) {
-    let mut first = true;
-    for mark in [".", "e", "E", "N", "I"] {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
-        chunks[current].emit_string_const(mark, line);
-        let idx = chunks[current].add_import("ecma:string", "includes");
-        chunks[current].emit_call(idx, 2, line);
-        ops::emit_dyn_to_bool(&mut chunks[current], line);
-        if first {
-            first = false;
-        } else {
-            chunks[current].emit_op(Op::I32_OR, line);
-        }
-    }
-}
 
 /// Kotlin `Double.isInfinite()`. Stack: `[value]` → `[bool]`.
 ///

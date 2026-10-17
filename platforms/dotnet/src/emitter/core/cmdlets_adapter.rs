@@ -2135,57 +2135,7 @@ pub fn emit_pscustomobject_new(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
-fn pop_path_and_flag(chunk: &mut Chunk, argc: u8, default_flag: &str, line: u32) -> (u16, u16) {
-    let path = chunk.alloc_scratch(1);
-    let flag = chunk.alloc_scratch(1);
-    match argc {
-        0 => {
-            chunk.emit_string_const("", line);
-            chunk.emit_op_u16(Op::LOCAL_SET, path, line);
-            chunk.emit_string_const(default_flag, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, flag, line);
-        }
-        1 => {
-            chunk.emit_op_u16(Op::LOCAL_SET, path, line);
-            chunk.emit_string_const(default_flag, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, flag, line);
-        }
-        _ => {
-            for _ in 2..argc {
-                chunk.emit_op(Op::DROP, line);
-            }
-            chunk.emit_op_u16(Op::LOCAL_SET, flag, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, path, line);
-        }
-    }
-    (path, flag)
-}
 
-fn pop_path_and_bool(chunk: &mut Chunk, argc: u8, default_flag: bool, line: u32) -> (u16, u16) {
-    let path = chunk.alloc_scratch(1);
-    let flag = chunk.alloc_scratch(1);
-    match argc {
-        0 => {
-            chunk.emit_string_const("", line);
-            chunk.emit_op_u16(Op::LOCAL_SET, path, line);
-            chunk.emit_bool_const(default_flag, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, flag, line);
-        }
-        1 => {
-            chunk.emit_op_u16(Op::LOCAL_SET, path, line);
-            chunk.emit_bool_const(default_flag, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, flag, line);
-        }
-        _ => {
-            for _ in 2..argc {
-                chunk.emit_op(Op::DROP, line);
-            }
-            chunk.emit_op_u16(Op::LOCAL_SET, flag, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, path, line);
-        }
-    }
-    (path, flag)
-}
 
 fn flag_is(chunk: &mut Chunk, flag: u16, value: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, flag, line);
@@ -6240,7 +6190,7 @@ pub fn emit_compare_object(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     };
 
     // `keys(source) -> [key…]`, and a parallel `used` array of falses.
-    let mut build = |chunks: &mut Vec<Chunk>, current: usize, source: u16, keys: u16, used: u16| {
+    let build = |chunks: &mut Vec<Chunk>, current: usize, source: u16, keys: u16, used: u16| {
         collections::emit_array_new(chunks, current, 0, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
         collections::emit_array_new(chunks, current, 0, line);
@@ -6398,7 +6348,7 @@ pub fn emit_compare_object(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         chunks[current].emit_op(Op::DROP, line);
     };
 
-    let mut emit_all = |chunks: &mut [Chunk], current: usize, source: u16, indicator: &str| {
+    let emit_all = |chunks: &mut [Chunk], current: usize, source: u16, indicator: &str| {
         chunks[current].emit_i32_const(0, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
         chunks[current].emit_block(line);
@@ -6518,7 +6468,7 @@ pub fn emit_compare_object(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
 
     // Pass two: whatever each side did not pair off. `-ExcludeDifferent` keeps
     // only the matches, so both loops are gated on it.
-    let mut unmatched =
+    let unmatched =
         |chunks: &mut [Chunk], current: usize, source: u16, used: u16, indicator: &str| {
             chunks[current].emit_op_u16(Op::LOCAL_GET, exclude_different, line);
             vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -7536,23 +7486,6 @@ pub fn emit_pscmdlet_should_process(chunks: &mut [Chunk], current: usize, argc: 
     chunks[current].emit_end(line);
 }
 
-fn emit_compare_entry(chunks: &mut [Chunk], current: usize, value: u16, side: &str, line: u32) {
-    let out = chunks[current].alloc_scratch(1);
-    emit_typed_object(
-        chunks,
-        current,
-        out,
-        "System.Management.Automation.PSCustomObject",
-        "PSCustomObject",
-        line,
-    );
-    let chunk = &mut chunks[current];
-    set_local(chunk, out, "InputObject", value, line);
-    set_local(chunk, out, "inputobject", value, line);
-    set_const_str(chunk, out, "SideIndicator", side, line);
-    set_const_str(chunk, out, "sideindicator", side, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
-}
 
 fn emit_match_info(
     chunks: &mut [Chunk],

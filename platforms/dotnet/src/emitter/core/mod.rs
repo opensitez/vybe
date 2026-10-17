@@ -43,6 +43,7 @@ pub mod financial_adapter;
 pub mod float_adapter;
 pub mod font_adapter;
 pub mod format_picture_adapter;
+pub mod picture_format;
 pub mod gc_adapter;
 pub mod guid_adapter;
 pub mod hashcode_adapter;

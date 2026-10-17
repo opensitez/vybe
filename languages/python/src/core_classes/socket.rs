@@ -248,30 +248,12 @@ pub(super) fn socket_impl() -> Statement {
             method(
                 "send",
                 vec![param("data", Some(null()))],
-                vec![
-                    expr_stmt(call_global(
-                        "_wasi_send",
-                        vec![
-                            res(),
-                            call_global("_stream_from_bytes", vec![ident("data")]),
-                        ],
-                    )),
-                    ret(call_global("len", vec![ident("data")])),
-                ],
+                vec![ret(call_global("__sock_send", vec![res(), ident("data")]))],
             ),
             method(
                 "sendall",
                 vec![param("data", Some(null()))],
-                vec![
-                    expr_stmt(call_global(
-                        "_wasi_send",
-                        vec![
-                            res(),
-                            call_global("_stream_from_bytes", vec![ident("data")]),
-                        ],
-                    )),
-                    ret(null()),
-                ],
+                vec![ret(call_global("__sock_sendall", vec![res(), ident("data")]))],
             ),
             method(
                 "recv",

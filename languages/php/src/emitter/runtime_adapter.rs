@@ -27,7 +27,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             return true;
         }
         "php.regex_replace_pat_first" => {
-            emit_regexp_replace_pat_first(chunks, current, line);
+            emit_regexp_replace_pat_first(chunks, current, argc, line);
             return true;
         }
         "php.gzcompress" => {
@@ -122,8 +122,17 @@ fn emit_regexp_pat_first(chunks: &mut [Chunk], current: usize, method: &str, lin
 
 /// Apply PHP pattern arrays in insertion order, pairing replacement arrays by
 /// position. Scalar replacements use PHP delimiter and backreference semantics.
-fn emit_regexp_replace_pat_first(chunks: &mut [Chunk], current: usize, line: u32) {
+pub(crate) fn emit_regexp_replace_pat_first(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = chunks[current].alloc_scratch(7);
+    let extra = if argc >= 4 {
+        let extra = chunks[current].alloc_scratch(4);
+        if argc >= 5 { chunks[current].emit_op_u16(Op::LOCAL_SET, extra + 1, line); }
+        vybe_compiler::primitives::convert::emit_to_int(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, extra, line);
+        chunks[current].emit_f64_const(0.0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, extra + 3, line);
+        Some(extra)
+    } else { None };
     chunks[current].emit_op_u16(Op::LOCAL_SET, base + 2, line); // subject (top)
     chunks[current].emit_op_u16(Op::LOCAL_SET, base + 1, line); // repl
     chunks[current].emit_op_u16(Op::LOCAL_SET, base, line); // pat
@@ -153,14 +162,41 @@ fn emit_regexp_replace_pat_first(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 6, line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
-    let idx = chunks[current].add_import("php:regex", "replaceAll");
-    chunks[current].emit_call(idx, 3, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 2, line);
+    if let Some(extra) = extra {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, extra, line);
+        let idx = chunks[current].add_import("php:regex", "replaceLimitedCount");
+        chunks[current].emit_call(idx, 4, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, extra + 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, extra + 2, line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, extra + 3, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, extra + 2, line);
+        chunks[current].emit_i32_const(1, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        chunks[current].emit_op(Op::F64_ADD, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, extra + 3, line);
+    } else {
+        let idx = chunks[current].add_import("php:regex", "replaceAll");
+        chunks[current].emit_call(idx, 3, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + 2, line);
+    }
+    // Invalid patterns/matches return null; do not apply later patterns.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 5, line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, base + 5, line);
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+    if argc >= 5 {
+        let extra = extra.unwrap();
+        super::string_adapter::emit_str_replace_count_store(chunks, current, extra + 1, extra + 3, line);
+    }
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
 }
 
@@ -213,7 +249,7 @@ fn emit_php_gz_encode(
             chunk.emit_call(len, 1, line);
             chunk.emit_f64_const(40.0, line);
             vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-            vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
             chunk.emit_if_value(line);
             push_str(chunk, prefix, line);
             chunk.emit_else(line);

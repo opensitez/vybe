@@ -84,13 +84,6 @@ fn index(object: Expression, i: i64) -> Expression {
     })
 }
 
-fn index_expr(object: Expression, i: Expression) -> Expression {
-    Expression::new(ExprKind::Index {
-        object: Box::new(object),
-        index: Box::new(i),
-        null_safe: false,
-    })
-}
 
 fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
     Statement::with_span(

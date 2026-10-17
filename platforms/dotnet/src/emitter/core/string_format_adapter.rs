@@ -19,7 +19,7 @@
 //! string or an `IFormatProvider`.
 
 use std::sync::Arc;
-use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -43,22 +43,39 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 /// share this adapter. The value's own `__type` decides, at run time, because
 /// a composite format string is walked at run time.
 fn emit_dotnet_format_value_call(
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    args_slot: u16,
-    idx_slot: u16,
-    format_slot: u16,
-    width_slot: u16,
-    line: u32,
+    chunks: &mut Vec<Chunk>, current: usize, args_slot: u16, idx_slot: u16,
+    format_slot: u16, width_slot: u16, line: u32,
 ) {
-    let value_slot = {
-        let chunk = &mut chunks[current];
-        let value_slot = chunk.alloc_scratch(1);
-        chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    let chunk = &mut chunks[current];
+    let value_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_value_from_locals(chunks, current, value_slot, format_slot, width_slot, false, line);
+}
 
+/// A known unformatted interpolation hole: `[value] -> [string]`.
+/// Use the same value renderer as `{0}`, without a composite-format parser.
+pub fn emit_interpolation_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = chunk.alloc_scratch(3);
+    let format = value + 1;
+    let width = value + 2;
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_string_const("__vybe_default", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, format, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, width, line);
+    emit_value_from_locals(chunks, current, value, format, width, true, line);
+}
+
+fn emit_value_from_locals(
+    chunks: &mut Vec<Chunk>, current: usize, value_slot: u16,
+    format_slot: u16, width_slot: u16, default_format: bool, line: u32,
+) {
+    {
+        let chunk = &mut chunks[current];
         // ⛔ The test is the `__time` FIELD, not `__type`: a VB `Date` carries
         // the type stamp folded to `datetime` while C# stamps `DateTime`, and
         // a name comparison answered only one of them. `__time` is the date's
@@ -71,16 +88,34 @@ fn emit_dotnet_format_value_call(
             Dest::Stack,
             line,
         );
-        chunk.emit_op(Op::REF_IS_NULL, line);
+        // Absent fields are Undefined; either nullish value means there is
+        // no DateTime payload, so ordinary values use numeric formatting.
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq_null_operand(chunk, false, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if_value(line);
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
-        value_slot
-    };
+    }
     super::datetime_format_adapter::emit_date_format(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_else(line);
+
+    if default_format {
+        // `__vybe_default` contains no numeric picture or format code. With
+        // width zero the numeric formatter reaches String(value) unchanged.
+        // Keep its null normalization and the date branch above.
+        chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if_value(line);
+        chunk.emit_string_const("", line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        chunk.emit_end(line);
+        host::emit(chunk, "ecma:string", "String", 1, line);
+        chunk.emit_end(line);
+        return;
+    }
 
     vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_dotnet_numeric_format", line);
 

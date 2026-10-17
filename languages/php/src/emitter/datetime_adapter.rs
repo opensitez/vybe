@@ -20,7 +20,6 @@ use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-const TYPE_KEY: &str = "__type";
 const TIME_KEY: &str = "__time";
 /// The `DateTimeZone` object stored on a `DateTime`/`DateTimeImmutable`.
 const TZ_KEY: &str = "__tz";
@@ -83,7 +82,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -235,6 +234,116 @@ fn emit_known_timezone_guard(chunks: &mut Vec<Chunk>, current: usize, name_slot:
 /// it is stashed onto the object under `__tz`; otherwise a default `UTC`
 /// zone is attached so `getTimezone()` always resolves. Stack on entry:
 /// `[s]` or `[s, tz]` ; Stack on exit: `[dt]`.
+// Normalize only a pure String YYYY-MM-DD[ T]HH:MM:SS.fraction with
+// 1..=6 ASCII fractional digits. Existing Date.parse then validates the rest.
+// Unknown/nonstring/other forms retain the original parser and coercion route.
+fn emit_constructor_fraction(chunk: &mut Chunk, text: u16, micros: u16, line: u32) {
+    let len = alloc_local(chunk);
+    let index = alloc_local(chunk);
+    let valid = alloc_local(chunk);
+    let unit = alloc_local(chunk);
+    local_get(chunk, text, line);
+    let test = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(test, 1, line);
+    chunk.emit_if(line);
+    local_get(chunk, text, line);
+    let length = chunk.add_import("ecma:string", "length");
+    chunk.emit_call(length, 1, line);
+    local_set(chunk, len, line);
+    local_get(chunk, len, line);
+    chunk.emit_f64_const(21.0, line);
+    chunk.emit_op(Op::F64_GE, line);
+    local_get(chunk, len, line);
+    chunk.emit_f64_const(26.0, line);
+    chunk.emit_op(Op::F64_LE, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    local_get(chunk, len, line);
+    let integer = chunk.add_import("wasm:js-number", "toI32");
+    chunk.emit_call(integer, 1, line);
+    local_set(chunk, len, line);
+    let code = chunk.add_import("wasm:js-string", "charCodeAt");
+    local_get(chunk, text, line);
+    chunk.emit_i32_const(19, line);
+    chunk.emit_call(code, 2, line);
+    chunk.emit_i32_const(46, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    local_get(chunk, text, line);
+    chunk.emit_i32_const(10, line);
+    chunk.emit_call(code, 2, line);
+    local_set(chunk, unit, line);
+    local_get(chunk, unit, line);
+    chunk.emit_i32_const(32, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    local_get(chunk, unit, line);
+    chunk.emit_i32_const(84, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op(Op::I32_AND, line);
+    local_set(chunk, valid, line);
+    chunk.emit_i32_const(20, line);
+    local_set(chunk, index, line);
+    let block = chunk.emit_block(line);
+    let (lp, _) = chunk.emit_loop_s(line);
+    local_get(chunk, index, line);
+    local_get(chunk, len, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_br_if(1, line);
+    local_get(chunk, valid, line);
+    local_get(chunk, text, line);
+    local_get(chunk, index, line);
+    chunk.emit_call(code, 2, line);
+    chunk.emit_i32_const(48, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    chunk.emit_i32_const(9, line);
+    chunk.emit_op(Op::I32_LE_U, line);
+    chunk.emit_op(Op::I32_AND, line);
+    local_set(chunk, valid, line);
+    local_get(chunk, index, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    local_set(chunk, index, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(lp);
+    chunk.emit_end(line);
+    chunk.patch_block(block);
+    local_get(chunk, valid, line);
+    chunk.emit_if(line);
+    // Retain full microsecond precision independently of Date's millisecond
+    // TimeClip. Feed Date.parse exactly the standard three-digit ISO form.
+    local_get(chunk, text, line);
+    chunk.emit_i32_const(20, line);
+    local_get(chunk, len, line);
+    let substring = chunk.add_import("wasm:js-string", "substring");
+    chunk.emit_call(substring, 3, line);
+    chunk.emit_f64_const(6.0, line);
+    push_str(chunk, "0", line);
+    let pad = chunk.add_import("ecma:string", "padEnd");
+    chunk.emit_call(pad, 3, line);
+    local_set(chunk, micros, line);
+    local_get(chunk, text, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_i32_const(10, line);
+    chunk.emit_call(substring, 3, line);
+    push_str(chunk, "T", line);
+    local_get(chunk, text, line);
+    chunk.emit_i32_const(11, line);
+    chunk.emit_i32_const(19, line);
+    chunk.emit_call(substring, 3, line);
+    push_str(chunk, ".", line);
+    local_get(chunk, micros, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_i32_const(3, line);
+    chunk.emit_call(substring, 3, line);
+    push_str(chunk, "Z", line);
+    vybe_compiler::primitives::strings::emit_concat_proven_strings(chunk, 6, line);
+    local_set(chunk, text, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
 fn emit_datetime_ctor(
     chunks: &mut Vec<Chunk>,
     current: usize,
@@ -252,11 +361,21 @@ fn emit_datetime_ctor(
         None
     };
 
+    let micros_slot = if argc >= 1 {
+        let slot = alloc_local(&mut chunks[current]);
+        push_const(&mut chunks[current], Value::Null, line);
+        local_set(&mut chunks[current], slot, line);
+        Some(slot)
+    } else {
+        None
+    };
+
     if argc >= 1 {
         // PHP's @seconds syntax is not an ECMA date string.
         let chunk = &mut chunks[current];
         let text_slot = alloc_local(chunk);
         local_set(chunk, text_slot, line);
+        emit_constructor_fraction(chunk, text_slot, micros_slot.unwrap(), line);
         local_get(chunk, text_slot, line);
         push_str(chunk, "@", line);
         let starts_with = chunk.add_import("ecma:string", "startsWith");
@@ -293,6 +412,18 @@ fn emit_datetime_ctor(
         local_get(chunk, ms_slot, line);
     }
     emit_wrap_ms(&mut chunks[current], type_tag, line);
+
+    if let Some(slot) = micros_slot {
+        let chunk = &mut chunks[current];
+        local_get(chunk, slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if_params(line, 1, 1);
+        chunk.emit_dup(line);
+        local_get(chunk, slot, line);
+        struct_set(chunk, &ClassSlot::internal(MICROSECONDS_KEY), line);
+        chunk.emit_end(line);
+    }
 
     // Attach the timezone: the caller-supplied one, or a default UTC zone.
     match tz_slot {
@@ -380,7 +511,7 @@ pub fn emit_datetimezone_list_identifiers(
     local_get(chunk, group_slot, line);
     chunk.emit_i32_const(4096, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
     chunk.emit_if_value(line);
     local_get(chunk, country_slot, line);
     vybe_compiler::primitives::datetime::emit_zone_identifiers_for_country(chunk, line);
@@ -401,7 +532,7 @@ pub fn emit_datetimezone_list_identifiers(
         local_get(chunk, group_slot, line);
         chunk.emit_i32_const(group, line);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
         chunk.emit_if_value(line);
         push_str(chunk, prefix, line);
         vybe_compiler::primitives::datetime::emit_zone_identifiers_with_prefix(chunk, line);
@@ -411,7 +542,7 @@ pub fn emit_datetimezone_list_identifiers(
     local_get(chunk, group_slot, line);
     chunk.emit_i32_const(1024, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
     chunk.emit_if_value(line);
     push_str(chunk, "UTC", line);
     vybe_compiler::primitives::datetime::emit_zone_identifiers_with_prefix(chunk, line);
@@ -505,23 +636,6 @@ pub fn emit_datetime_set_timezone(chunks: &mut [Chunk], current: usize, line: u3
     local_get(chunk, dt_slot, line);
 }
 
-/// Build `{__type: dt.__type, __time: <ms_slot>, __tz: dt.__tz}` on stack-top,
-/// cloning the object's identity while swapping in a fresh instant.
-#[allow(dead_code)]
-fn emit_rewrap_like(chunk: &mut Chunk, dt_slot: u16, ms_slot: u16, line: u32) {
-    class_slots::emit_class_alloc(chunk, line);
-    chunk.emit_dup(line);
-    local_get(chunk, dt_slot, line);
-    struct_get(chunk, &ClassSlot::TypeIdentity, line);
-    struct_set(chunk, &ClassSlot::TypeIdentity, line);
-    chunk.emit_dup(line);
-    local_get(chunk, ms_slot, line);
-    struct_set(chunk, &ClassSlot::internal(TIME_KEY), line);
-    chunk.emit_dup(line);
-    local_get(chunk, dt_slot, line);
-    struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
-    struct_set(chunk, &ClassSlot::internal(TZ_KEY), line);
-}
 
 /// PHP `$dt->setDate($y, $m, $d)` — returns a new object with the calendar
 /// date replaced and the time-of-day preserved. Stack: `[dt, y, m, d]` → `[dt2]`.
@@ -1101,6 +1215,27 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 }
 
+/// Formatter-owned calendar arithmetic / date getters produce primitive numbers.
+/// Preserve Number spelling including NaN/Infinity/-0 using the same imports as
+/// the original dynamic-add concat arm. No generic field coercion is assumed.
+fn emit_stringify_number(chunk: &mut Chunk, line: u32) {
+    let number = chunk.add_import("wasm:js-number", "toF64");
+    chunk.emit_call(number, 1, line);
+    let string = chunk.add_import("wasm:js-string", "fromF64");
+    chunk.emit_call(string, 1, line);
+}
+
+/// Both operands are proven primitive Strings: formatter result, and literal,
+/// charAt, numeric stringify/padding, or literal timezone-offset output.
+fn emit_append_string(chunk: &mut Chunk, result_slot: u16, line: u32) {
+    let piece_slot = alloc_local(chunk);
+    local_set(chunk, piece_slot, line);
+    local_get(chunk, result_slot, line);
+    local_get(chunk, piece_slot, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    local_set(chunk, result_slot, line);
+}
+
 /// Push the f64 result of `ecma:date.<getter>(dt)`.
 fn emit_dt_getter(chunks: &mut [Chunk], current: usize, dt_slot: u16, getter: &str, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, dt_slot, line);
@@ -1128,73 +1263,6 @@ fn emit_timezone_name_from_dt_slot(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     local_get(chunk, dt_slot, line);
     struct_get(chunk, &ClassSlot::internal(TZ_KEY), line);
     struct_get(chunk, &ClassSlot::internal(TZNAME_KEY), line);
-}
-
-fn emit_timezone_offset_seconds_from_name_slot(chunk: &mut Chunk, name_slot: u16, line: u32) {
-    local_get(chunk, name_slot, line);
-    push_str(chunk, "+02:00", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(7200.0), line);
-    chunk.emit_else(line);
-    local_get(chunk, name_slot, line);
-    push_str(chunk, "Europe/Paris", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(3600.0), line);
-    chunk.emit_else(line);
-    local_get(chunk, name_slot, line);
-    push_str(chunk, "-04:00", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(-14400.0), line);
-    chunk.emit_else(line);
-    local_get(chunk, name_slot, line);
-    push_str(chunk, "-05:00", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(-18000.0), line);
-    chunk.emit_else(line);
-    local_get(chunk, name_slot, line);
-    push_str(chunk, "+05:30", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(19800.0), line);
-    chunk.emit_else(line);
-    local_get(chunk, name_slot, line);
-    push_str(chunk, "America/New_York", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(-18000.0), line);
-    chunk.emit_else(line);
-    local_get(chunk, name_slot, line);
-    push_str(chunk, "America/Los_Angeles", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(-28800.0), line);
-    chunk.emit_else(line);
-    local_get(chunk, name_slot, line);
-    push_str(chunk, "Asia/Tokyo", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(32400.0), line);
-    chunk.emit_else(line);
-    local_get(chunk, name_slot, line);
-    push_str(chunk, "Europe/London", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_else(line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
 }
 
 fn emit_timezone_offset_seconds_at_ms_from_name_slot(
@@ -1376,8 +1444,8 @@ fn emit_day_of_year(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u3
 fn emit_iso8601(chunks: &mut [Chunk], current: usize, dt_slot: u16, result_slot: u16, line: u32) {
     // Year
     emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
-    emit_stringify(&mut chunks[current], line);
-    emit_append_to_result(&mut chunks[current], result_slot, line);
+    emit_stringify_number(&mut chunks[current], line);
+    emit_append_string(&mut chunks[current], result_slot, line);
     append_lit(&mut chunks[current], result_slot, "-", line);
     // Month (1-based, padded)
     emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
@@ -1385,40 +1453,40 @@ fn emit_iso8601(chunks: &mut [Chunk], current: usize, dt_slot: u16, result_slot:
         let chunk = &mut chunks[current];
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
-        emit_pad_to_width(chunk, 2, line);
-        emit_append_to_result(chunk, result_slot, line);
+        emit_pad_number_to_width(chunk, 2, line);
+        emit_append_string(chunk, result_slot, line);
     }
     append_lit(&mut chunks[current], result_slot, "-", line);
     // Day
     emit_dt_getter(chunks, current, dt_slot, "getDate", line);
-    emit_pad_to_width(&mut chunks[current], 2, line);
-    emit_append_to_result(&mut chunks[current], result_slot, line);
+    emit_pad_number_to_width(&mut chunks[current], 2, line);
+    emit_append_string(&mut chunks[current], result_slot, line);
     append_lit(&mut chunks[current], result_slot, "T", line);
     // Hour
     emit_dt_getter(chunks, current, dt_slot, "getHours", line);
-    emit_pad_to_width(&mut chunks[current], 2, line);
-    emit_append_to_result(&mut chunks[current], result_slot, line);
+    emit_pad_number_to_width(&mut chunks[current], 2, line);
+    emit_append_string(&mut chunks[current], result_slot, line);
     append_lit(&mut chunks[current], result_slot, ":", line);
     // Minute
     emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
-    emit_pad_to_width(&mut chunks[current], 2, line);
-    emit_append_to_result(&mut chunks[current], result_slot, line);
+    emit_pad_number_to_width(&mut chunks[current], 2, line);
+    emit_append_string(&mut chunks[current], result_slot, line);
     append_lit(&mut chunks[current], result_slot, ":", line);
     // Second
     emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
-    emit_pad_to_width(&mut chunks[current], 2, line);
-    emit_append_to_result(&mut chunks[current], result_slot, line);
+    emit_pad_number_to_width(&mut chunks[current], 2, line);
+    emit_append_string(&mut chunks[current], result_slot, line);
     let name_slot = alloc_local(&mut chunks[current]);
     emit_timezone_name_from_dt_slot(&mut chunks[current], dt_slot, line);
     local_set(&mut chunks[current], name_slot, line);
     emit_timezone_offset_string_from_name_slot(&mut chunks[current], name_slot, line, true);
-    emit_append_to_result(&mut chunks[current], result_slot, line);
+    emit_append_string(&mut chunks[current], result_slot, line);
 }
 
 /// Append a string literal to `result_slot`.
 fn append_lit(chunk: &mut Chunk, result_slot: u16, s: &str, line: u32) {
     push_str(chunk, s, line);
-    emit_append_to_result(chunk, result_slot, line);
+    emit_append_string(chunk, result_slot, line);
 }
 
 /// Push the millisecond instant of the Thursday of `dt`'s ISO-8601 week.
@@ -1524,8 +1592,19 @@ fn emit_iso_year(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32) 
 ///
 /// Stack on entry: `[value]` ; Stack on exit: `[padded_string]`.
 fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
-    // Coerce to string first.
+    // Generic DateInterval fields may run user coercion; keep it unchanged.
     emit_stringify(chunk, line);
+    emit_pad_string_to_width(chunk, width, line);
+}
+
+fn emit_pad_number_to_width(chunk: &mut Chunk, width: u32, line: u32) {
+    emit_stringify_number(chunk, line);
+    emit_pad_string_to_width(chunk, width, line);
+}
+
+// The shared padding tail receives only primitive Strings. Numeric formatter
+// and generic DateInterval conversions differ only before this pure tail.
+fn emit_pad_string_to_width(chunk: &mut Chunk, width: u32, line: u32) {
     if width <= 1 {
         return;
     }
@@ -1546,7 +1625,7 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
         chunk.emit_if(line);
         push_str(chunk, "0", line);
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
         chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
         chunk.emit_end(line);
     }
@@ -1558,7 +1637,7 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
 fn emit_code_arm(
     chunks: &mut [Chunk],
     current: usize,
-    matched_slot: u16,
+    _matched_slot: u16,
     c_slot: u16,
     code: &str,
     line: u32,
@@ -1566,9 +1645,6 @@ fn emit_code_arm(
 ) {
     {
         let chunk = &mut chunks[current];
-        chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
-        chunk.emit_op(Op::I32_EQZ, line);
-        chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
         push_str(chunk, code, line);
         // c_slot is populated by charAt; the code is a string literal. Neither
@@ -1580,9 +1656,7 @@ fn emit_code_arm(
     body(chunks, current);
     {
         let chunk = &mut chunks[current];
-        core_wasm::i32_const(chunk, line, 1);
-        chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
-        chunk.emit_end(line);
+        chunk.emit_br(1, line); // arm IF -> enclosing dispatch block
         chunk.emit_end(line);
     }
 }
@@ -1604,13 +1678,8 @@ fn emit_format_code_dispatch(
     mode_strftime: bool,
     line: u32,
 ) {
-    let matched_slot = {
-        let chunk = &mut chunks[current];
-        let slot = alloc_local(chunk);
-        core_wasm::i32_const(chunk, line, 0);
-        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-        slot
-    };
+    let matched_slot = 0u16; // private Rust argument; no emitted slot/read
+    let dispatch_block = chunks[current].emit_block(line);
 
     if !mode_strftime {
         // PHP `date()` codes.
@@ -1624,8 +1693,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // y: last two digits, zero-padded
@@ -1641,8 +1710,8 @@ fn emit_format_code_dispatch(
                 // % 100
                 chunks[current].emit_f64_const(100.0, line);
                 vybe_compiler::primitives::expressions::emit_f64_mod(&mut chunks[current], line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // m: month 01-12, zero-padded
@@ -1657,8 +1726,8 @@ fn emit_format_code_dispatch(
                 emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
                 chunks[current].emit_f64_const(1.0, line);
                 chunks[current].emit_op(Op::F64_ADD, line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // n: month 1-12, no padding
@@ -1673,8 +1742,8 @@ fn emit_format_code_dispatch(
                 emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
                 chunks[current].emit_f64_const(1.0, line);
                 chunks[current].emit_op(Op::F64_ADD, line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // d: day 01-31, zero-padded
@@ -1687,8 +1756,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getDate", line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // j: day 1-31, no padding
@@ -1701,8 +1770,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getDate", line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // H: hour 00-23, zero-padded
@@ -1715,8 +1784,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getHours", line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // G: hour 0-23, no padding
@@ -1729,8 +1798,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getHours", line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // i: minute 00-59, zero-padded
@@ -1743,8 +1812,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // s: second 00-59, zero-padded
@@ -1757,8 +1826,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // u: microseconds, six digits.
@@ -1800,8 +1869,8 @@ fn emit_format_code_dispatch(
                 push_const(chunk, Value::F64(MS_PER_SECOND), line);
                 chunk.emit_op(Op::F64_DIV, line);
                 chunk.emit_op(Op::F64_FLOOR, line);
-                emit_stringify(chunk, line);
-                emit_append_to_result(chunk, result_slot, line);
+                emit_stringify_number(chunk, line);
+                emit_append_string(chunk, result_slot, line);
             },
         );
         // a / A: am/pm
@@ -1903,8 +1972,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getDay", line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // T: literal "UTC"
@@ -1917,7 +1986,7 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 push_str(&mut chunks[current], "UTC", line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // N: ISO-8601 day of week, 1 (Mon) … 7 (Sun).
@@ -1939,8 +2008,8 @@ fn emit_format_code_dispatch(
                 vybe_compiler::primitives::expressions::emit_f64_mod(chunk, line);
                 push_const(chunk, Value::F64(1.0), line);
                 chunk.emit_op(Op::F64_ADD, line);
-                emit_stringify(chunk, line);
-                emit_append_to_result(chunk, result_slot, line);
+                emit_stringify_number(chunk, line);
+                emit_append_string(chunk, result_slot, line);
             },
         );
         // L: 1 if a leap year, else 0.
@@ -1953,8 +2022,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_leap_flag(chunks, current, dt_slot, line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // t: number of days in the month (28–31).
@@ -1967,8 +2036,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_days_in_month(chunks, current, dt_slot, line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // z: day of the year, 0 (Jan 1) … 365.
@@ -1981,8 +2050,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_day_of_year(chunks, current, dt_slot, line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // u: microseconds, 6 digits (millisecond precision → trailing zeros).
@@ -2002,8 +2071,8 @@ fn emit_format_code_dispatch(
                 vybe_compiler::primitives::expressions::emit_f64_mod(chunk, line);
                 push_const(chunk, Value::F64(1000.0), line);
                 chunk.emit_op(Op::F64_MUL, line);
-                emit_pad_to_width(chunk, 6, line);
-                emit_append_to_result(chunk, result_slot, line);
+                emit_pad_number_to_width(chunk, 6, line);
+                emit_append_string(chunk, result_slot, line);
             },
         );
         // c: ISO-8601 date, e.g. 2024-06-15T10:00:00+00:00.
@@ -2049,7 +2118,7 @@ fn emit_format_code_dispatch(
                     line,
                     true,
                 );
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // O: timezone offset without a colon, e.g. +0000.
@@ -2070,7 +2139,7 @@ fn emit_format_code_dispatch(
                     line,
                     false,
                 );
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // W: ISO-8601 week number, zero-padded to 2 digits.
@@ -2083,8 +2152,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_iso_week(chunks, current, dt_slot, line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         // o: ISO-8601 year.
@@ -2097,8 +2166,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_iso_year(chunks, current, dt_slot, line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
     } else {
@@ -2114,8 +2183,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         emit_code_arm(
@@ -2129,8 +2198,8 @@ fn emit_format_code_dispatch(
                 emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
                 chunks[current].emit_f64_const(100.0, line);
                 vybe_compiler::primitives::expressions::emit_f64_mod(&mut chunks[current], line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         emit_code_arm(
@@ -2144,8 +2213,8 @@ fn emit_format_code_dispatch(
                 emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
                 chunks[current].emit_f64_const(1.0, line);
                 chunks[current].emit_op(Op::F64_ADD, line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         emit_code_arm(
@@ -2157,8 +2226,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getDate", line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         emit_code_arm(
@@ -2170,8 +2239,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getDate", line);
-                emit_stringify(&mut chunks[current], line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_stringify_number(&mut chunks[current], line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         emit_code_arm(
@@ -2183,8 +2252,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getHours", line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         emit_code_arm(
@@ -2196,8 +2265,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         emit_code_arm(
@@ -2209,8 +2278,8 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
-                emit_pad_to_width(&mut chunks[current], 2, line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_pad_number_to_width(&mut chunks[current], 2, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
         emit_code_arm(
@@ -2308,7 +2377,7 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 push_str(&mut chunks[current], "%", line);
-                emit_append_to_result(&mut chunks[current], result_slot, line);
+                emit_append_string(&mut chunks[current], result_slot, line);
             },
         );
     }
@@ -2316,12 +2385,10 @@ fn emit_format_code_dispatch(
     // Default arm: append the raw character itself when no format arm matched.
     {
         let chunk = &mut chunks[current];
-        chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
-        chunk.emit_op(Op::I32_EQZ, line);
-        chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
-        emit_append_to_result(chunk, result_slot, line);
+        emit_append_string(chunk, result_slot, line);
         chunk.emit_end(line);
+        chunk.patch_block(dispatch_block);
     }
 }
 
@@ -2335,14 +2402,14 @@ fn emit_am_pm(
 ) {
     emit_dt_getter(chunks, current, dt_slot, "getHours", line);
     let chunk = &mut chunks[current];
-    let _idx = chunk.add_constant(Value::F64(12.0));
+    push_const(chunk, Value::F64(12.0), line);
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     push_str(chunk, if upper { "AM" } else { "am" }, line);
     chunk.emit_else(line);
     push_str(chunk, if upper { "PM" } else { "pm" }, line);
     chunk.emit_end(line);
-    emit_append_to_result(chunk, result_slot, line);
+    emit_append_string(chunk, result_slot, line);
 }
 
 /// Index a constant string array by `getDay()` and append the result.
@@ -2443,7 +2510,16 @@ fn emit_format_dt_runtime(
         chunks.push(body.pop().unwrap());
         index
     };
+    local_get(&mut chunks[current], dt_slot, line);
+    local_get(&mut chunks[current], fmt_slot, line);
+    if vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+        chunks, current, helper, 2, line,
+    ) {
+        return;
+    }
     let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::REF_FUNC, helper as u16, line);
     chunk.emit(0, line);
     local_get(chunk, dt_slot, line);
@@ -2522,7 +2598,7 @@ fn emit_format_dt_runtime_body(
             let idx = chunk.add_import("ecma:string", "charAt");
             chunk.emit_call(idx, 2, line);
         }
-        emit_append_to_result(chunk, result_slot, line);
+        emit_append_string(chunk, result_slot, line);
         chunk.emit_end(line);
         // i++
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -2579,14 +2655,14 @@ fn emit_format_dt_runtime_body(
         chunks[current].emit_else(line);
         // OOB: append "%"
         push_str(&mut chunks[current], "%", line);
-        emit_append_to_result(&mut chunks[current], result_slot, line);
+        emit_append_string(&mut chunks[current], result_slot, line);
         chunks[current].emit_end(line);
         chunks[current].emit_else(line);
         // Plain char path: append c.
         {
             let chunk = &mut chunks[current];
             chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
-            emit_append_to_result(chunk, result_slot, line);
+            emit_append_string(chunk, result_slot, line);
         }
         chunks[current].emit_end(line);
     }
@@ -4438,7 +4514,6 @@ pub fn parse_iso_duration(s: &str) -> (i64, i64, i64, i64, i64, i64) {
 }
 
 // Silence unused-warning for stub helpers used only by future paths.
-#[allow(dead_code)]
 fn _unused_alloc_referrer() {
     let _ = MS_PER_WEEK;
 }

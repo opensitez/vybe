@@ -188,13 +188,6 @@ pub(crate) fn is_dart_mixin(__w: &mut DartWalker, name: &str) -> bool {
     __w.dart_mixin_names.contains(name)
 }
 
-/// The mixins `class_name` declared with `with`, in source order.
-pub(crate) fn dart_class_mixins(__w: &mut DartWalker, class_name: &str) -> Vec<String> {
-    __w.dart_class_mixins
-        .get(class_name)
-        .cloned()
-        .unwrap_or_default()
-}
 
 fn is_user_declared_class(__w: &DartWalker, name: &str) -> bool {
     __w.user_declared_classes.contains(name)
@@ -388,7 +381,6 @@ fn dart_call_or_new(__w: &mut DartWalker, callee: Expression, args: Vec<Argument
 /// blanket rewrite — and it bails when the user declares their own `Type`.
 /// Returns the rewritten `Call`, or `None` when nothing matches.
 /// True when `name` is a widget/value type registered in the Flutter catalog.
-#[allow(dead_code)]
 fn is_flutter_catalog_class(name: &str) -> bool {
     vybe_platform_flutter::emitter::flutter_classes()
         .iter()
@@ -1800,7 +1792,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // is ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)` taken
         // literally, which is also the only shape expressible as a functype.
         directives: vybe_ast::Directives {
+            add_concatenates_strings: Some(true),
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+            // The common ABI represents omitted arguments as Undefined.
+            // Keep explicit null distinct so optional defaults apply only
+            // to omitted arguments, including named and constructor params.
+            missing_arg_is_undefined: Some(true),
             type_resolution: Some(vybe_ast::TypeResolution::Hybrid),
             operator_dispatch: Some(vybe_ast::OperatorDispatch::RuntimeProtocol),
             // Prototype dispatch, as js — the callable carries its own
@@ -3623,7 +3620,6 @@ fn rewrite_this_to_dart_extension_receiver_expr(expr: &mut Expression) {
     }
 }
 
-#[allow(dead_code)]
 fn same_name_property_member_exists(members: &[ClassMember], incoming: &ClassMember) -> bool {
     let ClassMember::Property { name, .. } = incoming else {
         return false;
@@ -7584,18 +7580,6 @@ fn override_inherited_getter_fields(body: &mut [Statement]) {
     }
 }
 
-fn member_name(m: &ClassMember) -> Option<String> {
-    match m {
-        ClassMember::Field { name, .. } => Some(name.clone()),
-        ClassMember::Method(stmt) => match &stmt.kind {
-            StmtKind::FunctionDecl { name, .. } => Some(name.clone()),
-            _ => None,
-        },
-        ClassMember::Const { name, .. } => Some(name.clone()),
-        ClassMember::Property { name, .. } => Some(name.clone()),
-        _ => None,
-    }
-}
 
 fn instance_member_name(m: &ClassMember) -> Option<String> {
     match m {
@@ -15132,40 +15116,6 @@ fn dart_is_list_literal_receiver(expr: &Expression) -> bool {
     }
 }
 
-fn dart_call_result_has_collection_length(expr: &Expression) -> bool {
-    let ExprKind::Call { callee, .. } = &expr.kind else {
-        return false;
-    };
-    if matches!(
-        &callee.kind,
-        ExprKind::Ident(name)
-            if matches!(
-                name.as_str(),
-                "__dart_iter_where"
-                    | "__dart_iter_expand_precurrent"
-                    | "__dart_set_from"
-                    | "__dart_string_code_units"
-                    | "__dart_string_runes"
-                    | "List.generate"
-                    | "List.from"
-                    | "List.of"
-                    | "List.unmodifiable"
-                    | "Stream.fromIterable"
-                    | "Stream.value"
-                    | "Stream.empty"
-            )
-    ) {
-        return true;
-    }
-    matches!(
-        &callee.kind,
-        ExprKind::Member { field, .. }
-            if matches!(
-                field.as_str(),
-                "where" | "map" | "expand" | "toList" | "toSet" | "values" | "entries"
-            )
-    )
-}
 
 fn dart_expr_can_be_callable_object(expr: &Expression) -> bool {
     match &expr.kind {

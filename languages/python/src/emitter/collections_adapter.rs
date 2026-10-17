@@ -2398,8 +2398,7 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     );
     chunks[current].emit_op_u16(Op::LOCAL_SET, next_fn, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, next_fn, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::runtime_adapter::emit_slot_is_null_or_undefined(&mut chunks[current], next_fn, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
 
@@ -2423,7 +2422,7 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
         emit_throw_python_exception(&mut chunks[current], "StopIteration", "", line);
-        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        // Statement guard terminates in THROW; no value may remain at its void END.
         chunks[current].emit_end(line);
     }
     collections::emit_runtime_helper_call(chunks, current, "__vybe_pynext", argc, line);
@@ -2811,6 +2810,10 @@ pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_if_value(line);
         let owner = chunks[current].alloc_scratch(1);
 
+        // Keep the common call operands below the receiver-selection block.
+        // Its single result is the descriptor receiver; owner is set in both arms.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, getter, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
         chunks[current].emit_string_const("__mro__", line);
         call_import(chunks, current, "ecma:object", "hasIn", 2, line);
@@ -2818,10 +2821,7 @@ pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_if_value(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, owner, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, getter, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, owner, line);
         chunks[current].emit_else(line);
         class_slots::emit_class_alloc(&mut chunks[current], line);
         core_wasm::dup(&mut chunks[current], line);
@@ -2835,11 +2835,9 @@ pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
         );
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, owner, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, getter, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, owner, line);
         chunks[current].emit_end(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, owner, line);
         vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
             &mut chunks[current],
             3,
@@ -4572,6 +4570,10 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_method, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
+    let undefined_test = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(undefined_test, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     class_slots::emit_class_get(
@@ -4585,6 +4587,10 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
+    let undefined_test = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(undefined_test, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_op(Op::I32_EQZ, line); // 1 if a method is present
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);

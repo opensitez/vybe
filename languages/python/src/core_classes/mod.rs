@@ -35,6 +35,8 @@ mod argparse;
 mod ast_mod;
 mod asyncio_mod;
 mod builders;
+#[cfg(test)]
+mod library_gates;
 mod builtins;
 mod bytes;
 mod collections;
@@ -1001,18 +1003,28 @@ pub const CLASS_MODULES: &[(&str, &str)] = &[
 /// fact as metadata.
 pub const DYNAMIC_ATTR_CLASSES: &[&str] = &["Namespace", "Mock", "MagicMock", "PropertyMock"];
 
-/// The class names a program actually needs, on the same gate as
-/// `declarations_for`.
-///
-/// ⛔ The walker must register ONLY these. Registering every core class name in
-/// `py_defined_classes` for every program cost **242 tests** — sets,
-/// comprehensions and zip — because that registry is consulted far more widely
-/// than "is this name a class", and seeding it changes lowering decisions in
-/// programs that never mention the module.
-pub fn needed_classes(source: &str) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    for (module, classes) in MODULE_CLASSES {
-        if source.contains(module) {
+/// Ordered library gates shared by metadata setup and declaration injection.
+/// Only source-independent row identities are retained; declarations and scope
+/// metadata remain freshly constructed for each program.
+pub struct CoreLibrarySelection {
+    rows: Vec<usize>,
+}
+
+impl CoreLibrarySelection {
+    pub fn for_source(source: &str) -> Self {
+        let mut rows = Vec::new();
+        for (index, (module, _)) in MODULE_CLASSES.iter().enumerate() {
+            if source.contains(module) {
+                rows.push(index);
+            }
+        }
+        Self { rows }
+    }
+
+    pub fn needed_classes(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        for &index in &self.rows {
+            let (module, classes) = &MODULE_CLASSES[index];
             out.extend_from_slice(classes);
             if *module == "warnings" {
                 out.extend(warnings::CATEGORIES.iter().map(|(name, _)| *name));
@@ -1045,8 +1057,20 @@ pub fn needed_classes(source: &str) -> Vec<&'static str> {
                 out.extend(http_ssl::EXCEPTIONS.iter().map(|(name, _)| *name));
             }
         }
+        out
     }
-    out
+}
+
+/// The class names a program actually needs, on the same gate as
+/// `declarations_for`.
+///
+/// ⛔ The walker must register ONLY these. Registering every core class name in
+/// `py_defined_classes` for every program cost **242 tests** — sets,
+/// comprehensions and zip — because that registry is consulted far more widely
+/// than "is this name a class", and seeding it changes lowering decisions in
+/// programs that never mention the module.
+pub fn needed_classes(source: &str) -> Vec<&'static str> {
+    CoreLibrarySelection::for_source(source).needed_classes()
 }
 
 /// The instance attributes each declared class carries, for the walker's
@@ -3013,10 +3037,22 @@ pub fn module_member(module: &str, name: &str) -> Option<&'static str> {
             return Some(*class_name);
         }
     }
-    MODULE_SURFACE
-        .iter()
-        .find(|(m, n, _)| *m == module && *n == name)
-        .map(|(_, _, global)| *global)
+    // This table describes fixed library identities, not a program's imports
+    // or bindings. Keep the original first-match semantics for duplicate rows;
+    // user scope resolution still happens in the walker before this lookup.
+    static MEMBERS: std::sync::OnceLock<
+        std::collections::HashMap<(&'static str, &'static str), &'static str>,
+    > = std::sync::OnceLock::new();
+    MEMBERS
+        .get_or_init(|| {
+            let mut members = std::collections::HashMap::with_capacity(MODULE_SURFACE.len());
+            for &(module, name, global) in MODULE_SURFACE {
+                members.entry((module, name)).or_insert(global);
+            }
+            members
+        })
+        .get(&(module, name))
+        .copied()
 }
 
 pub fn class_module(name: &str) -> Option<&'static str> {
@@ -3399,31 +3435,179 @@ const MODULE_CLASSES: &[(&str, &[&str])] = &[
 /// full parse of hundreds of lines of Python; this is a `Vec<Statement>` built
 /// by function calls.
 pub fn declarations_for(source: &str, is_user_declared: impl Fn(&str) -> bool) -> Vec<Statement> {
-    let mut out = Vec::new();
-    for (module, classes) in MODULE_CLASSES {
-        if !source.contains(module) {
-            continue;
-        }
-        if *module == "contextvars" {
-            for (owner, build) in MODULE_FUNCTIONS {
-                if owner == module {
-                    out.extend(build());
+    CoreLibrarySelection::for_source(source).declarations(is_user_declared)
+}
+
+impl CoreLibrarySelection {
+    pub fn declarations(&self, is_user_declared: impl Fn(&str) -> bool) -> Vec<Statement> {
+        let mut out = Vec::new();
+        for &index in &self.rows {
+            let (module, classes) = &MODULE_CLASSES[index];
+            if *module == "contextvars" {
+                for (owner, build) in MODULE_FUNCTIONS {
+                    if owner == module {
+                        out.extend(build());
+                    }
+                }
+            }
+            out.extend(generated_classes(module));
+            for (name, build) in CORE_CLASSES {
+                if classes.contains(name) && !is_user_declared(name) {
+                    out.push(build());
+                }
+            }
+            if *module != "contextvars" {
+                for (owner, build) in MODULE_FUNCTIONS {
+                    if owner == module {
+                        out.extend(build());
+                    }
                 }
             }
         }
-        out.extend(generated_classes(module));
-        for (name, build) in CORE_CLASSES {
-            if classes.contains(name) && !is_user_declared(name) {
-                out.push(build());
+        out
+    }
+}
+
+#[cfg(test)]
+mod module_member_index_tests {
+    use super::*;
+
+    fn linear_member(module: &str, name: &str) -> Option<&'static str> {
+        if module == "decimal"
+            && let Some((class_name, _)) = decimal::EXCEPTIONS
+                .iter()
+                .find(|(class_name, _)| *class_name == name)
+        {
+            return Some(*class_name);
+        }
+        MODULE_SURFACE.iter()
+            .find(|(owner, member, _)| *owner == module && *member == name)
+            .map(|(_, _, global)| *global)
+    }
+
+    #[test]
+    fn indexed_exports_preserve_every_linear_first_match() {
+        for &(module, name, _) in MODULE_SURFACE {
+            assert_eq!(module_member(module, name), linear_member(module, name),
+                "{module}.{name}");
+        }
+        for &(name, _) in decimal::EXCEPTIONS {
+            assert_eq!(module_member("decimal", name), linear_member("decimal", name));
+        }
+        for &(module, name) in &[("missing", "missing"), ("json", "missing"),
+            ("missing", "dumps"), ("", ""), ("decimal", "missing")]
+        {
+            assert_eq!(module_member(module, name), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod library_selection_tests {
+    use super::*;
+    fn legacy_needed_classes(source: &str) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        for (module, classes) in MODULE_CLASSES {
+            if source.contains(module) {
+                out.extend_from_slice(classes);
+                if *module == "warnings" {
+                    out.extend(warnings::CATEGORIES.iter().map(|(name, _)| *name));
+                }
+                if *module == "threading" {
+                    out.extend(threading::LOCK_ALIASES.iter().map(|(name, _)| *name));
+                }
+                if *module == "contextvars" {
+                    out.push("Context");
+                }
+                if *module == "decimal" {
+                    out.extend(decimal::EXCEPTIONS.iter().map(|(name, _)| *name));
+                }
+                if *module == "graphlib" {
+                    out.extend(graphlib::EXCEPTIONS.iter().map(|(name, _)| *name));
+                }
+                if *module == "socket" {
+                    out.extend(socket::EXCEPTIONS.iter().map(|(name, _)| *name));
+                }
+                if *module == "queue" {
+                    out.extend(queue::EXCEPTIONS.iter().map(|(name, _)| *name));
+                }
+                if *module == "pathlib" {
+                    out.extend(pathlib::FLAVOURS.iter().map(|(name, _)| *name));
+                }
+                if *module == "concurrent" {
+                    out.extend(futures::EXECUTORS.iter().copied());
+                }
+                if *module == "http" || *module == "ssl" {
+                    out.extend(http_ssl::EXCEPTIONS.iter().map(|(name, _)| *name));
+                }
             }
         }
-        if *module != "contextvars" {
-            for (owner, build) in MODULE_FUNCTIONS {
-                if owner == module {
-                    out.extend(build());
+        out
+    }
+    fn legacy_declarations_for(
+        source: &str,
+        is_user_declared: impl Fn(&str) -> bool,
+    ) -> Vec<Statement> {
+        let mut out = Vec::new();
+        for (module, classes) in MODULE_CLASSES {
+            if !source.contains(module) {
+                continue;
+            }
+            if *module == "contextvars" {
+                for (owner, build) in MODULE_FUNCTIONS {
+                    if owner == module {
+                        out.extend(build());
+                    }
                 }
+            }
+            out.extend(generated_classes(module));
+            for (name, build) in CORE_CLASSES {
+                if classes.contains(name) && !is_user_declared(name) {
+                    out.push(build());
+                }
+            }
+            if *module != "contextvars" {
+                for (owner, build) in MODULE_FUNCTIONS {
+                    if owner == module {
+                        out.extend(build());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn shared_selection_preserves_gate_order_metadata_and_declarations() {
+        let combined = MODULE_CLASSES
+            .iter()
+            .map(|(module, _)| *module)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let sources = MODULE_CLASSES.iter().map(|(module, _)| *module).chain([
+            "",
+            "no imports here",
+            "# contextvars decimal warnings",
+            combined.as_str(),
+        ]);
+        for source in sources {
+            let selection = CoreLibrarySelection::for_source(source);
+            assert_eq!(
+                selection.needed_classes(),
+                legacy_needed_classes(source),
+                "{source}"
+            );
+            for exclude in [false, true] {
+                let filter = |name: &str| {
+                    exclude && (name.starts_with('_') || name == "Context" || name == "Decimal")
+                };
+                assert_eq!(
+                    format!("{:?}", selection.declarations(filter)),
+                    format!("{:?}", legacy_declarations_for(source, filter)),
+                    "{source}, exclude={exclude}"
+                );
             }
         }
     }
-    out
 }
+

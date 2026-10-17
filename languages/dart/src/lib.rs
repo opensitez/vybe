@@ -8,7 +8,6 @@ pub mod protocol;
 pub mod tree_register;
 pub mod walker;
 
-#[allow(dead_code)]
 mod native_grammar {
     include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
 }
@@ -46,6 +45,13 @@ pub fn register() {
         register_tree: Some(tree_register::register_namespace_tree),
         expand_source: None,
     });
+    vybe_compiler::frontend_preparation::register_default(
+        parse,
+        vybe_compiler::frontend_preparation::Capabilities {
+            helper_definitions: emitter::json_adapter::HELPER_DEFINITIONS,
+            ..Default::default()
+        },
+    );
     // Dart records compare by value while Lists compare by reference, so the
     // equality fallback deep-compares only tagged tuples (see vybe_compiler::emitter).
     vybe_runtime::registry::register_hooks(

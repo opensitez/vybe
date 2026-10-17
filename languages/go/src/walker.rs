@@ -44,19 +44,32 @@ use vybe_compiler::primitives::reflection;
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let (package_name, body, imports) = walk_go_source(source)?;
+    let retained_signatures = interface_values::source_signatures(source)?;
     go_validate_method_sets(&merge_go_struct_decls(&body))?;
 
-    let mut module = normalize_go_module(Module {
+    let mut module = normalize_go_module_with_signatures(Module {
         canon: Default::default(),
         name: package_name,
         language: Lang::Go,
         body,
         imports,
         directives: vybe_ast::Directives {
+            add_concatenates_strings: Some(true),
             // A go method declares its receiver (`func (r *T) M()`) and the
             // CALL supplies it as a leading argument — the callable is the raw
             // function off the type, carrying no receiver of its own.
             method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+            // Go method sets are fixed by declarations. Unlike dynamic object
+            // properties, a declared method cannot be reassigned at runtime.
+            // Let shared lowering omit shape probes for eligible resolved calls.
+            method_bindings_live: Some(false),
+            // Package function declarations are not assignable function variables.
+            // The common consumer additionally requires the exact native producer.
+            declared_function_bindings_live: Some(false),
+            // Function variables hold one callable even when reassigned; they
+            // are not multicast delegate arrays. This is independent of the
+            // immutability of declared method tables above.
+            callable_invocation: Some(vybe_ast::CallableInvocation::Single),
             // Every callable declares a leading receiver parameter, not only
             // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
             // argumentsList)`. A plain `f()` passes `undefined` (§10.2.1.1).
@@ -65,7 +78,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
             operator_dispatch: Some(vybe_ast::OperatorDispatch::StaticBuiltin),
             ..Default::default()
         },
-    });
+    }, retained_signatures);
     module.imports.retain(go_should_emit_import);
     Ok(module)
 }
@@ -300,6 +313,9 @@ struct GoFunctionSignature {
 
 #[derive(Clone, Default)]
 struct GoNormalizeEnv {
+    interface_signatures: interface_values::DeclaredInterfaces,
+    lambda_signature: Option<interface_values::MethodSignature>,
+    return_signature: Option<interface_values::MethodSignature>,
     value_types: HashMap<String, String>,
     reflect_value_payloads: HashMap<String, Expression>,
     reflect_value_targets: HashMap<String, Expression>,
@@ -315,7 +331,6 @@ struct GoNormalizeEnv {
     interface_methods: HashMap<String, HashSet<String>>,
     interface_concrete_types: HashMap<String, String>,
     nil_interface_values: HashSet<String>,
-    method_value_bindings: HashMap<String, GoMethodValueBinding>,
     named_types: HashMap<String, String>,
     type_names: HashSet<String>,
     function_bodies: HashMap<String, Vec<Statement>>,
@@ -367,15 +382,12 @@ struct GoMethodDef {
     is_sub: bool,
 }
 
-#[derive(Clone)]
-struct GoMethodValueBinding {
-    receiver: Expression,
-    method: String,
-}
 
 #[derive(Default)]
 struct GoNormalizeState {
     next_temp: usize,
+    interface_carriers: std::collections::BTreeSet<String>,
+    interface_reflection_types: std::collections::BTreeSet<String>,
 }
 
 struct GoSignatureInfo {
@@ -384,7 +396,11 @@ struct GoSignatureInfo {
     named_results: Vec<Param>,
 }
 
-fn normalize_go_module(mut module: Module) -> Module {
+fn normalize_go_module(module: Module) -> Module {
+    normalize_go_module_with_signatures(module, interface_values::SourceSignatures::default())
+}
+
+fn normalize_go_module_with_signatures(mut module: Module, retained: interface_values::SourceSignatures) -> Module {
     module.body = merge_go_struct_decls(&module.body);
     let signatures = collect_go_function_signatures(&module.body);
     let globals = collect_go_global_fixed_arrays(&module.body, &signatures);
@@ -396,6 +412,9 @@ fn normalize_go_module(mut module: Module) -> Module {
     let package_aliases = collect_go_package_aliases(&module.imports);
     let mut state = GoNormalizeState::default();
     let mut env = GoNormalizeEnv {
+        interface_signatures: interface_values::collect(&module.body),
+        lambda_signature: None,
+        return_signature: None,
         value_types: HashMap::new(),
         reflect_value_payloads: HashMap::new(),
         reflect_value_targets: HashMap::new(),
@@ -411,7 +430,6 @@ fn normalize_go_module(mut module: Module) -> Module {
         interface_methods,
         interface_concrete_types: HashMap::new(),
         nil_interface_values: HashSet::new(),
-        method_value_bindings: HashMap::new(),
         named_types,
         type_names,
         function_bodies,
@@ -430,6 +448,8 @@ fn normalize_go_module(mut module: Module) -> Module {
         owns_panic_state: false,
     };
 
+    env.interface_signatures.package = module.name.clone();
+    env.interface_signatures.source = retained;
     let mut normalized = Vec::with_capacity(module.body.len());
     for stmt in &module.body {
         normalized.extend(normalize_go_statement(
@@ -440,7 +460,8 @@ fn normalize_go_module(mut module: Module) -> Module {
         ));
     }
     let normalized = go_add_named_scalar_method_wrappers(normalized, &env);
-    let normalized = go_hoist_zero_value_globals(normalized);
+    let mut normalized = go_hoist_zero_value_globals(normalized);
+    normalized.extend(interface_values::carrier_declarations(&env, &state));
     module.body = go_lower_module_init_functions(normalized, &mut state);
     module
 }
@@ -1177,19 +1198,8 @@ fn collect_go_struct_infos(body: &[Statement]) -> HashMap<String, GoStructInfo> 
 }
 
 fn collect_go_interface_methods(body: &[Statement]) -> HashMap<String, HashSet<String>> {
-    let mut interfaces = HashMap::new();
-    for stmt in body {
-        let StmtKind::InterfaceDecl { name, members, .. } = &stmt.kind else {
-            continue;
-        };
-        let methods = interfaces.entry(name.clone()).or_insert_with(HashSet::new);
-        for member in members {
-            if let InterfaceMember::Method { name, .. } = member {
-                methods.insert(name.clone());
-            }
-        }
-    }
-    interfaces
+    interface_values::collect(body).methods.into_iter()
+        .map(|(name, methods)| (name, methods.into_keys().collect())).collect()
 }
 
 fn go_validate_method_sets(body: &[Statement]) -> Result<(), String> {
@@ -1206,10 +1216,12 @@ fn go_validate_method_sets(body: &[Statement]) -> Result<(), String> {
         slice_caps: HashMap::new(),
         slice_views: HashMap::new(),
         struct_infos: collect_go_struct_infos(body),
+        interface_signatures: interface_values::collect(body),
+        lambda_signature: None,
+        return_signature: None,
         interface_methods: collect_go_interface_methods(body),
         interface_concrete_types: HashMap::new(),
         nil_interface_values: HashSet::new(),
-        method_value_bindings: HashMap::new(),
         named_types: collect_go_named_types(body),
         type_names: collect_go_type_names(body),
         function_bodies: HashMap::new(),
@@ -1652,6 +1664,9 @@ fn normalize_go_block(
     normalized
 }
 
+mod panic_state_liveness;
+mod interface_values;
+
 fn normalize_go_function_body(
     stmts: &[Statement],
     env: &mut GoNormalizeEnv,
@@ -1746,6 +1761,25 @@ fn lower_go_defer_body(
             }
         }
         post_defer_output.reverse();
+    }
+
+    // A function without defers need not allocate a recovery closure and its
+    // captured state when normalization produced no reads of that state.
+    // Unknown AST shapes and nested closures deliberately keep the old path.
+    if !has_defer && env.owns_panic_state
+        && panic_state_liveness::is_unused(
+            &lowered_body,
+            final_return.as_ref(),
+            &[
+                panic_value_name.as_str(), has_panic_name.as_str(),
+                in_defer_name.as_str(), recover_fn_name.as_str(),
+            ],
+        )
+    {
+        if let Some(expr) = final_return {
+            lowered_body.push(Statement::new(StmtKind::Return(Some(expr))));
+        }
+        return lowered_body;
     }
 
     let panic_value_decl = go_defer_temp_decl(panic_value_name.clone(), None, Expression::null());
@@ -3160,7 +3194,7 @@ fn go_lower_defer_stmt(
 fn go_deferred_lambda_with_ref_captures(
     body: LambdaBody,
     value_captures: &[String],
-    _env: &GoNormalizeEnv,
+    env: &GoNormalizeEnv,
     _signatures: &HashMap<String, GoFunctionSignature>,
     state: &mut GoNormalizeState,
 ) -> Expression {
@@ -3185,10 +3219,22 @@ fn go_deferred_lambda_with_ref_captures(
         });
     }
 
+    // A named-result reference introduces an extra factory scope. Forward
+    // the set-once recovery callable through it explicitly, rather than
+    // relying on a transitive capture through that synthetic scope. The
+    // callable itself still shares the live panic-state cells.
+    let mut value_captures = value_captures.to_vec();
+    let mut used_names = HashSet::new();
+    go_collect_lambda_body_idents(&body, &mut used_names);
+    if let Some(recover) = env.recover_fn_name.as_ref() {
+        if used_names.contains(recover) && !value_captures.contains(recover) {
+            value_captures.push(recover.clone());
+        }
+    }
     let mut replacements = HashMap::new();
     let mut params = Vec::new();
     let mut args = Vec::new();
-    for name in value_captures {
+    for name in &value_captures {
         if params.iter().any(|param: &Param| param.name == *name) {
             continue;
         }
@@ -5018,6 +5064,9 @@ fn normalize_go_statement_inner(
             is_sub,
         } => {
             let mut fn_env = GoNormalizeEnv {
+                interface_signatures: env.interface_signatures.clone(),
+                lambda_signature: None,
+                return_signature: None,
                 value_types: env.value_types.clone(),
                 reflect_value_payloads: env.reflect_value_payloads.clone(),
                 reflect_value_targets: env.reflect_value_targets.clone(),
@@ -5033,7 +5082,6 @@ fn normalize_go_statement_inner(
                 interface_methods: env.interface_methods.clone(),
                 interface_concrete_types: env.interface_concrete_types.clone(),
                 nil_interface_values: env.nil_interface_values.clone(),
-                method_value_bindings: HashMap::new(),
                 named_types: env.named_types.clone(),
                 type_names: env.type_names.clone(),
                 function_bodies: env.function_bodies.clone(),
@@ -5051,6 +5099,7 @@ fn normalize_go_statement_inner(
                 recover_fn_name: None,
                 owns_panic_state: false,
             };
+            fn_env.return_signature = interface_values::declaration_signature(name, params, env);
             for param in params {
                 if param.type_hint.as_deref() == Some("__goTypeArg") {
                     if let Some(type_param) = go_runtime_generic_param_name(&param.name) {
@@ -5106,6 +5155,16 @@ fn normalize_go_statement_inner(
             let mut normalized = Vec::with_capacity(declarations.len());
             for decl in declarations {
                 let mut next_decl = decl.clone();
+                if next_decl.type_hint.is_none() {
+                    next_decl.type_hint = decl.init.as_ref()
+                        .and_then(|expr| interface_values::member_function_type(expr, env, signatures)
+                            .or_else(|| go_expr_type_hint(expr, env, signatures)))
+                        .map(Into::into);
+                }
+                let source_tuple_type_hints = decl
+                    .init
+                    .as_ref()
+                    .and_then(|expr| go_expr_tuple_type_hints(expr, env, signatures));
                 if let Some(pattern) = go_single_named_binding_pattern(&next_decl.pattern) {
                     next_decl.pattern = pattern;
                 }
@@ -5116,9 +5175,10 @@ fn normalize_go_statement_inner(
                         {
                             return tuple_expr;
                         }
-                        if let Some(tuple_expr) =
+                        if let Some((temporaries, tuple_expr)) =
                             go_normalize_map_lookup_tuple_expr(expr, env, signatures, state)
                         {
+                            prefix.extend(temporaries);
                             return tuple_expr;
                         }
                     }
@@ -5135,16 +5195,10 @@ fn normalize_go_statement_inner(
                         )
                     }
                 });
-                let method_value_binding = next_decl
-                    .init
-                    .as_ref()
-                    .and_then(|init| go_method_value_binding_from_expr(init, env, signatures));
-                if let Some(init) = next_decl.init.take() {
-                    next_decl.init = Some(if method_value_binding.is_some() {
-                        Expression::null()
-                    } else {
-                        go_normalize_method_value_binding(init, env, signatures, state)
-                    });
+                if let (Some(source), Some(target)) = (decl.init.as_ref(), next_decl.type_hint.as_deref()) {
+                    if let Some(init) = next_decl.init.take() {
+                        next_decl.init = Some(interface_values::box_value(init, source, target, env, signatures, state));
+                    }
                 }
                 next_decl.array_bounds = decl.array_bounds.as_ref().map(|bounds| {
                     bounds
@@ -5219,13 +5273,6 @@ fn normalize_go_statement_inner(
                     }
                 }
                 if let BindingPattern::Ident(name) = &next_decl.pattern {
-                    if let Some(binding) = method_value_binding.clone() {
-                        env.method_value_bindings.insert(name.clone(), binding);
-                    } else {
-                        env.method_value_bindings.remove(name);
-                    }
-                }
-                if let BindingPattern::Ident(name) = &next_decl.pattern {
                     if let Some(pattern) = next_decl
                         .init
                         .as_ref()
@@ -5238,6 +5285,7 @@ fn normalize_go_statement_inner(
                     .init
                     .as_ref()
                     .and_then(|init| go_expr_tuple_type_hints(init, env, signatures))
+                    .or_else(|| source_tuple_type_hints.clone())
                 {
                     go_record_binding_pattern_type_hints(&next_decl.pattern, &type_hints, env);
                 }
@@ -5327,6 +5375,23 @@ fn normalize_go_statement_inner(
                     }));
                     continue;
                 }
+                if let Some((temporary, expanded)) = source_tuple_type_hints
+                    .as_deref()
+                    .and_then(|hints| go_materialize_typed_tuple_decl(&next_decl, hints, state))
+                {
+                    if !normalized.is_empty() {
+                        prefix.push(Statement::new(StmtKind::VarDecl {
+                            declarations: std::mem::take(&mut normalized),
+                            kind: kind.clone(),
+                        }));
+                    }
+                    prefix.push(temporary);
+                    prefix.push(Statement::new(StmtKind::VarDecl {
+                        declarations: expanded,
+                        kind: kind.clone(),
+                    }));
+                    continue;
+                }
                 normalized.push(next_decl);
             }
 
@@ -5386,14 +5451,61 @@ fn normalize_go_statement_inner(
             if let Some(flag_def) = go_flag_definition(value) {
                 env.flag_defs.push(flag_def);
             }
-            let mut next_value = normalize_go_expr(value, env, signatures, state);
-            let method_value_binding =
-                go_method_value_binding_from_expr(&next_value, env, signatures);
-            next_value = if method_value_binding.is_some() {
-                Expression::null()
+            let map_lookup_tuple = if let [target] = targets.as_slice() {
+                let is_two_value = match &target.kind {
+                    ExprKind::Tuple(elements) => elements.len() == 2,
+                    ExprKind::Destructure(DestructurePattern::Array(elements)) => {
+                        elements.len() == 2
+                    }
+                    _ => false,
+                };
+                if is_two_value {
+                    go_normalize_map_lookup_tuple_expr(value, env, signatures, state)
+                } else {
+                    None
+                }
             } else {
-                go_normalize_method_value_binding(next_value, env, signatures, state)
+                None
             };
+            if map_lookup_tuple.is_some() {
+                // A lookup replaces these values; their old dynamic interface facts no longer apply.
+                let bound_names: Vec<&str> = match &targets[0].kind {
+                    ExprKind::Tuple(elements) => elements
+                        .iter()
+                        .filter_map(|element| {
+                            if let ExprKind::Ident(name) = &element.kind {
+                                Some(name.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    ExprKind::Destructure(DestructurePattern::Array(elements)) => elements
+                        .iter()
+                        .filter_map(|element| {
+                            if let ArrayPatternElem::Pattern(BindingPattern::Ident(name), None) =
+                                element
+                            {
+                                Some(name.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                for name in bound_names {
+                    env.interface_concrete_types.remove(name);
+                    env.nil_interface_values.remove(name);
+                }
+            }
+            let (mut prefix, mut next_value) = map_lookup_tuple
+                .unwrap_or_else(|| (Vec::new(), normalize_go_expr(value, env, signatures, state)));
+            if let [target] = targets.as_slice() {
+                if let Some(target_type) = go_expr_type_hint(target, env, signatures) {
+                    next_value = interface_values::box_value(next_value, value, &target_type, env, signatures, state);
+                }
+            }
             if let [target] = targets.as_slice()
                 && let ExprKind::Tuple(tuple_targets) = &target.kind
                 && tuple_targets.len() == 2
@@ -5405,13 +5517,8 @@ fn normalize_go_statement_inner(
             next_value = go_wrap_fixed_array_copy(next_value, env, signatures);
             if let [target] = targets.as_slice() {
                 if let ExprKind::Ident(name) = &target.kind {
-                    if let Some(binding) = method_value_binding.clone() {
-                        env.method_value_bindings.insert(name.clone(), binding);
-                    } else {
-                        env.method_value_bindings.remove(name);
-                    }
                     if let Some(type_name) = go_expr_type_hint(&next_value, env, signatures) {
-                        env.value_types.insert(name.clone(), type_name);
+                        env.value_types.entry(name.clone()).or_insert(type_name);
                     }
                     if let Some(concrete_type) = go_interface_concrete_type_from_assignment_target(
                         target,
@@ -5468,14 +5575,15 @@ fn normalize_go_statement_inner(
                     return rewritten;
                 }
             }
-            vec![Statement::new(StmtKind::Assign {
+            prefix.push(Statement::new(StmtKind::Assign {
                 targets: targets
                     .iter()
                     .map(|target| normalize_go_lvalue_expr(target, env, signatures, state))
                     .collect(),
                 value: next_value,
                 by_ref: false,
-            })]
+            }));
+            prefix
         }
         StmtKind::CompoundAssign { target, op, value } => {
             vec![Statement::new(StmtKind::CompoundAssign {
@@ -5487,6 +5595,7 @@ fn normalize_go_statement_inner(
         StmtKind::Return(expr) => {
             let next_expr = expr.as_ref().map(|value| {
                 let normalized = normalize_go_expr(value, env, signatures, state);
+                let normalized = interface_values::return_value(normalized, value, env, signatures, state);
                 if env
                     .return_type
                     .as_deref()
@@ -5802,148 +5911,11 @@ fn normalize_go_single_statement(
     }
 }
 
-fn normalize_go_expr(
-    expr: &Expression,
-    env: &GoNormalizeEnv,
-    signatures: &HashMap<String, GoFunctionSignature>,
-    state: &mut GoNormalizeState,
+fn go_normalize_member_expr(
+    expr: &Expression, env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>, state: &mut GoNormalizeState, as_value: bool,
 ) -> Expression {
-    match &expr.kind {
-        ExprKind::Ident(name) => env
-            .slice_views
-            .get(name)
-            .cloned()
-            .map(go_materialize_slice_view)
-            .unwrap_or_else(|| expr.clone()),
-        ExprKind::Binary { op, left, right } => {
-            if matches!(op, BinOp::Eq | BinOp::NotEq)
-                && go_is_time_location_utc_compare(left, right)
-            {
-                let equal = Expression::bool(true);
-                return if *op == BinOp::NotEq {
-                    Expression::new(ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        expr: Box::new(equal),
-                    })
-                } else {
-                    equal
-                };
-            }
-            let next_left = normalize_go_expr(left, env, signatures, state);
-            let next_right = normalize_go_expr(right, env, signatures, state);
-            if let Some(complex) =
-                go_complex_binary_expr(*op, next_left.clone(), next_right.clone())
-            {
-                return complex;
-            }
-            let normalized_op = if *op == BinOp::Div
-                && go_expr_type_hint(&next_left, env, signatures)
-                    .as_deref()
-                    .is_some_and(go_is_integer_type)
-                && go_expr_type_hint(&next_right, env, signatures)
-                    .as_deref()
-                    .is_some_and(go_is_integer_type)
-            {
-                BinOp::IDiv
-            } else {
-                *op
-            };
-
-            if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
-                && let Some(equal) = go_struct_equality_expr(
-                    next_left.clone(),
-                    next_right.clone(),
-                    normalized_op,
-                    env,
-                    signatures,
-                )
-            {
-                equal
-            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
-                && let Some(equal) = go_time_location_equality_expr(&next_left, &next_right)
-            {
-                if normalized_op == BinOp::NotEq {
-                    Expression::new(ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        expr: Box::new(equal),
-                    })
-                } else {
-                    equal
-                }
-            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
-                && let Some(equal) = go_interface_typed_nil_equality_expr(
-                    &next_left,
-                    &next_right,
-                    normalized_op,
-                    env,
-                )
-            {
-                equal
-            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
-                && let Some(equal) = go_nil_slice_map_equality_expr(
-                    next_left.clone(),
-                    next_right.clone(),
-                    normalized_op,
-                    env,
-                    signatures,
-                )
-            {
-                equal
-            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
-                && go_expr_is_fixed_array(&next_left, env, signatures)
-                && go_expr_is_fixed_array(&next_right, env, signatures)
-            {
-                let equal = go_builtin_call("__go_fixed_array_equal", vec![next_left, next_right]);
-                if normalized_op == BinOp::NotEq {
-                    Expression::new(ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        expr: Box::new(equal),
-                    })
-                } else {
-                    equal
-                }
-            } else {
-                Expression::new(ExprKind::Binary {
-                    op: normalized_op,
-                    left: Box::new(next_left),
-                    right: Box::new(next_right),
-                })
-            }
-        }
-        ExprKind::Unary {
-            op: UnaryOp::AddrOf,
-            expr,
-        } => {
-            let next_expr = normalize_go_expr(expr, env, signatures, state);
-            if let Some(place) = PlaceExpr::from_expr(&next_expr) {
-                Expression::new(ExprKind::RefOf(Box::new(place)))
-            } else {
-                Expression::new(ExprKind::Unary {
-                    op: UnaryOp::AddrOf,
-                    expr: Box::new(next_expr),
-                })
-            }
-        }
-        ExprKind::Unary {
-            op: UnaryOp::Deref,
-            expr,
-        } => Expression::new(ExprKind::RefLoad(Box::new(normalize_go_expr(
-            expr, env, signatures, state,
-        )))),
-        ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
-            op: *op,
-            expr: Box::new(normalize_go_expr(expr, env, signatures, state)),
-        }),
-        ExprKind::Ternary { cond, then, else_ } => Expression::new(ExprKind::Ternary {
-            cond: Box::new(normalize_go_expr(cond, env, signatures, state)),
-            then: Box::new(normalize_go_expr(then, env, signatures, state)),
-            else_: Box::new(normalize_go_expr(else_, env, signatures, state)),
-        }),
-        ExprKind::Member {
-            object,
-            field,
-            null_safe,
-        } => {
+    let ExprKind::Member { object, field, null_safe } = &expr.kind else { return expr.clone(); };
             if field == "String"
                 && let ExprKind::Member {
                     object: inner_object,
@@ -6100,14 +6072,158 @@ fn normalize_go_expr(
                 env,
                 signatures,
             );
-            rewritten.unwrap_or_else(|| {
-                Expression::new(ExprKind::Member {
-                    object: Box::new(next_object),
-                    field: field.clone(),
-                    null_safe: *null_safe,
+            let member = rewritten.unwrap_or_else(|| Expression::new(ExprKind::Member {
+                object: Box::new(next_object), field: field.clone(), null_safe: *null_safe,
+            }));
+            if as_value { go_normalize_method_value_binding(member, env, signatures, state) } else { member }
+
+}
+
+fn normalize_go_expr(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Expression {
+    match &expr.kind {
+        ExprKind::Ident(name) => env
+            .slice_views
+            .get(name)
+            .cloned()
+            .map(go_materialize_slice_view)
+            .unwrap_or_else(|| expr.clone()),
+        ExprKind::Binary { op, left, right } => {
+            if matches!(op, BinOp::Eq | BinOp::NotEq)
+                && go_is_time_location_utc_compare(left, right)
+            {
+                let equal = Expression::bool(true);
+                return if *op == BinOp::NotEq {
+                    Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(equal),
+                    })
+                } else {
+                    equal
+                };
+            }
+            let next_left = normalize_go_expr(left, env, signatures, state);
+            let next_right = normalize_go_expr(right, env, signatures, state);
+            if matches!(op, BinOp::Eq | BinOp::NotEq)
+                && [left.as_ref(), right.as_ref()].iter().any(|operand|
+                    go_expr_type_hint(operand, env, signatures)
+                        .is_some_and(|ty| go_is_go_interface_type(&ty, env)))
+            {
+                return interface_values::equal(next_left, next_right, *op, env, state);
+            }
+            if let Some(complex) =
+                go_complex_binary_expr(*op, next_left.clone(), next_right.clone())
+            {
+                return complex;
+            }
+            let normalized_op = if *op == BinOp::Div
+                && go_expr_type_hint(&next_left, env, signatures)
+                    .as_deref()
+                    .is_some_and(go_is_integer_type)
+                && go_expr_type_hint(&next_right, env, signatures)
+                    .as_deref()
+                    .is_some_and(go_is_integer_type)
+            {
+                BinOp::IDiv
+            } else {
+                *op
+            };
+
+            if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
+                && let Some(equal) = go_struct_equality_expr(
+                    next_left.clone(),
+                    next_right.clone(),
+                    normalized_op,
+                    env,
+                    signatures,
+                )
+            {
+                equal
+            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
+                && let Some(equal) = go_time_location_equality_expr(&next_left, &next_right)
+            {
+                if normalized_op == BinOp::NotEq {
+                    Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(equal),
+                    })
+                } else {
+                    equal
+                }
+            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
+                && let Some(equal) = go_interface_typed_nil_equality_expr(
+                    &next_left,
+                    &next_right,
+                    normalized_op,
+                    env,
+                )
+            {
+                equal
+            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
+                && let Some(equal) = go_nil_slice_map_equality_expr(
+                    next_left.clone(),
+                    next_right.clone(),
+                    normalized_op,
+                    env,
+                    signatures,
+                )
+            {
+                equal
+            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
+                && go_expr_is_fixed_array(&next_left, env, signatures)
+                && go_expr_is_fixed_array(&next_right, env, signatures)
+            {
+                let equal = go_builtin_call("__go_fixed_array_equal", vec![next_left, next_right]);
+                if normalized_op == BinOp::NotEq {
+                    Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(equal),
+                    })
+                } else {
+                    equal
+                }
+            } else {
+                Expression::new(ExprKind::Binary {
+                    op: normalized_op,
+                    left: Box::new(next_left),
+                    right: Box::new(next_right),
                 })
-            })
+            }
         }
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => {
+            let next_expr = normalize_go_expr(expr, env, signatures, state);
+            if let Some(place) = PlaceExpr::from_expr(&next_expr) {
+                Expression::new(ExprKind::RefOf(Box::new(place)))
+            } else {
+                Expression::new(ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    expr: Box::new(next_expr),
+                })
+            }
+        }
+        ExprKind::Unary {
+            op: UnaryOp::Deref,
+            expr,
+        } => Expression::new(ExprKind::RefLoad(Box::new(normalize_go_expr(
+            expr, env, signatures, state,
+        )))),
+        ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
+            op: *op,
+            expr: Box::new(normalize_go_expr(expr, env, signatures, state)),
+        }),
+        ExprKind::Ternary { cond, then, else_ } => Expression::new(ExprKind::Ternary {
+            cond: Box::new(normalize_go_expr(cond, env, signatures, state)),
+            then: Box::new(normalize_go_expr(then, env, signatures, state)),
+            else_: Box::new(normalize_go_expr(else_, env, signatures, state)),
+        }),
+        ExprKind::Member { .. } => go_normalize_member_expr(expr, env, signatures, state, true),
         ExprKind::Index {
             object,
             index,
@@ -6184,17 +6300,28 @@ fn normalize_go_expr(
                     );
                 }
             }
-            let next_callee = normalize_go_expr(callee, env, signatures, state);
+            let next_callee = if matches!(&callee.kind, ExprKind::Member { .. }) {
+                go_normalize_member_expr(callee, env, signatures, state, false)
+            } else { normalize_go_expr(callee, env, signatures, state) };
+            if matches!(&next_callee.kind, ExprKind::Ident(name) if name == "__go_type_assert_comma_ok")
+                && args.len() == 2
+            {
+                if let Some(target) = go_type_name_from_expr(&args[1].value) {
+                    return interface_values::assertion(
+                        normalize_go_expr(&args[0].value, env, signatures, state),
+                        &target, env, state, true,
+                    );
+                }
+            }
             if matches!(&next_callee.kind, ExprKind::Ident(name) if name == "__go_type_assert")
                 && args.len() == 2
             {
                 if let Some(type_name) = go_type_name_from_expr(&args[1].value) {
-                    return go_type_assert_value_expr(
-                        normalize_go_expr(&args[0].value, env, signatures, state),
-                        &type_name,
-                        env,
-                        Some(state),
-                    );
+                    let subject = normalize_go_expr(&args[0].value, env, signatures, state);
+                    if go_stdlib_type_binding(&type_name).is_none() {
+                        return interface_values::assertion(subject, &type_name, env, state, false);
+                    }
+                    return go_type_assert_value_expr(subject, &type_name, env, Some(state));
                 }
                 if let Some(kind) = go_xml_type_assert_kind_marker(&args[1].value) {
                     return go_xml_token_element_from_go_expr(
@@ -6227,6 +6354,14 @@ fn normalize_go_expr(
                     {
                         value = go_wrap_fixed_array_copy(value, env, signatures);
                     }
+                    let hidden = signature.map_or(0, |signature| signature.generic_arg_count);
+                    if idx >= hidden {
+                        if let Some(target) = interface_values::call_parameter_type(&next_callee, idx - hidden, arg.spread, env, signatures) {
+                            value = interface_values::box_value(value, &arg.value, &target, env, signatures, state);
+                        } else if let Some(target) = signature.and_then(|sig| sig.params.get(idx)).and_then(|hint| hint.as_deref()) {
+                            value = interface_values::box_value(value, &arg.value, target, env, signatures, state);
+                        }
+                    }
                     Argument {
                         value,
                         name: arg.name.clone(),
@@ -6235,6 +6370,16 @@ fn normalize_go_expr(
                     }
                 })
                 .collect::<Vec<_>>();
+
+            if next_args.len() == 1 {
+                match go_expr_call_name(&next_callee).as_deref() {
+                    Some("reflect.TypeOf") => return interface_values::reflect(
+                        next_args[0].value.clone(), &args[0].value, false, env, signatures, state),
+                    Some("reflect.ValueOf") => return interface_values::reflect(
+                        next_args[0].value.clone(), &args[0].value, true, env, signatures, state),
+                    _ => {}
+                }
+            }
 
             if next_args.is_empty()
                 && let ExprKind::Lit(Literal::Str(_)) = &next_callee.kind
@@ -6262,15 +6407,6 @@ fn normalize_go_expr(
                 return rewritten_iife;
             }
 
-            if let ExprKind::Ident(name) = &next_callee.kind {
-                if let Some(binding) = env.method_value_bindings.get(name)
-                    && let Some(rewritten_call) = go_method_value_binding_call_expr(
-                        binding, &next_args, *optional, env, signatures,
-                    )
-                {
-                    return rewritten_call;
-                }
-            }
 
             if let Some(rewritten_call) =
                 go_rewrite_bytes_method_call(&next_callee, &next_args, env, signatures)
@@ -6397,6 +6533,14 @@ fn normalize_go_expr(
             }
 
             let call_name = go_expr_call_name(&next_callee);
+
+            if call_name.as_deref() == Some("println")
+                && !env.value_types.contains_key("println")
+                && !signatures.contains_key("println")
+            {
+                return go_builtin_call("__go_fmt_println",
+                    next_args.iter().map(|arg| arg.value.clone()).collect());
+            }
 
             if let Some(name) = call_name.as_deref() {
                 if let Some(rewritten) = go_rewrite_fmt_format_call(
@@ -6810,6 +6954,16 @@ fn normalize_go_expr(
                 }
             }
 
+            if let ExprKind::Ident(name) = &next_callee.kind {
+                if let Some(ty) = env.value_types.get(name)
+                    .filter(|ty| interface_values::function_signature(ty).is_some())
+                {
+                    if !next_args.iter().any(|arg| arg.by_ref) {
+                        return interface_values::guard_function_call(
+                            next_callee, ty, next_args, *optional, state);
+                    }
+                }
+            }
             Expression::new(ExprKind::Call {
                 callee: Box::new(next_callee),
                 args: next_args,
@@ -6850,7 +7004,18 @@ fn normalize_go_expr(
                 .collect(),
         )),
         ExprKind::Cast { expr, type_name } => {
+            if matches!(&expr.kind, ExprKind::Lambda { .. }) && go_is_function_type(type_name) {
+                let mut typed_env = env.clone();
+                typed_env.lambda_signature = interface_values::function_signature(type_name);
+                return normalize_go_expr(expr, &typed_env, signatures, state);
+            }
             let normalized_expr = normalize_go_expr(expr, env, signatures, state);
+            if go_is_go_interface_type(type_name, env) {
+                return interface_values::box_value(normalized_expr, expr, type_name, env, signatures, state);
+            }
+            if go_expr_type_hint(expr, env, signatures).is_some_and(|ty| go_is_go_interface_type(&ty, env)) {
+                return interface_values::assertion(normalized_expr, type_name, env, state, false);
+            }
             if matches!(type_name.trim(), "int" | "int64") {
                 if let Some(value) = go_time_named_value_to_int(&normalized_expr) {
                     return Expression::int(value);
@@ -6916,6 +7081,7 @@ fn normalize_go_expr(
                     type_name: type_name.clone(),
                 });
             }
+            let normalized_expr = interface_values::composite(normalized_expr, expr, type_name, env, signatures, state);
             go_normalize_typed_composite_expr(normalized_expr, type_name, env)
         }
         ExprKind::TypeOf(inner) => Expression::new(ExprKind::TypeOf(Box::new(normalize_go_expr(
@@ -6923,6 +7089,9 @@ fn normalize_go_expr(
         )))),
         ExprKind::IsType { expr, type_name } => {
             let normalized_expr = normalize_go_expr(expr, env, signatures, state);
+            if go_expr_type_hint(expr, env, signatures).is_some_and(|ty| go_is_go_interface_type(&ty, env)) {
+                return interface_values::test(normalized_expr, type_name, env);
+            }
             if type_name.trim() == "__goXMLStartElement" {
                 return Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
@@ -6976,6 +7145,9 @@ fn normalize_go_expr(
             captures,
         } => {
             let mut lambda_env = GoNormalizeEnv {
+                interface_signatures: env.interface_signatures.clone(),
+                lambda_signature: None,
+                return_signature: env.lambda_signature.clone(),
                 value_types: env.value_types.clone(),
                 reflect_value_payloads: env.reflect_value_payloads.clone(),
                 reflect_value_targets: env.reflect_value_targets.clone(),
@@ -6991,7 +7163,6 @@ fn normalize_go_expr(
                 interface_methods: env.interface_methods.clone(),
                 interface_concrete_types: env.interface_concrete_types.clone(),
                 nil_interface_values: env.nil_interface_values.clone(),
-                method_value_bindings: env.method_value_bindings.clone(),
                 named_types: env.named_types.clone(),
                 type_names: env.type_names.clone(),
                 function_bodies: env.function_bodies.clone(),
@@ -7002,7 +7173,7 @@ fn normalize_go_expr(
                 log_flags: env.log_flags.clone(),
                 time_round_half_hour_bindings: env.time_round_half_hour_bindings.clone(),
                 generic_type_params: env.generic_type_params.clone(),
-                return_type: None,
+                return_type: env.lambda_signature.as_ref().and_then(|signature| signature.return_type.clone()),
                 panic_value_name: None,
                 has_panic_name: None,
                 in_defer_name: None,
@@ -7113,6 +7284,9 @@ fn go_normalize_direct_defer_callee(
     };
 
     let mut lambda_env = GoNormalizeEnv {
+        interface_signatures: env.interface_signatures.clone(),
+        lambda_signature: None,
+        return_signature: None,
         value_types: env.value_types.clone(),
         reflect_value_payloads: env.reflect_value_payloads.clone(),
         reflect_value_targets: env.reflect_value_targets.clone(),
@@ -7128,7 +7302,6 @@ fn go_normalize_direct_defer_callee(
         interface_methods: env.interface_methods.clone(),
         interface_concrete_types: env.interface_concrete_types.clone(),
         nil_interface_values: env.nil_interface_values.clone(),
-        method_value_bindings: env.method_value_bindings.clone(),
         named_types: env.named_types.clone(),
         type_names: env.type_names.clone(),
         function_bodies: env.function_bodies.clone(),
@@ -9326,6 +9499,9 @@ fn go_rewrite_reflect_method_call(
         "__goReflectValue" | "__goReflectType"
     ) {
         return None;
+    }
+    if receiver_type == "__goReflectType" && field == "String" && args.is_empty() {
+        return Some(go_builtin_call("go.reflect_name", vec![object.as_ref().clone()]));
     }
     if field == "Elem" && args.is_empty() {
         if let Some(rewritten) = go_rewrite_reflect_elem(object, env, signatures) {
@@ -13945,20 +14121,46 @@ fn go_is_two_value_binding_pattern(pattern: &BindingPattern) -> bool {
 
 fn go_normalize_map_lookup_tuple_expr(
     expr: &Expression,
-    env: &GoNormalizeEnv,
+    env: &mut GoNormalizeEnv,
     signatures: &HashMap<String, GoFunctionSignature>,
     state: &mut GoNormalizeState,
-) -> Option<Expression> {
+) -> Option<(Vec<Statement>, Expression)> {
     let ExprKind::Index { object, index, .. } = &expr.kind else {
         return None;
     };
-    let value_type = go_map_index_value_type(expr, env, signatures)?;
+    let map_type = go_expr_type_hint(object, env, signatures)?;
+    let (key_type, value_type) = go_map_key_value_types(&map_type)?;
     let next_object = normalize_go_expr(object, env, signatures, state);
     let next_index = normalize_go_expr(index, env, signatures, state);
-    Some(Expression::new(ExprKind::Tuple(vec![
-        go_build_map_read_expr(next_object.clone(), next_index.clone(), &value_type),
-        go_map_has_expr(next_object, next_index),
-    ])))
+    let map_name = fresh_go_temp(state, "__go_lookup_map");
+    let key_name = fresh_go_temp(state, "__go_lookup_key");
+    let mut temporaries = Vec::new();
+    // Checked bindings store the map value unchanged, before evaluating the key.
+    for (name, type_name, init) in [
+        (map_name.clone(), map_type, next_object),
+        (key_name.clone(), key_type, next_index),
+    ] {
+        env.value_types.insert(name.clone(), type_name.clone());
+        temporaries.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name),
+                type_hint: Some(TypeHint::checked(type_name)),
+                init: Some(init),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }));
+    }
+    let map = Expression::ident(&map_name);
+    let key = Expression::ident(&key_name);
+    Some((
+        temporaries,
+        Expression::new(ExprKind::Tuple(vec![
+            go_build_map_read_expr(map.clone(), key.clone(), &value_type),
+            go_map_has_expr(map, key),
+        ])),
+    ))
 }
 
 fn go_normalize_channel_receive_tuple_expr(
@@ -13977,17 +14179,6 @@ fn go_normalize_channel_receive_tuple_expr(
 
 fn go_map_has_expr(object: Expression, index: Expression) -> Expression {
     go_builtin_call("__go_map_has", vec![object, index])
-}
-
-fn go_map_index_value_type(
-    expr: &Expression,
-    env: &GoNormalizeEnv,
-    signatures: &HashMap<String, GoFunctionSignature>,
-) -> Option<String> {
-    let ExprKind::Index { object, .. } = &expr.kind else {
-        return None;
-    };
-    go_expr_type_hint(object, env, signatures).and_then(|type_name| go_map_value_type(&type_name))
 }
 
 fn go_build_map_read_expr(object: Expression, index: Expression, value_type: &str) -> Expression {
@@ -14176,6 +14367,11 @@ fn go_expr_type_hint(
     env: &GoNormalizeEnv,
     signatures: &HashMap<String, GoFunctionSignature>,
 ) -> Option<String> {
+    if let ExprKind::Call { callee, .. } = &expr.kind {
+        if let Some(signature) = go_expr_type_hint(callee, env, signatures).and_then(|ty| interface_values::function_signature(&ty)) {
+            return signature.return_type;
+        }
+    }
     match &expr.kind {
         ExprKind::Ident(name) => env
             .value_types
@@ -14186,6 +14382,10 @@ fn go_expr_type_hint(
         ExprKind::Lit(Literal::Float(_)) => Some("float64".to_string()),
         ExprKind::Lit(Literal::Bool(_)) => Some("bool".to_string()),
         ExprKind::Lit(Literal::Str(_)) => Some("string".to_string()),
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            expr,
+        } => go_expr_type_hint(expr, env, signatures),
         ExprKind::Object(_) if go_expr_is_complex(expr) => Some("complex128".to_string()),
         ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
         ExprKind::RefOf(place) => {
@@ -14518,10 +14718,14 @@ fn go_expr_type_hint(
             ExprKind::Member { field, .. } if field == "charCodeAt" => Some("int".to_string()),
             ExprKind::Member { object, field, .. } => go_expr_type_hint(object, env, signatures)
                 .and_then(|type_name| {
-                    go_resolve_struct_member_type(&type_name, field, env, &mut HashSet::new())
+                    interface_values::method(env, &type_name, field).and_then(|sig| sig.return_type.clone())
+                        .or_else(|| go_resolve_struct_member_type(&type_name, field, env, &mut HashSet::new()))
                 }),
-            ExprKind::Ident(name) => signatures.get(name).and_then(|sig| sig.return_type.clone()),
+            ExprKind::Ident(name) => signatures.get(name).and_then(|sig| sig.return_type.clone())
+                .or_else(|| env.value_types.get(name).and_then(|ty| interface_values::function_signature(ty)).and_then(|sig| sig.return_type)),
             _ => match go_expr_call_name(callee).as_deref() {
+                Some("reflect.TypeOf") => Some("__goReflectType".into()),
+                Some("reflect.ValueOf") => Some("__goReflectValue".into()),
                 Some("utf16.Decode") => Some("[]rune".to_string()),
                 Some("utf16.Encode") => Some("[]uint16".to_string()),
                 Some(name)
@@ -14670,44 +14874,16 @@ fn go_normalize_method_value_binding(
     expr: Expression,
     env: &GoNormalizeEnv,
     signatures: &HashMap<String, GoFunctionSignature>,
-    _state: &mut GoNormalizeState,
+    state: &mut GoNormalizeState,
 ) -> Expression {
-    let ExprKind::Member { object, field, .. } = &expr.kind else {
-        return expr;
-    };
-    go_bound_method_value_expr(object.as_ref().clone(), field, env, signatures).unwrap_or(expr)
-}
-
-fn go_method_value_binding_from_expr(
-    expr: &Expression,
-    env: &GoNormalizeEnv,
-    signatures: &HashMap<String, GoFunctionSignature>,
-) -> Option<GoMethodValueBinding> {
-    let ExprKind::Member { object, field, .. } = &expr.kind else {
-        return None;
-    };
-    go_bound_method_call_expr(object.as_ref().clone(), field, &[], false, env, signatures)?;
-    Some(GoMethodValueBinding {
-        receiver: object.as_ref().clone(),
-        method: field.clone(),
-    })
-}
-
-fn go_method_value_binding_call_expr(
-    binding: &GoMethodValueBinding,
-    args: &[Argument],
-    optional: bool,
-    env: &GoNormalizeEnv,
-    signatures: &HashMap<String, GoFunctionSignature>,
-) -> Option<Expression> {
-    go_bound_method_call_expr(
-        binding.receiver.clone(),
-        &binding.method,
-        args,
-        optional,
-        env,
-        signatures,
-    )
+    let ExprKind::Member { object, field, .. } = &expr.kind else { return expr; };
+    if let Some(ty) = go_expr_type_hint(object, env, signatures) {
+        if let Some(value) = interface_values::materialize(object.as_ref().clone(), &ty, field, env, state) { return value; }
+        if let Some((receiver, interface_type)) = go_embedded_interface_method_receiver(object, &ty, field, env) {
+            if let Some(value) = interface_values::materialize(receiver, &interface_type, field, env, state) { return value; }
+        }
+    }
+    go_bound_method_value_expr(object.as_ref().clone(), field, env, signatures, state).unwrap_or(expr)
 }
 
 fn go_bound_method_value_expr(
@@ -14715,89 +14891,51 @@ fn go_bound_method_value_expr(
     field: &str,
     env: &GoNormalizeEnv,
     signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
 ) -> Option<Expression> {
     let mut receiver_type = go_expr_type_hint(&receiver_object, env, signatures)?;
-    if env.interface_methods.contains_key(receiver_type.trim()) {
-        receiver_type =
-            go_interface_receiver_concrete_type(&receiver_object, &receiver_type, field, env)?;
-    }
-
     let mut lookup = go_struct_lookup_name(&receiver_type)?;
     let mut info = env.struct_infos.get(&lookup)?;
-    let mut method_params = info.method_params.get(field).cloned();
-    let mut wrapper_lookup = lookup.clone();
-
     if !info.method_names.contains(field) {
-        if let Some(promoted_owner) = go_promoted_pointer_method_wrapper_owner(&lookup, field, env)
-        {
-            method_params = go_promoted_pointer_method_params(&promoted_owner, field, env);
-            wrapper_lookup = promoted_owner;
-        } else {
-            let (promoted_object, promoted_type) = go_promoted_method_receiver_for_call(
-                receiver_object.clone(),
-                &receiver_type,
-                field,
-                env,
-            )?;
-            receiver_object = promoted_object;
-            receiver_type = promoted_type;
-            lookup = go_struct_lookup_name(&receiver_type)?;
-            info = env.struct_infos.get(&lookup)?;
-            method_params = info.method_params.get(field).cloned();
-            wrapper_lookup = lookup.clone();
-            if !info.method_names.contains(field) {
-                return None;
-            }
+        let promoted = interface_values::promoted_receiver(receiver_object, &receiver_type, field, env, state)?;
+        receiver_object = promoted.0;
+        receiver_type = promoted.1;
+        if let Some(value) = interface_values::materialize(receiver_object.clone(), &receiver_type, field, env, state) {
+            return Some(value);
         }
+        lookup = go_struct_lookup_name(&receiver_type)?;
+        info = env.struct_infos.get(&lookup)?;
     }
-
-    if go_skip_method_wrapper_type(&wrapper_lookup) {
-        return None;
-    }
-
-    let params = method_params?;
-    let declared_receiver = params.first().and_then(|param| param.type_hint.as_deref());
-    let receiver_arg = match declared_receiver {
-        Some(declared) if receiver_type.trim().starts_with('*') && !declared.starts_with('*') => {
-            Expression::new(ExprKind::Unary {
-                op: UnaryOp::Deref,
-                expr: Box::new(receiver_object.clone()),
-            })
-        }
-        Some(declared) if !receiver_type.trim().starts_with('*') && declared.starts_with('*') => {
-            go_addr_of_normalized_expr(receiver_object.clone())
-        }
-        _ => receiver_object,
+    if go_skip_method_wrapper_type(&lookup) { return None; }
+    let params = info.method_params.get(field)?.clone();
+    let declared_receiver = params.first()?.type_hint.as_deref()?;
+    let receiver_arg = if declared_receiver.starts_with('*') {
+        if receiver_type.starts_with('*') { receiver_object }
+        else { go_addr_of_normalized_expr(receiver_object) }
+    } else {
+        let value = if receiver_type.starts_with('*') {
+            Expression::new(ExprKind::RefLoad(Box::new(interface_values::require_non_nil(receiver_object, state))))
+        } else if let ExprKind::RefLoad(pointer) = receiver_object.kind {
+            Expression::new(ExprKind::RefLoad(Box::new(interface_values::require_non_nil(*pointer, state))))
+        } else { receiver_object };
+        let value = Expression::new(ExprKind::Cast { expr: Box::new(value), type_name: declared_receiver.to_owned() });
+        go_wrap_go_value_copy(value, env, signatures)
     };
-    let receiver_arg = match declared_receiver {
-        Some(declared) if !declared.starts_with('*') => {
-            go_wrap_go_value_copy(receiver_arg, env, signatures)
-        }
-        _ => receiver_arg,
-    };
-
-    let call_params = params.into_iter().skip(1).collect::<Vec<_>>();
-    let mut call_args = Vec::with_capacity(call_params.len() + 1);
-    call_args.push(Argument::positional(receiver_arg.clone()));
-    call_args.extend(
-        call_params
-            .iter()
-            .map(|param| Argument::positional(Expression::ident(&param.name))),
-    );
-    let mut captures = go_big_captures(&[&receiver_arg]);
-    captures.retain(|name| !name.starts_with("__go_"));
-    Some(Expression::new(ExprKind::Lambda {
-        params: call_params,
-        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::new(ExprKind::FuncRef(
-                go_scalar_method_wrapper_name(&wrapper_lookup, field),
-            ))),
-            args: call_args,
-            optional: false,
-        }))),
-        is_async: false,
-        captures,
-    }))
+    let snapshot = fresh_go_temp(state, "__go_bound_concrete");
+    let mut call_params = params.into_iter().skip(1).collect::<Vec<_>>();
+    for (index, param) in call_params.iter_mut().enumerate() { param.name = format!("{snapshot}_arg_{index}"); }
+    let mut args = vec![Argument::positional(Expression::ident(&snapshot))];
+    args.extend(call_params.iter().map(|param| Argument {
+        value: Expression::ident(&param.name), name: None, by_ref: false, spread: param.is_rest,
+    }));
+    let callable = Expression::new(ExprKind::Lambda {
+        params: call_params, body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::FuncRef(go_scalar_method_wrapper_name(&lookup, field)))),
+            args, optional: false,
+        }))), is_async: false, captures: vec![snapshot.clone()],
+    });
+    Some(interface_values::with_snapshot(receiver_arg, snapshot, None,
+        vec![Statement::new(StmtKind::Return(Some(callable)))]))
 }
 
 fn go_bound_method_call_expr(
@@ -14940,6 +15078,7 @@ fn go_rewrite_named_type_method_call(
     };
     let mut receiver_object = (**object).clone();
     let mut receiver_type = go_expr_type_hint(object, env, signatures)?;
+    if go_is_go_interface_type(&receiver_type, env) { return None; }
     if let Some(rewritten) = go_rewrite_tree_adapter_method_call(
         receiver_object.clone(),
         &receiver_type,
@@ -14952,13 +15091,11 @@ fn go_rewrite_named_type_method_call(
     if let Some((embedded_object, embedded_interface_type)) =
         go_embedded_interface_method_receiver(&receiver_object, &receiver_type, field, env)
     {
-        receiver_object = embedded_object;
-        receiver_type = go_interface_receiver_concrete_type(
-            &receiver_object,
-            &embedded_interface_type,
-            field,
-            env,
-        )?;
+        let _ = embedded_interface_type;
+        return Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member { object: Box::new(embedded_object), field: field.clone(), null_safe: false })),
+            args: args.to_vec(), optional,
+        }));
     } else if env.interface_methods.contains_key(receiver_type.trim()) {
         receiver_type =
             go_interface_receiver_concrete_type(&receiver_object, &receiver_type, field, env)?;
@@ -15535,6 +15672,11 @@ fn go_type_assignable_to_interface(
     interface_type: &str,
     env: &GoNormalizeEnv,
 ) -> bool {
+    if concrete_type.trim() == interface_type.trim() { return true; }
+    if go_is_go_interface_type(concrete_type, env) {
+        return matches!(interface_type.trim(), "interface{}" | "any")
+            || go_interface_implements_interface(concrete_type, interface_type, env);
+    }
     if matches!(interface_type.trim(), "interface{}" | "any") {
         true
     } else if interface_type.trim() == "error" {
@@ -15587,8 +15729,9 @@ fn go_utf16_call_type_hint(expr: &Expression) -> Option<String> {
 fn go_expr_tuple_type_hints(
     expr: &Expression,
     env: &GoNormalizeEnv,
-    _signatures: &HashMap<String, GoFunctionSignature>,
+    signatures: &HashMap<String, GoFunctionSignature>,
 ) -> Option<Vec<Option<String>>> {
+    if let Some(hints) = interface_values::tuple_hints(expr, env, signatures) { return Some(hints); }
     if let Some(hints) = crate::adapters::url::tuple_type_hints(expr) {
         return Some(hints);
     }
@@ -15597,12 +15740,12 @@ fn go_expr_tuple_type_hints(
     }
 
     if let ExprKind::Tuple(values) = &expr.kind {
-        if values.len() == 2 {
-            if let ExprKind::Cast { type_name, .. } = &values[0].kind {
-                return Some(vec![Some(type_name.clone()), Some("bool".to_string())]);
-            }
-        }
-        return None;
+        return Some(
+            values
+                .iter()
+                .map(|value| go_expr_type_hint(value, env, signatures))
+                .collect(),
+        );
     }
 
     let ExprKind::Call { callee, .. } = &expr.kind else {
@@ -15762,6 +15905,66 @@ fn go_record_tuple_target_type_hints(
             env.value_types.insert(name.clone(), type_hint.clone());
         }
     }
+}
+
+fn go_materialize_typed_tuple_decl(
+    decl: &VarDeclarator,
+    type_hints: &[Option<String>],
+    state: &mut GoNormalizeState,
+) -> Option<(Statement, Vec<VarDeclarator>)> {
+    let BindingPattern::Array(elements) = &decl.pattern else {
+        return None;
+    };
+    let init = decl.init.as_ref()?;
+    if matches!(&init.kind, ExprKind::Tuple(_))
+        || elements.len() != type_hints.len()
+        || !elements.iter().all(|element| {
+            matches!(
+                element,
+                ArrayPatternElem::Hole | ArrayPatternElem::Pattern(BindingPattern::Ident(_), None)
+            )
+        })
+        || elements
+            .iter()
+            .all(|element| matches!(element, ArrayPatternElem::Hole))
+    {
+        return None;
+    }
+    let result_name = fresh_go_temp(state, "__go_tuple_result");
+    let declarations = elements
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, element)| {
+            let ArrayPatternElem::Pattern(BindingPattern::Ident(name), None) = element else {
+                return None;
+            };
+            Some(VarDeclarator {
+                pattern: BindingPattern::Ident(name.clone()),
+                type_hint: type_hints[idx]
+                    .as_ref()
+                    .map(|name| TypeHint::checked(name.clone())),
+                init: Some(Expression::new(ExprKind::Index {
+                    object: Box::new(Expression::ident(&result_name)),
+                    index: Box::new(Expression::int(idx as i64)),
+                    null_safe: false,
+                })),
+                array_bounds: None,
+                with_events: false,
+            })
+        })
+        .collect();
+    // Keep one invocation and its byte-slice backing; checked result bindings never coerce it.
+    let temporary = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(result_name),
+            type_hint: None,
+            init: Some(init.clone()),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+    Some((temporary, declarations))
 }
 
 fn go_single_named_binding_pattern(pattern: &BindingPattern) -> Option<BindingPattern> {
@@ -16883,20 +17086,27 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
 
 fn walk_interface_type(name: String, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut members = Vec::new();
+    let mut parents = Vec::new();
 
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::interface_member {
             let mut method_name = String::new();
             let mut params = Vec::new();
             let mut return_type: Option<String> = None;
+            let mut signature_source = None;
 
             for m_inner in inner.into_inner() {
                 match m_inner.as_rule() {
                     Rule::ident_name => method_name = m_inner.as_str().to_string(),
                     Rule::signature => {
+                        signature_source = Some(m_inner.as_str().to_owned());
                         let sig = walk_signature(m_inner)?;
                         params = sig.params;
                         return_type = sig.return_type;
+                    }
+                    Rule::type_constraint => {
+                        let parent = m_inner.as_str().trim();
+                        if !parent.contains('|') && !parent.contains('~') { parents.push(walk_type(m_inner)); }
                     }
                     _ => {}
                 }
@@ -16908,7 +17118,7 @@ fn walk_interface_type(name: String, pair: Pair<Rule>) -> Result<Statement, Stri
                     params,
                     return_type,
                     is_sub: false,
-                    signature_source: None,
+                    signature_source,
                 });
             }
         }
@@ -16916,7 +17126,7 @@ fn walk_interface_type(name: String, pair: Pair<Rule>) -> Result<Statement, Stri
 
     Ok(Statement::new(StmtKind::InterfaceDecl {
         name,
-        parents: Vec::new(),
+        parents,
         members,
         decorators: Vec::new(),
     }))
@@ -17219,13 +17429,7 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             );
             declarations.push(VarDeclarator {
                 pattern,
-                init: Some(Expression::new(ExprKind::Tuple(vec![
-                    go_type_assert_expr(expr.clone(), type_name.clone()),
-                    Expression::new(ExprKind::IsType {
-                        expr: Box::new(expr),
-                        type_name,
-                    }),
-                ]))),
+                init: Some(go_builtin_call("__go_type_assert_comma_ok", vec![expr, go_type_arg_expr(type_name)])),
                 type_hint: None,
                 array_bounds: None,
                 with_events: false,
@@ -17455,6 +17659,13 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::switch_assignment_init => {
                 pre_stmt = Some(Box::new(Statement::new(walk_assignment(inner)?)));
             }
+            Rule::switch_inc_dec_init => {
+                pre_stmt = Some(Box::new(Statement::new(walk_inc_dec(inner)?)));
+            }
+            Rule::switch_expression_init => {
+                let expr = walk_expression(first_meaningful(inner)?)?;
+                pre_stmt = Some(Box::new(Statement::new(StmtKind::Expr(expr))));
+            }
             Rule::expression => expr = Some(walk_expression(inner)?),
             Rule::short_var_declaration => {
                 pre_stmt = Some(Box::new(Statement::new(walk_short_var_decl(inner)?)));
@@ -17585,6 +17796,13 @@ fn walk_type_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             Rule::switch_assignment_init => {
                 pre_stmt = Some(Box::new(Statement::new(walk_assignment(inner)?)));
+            }
+            Rule::switch_inc_dec_init => {
+                pre_stmt = Some(Box::new(Statement::new(walk_inc_dec(inner)?)));
+            }
+            Rule::switch_expression_init => {
+                let expr = walk_expression(first_meaningful(inner)?)?;
+                pre_stmt = Some(Box::new(Statement::new(StmtKind::Expr(expr))));
             }
             Rule::short_var_declaration => {
                 pre_stmt = Some(Box::new(Statement::new(walk_short_var_decl(inner)?)));
@@ -18529,7 +18747,7 @@ fn walk_type_conversion(pair: Pair<Rule>) -> Result<Expression, String> {
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::type_annotation => type_name = Some(walk_type(inner)),
+            Rule::type_annotation | Rule::interface_type => type_name = Some(walk_type(inner)),
             Rule::expression => expr = Some(walk_expression(inner)?),
             _ => {}
         }
@@ -18960,6 +19178,11 @@ fn go_zero_value_expr(type_name: &str) -> Expression {
 }
 
 fn go_zero_value_for_type(type_name: &str, env: &GoNormalizeEnv) -> Expression {
+    // Named interfaces have the same nil zero value as interface{}; an empty
+    // typed composite would instead manufacture a non-nil interface value.
+    if go_is_go_interface_type(type_name, env) {
+        return Expression::null();
+    }
     if let Some(runtime_param) = env.generic_type_params.get(type_name.trim()) {
         return go_zero_value_from_type_token(Expression::ident(runtime_param));
     }
@@ -19129,12 +19352,14 @@ fn walk_literal_value_expr(pair: Pair<Rule>) -> Result<Expression, String> {
 
 fn walk_function_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut params = Vec::new();
+    let mut signature_source = None;
     let mut return_type = None;
     let mut body = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::signature => {
+                signature_source = Some(inner.as_str().to_owned());
                 let sig = walk_signature(inner)?;
                 params = sig.params;
                 return_type = sig.return_type;
@@ -19146,7 +19371,7 @@ fn walk_function_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         }
     }
 
-    let func_type = go_function_type_name(&params, return_type.as_deref());
+    let func_type = format!("func{}", signature_source.unwrap_or_default());
     Ok(Expression::new(ExprKind::Cast {
         expr: Box::new(Expression::new(ExprKind::Lambda {
             params,
@@ -19530,6 +19755,11 @@ fn go_type_assert_value_expr(
     mut state: Option<&mut GoNormalizeState>,
 ) -> Expression {
     let trimmed_type = type_name.trim();
+    if go_expr_type_hint(&expr, env, &HashMap::new()).is_some_and(|ty| go_is_go_interface_type(&ty, env)) {
+        let mut local_state = GoNormalizeState::default();
+        let state = state.as_deref_mut().unwrap_or(&mut local_state);
+        return interface_values::assertion(expr, type_name, env, state, false);
+    }
     if let Some(concrete) = go_known_interface_dynamic_type(&expr, env) {
         if go_types_match_for_assert(&concrete, trimmed_type, env) {
             let cast_type = if go_is_go_interface_type(trimmed_type, env) {
@@ -19723,7 +19953,7 @@ fn go_build_type_switch_case_expr(expr: Expression, type_name: &str) -> Expressi
             right: Box::new(Expression::null()),
         });
     }
-    go_build_is_type(expr, type_name)
+    Expression::new(ExprKind::IsType { expr: Box::new(expr), type_name: type_name.into() })
 }
 
 fn go_non_null_cond(expr: Expression) -> Expression {
@@ -20079,6 +20309,529 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reader_tuple_types_survive_adapter_expansion() {
+        for (source, expected) in [
+            (
+                "data, err := reader.ReadBytes(';')",
+                vec!["[]byte", "error"],
+            ),
+            (
+                "data, err := reader.ReadSlice(',')",
+                vec!["[]byte", "error"],
+            ),
+            (
+                "data, partial, err := reader.ReadLine()",
+                vec!["[]byte", "bool", "error"],
+            ),
+        ] {
+            let pair = GoParser::parse(Rule::short_var_declaration, source)
+                .unwrap()
+                .next()
+                .unwrap();
+            let stmt = Statement::new(walk_short_var_decl(pair).unwrap());
+            let mut env = GoNormalizeEnv::default();
+            env.value_types
+                .insert("reader".to_string(), "*__goReader".to_string());
+            let normalized = normalize_go_statement(
+                &stmt,
+                &mut env,
+                &HashMap::new(),
+                &mut GoNormalizeState::default(),
+            );
+            assert_eq!(normalized.len(), 2);
+            let StmtKind::VarDecl {
+                declarations: temporaries,
+                kind: VarDeclKind::Let,
+            } = &normalized[0].kind
+            else {
+                panic!("scoped tuple temporary");
+            };
+            assert_eq!(temporaries.len(), 1);
+            assert!(matches!(
+                &temporaries[0].init.as_ref().unwrap().kind,
+                ExprKind::Call { .. }
+            ));
+            let BindingPattern::Ident(result_name) = &temporaries[0].pattern else {
+                panic!("tuple name");
+            };
+            let StmtKind::VarDecl { declarations, .. } = &normalized[1].kind else {
+                panic!("typed tuple bindings");
+            };
+            assert_eq!(declarations.len(), expected.len());
+            for (idx, (decl, expected_type)) in declarations.iter().zip(expected).enumerate() {
+                let hint = decl.type_hint.as_ref().unwrap();
+                assert_eq!(hint.spelling(), expected_type);
+                assert_eq!(hint.binding, TypeBinding::Checked);
+                assert!(
+                    matches!(&decl.init.as_ref().unwrap().kind, ExprKind::Index { object, index, .. }
+                    if matches!(&object.kind, ExprKind::Ident(name) if name == result_name)
+                    && matches!(&index.kind, ExprKind::Lit(Literal::Int(value)) if *value == idx as i64))
+                );
+            }
+            let converted = normalize_go_expr(
+                &Expression::new(ExprKind::Cast {
+                    expr: Box::new(Expression::ident("data")),
+                    type_name: "string".to_string(),
+                }),
+                &env,
+                &HashMap::new(),
+                &mut GoNormalizeState::default(),
+            );
+            assert!(matches!(&converted.kind, ExprKind::Call { callee, .. }
+                if go_expr_call_name(callee).as_deref() == Some("__go_io_bytes_to_string")));
+        }
+    }
+
+    #[test]
+    fn reader_tuple_materialization_keeps_earlier_declaration_order() {
+        let pair = GoParser::parse(
+            Rule::short_var_declaration,
+            "data, err := reader.ReadBytes(';')",
+        )
+        .unwrap()
+        .next()
+        .unwrap();
+        let StmtKind::VarDecl {
+            mut declarations,
+            kind,
+        } = walk_short_var_decl(pair).unwrap()
+        else {
+            panic!("reader declaration");
+        };
+        declarations.insert(
+            0,
+            VarDeclarator {
+                pattern: BindingPattern::Ident("earlier".to_string()),
+                init: Some(go_builtin_call("mark", vec![])),
+                type_hint: None,
+                array_bounds: None,
+                with_events: false,
+            },
+        );
+        let mut env = GoNormalizeEnv::default();
+        env.value_types
+            .insert("reader".to_string(), "*__goReader".to_string());
+        let normalized = normalize_go_statement(
+            &Statement::new(StmtKind::VarDecl { declarations, kind }),
+            &mut env,
+            &HashMap::new(),
+            &mut GoNormalizeState::default(),
+        );
+        assert_eq!(normalized.len(), 3);
+        let StmtKind::VarDecl { declarations, .. } = &normalized[0].kind else {
+            panic!("earlier initializer first");
+        };
+        assert!(
+            matches!(&declarations[0].pattern, BindingPattern::Ident(name) if name == "earlier")
+        );
+        assert!(
+            matches!(&declarations[0].init.as_ref().unwrap().kind, ExprKind::Call { callee, .. }
+            if go_expr_call_name(callee).as_deref() == Some("mark"))
+        );
+        let StmtKind::VarDecl { declarations, .. } = &normalized[2].kind else {
+            panic!("reader results last");
+        };
+        assert_eq!(declarations.len(), 2);
+    }
+
+    #[test]
+    fn typed_tuple_materialization_preserves_holes_and_one_call() {
+        let decl = VarDeclarator {
+            pattern: BindingPattern::Array(vec![
+                ArrayPatternElem::Hole,
+                ArrayPatternElem::Pattern(BindingPattern::Ident("err".to_string()), None),
+            ]),
+            init: Some(go_builtin_call("read_once", vec![])),
+            type_hint: None,
+            array_bounds: None,
+            with_events: false,
+        };
+        let (temporary, declarations) = go_materialize_typed_tuple_decl(
+            &decl,
+            &[Some("[]byte".to_string()), Some("error".to_string())],
+            &mut GoNormalizeState::default(),
+        )
+        .unwrap();
+        let StmtKind::VarDecl {
+            declarations: temporaries,
+            ..
+        } = &temporary.kind
+        else {
+            panic!("one call binding");
+        };
+        assert_eq!(temporaries.len(), 1);
+        assert!(
+            matches!(&temporaries[0].init.as_ref().unwrap().kind, ExprKind::Call { callee, .. }
+            if go_expr_call_name(callee).as_deref() == Some("read_once"))
+        );
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(
+            declarations[0].type_hint.as_ref().unwrap().binding,
+            TypeBinding::Checked
+        );
+        assert!(
+            matches!(&declarations[0].init.as_ref().unwrap().kind, ExprKind::Index { index, .. }
+            if matches!(&index.kind, ExprKind::Lit(Literal::Int(1))))
+        );
+    }
+
+    #[test]
+    fn map_comma_ok_temporaries_are_typed_ordered_and_reused() {
+        let mut env = GoNormalizeEnv::default();
+        let signatures = HashMap::from([
+            (
+                "source".to_string(),
+                GoFunctionSignature {
+                    return_type: Some("map[string]int".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "key".to_string(),
+                GoFunctionSignature {
+                    return_type: Some("string".to_string()),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let lookup = Expression::new(ExprKind::Index {
+            object: Box::new(go_builtin_call("source", vec![])),
+            index: Box::new(go_builtin_call("key", vec![])),
+            null_safe: false,
+        });
+        let mut state = GoNormalizeState::default();
+        let (temporaries, tuple) =
+            go_normalize_map_lookup_tuple_expr(&lookup, &mut env, &signatures, &mut state).unwrap();
+        assert_eq!(temporaries.len(), 2);
+        let mut names = Vec::new();
+        for (statement, (callee_name, type_name)) in temporaries
+            .iter()
+            .zip([("source", "map[string]int"), ("key", "string")])
+        {
+            let StmtKind::VarDecl {
+                declarations,
+                kind: VarDeclKind::Let,
+            } = &statement.kind
+            else {
+                panic!("lookup temporary must be block-scoped");
+            };
+            assert_eq!(declarations.len(), 1);
+            let decl = &declarations[0];
+            let hint = decl.type_hint.as_ref().unwrap();
+            assert_eq!(hint.spelling(), type_name);
+            assert_eq!(hint.binding, TypeBinding::Checked);
+            let ExprKind::Call { callee, args, .. } = &decl.init.as_ref().unwrap().kind else {
+                panic!("temporary must bind original expression directly, without copying");
+            };
+            assert!(matches!(&callee.kind, ExprKind::Ident(name) if name == callee_name));
+            assert!(args.is_empty());
+            let BindingPattern::Ident(name) = &decl.pattern else {
+                panic!("named temporary");
+            };
+            names.push(name.clone());
+        }
+        assert_ne!(names[0], names[1]);
+        let ExprKind::Tuple(elements) = &tuple.kind else {
+            panic!("lookup tuple");
+        };
+        let ExprKind::Ternary { cond, then, .. } = &elements[0].kind else {
+            panic!("zero-value read");
+        };
+        for has in [cond.as_ref(), &elements[1]] {
+            let ExprKind::Call { args, .. } = &has.kind else {
+                panic!("membership call");
+            };
+            assert!(matches!(&args[0].value.kind, ExprKind::Ident(name) if name == &names[0]));
+            assert!(matches!(&args[1].value.kind, ExprKind::Ident(name) if name == &names[1]));
+        }
+        assert!(matches!(&then.kind, ExprKind::Index { object, index, .. }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == &names[0])
+            && matches!(&index.kind, ExprKind::Ident(name) if name == &names[1])));
+        assert_eq!(
+            go_expr_tuple_type_hints(&tuple, &env, &signatures),
+            Some(vec![Some("int".to_string()), Some("bool".to_string())])
+        );
+        let (next_temporaries, _) =
+            go_normalize_map_lookup_tuple_expr(&lookup, &mut env, &signatures, &mut state).unwrap();
+        for statement in next_temporaries {
+            let StmtKind::VarDecl { declarations, .. } = statement.kind else {
+                panic!("temporary");
+            };
+            assert!(
+                matches!(&declarations[0].pattern, BindingPattern::Ident(name) if !names.contains(name))
+            );
+        }
+    }
+
+    #[test]
+    fn map_comma_ok_declarations_and_assignments_materialize_before_binding() {
+        let signatures = HashMap::from([
+            (
+                "source".to_string(),
+                GoFunctionSignature {
+                    return_type: Some("map[string]int".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "key".to_string(),
+                GoFunctionSignature {
+                    return_type: Some("string".to_string()),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        for declaration in [true, false] {
+            let (rule, source) = if declaration {
+                (Rule::short_var_declaration, "value, ok := source()[key()]")
+            } else {
+                (Rule::assignment_statement, "value, ok = source()[key()]")
+            };
+            let pair = GoParser::parse(rule, source).unwrap().next().unwrap();
+            let kind = if declaration {
+                walk_short_var_decl(pair)
+            } else {
+                walk_assignment(pair)
+            }
+            .unwrap();
+            let normalized = normalize_go_statement(
+                &Statement::new(kind),
+                &mut GoNormalizeEnv::default(),
+                &signatures,
+                &mut GoNormalizeState::default(),
+            );
+            assert_eq!(normalized.len(), 3);
+            assert!(go_statements_call_named(&normalized[..1], "source"));
+            assert!(!go_statements_call_named(&normalized[1..], "source"));
+            assert!(go_statements_call_named(&normalized[1..2], "key"));
+            assert!(!go_statements_call_named(&normalized[2..], "key"));
+            assert!(matches!(&normalized[2].kind, StmtKind::VarDecl { .. }) == declaration);
+        }
+    }
+
+    #[test]
+    fn map_comma_ok_assignments_use_membership_tuple() {
+        for map_type in [
+            "map[string]int",
+            "map[string]interface{}",
+            "map[string]*int",
+        ] {
+            for source in [
+                "value, ok = values[\"key\"]",
+                "_, ok = values[\"key\"]",
+                "out[0], ok = values[\"key\"]",
+            ] {
+                let mut pairs = GoParser::parse(Rule::assignment_statement, source).unwrap();
+                let stmt = Statement::new(walk_assignment(pairs.next().unwrap()).unwrap());
+                let mut env = GoNormalizeEnv::default();
+                env.value_types
+                    .insert("values".to_string(), map_type.to_string());
+                let normalized = normalize_go_statement(
+                    &stmt,
+                    &mut env,
+                    &HashMap::new(),
+                    &mut GoNormalizeState::default(),
+                );
+                let StmtKind::Assign { value, .. } = &normalized.last().unwrap().kind else {
+                    panic!("map lookup must remain an assignment");
+                };
+                let ExprKind::Tuple(elements) = &value.kind else {
+                    panic!("two-target map assignment must produce a tuple");
+                };
+                assert_eq!(elements.len(), 2);
+                assert!(matches!(&elements[0].kind, ExprKind::Ternary { .. }));
+                assert!(
+                    matches!(&elements[1].kind, ExprKind::Call { callee, args, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__go_map_has")
+                    && args.len() == 2)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn map_comma_ok_assignment_invalidates_prior_interface_value() {
+        for source in [
+            "boxed, ok = values[\"key\"]",
+            "boxed, out[0] = values[\"key\"]",
+        ] {
+            let mut pairs = GoParser::parse(Rule::assignment_statement, source).unwrap();
+            let stmt = Statement::new(walk_assignment(pairs.next().unwrap()).unwrap());
+            let mut env = GoNormalizeEnv::default();
+            env.value_types
+                .insert("values".to_string(), "map[string]interface{}".to_string());
+            env.value_types
+                .insert("boxed".to_string(), "interface{}".to_string());
+            env.interface_concrete_types
+                .insert("boxed".to_string(), "int".to_string());
+            env.nil_interface_values.insert("boxed".to_string());
+            normalize_go_statement(
+                &stmt,
+                &mut env,
+                &HashMap::new(),
+                &mut GoNormalizeState::default(),
+            );
+            assert!(!env.interface_concrete_types.contains_key("boxed"));
+            assert!(!env.nil_interface_values.contains("boxed"));
+            let comparison = normalize_go_expr(
+                &Expression::new(ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(Expression::ident("boxed")),
+                    right: Box::new(Expression::null()),
+                }),
+                &env,
+                &HashMap::new(),
+                &mut GoNormalizeState::default(),
+            );
+            assert!(matches!(
+                comparison.kind,
+                ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn single_target_map_assignment_is_not_comma_ok() {
+        let mut pairs =
+            GoParser::parse(Rule::assignment_statement, "value = values[\"key\"]").unwrap();
+        let stmt = Statement::new(walk_assignment(pairs.next().unwrap()).unwrap());
+        let mut env = GoNormalizeEnv::default();
+        env.value_types
+            .insert("values".to_string(), "map[string]int".to_string());
+        let normalized = normalize_go_statement(
+            &stmt,
+            &mut env,
+            &HashMap::new(),
+            &mut GoNormalizeState::default(),
+        );
+        assert!(matches!(&normalized[0].kind, StmtKind::Assign { value, .. }
+            if matches!(&value.kind, ExprKind::Ternary { .. })));
+    }
+
+    #[test]
+    fn switch_simple_initializers_preserve_statement_order() {
+        for (source, increment) in [
+            ("switch count++; count { case 1: }", true),
+            ("switch count--; count { case 0: }", false),
+        ] {
+            let mut pairs = GoParser::parse(Rule::switch_statement, source)
+                .expect("increment/decrement initializer should parse");
+            let StmtKind::Block(body) = walk_switch(pairs.next().unwrap()).unwrap() else {
+                panic!("initializer must precede switch in a block");
+            };
+            assert_eq!(body.len(), 2);
+            assert!(matches!(&body[0].kind,
+                StmtKind::CompoundAssign { op, .. }
+                if *op == if increment { CompoundOp::Add } else { CompoundOp::Sub }));
+            assert!(matches!(&body[1].kind, StmtKind::Switch { .. }));
+        }
+    }
+
+    #[test]
+    fn switch_call_initializer_is_not_the_tag() {
+        let mut pairs =
+            GoParser::parse(Rule::switch_statement, "switch touch(); count { case 1: }")
+                .expect("call initializer should parse");
+        let StmtKind::Block(body) = walk_switch(pairs.next().unwrap()).unwrap() else {
+            panic!("call initializer must precede switch");
+        };
+        assert_eq!(body.len(), 2);
+        assert!(matches!(
+            &body[0].kind,
+            StmtKind::Expr(Expression {
+                kind: ExprKind::Call { .. },
+                ..
+            })
+        ));
+        assert!(matches!(&body[1].kind, StmtKind::Switch { expr, .. }
+            if matches!(&expr.kind, ExprKind::Ident(name) if name == "count")));
+        parse("package main\nfunc touch() {}\nfunc main() { switch touch(); { case true: } }")
+            .expect("tagless switch with call initializer should parse");
+    }
+
+    #[test]
+    fn type_switch_accepts_simple_initializers() {
+        for init in ["count++", "count--", "touch()"] {
+            parse(&format!(
+                "package main\nfunc touch() {{}}\nfunc main() {{ count := 1; var value interface{{}}; switch {init}; value.(type) {{ case int: }} }}"
+            )).expect("type switch should accept the same simple initializers");
+        }
+    }
+
+    #[test]
+    fn switch_without_initializer_keeps_its_tag() {
+        let mut pairs = GoParser::parse(Rule::switch_statement, "switch count { case 1: }")
+            .expect("ordinary switch should parse");
+        assert!(matches!(walk_switch(pairs.next().unwrap()).unwrap(),
+            StmtKind::Switch { expr, .. }
+            if matches!(&expr.kind, ExprKind::Ident(name) if name == "count")));
+        assert!(
+            parse("package main\nfunc main() { count := 0; switch count++ count { case 1: } }")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn grouped_declarations_preserve_each_element_type() {
+        let env = GoNormalizeEnv::default();
+        let signatures = HashMap::new();
+        let tuple = Expression::new(ExprKind::Tuple(vec![
+            Expression::int(10),
+            Expression::new(ExprKind::Cast {
+                expr: Box::new(Expression::int(3)),
+                type_name: "int".to_string(),
+            }),
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: Box::new(Expression::int(10)),
+            }),
+            Expression::new(ExprKind::Cast {
+                expr: Box::new(Expression::int(4)),
+                type_name: "float64".to_string(),
+            }),
+            Expression::bool(false),
+        ]));
+        assert_eq!(
+            go_expr_tuple_type_hints(&tuple, &env, &signatures),
+            Some(vec![
+                Some("int".to_string()),
+                Some("int".to_string()),
+                Some("int".to_string()),
+                Some("float64".to_string()),
+                Some("bool".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn two_converted_integer_bindings_are_not_comma_ok() {
+        let tuple = Expression::new(ExprKind::Tuple(vec![
+            Expression::new(ExprKind::Cast {
+                expr: Box::new(Expression::int(10)),
+                type_name: "int".to_string(),
+            }),
+            Expression::new(ExprKind::Cast {
+                expr: Box::new(Expression::int(3)),
+                type_name: "int".to_string(),
+            }),
+        ]));
+        assert_eq!(
+            go_expr_tuple_type_hints(&tuple, &GoNormalizeEnv::default(), &HashMap::new()),
+            Some(vec![Some("int".to_string()), Some("int".to_string())])
+        );
+    }
+
+    #[test]
+    fn grouped_integer_declaration_selects_integer_division_ast() {
+        let module = parse("package main\nfunc main() { a,b := 10,3; _ = a/b }")
+            .expect("grouped declaration should parse");
+        assert!(format!("{:?}", module).contains("op: IDiv"));
+    }
+
+    #[test]
     fn sync_atomic_function_calls_normalize_to_common_atomic_node() {
         let module = parse(
             r#"
@@ -20168,5 +20921,26 @@ func main() {
             rendered.contains("value"),
             "atomic.Value should use explicit adapter storage"
         );
+    }
+}
+
+#[cfg(test)]
+mod immutable_declared_function_policy_tests {
+    use super::*;
+
+    #[test]
+    fn package_function_immutability_does_not_remove_function_variable_assignment() {
+        let module = parse("package main\nfunc step(value int32) int32 { return value + 1 }\nfunc main() { alias := step; alias = func(value int32) int32 { return value + 2 }; println(alias(3)) }\n").unwrap();
+        assert_eq!(module.directives.declared_function_bindings_live, Some(false));
+        let mut assigned = HashSet::new();
+        for statement in &module.body {
+            if let StmtKind::FunctionDecl { body, .. } = &statement.kind {
+                for statement in body {
+                    go_collect_stmt_assigned_idents(statement, &mut assigned);
+                }
+            }
+        }
+        assert!(assigned.contains("alias"),
+            "immutable declarations must not erase statement-level callable reassignment: {assigned:?}");
     }
 }

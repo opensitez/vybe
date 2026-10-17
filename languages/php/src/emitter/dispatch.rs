@@ -9,6 +9,11 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+#[path = "shared_array_helpers.rs"]
+mod shared_array_helpers;
+
+pub(crate) use shared_array_helpers::helper_definitions;
+
 pub(crate) fn register_typed_results() {
     use vybe_runtime::registry::emitter_results::{self, TypedEmitterDef};
     emitter_results::register(TypedEmitterDef {
@@ -30,14 +35,62 @@ fn dispatch_typed(
     use vybe_runtime::registry::emitter_results::{
         EmitOutcome, EmitRequest, ResultRepresentation,
     };
+    if request == EmitRequest::ScalarLiteralOperand {
+        if name != "php.add" || argc != 2 {
+            return EmitOutcome::Unhandled;
+        }
+        // A physical scalar cannot participate in array+array union. The
+        // old non-union branch is this exact opcode, with the same operands
+        // and coercion/errors. isArray is an internal, callback-free predicate.
+        chunks[current].emit_op(Op::F64_ADD, line);
+        return EmitOutcome::Handled(ResultRepresentation::Unknown);
+    }
+    if request == EmitRequest::NullLiteralRhs {
+        if argc != 2 || !matches!(name, "php.loose_eq" | "php.loose_ne") {
+            return EmitOutcome::Unhandled;
+        }
+        super::relational_adapter::emit_php_loose_eq_null_literal(
+            chunks, current, name == "php.loose_ne", line,
+        );
+        return EmitOutcome::Handled(ResultRepresentation::BoxedBoolean);
+    }
+    if let EmitRequest::StringLiteralRhs { constant } = request {
+        if argc != 2 || !matches!(name, "php.loose_eq" | "php.loose_ne") {
+            return EmitOutcome::Unhandled;
+        }
+        let literal = match chunks[current].constants.get(constant as usize) {
+            Some(vybe_runtime::Value::String(key)) => key.strip_prefix("wasm:string-constants::")
+                .filter(|text| chunks[current].global_imports.iter().any(|i|
+                    i.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE && i.name == *text))
+                .map(str::to_owned),
+            _ => None,
+        };
+        if let Some(literal) = literal
+            && super::relational_adapter::emit_php_loose_eq_string_literal(
+                chunks, current, name == "php.loose_ne", line, &literal,
+            )
+        {
+            return EmitOutcome::Handled(ResultRepresentation::BoxedBoolean);
+        }
+        return EmitOutcome::Unhandled;
+    }
     // This provider owns only these resolved adapter keys. Other operations
     // remain legacy emissions, with their existing result contracts.
-    if !matches!(name, "php.empty" | "php.is_array") {
+    if !matches!(name, "php.empty" | "php.is_array" | "php.isset_all" | "php.loose_eq" | "php.loose_ne") {
+        return EmitOutcome::Unhandled;
+    }
+    if matches!(name, "php.loose_eq" | "php.loose_ne") && argc != 2 {
         return EmitOutcome::Unhandled;
     }
     if request == EmitRequest::I32Condition {
         match name {
+            "php.loose_eq" | "php.loose_ne" => {
+                super::relational_adapter::emit_php_loose_eq_condition(
+                    chunks, current, argc, name == "php.loose_ne", line,
+                )
+            }
             "php.empty" => super::empty_adapter::emit_php_empty_condition(chunks, current, line),
+            "php.isset_all" => emit_isset_all_i32(&mut chunks[current], argc, line),
             "php.is_array" => {
                 super::array_adapter::emit_php_is_array_condition(chunks, current, argc, line)
             }
@@ -54,24 +107,27 @@ fn dispatch_typed(
 /// PHP `isset($a, $b, ...)` — true iff every arg is non-null. Variadic, so it
 /// can't be a fixed-arity stdlib chunk.
 fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
+    emit_isset_all_i32(chunk, argc, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+}
+
+// The caller has already prepared the PHP values/reference contexts. Only
+// the physical Boolean result differs between condition and value requests.
+fn emit_isset_all_i32(chunk: &mut Chunk, argc: u8, line: u32) {
     if argc == 0 {
-        chunk.emit_bool_const(true, line);
+        chunk.emit_i32_const(1, line);
         return;
     }
     let base = chunk.local_count;
-    chunk.local_count = base + argc as u16 + 1;
-    let tmp = base + argc as u16;
+    chunk.local_count = base + argc as u16;
     for i in (0..argc).rev() {
         chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
     }
 
     for i in 0..argc {
         chunk.emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, tmp, line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, tmp, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, tmp, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
         let undef = chunk.add_import("wasm:js-undefined", "test");
         chunk.emit_call(undef, 1, line);
         chunk.emit_op(Op::I32_OR, line);
@@ -81,11 +137,36 @@ fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
             chunk.emit_op(Op::I32_AND, line);
         }
     }
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
+#[cfg(test)]
+#[path = "isset_emission_tests.rs"]
+mod isset_emission_tests;
+
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    if shared_array_helpers::emit(name, chunks, current, argc, line) {
+        return true;
+    }
+    dispatch_inline(name, chunks, current, argc, line)
+}
+
+fn dispatch_inline(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
+        name @ ("php.foreach_protocol_current" | "php.foreach_protocol_valid" | "php.foreach_protocol_next" | "php.foreach_protocol_rewind" | "php.foreach_protocol_key" | "php.foreach_protocol_getiterator") => {
+            super::foreach_protocol::emit(chunks,current,name.trim_start_matches("php.foreach_protocol_"),line);
+        }
+
+        "php.late_bound_argument" => {
+            let place = chunks[current].alloc_scratch(1);
+            let value = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, place, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, place, line);
+            vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+            super::copy_adapter::emit_php_copy_on_assign(chunks, current, 1, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+            vybe_compiler::primitives::references::emit_late_bound_argument(
+                chunks, current, place, value, line);
+        }
         "php.cookie_decode_request" => {
             vybe_compiler::primitives::http_cookie::emit_request_cookies(chunks, current, line);
             let decode = chunks[current].add_import("php:cookie", "decodeRequest");
@@ -134,6 +215,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.dynamic_method_call" => {
             super::call_adapter::emit_php_dynamic_method_call(chunks, current, argc, line)
+        }
+        "php.bind_named_args" => {
+            super::named_args_adapter::emit_bind_named_args(chunks, current, argc, line)
         }
         "php.call_user_func_array" => {
             super::call_adapter::emit_php_call_user_func_array(chunks, current, argc, line)
@@ -270,6 +354,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.is_object" => super::array_adapter::emit_php_is_object(chunks, current, line),
         "php.array_sum" => super::array_adapter::emit_php_array_sum(chunks, current, argc, line),
         "php.offset" => super::array_adapter::emit_php_offset(chunks, current, argc, line),
+        "php.quiet_index" => super::array_adapter::emit_php_quiet_index(chunks, current, line),
         "php.key" => super::array_adapter::emit_php_key(chunks, current, argc, line),
         "php.copy_on_assign" => {
             super::copy_adapter::emit_php_copy_on_assign(chunks, current, argc, line)
@@ -720,6 +805,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.floatval" => {
             crate::emitter::numeric_adapter::emit_php_floatval(chunks, current, argc, line)
         }
+        "php.string_inc_proven" => crate::emitter::numeric_adapter::emit_php_string_inc_proven(chunks, current, argc, line),
         "php.inc" => crate::emitter::numeric_adapter::emit_php_inc(chunks, current, argc, line),
         "php.dec" => crate::emitter::numeric_adapter::emit_php_dec(chunks, current, argc, line),
         "php.int_max" => {
@@ -1236,23 +1322,28 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::spl_adapter::emit_spl_count_method(chunks, current, argc, line)
         }
         "php.array_merge" => {
-            super::type_guard::guard_arg(
-                chunks,
-                current,
-                argc,
-                0,
-                super::type_guard::Expect::Array,
-                "TypeError",
-                "array_merge(): Argument #1 ($arrays) must be of type array",
-                line,
-            );
             crate::emitter::array_adapter::emit_php_array_merge(chunks, current, argc, line)
+        }
+        "php.array_merge_args" => {
+            crate::emitter::array_adapter::emit_php_array_merge_args(chunks, current, line)
         }
         "php.array_merge_recursive" => {
             crate::emitter::array_adapter::emit_array_merge_recursive(chunks, current, argc, line)
         }
         "php.array_change_key_case" => {
             crate::emitter::array_adapter::emit_array_change_key_case(chunks, current, argc, line)
+        }
+        "php.extract_scope" => {
+            crate::emitter::extract_adapter::emit_extract_scope(chunks, current, line)
+        }
+        "php.scope_new" => {
+            crate::emitter::extract_adapter::emit_scope_new(chunks, current, line)
+        }
+        "php.scope_ref" => {
+            crate::emitter::extract_adapter::emit_scope_ref(chunks, current, line)
+        }
+        "php.scope_cell" => {
+            crate::emitter::extract_adapter::emit_scope_cell(chunks, current, line)
         }
         "php.array_udiff" => {
             crate::emitter::array_adapter::emit_array_udiff(chunks, current, argc, line)
@@ -1375,6 +1466,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.mkdir" => crate::emitter::filesystem_adapter::emit_mkdir(chunks, current, argc, line),
         "php.file_exists" => {
             crate::emitter::filesystem_adapter::emit_file_exists(chunks, current, argc, line)
+        }
+        "php.clearstatcache" => {
+            crate::emitter::filesystem_adapter::emit_clearstatcache(chunks, current, argc, line)
         }
         "php.is_file" => {
             crate::emitter::filesystem_adapter::emit_is_file(chunks, current, argc, line)

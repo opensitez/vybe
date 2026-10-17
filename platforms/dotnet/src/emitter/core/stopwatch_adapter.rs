@@ -4,7 +4,6 @@
 //! for all timing.  The Stopwatch object layout:
 //!   `{__type: "Stopwatch", __start_ns: f64, __accumulated_ns: f64, isrunning: bool}`
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;

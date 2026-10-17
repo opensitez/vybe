@@ -1,17 +1,12 @@
 //! Runtime argument type-guards for PHP builtins.
 //!
-//! PHP raises `TypeError`/`ValueError` where JavaScript would silently coerce
-//! or return `undefined` (and where Vybe would otherwise crash trying to treat
-//! a scalar as an array). Each guard is emitted at a builtin's dispatch site:
-//! it inspects an argument already on the operand stack and, if the type is
-//! illegal, throws through the **common** errors emitter
-//! (`errors::emit_exception_new_finalize`) so the thrown value is byte-identical
-//! to — and catchable across — every other language (PHP `TypeError` ≡ JS
-//! `TypeError` ≡ Python `TypeError`).
+//! PHP errors are constructed by the same PHP core class callables as source
+//! `new TypeError(...)`, not by allocating a bare object and stamping a name.
+//! Their inherited methods, default fields and Throwable ancestry therefore
+//! come from ordinary native class lowering. Constructor dependencies must be
+//! selected by the PHP bootstrap before these emitted cold paths can execute.
 //!
-//! The guard spills the `argc` arguments to locals, tests the target argument,
-//! throws on failure, then restores every argument in its original order so the
-//! underlying builtin emit consumes an unchanged stack.
+//! Guards spill arguments once and restore them unchanged on the valid path.
 
 use vybe_compiler::primitives::class_slots::{self};
 use vybe_runtime::Chunk;
@@ -34,50 +29,9 @@ pub enum Expect {
     NotScalar,
 }
 
-/// The PHP `Throwable` ancestry for a built-in exception, most-derived first.
-/// `Error` and `Exception` are **sibling** branches of `Throwable` (unlike JS,
-/// where `Error` is the universal base), and `TypeError`/`ValueError` extend
-/// `Error`. The catch-matcher (`primitives/mod.rs`) matches a caught type against
-/// the exception's `__types` array, so stamping the full chain is what lets
-/// `catch (\Error)` catch a thrown `TypeError` — mirroring the chain that user
-/// `throw new TypeError()` gets from class emission.
-fn php_exception_chain(exc_name: &str) -> &'static [&'static str] {
-    match exc_name {
-        "TypeError" => &["TypeError", "Error", "Throwable"],
-        "ValueError" => &["ValueError", "Error", "Throwable"],
-        "ArgumentCountError" => &["ArgumentCountError", "TypeError", "Error", "Throwable"],
-        "DivisionByZeroError" => &[
-            "DivisionByZeroError",
-            "ArithmeticError",
-            "Error",
-            "Throwable",
-        ],
-        "FiberError" => &["FiberError", "Error", "Throwable"],
-        "Error" => &["Error", "Throwable"],
-        "Exception" => &["Exception", "Throwable"],
-        "PDOException" => &["PDOException", "Exception", "Throwable"],
-        "RuntimeException" => &["RuntimeException", "Exception", "Throwable"],
-        "OutOfRangeException" => &[
-            "OutOfRangeException",
-            "LogicException",
-            "Exception",
-            "Throwable",
-        ],
-        "OutOfBoundsException" => &[
-            "OutOfBoundsException",
-            "RuntimeException",
-            "Exception",
-            "Throwable",
-        ],
-        _ => &[],
-    }
-}
-
-/// Unconditionally construct and throw `exc_name(msg)` at the current point.
-/// Diverges. Uses the shared errors emitter to mint the instance and the shared
-/// `emit_instanceof_chain` to stamp its `Throwable` ancestry, so the exception
-/// participates in cross-language `catch` matching including base-class catches
-/// (`catch (\Error)` matching a `TypeError`).
+/// Construct the real PHP core exception and throw it. There is deliberately
+/// no undefined-constructor/bare-object fallback: source bootstrap dependency
+/// selection must provide the same class binding as an explicit `new`.
 pub fn emit_throw_const(
     chunks: &mut [Chunk],
     current: usize,
@@ -89,8 +43,10 @@ pub fn emit_throw_const(
     emit_throw_from_stack(chunks, current, exc_name, line);
 }
 
-/// Consume a message and throw through the shared Wasm exception machinery.
-/// Generated PHP throw expressions use this instead of allocating a closure.
+/// Consume one message. Preserve the previous finalizer's exactly-once String
+/// conversion, then call the actual three-argument PHP class constructor. Its
+/// normal class lowering owns methods, field defaults and Error/Exception's
+/// distinct ancestry; reflection stamps are not a substitute for that class.
 pub fn emit_throw_from_stack(
     chunks: &mut [Chunk],
     current: usize,
@@ -99,23 +55,18 @@ pub fn emit_throw_from_stack(
 ) {
     let chunk = &mut chunks[current];
     let message_slot = chunk.alloc_scratch(1);
+    let stringify = chunk.add_import("ecma:string", "String");
+    chunk.emit_call(stringify, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, message_slot, line);
-    class_slots::emit_class_alloc(chunk, line);
-    chunk.emit_dup(line);
+
+    // emit_store_constructor_with_upvalues publishes this exact class name;
+    // core constructors have arity 3 and takes_receiver=false. Do not use a JS
+    // __ctor_<name> anchor or inject a receiver into this PHP constructor ABI.
+    vybe_compiler::primitives::globals::emit_read(chunk, exc_name, line);
     chunk.emit_op_u16(Op::LOCAL_GET, message_slot, line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exc_name, line);
-    // Park the instance in a local so the shared chain-stamper can push each
-    // ancestor name into its `__types` array, then reload and throw.
-    let this_slot = chunk.local_count;
-    chunk.local_count += 1;
-    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-    for name in php_exception_chain(exc_name) {
-        vybe_compiler::primitives::reflection::emit_instanceof_chain(
-            chunks, current, this_slot, name, line,
-        );
-    }
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 3, line);
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
@@ -155,17 +106,32 @@ pub fn guard_arg(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    // Reserve a contiguous block of locals: arg0 → base, argN-1 → base+argc-1.
+    // Values below the guarded argument can remain on the operand stack.
+    // Keep the guarded value there too: local.tee gives the predicate a
+    // stable local without requiring another reload on the valid path.
+    // Invalid/missing-argument shapes retain their previous emission path.
+    let keep_guarded = arg_idx < argc;
+    let first = if keep_guarded { arg_idx } else { 0 };
+    let stored = argc - first;
     let base = chunk.local_count;
-    chunk.local_count += argc as u16;
-    for i in (0..argc).rev() {
-        chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+    chunk.local_count += u16::from(stored);
+    for i in (first..argc).rev() {
+        let op = if keep_guarded && i == arg_idx {
+            Op::LOCAL_TEE
+        } else {
+            Op::LOCAL_SET
+        };
+        chunk.emit_op_u16(op, base + u16::from(i - first), line);
     }
 
-    let slot = base + arg_idx as u16;
+    let slot = base + u16::from(arg_idx - first);
     match expect {
-        // Accept a PHP array/collection (JS array or object); a scalar is illegal.
-        Expect::Array | Expect::NotScalar => {
+        // PHP arrays exclude ordinary objects and ArrayObject instances.
+        Expect::Array => {
+            super::copy_adapter::emit_php_arrayish_slot(chunk, slot, line);
+            chunk.emit_op(Op::I32_EQZ, line);
+        }
+        Expect::NotScalar => {
             // bad = !is_collection
             push_is_collection(chunk, slot, line);
             chunk.emit_op(Op::I32_EQZ, line);
@@ -201,8 +167,13 @@ pub fn guard_arg(
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
 
-    // Restore arguments in original order.
-    for i in 0..argc {
-        chunk.emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
+    // The prefix and guarded value are already in their original positions.
+    // Restore only arguments that were above the checked value.
+    for i in u8::from(keep_guarded)..stored {
+        chunk.emit_op_u16(Op::LOCAL_GET, base + u16::from(i), line);
     }
 }
+
+#[cfg(test)]
+#[path = "type_guard_emission_tests.rs"]
+mod type_guard_emission_tests;

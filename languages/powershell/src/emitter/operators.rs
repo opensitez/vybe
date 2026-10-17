@@ -1571,9 +1571,7 @@ pub fn emit_get_enumerator(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_len = chunk.add_import("ecma:array", "length");
     let arr_get = chunk.add_import("ecma:array", "get");
     let arr_push = chunk.add_import("ecma:array", "push");
-    let obj_set = chunk.add_import("ecma:object", "set");
     let arr_new = chunk.add_import("ecma:array", "new");
-    let obj_new = chunk.add_import("ecma:object", "new");
 
     chunk.emit_op_u16(Op::LOCAL_SET, recv, line);
 
@@ -2600,7 +2598,7 @@ pub fn emit_compare_object(chunks: &mut [Chunk], current: usize, line: u32) {
     };
 
     // `keys(source) -> [key…]`, and a parallel `used` array of falses.
-    let mut build = |chunks: &mut [Chunk], current: usize, source: u16, keys: u16, used: u16| {
+    let build = |chunks: &mut [Chunk], current: usize, source: u16, keys: u16, used: u16| {
         chunks[current].emit_call(arr_new, 0, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
         chunks[current].emit_call(arr_new, 0, line);
@@ -2805,7 +2803,7 @@ pub fn emit_compare_object(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Pass two: whatever each side did not pair off. `-ExcludeDifferent` keeps
     // only the matches, so both loops are gated on it.
-    let mut unmatched =
+    let unmatched =
         |chunks: &mut [Chunk], current: usize, source: u16, used: u16, indicator: &str| {
             chunks[current].emit_op_u16(Op::LOCAL_GET, exclude_different, line);
             vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -2870,41 +2868,7 @@ pub fn emit_get_type(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     vybe_platform_dotnet::emitter::dispatch::dispatch("dotnet.get_type", chunks, current, 1, line);
 }
 
-fn emit_ps_type_object_from_name(chunk: &mut Chunk, full_name: u16, line: u32) {
-    let split = chunk.add_import("ecma:string", "split");
-    let at = chunk.add_import("ecma:array", "at");
-    let obj = chunk.alloc_scratch(1);
-    let short = chunk.alloc_scratch(1);
 
-    vybe_compiler::primitives::class_slots::emit_class_alloc(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, full_name, line);
-    chunk.emit_string_const(".", line);
-    chunk.emit_call(split, 2, line);
-    chunk.emit_i32_const(-1, line);
-    chunk.emit_call(at, 2, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, short, line);
-
-    set_ps_type_object_slot(chunk, obj, "Name", short, line);
-    set_ps_type_object_slot(chunk, obj, "name", short, line);
-    set_ps_type_object_slot(chunk, obj, "FullName", full_name, line);
-    set_ps_type_object_slot(chunk, obj, "fullname", full_name, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-}
-
-fn set_ps_type_object_slot(chunk: &mut Chunk, obj: u16, key: &str, value: u16, line: u32) {
-    vybe_compiler::primitives::class_slots::emit_class_set(
-        chunk,
-        vybe_compiler::primitives::class_slots::ObjSource::Local(obj),
-        &vybe_compiler::primitives::class_slots::resolve(
-            &vybe_compiler::primitives::class_slots::ClassSlot::internal(key),
-            &vybe_compiler::primitives::class_slots::PlainNames,
-        ),
-        vybe_compiler::primitives::class_slots::ValueSource::Local(value),
-        line,
-    );
-}
 
 /// `.Remove(…)` on an UNTYPED receiver — three receivers share the spelling at
 /// one arity, and only the value at run time can tell them apart:

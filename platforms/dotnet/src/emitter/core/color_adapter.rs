@@ -170,6 +170,7 @@ fn browser_color(chunk: &mut Chunk, source: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, computed, line);
     chunk.emit_string_const("#", line);
     call(chunk, "ecma:string", "startsWith", 2, line);
+    call(chunk, "wasm:js-boolean", "cast", 1, line);
     chunk.emit_if_value(line);
     hex_color(chunk, computed, line);
     chunk.emit_else(line);
@@ -185,12 +186,14 @@ pub fn emit_from_html(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, source, line);
     chunk.emit_string_const("#", line);
     call(chunk, "ecma:string", "startsWith", 2, line);
+    call(chunk, "wasm:js-boolean", "cast", 1, line);
     chunk.emit_if_value(line);
     hex_color(chunk, source, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, source, line);
     chunk.emit_string_const("rgb", line);
     call(chunk, "ecma:string", "startsWith", 2, line);
+    call(chunk, "wasm:js-boolean", "cast", 1, line);
     chunk.emit_if_value(line);
     rgb_color(chunk, source, line);
     chunk.emit_else(line);

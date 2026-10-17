@@ -20,15 +20,13 @@
 //! stored fields: a stored `Length` goes stale on every write, and
 //! `Capacity`'s setter has to resize and can throw.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
-use vybe_compiler::primitives::errors;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
 
 use super::thread_adapter::DELAY_TOKEN_KEY;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 use super::object_fields::field_slot;
 
@@ -119,7 +117,6 @@ fn guard_open(chunks: &mut [Chunk], current: usize, obj: u16, line: u32) {
         "Cannot access a closed Stream.",
         line,
     );
-    let chunk = &mut chunks[current];
 }
 
 /// `[] → [capacity]`
@@ -537,9 +534,7 @@ pub fn emit_write_byte(chunks: &mut [Chunk], current: usize, line: u32) {
     set(chunk, byte, line);
     set(chunk, obj, line);
     guard_open(chunks, current, obj, line);
-    let chunk = &mut chunks[current];
     emit_store_byte_at_position(chunks, current, obj, byte, line);
-    let chunk = &mut chunks[current];
 }
 
 /// Write one byte at the cursor, growing and extending as .NET does.

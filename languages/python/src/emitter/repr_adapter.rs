@@ -15,12 +15,11 @@
 //! The chunk's name is `__py_repr`; it is built once per module (deduped by
 //! scanning `chunks` for that name), since `repr` runs on every `print`/`str`.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::tuples::{FIELDS_TAG, TUPLE_TAG, TYPENAME_TAG};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 const REPR_CHUNK: &str = "__py_repr";
 const FLOAT_FIELDS_TAG: &str = "__py_float_fields";
@@ -51,7 +50,8 @@ fn emit_is_notimplemented(chunk: &mut Chunk, slot: u16, line: u32) {
     str_const(chunk, "object", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if_value(line);
+    // Both arms produce an i32 predicate, consumed directly as a condition.
+    chunk.emit_if_i32(line);
     let marker = class_slots::resolve(&ClassSlot::internal("__py_notimplemented"), &PlainNames);
     class_slots::emit_class_get(chunk, ObjSource::Local(slot), &marker, Dest::Stack, line);
     chunk.emit_bool_const(true, line);
@@ -145,6 +145,9 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let key = c.alloc_scratch(1);
     let fields = c.alloc_scratch(1);
     let esc = c.alloc_scratch(1);
+    // String escaping returns before container rendering; reuse its scratch
+    // slot to carry an element across the container format branches.
+    let element = esc;
 
     // ── None ────────────────────────────────────────────────────────────
     lget(&mut c, value, line);
@@ -335,7 +338,9 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         // Named tuple? `__typename` present → `Name(f=v, …)`.
         lget(&mut c, value, line);
         struct_get(&mut c, &ClassSlot::internal(TYPENAME_TAG), line);
-        c.emit_op(Op::REF_IS_NULL, line);
+        let present = c.alloc_scratch(1);
+        lset(&mut c, present, line);
+        super::runtime_adapter::emit_slot_is_null_or_undefined(&mut c, present, line);
         c.emit_op(Op::I32_EQZ, line);
         c.emit_if(line);
         {
@@ -367,10 +372,13 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             lget(&mut c, value, line);
             lget(&mut c, i, line);
             c.emit_op(Op::ARRAY_GET, line);
+            lset(&mut c, element, line);
             lget(&mut c, float_items, line);
             c.emit_if_value(line);
+            lget(&mut c, element, line);
             float_repr_from_stack(&mut c, line);
             c.emit_else(line);
+            lget(&mut c, element, line);
             recurse(&mut c, self_idx, line);
             c.emit_end(line);
             concat(&mut c, line);
@@ -387,7 +395,9 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         // Plain tuple? `__tuple` present → `(a, b)` / `(a,)`.
         lget(&mut c, value, line);
         struct_get(&mut c, &ClassSlot::internal(TUPLE_TAG), line);
-        c.emit_op(Op::REF_IS_NULL, line);
+        let present = c.alloc_scratch(1);
+        lset(&mut c, present, line);
+        super::runtime_adapter::emit_slot_is_null_or_undefined(&mut c, present, line);
         c.emit_op(Op::I32_EQZ, line);
         c.emit_if(line);
         {
@@ -438,8 +448,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             Dest::Local(module_name),
             line,
         );
-        lget(&mut c, module_name, line);
-        c.emit_op(Op::REF_IS_NULL, line);
+        super::runtime_adapter::emit_slot_is_null_or_undefined(&mut c, module_name, line);
         c.emit_op(Op::I32_EQZ, line);
         c.emit_if(line);
         str_const(&mut c, "<module '", line);
@@ -456,7 +465,9 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // object for exactly this. CPython omits the step when it is 1.
     lget(&mut c, value, line);
     struct_get(&mut c, &ClassSlot::internal("__py_range_stop"), line);
-    c.emit_op(Op::REF_IS_NULL, line);
+    let present = c.alloc_scratch(1);
+    lset(&mut c, present, line);
+    super::runtime_adapter::emit_slot_is_null_or_undefined(&mut c, present, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line);
     {
@@ -634,7 +645,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             c.emit_call(to_f64, 1, line);
             c.emit_f64_const(0.0, line);
             c.emit_op(Op::F64_EQ, line);
-            c.emit_if(line);
+            c.emit_if_value(line);
             {
                 lget(&mut c, imag, line);
                 c.emit_call(to_f64, 1, line);
@@ -645,7 +656,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
                 c.emit_call(object_is, 2, line);
                 vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
                 c.emit_op(Op::I32_OR, line);
-                c.emit_if(line);
+                c.emit_if_value(line);
                 str_const(&mut c, "-", line);
                 lget(&mut c, imag_s, line);
                 concat(&mut c, line);
@@ -669,7 +680,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
                 c.emit_call(object_is, 2, line);
                 vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
                 c.emit_op(Op::I32_OR, line);
-                c.emit_if(line);
+                c.emit_if_value(line);
                 str_const(&mut c, "-", line);
                 c.emit_else(line);
                 str_const(&mut c, "+", line);
@@ -749,8 +760,8 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut c, key, line);
     c.emit_i32_const(1, line);
     c.emit_op(Op::ARRAY_GET, line);
-    lget(&mut c, fields, line);
-    c.emit_op(Op::REF_IS_NULL, line);
+    lset(&mut c, element, line);
+    super::runtime_adapter::emit_slot_is_null_or_undefined(&mut c, fields, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if_value(line);
     lget(&mut c, fields, line);
@@ -763,11 +774,14 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     }
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
     c.emit_if_value(line);
+    lget(&mut c, element, line);
     float_repr_from_stack(&mut c, line);
     c.emit_else(line);
+    lget(&mut c, element, line);
     recurse(&mut c, self_idx, line);
     c.emit_end(line);
     c.emit_else(line);
+    lget(&mut c, element, line);
     recurse(&mut c, self_idx, line);
     c.emit_end(line);
     concat(&mut c, line);

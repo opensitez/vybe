@@ -77,8 +77,9 @@ fn emit_cmp_op_result(chunk: &mut Chunk, cmp_slot: u16, op_slot: u16, op: &str, 
             chunk.emit_f64_const(0.0, line);
             vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
         }
-        _ => chunk.emit_bool_const(false, line),
+        _ => unreachable!("internal version comparison operator"),
     }
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
 }
 
@@ -205,8 +206,8 @@ pub fn emit_php_version_compare(chunks: &mut [Chunk], current: usize, argc: u8, 
     lget(chunk, left_slot, line);
     lget(chunk, right_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
+
+    chunk.emit_if_value(line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_else(line);
 
@@ -215,7 +216,7 @@ pub fn emit_php_version_compare(chunks: &mut [Chunk], current: usize, argc: u8, 
     let includes = chunk.add_import("ecma:string", "includes");
     chunk.emit_call(includes, 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     chunk.emit_f64_const(-1.0, line);
     chunk.emit_else(line);
 

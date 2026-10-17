@@ -1,6 +1,5 @@
 //! Kotlin collection adapters that need Kotlin-specific return contracts.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
@@ -8,7 +7,6 @@ use vybe_compiler::primitives::{
     collections as common_collections, dict, instructions::host, loops, ops, sets as common_sets,
 };
 use vybe_runtime::Chunk;
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
 const MUTABLE_LIST_MARKER: &str = "__kt_mutable_list";

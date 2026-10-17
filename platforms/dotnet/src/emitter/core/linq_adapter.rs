@@ -190,31 +190,6 @@ fn emit_linq_group_map_key_slot(
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
 }
 
-fn emit_value_eq_stamp_test(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
-    let result_slot = alloc_locals(&mut chunks[current], 1);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if_value(line);
-    core_wasm::bool_const(&mut chunks[current], line, false);
-    chunks[current].emit_else(line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    emit_import_call(chunks, current, "ecma:value", "typeof", 1, line);
-    chunks[current].emit_string_const("object", line);
-    ops::emit_dyn_eq(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_string_const("__value_eq", line);
-    collections::emit_get(chunks, current, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_else(line);
-    core_wasm::bool_const(&mut chunks[current], line, false);
-    chunks[current].emit_end(line);
-
-    chunks[current].emit_end(line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
-}
 
 pub(super) fn emit_linq_value_equals_slots(
     chunks: &mut [Chunk],

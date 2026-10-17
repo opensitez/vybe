@@ -8,6 +8,23 @@ license.workspace = true
 [lib]
 name = "vybe_language_php"
 
+[features]
+primitive-benchmarks = ["vybe_compiler/primitive-benchmarks"]
+service-verification = ["vybe_compiler/service-verification"]
+
+[[bin]]
+name = "verify_retired_compiled"
+path = "src/bin/verify_retired_compiled.rs"
+required-features = ["service-verification"]
+
+[[example]]
+name = "emission_import_interning"
+required-features = ["primitive-benchmarks"]
+
+[[test]]
+name = "deferred_class_body_ownership"
+required-features = ["service-verification"]
+
 [dependencies]
 grameo = { path = "../../crates/grameo" }
 vybe_compiler = { workspace = true }
@@ -26,7 +43,10 @@ getrandom = { workspace = true }
 vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
+vybe_platform_wasm = { workspace = true }
+wasmparser = "0.244"
 uuid = { workspace = true }
 
 [build-dependencies]
+grameo = { path = "../../crates/grameo" }
 grameo_codegen = { path = "../../crates/grameo/codegen" }

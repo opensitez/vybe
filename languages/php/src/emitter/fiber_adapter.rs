@@ -14,13 +14,12 @@
 //! generator infrastructure already uses, so this is bytecode-level
 //! reuse — no new VM ops, no new host fns.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_runtime::chunk::StackSwitchHandler;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -339,10 +338,10 @@ pub fn emit_php_fiber_get_return(chunks: &mut [Chunk], current: usize, _argc: u8
         fiber_slot
     };
     let terminated_key = class_slots::resolve(
-        &ClassSlot::Internal(("__terminated".to_string())),
+        &ClassSlot::Internal("__terminated".to_string()),
         &PlainNames,
     );
-    let return_key = class_slots::resolve(&ClassSlot::Internal(("__return".to_string())), &PlainNames);
+    let return_key = class_slots::resolve(&ClassSlot::Internal("__return".to_string()), &PlainNames);
     {
         let chunk = &mut chunks[current];
         lget(chunk, fiber_slot, line);
@@ -415,7 +414,6 @@ pub fn emit_php_fiber_is_terminated(chunks: &mut [Chunk], current: usize, _argc:
 }
 
 // Suppress unused-import warnings if some helpers grow.
-#[allow(dead_code)]
 fn _touch(_c: &mut Chunk, _s: u16, _l: u32) {
     let _ = lset;
     let _ = lget;

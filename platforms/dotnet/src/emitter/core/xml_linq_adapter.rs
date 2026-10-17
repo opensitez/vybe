@@ -1379,7 +1379,7 @@ pub fn emit_xelement_replace_nodes(chunks: &mut [Chunk], current: usize, line: u
 }
 
 pub fn emit_xelement_set_element_value(chunks: &mut [Chunk], current: usize, line: u32) {
-    let base = chunks[current].alloc_scratch(11);
+    let base = chunks[current].alloc_scratch(8);
     let elem_slot = base;
     let name_slot = base + 1;
     let value_slot = base + 2;
@@ -1387,10 +1387,7 @@ pub fn emit_xelement_set_element_value(chunks: &mut [Chunk], current: usize, lin
     let type_slot = base + 4;
     let kind_slot = base + 5;
     let attr_name_slot = base + 6;
-    let attr_value_slot = base + 7;
-    let idx_slot = base + 8;
-    let item_slot = base + 9;
-    let children_slot = base + 10;
+    let children_slot = base + 7;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, name_slot, line);

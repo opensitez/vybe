@@ -26,7 +26,6 @@ enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
 entry_point = "main"
-dynamic_add = true
 uses_normalize_class = true
 materialize_bool_results = true
 
@@ -189,7 +188,7 @@ materialize_bool_results = true
 "__go_slices_grow_common" = { emit = "common:collections.first_of_two", min_args = 2, max_args = 2 }
 "__go_slices_clip_common" = { emit = "common:collections.clone", min_args = 1, max_args = 1 }
 "__go_maps_clone_common" = { emit = "common:collections.map_clone", min_args = 1, max_args = 1 }
-"__go_maps_copy_common" = { emit = "common:collections.map_copy", min_args = 2, max_args = 2 }
+"__go_maps_copy_common" = { emit = "common:collections.map_copy", discarded_emit = "common:collections.map_copy_void", min_args = 2, max_args = 2 }
 "__go_maps_delete_func_common" = { emit = "common:collections.map_delete_func", min_args = 2, max_args = 2 }
 "__go_slices_delete_func" = { emit = "common:go.slices_delete_func", min_args = 2, max_args = 2 }
 "__go_slices_compact_func" = { emit = "common:go.slices_compact_func", min_args = 2, max_args = 2 }

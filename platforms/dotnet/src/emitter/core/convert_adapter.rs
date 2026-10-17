@@ -110,28 +110,8 @@ fn emit_base64_char_valid(chunk: &mut Chunk, code_slot: u16, line: u32) {
     let ok_slot = reserve_slot(chunk);
     chunk.emit_i32_const(0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ok_slot, line);
-    for (lo, hi) in [(65, 90), (97, 122), (48, 57)] {
-        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
-        chunk.emit_i32_const(lo, line);
-        chunk.emit_op(Op::I32_GE_S, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
-        chunk.emit_i32_const(hi, line);
-        chunk.emit_op(Op::I32_LE_S, line);
-        chunk.emit_op(Op::I32_AND, line);
-        chunk.emit_if(line);
-        chunk.emit_i32_const(1, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, ok_slot, line);
-        chunk.emit_end(line);
-    }
-    for code in [43, 47, 61] {
-        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
-        chunk.emit_i32_const(code, line);
-        chunk.emit_op(Op::I32_EQ, line);
-        chunk.emit_if(line);
-        chunk.emit_i32_const(1, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, ok_slot, line);
-        chunk.emit_end(line);
-    }
+    vybe_compiler::primitives::base64::emit_code_is_allowed(chunk, code_slot, false, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ok_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ok_slot, line);
 }
 
@@ -175,14 +155,14 @@ fn emit_filter_dotnet_base64(
     chunks[current].emit_op_u16(Op::LOCAL_SET, pad_count_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
-    host::emit(&mut chunks[current], "wasm:js-number", "toI32", 1, line);
+
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
 
     let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    vybe_compiler::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -246,7 +226,7 @@ fn emit_filter_dotnet_base64(
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
-    host::emit(&mut chunks[current], "wasm:js-number", "toI32", 1, line);
+
     chunks[current].emit_op_u16(Op::LOCAL_SET, filtered_len_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, filtered_len_slot, line);
     chunks[current].emit_i32_const(4, line);
@@ -290,8 +270,8 @@ fn emit_insert_line_breaks(chunks: &mut [Chunk], current: usize, input_slot: u16
     let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    vybe_compiler::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -399,8 +379,7 @@ pub fn emit_convert_from_base64_string(chunks: &mut [Chunk], current: usize, _ar
     chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
     emit_throw_if_null(chunks, current, text_slot, line);
     emit_filter_dotnet_base64(chunks, current, text_slot, true, line);
-    vybe_compiler::primitives::base64::emit_decode_binary_string(chunks, current, line);
-    vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
+    vybe_compiler::primitives::base64::emit_decode_byte_array(chunks, current, line);
 }
 
 pub fn emit_convert_from_base64_char_array(
@@ -433,8 +412,7 @@ pub fn emit_convert_from_base64_char_array(
     emit_chars_to_string(chunks, current, slice_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
     emit_filter_dotnet_base64(chunks, current, text_slot, true, line);
-    vybe_compiler::primitives::base64::emit_decode_binary_string(chunks, current, line);
-    vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
+    vybe_compiler::primitives::base64::emit_decode_byte_array(chunks, current, line);
 }
 
 /// `Convert.ToHexString(byte[])` — UPPERCASE hex, two characters per byte and
@@ -460,8 +438,7 @@ pub fn emit_convert_from_hex_string(chunks: &mut [Chunk], current: usize, _argc:
     chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
     emit_throw_if_null(chunks, current, text_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    vybe_compiler::primitives::string_encoding::emit_hex2bin(chunks, current, 1, line);
-    vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
+    vybe_compiler::primitives::string_encoding::emit_hex2bytes(chunks, current, 1, line);
 }
 
 fn emit_bool_int_pair(chunks: &mut [Chunk], current: usize, ok: bool, value_slot: u16, line: u32) {
@@ -531,8 +508,7 @@ pub fn emit_convert_try_from_base64_chars(
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, filtered_slot, line);
-    vybe_compiler::primitives::base64::emit_decode_binary_string(chunks, current, line);
-    vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
+    vybe_compiler::primitives::base64::emit_decode_byte_array(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, decoded_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, decoded_slot, line);
@@ -545,7 +521,7 @@ pub fn emit_convert_try_from_base64_chars(
     chunks[current].emit_op_u16(Op::LOCAL_GET, decoded_len_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dest_len_slot, line);
     chunks[current].emit_op(Op::I32_GT_S, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     emit_false_zero_pair(chunks, current, line);
     chunks[current].emit_else(line);
 
@@ -554,8 +530,8 @@ pub fn emit_convert_try_from_base64_chars(
     let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, decoded_len_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    vybe_compiler::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dest_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -623,8 +599,8 @@ pub fn emit_convert_to_base64_char_array(
     let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    vybe_compiler::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_offset_slot, line);
@@ -671,7 +647,7 @@ pub fn emit_convert_try_to_base64_chars(
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dest_len_slot, line);
     chunks[current].emit_op(Op::I32_GT_S, line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     emit_false_zero_pair(chunks, current, line);
     chunks[current].emit_else(line);
 
@@ -680,8 +656,8 @@ pub fn emit_convert_try_to_base64_chars(
     let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    vybe_compiler::primitives::loops::emit_loop_break_if_from_i32(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);

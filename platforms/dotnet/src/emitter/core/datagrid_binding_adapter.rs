@@ -53,16 +53,18 @@ fn registry(chunk: &mut Chunk, line: u32) {
     globals::emit_read(chunk, GRID_SOURCES, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let block = chunk.emit_block(line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(0, line);
+    // Missing sidecar globals read Undefined, a non-null Wasm externref.
+    chunk.emit_op_u16(Op::LOCAL_GET, chunk.dup_slot.expect("dup reserved its root"), line);
+    let undefined = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_params(line, 1, 1);
     chunk.emit_op(Op::DROP, line);
     let new = chunk.add_import("ecma:object", "new");
     chunk.emit_call(new, 0, line);
     core_wasm::dup(chunk, line);
     globals::emit_write(chunk, GRID_SOURCES, line);
     chunk.emit_end(line);
-    chunk.patch_block(block);
 }
 
 fn empty_array(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {

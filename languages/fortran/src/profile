@@ -63,7 +63,6 @@ string_indexing = "one_based"          # Fortran strings are 1-based
 array_upper_bound_inclusive = true     # do i=1,10 means 1..10 inclusive
 parens_for_index = true                # Fortran uses () for array indexing
 entry_point = "main"
-dynamic_add = false
 commonjs_require = false
 byref_boxing = false
 with_block = false

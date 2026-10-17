@@ -1407,13 +1407,53 @@ fn scanner_tokens(source: Expression, mode: Expression) -> Expression {
         then: Box::new(call("strings.Fields", vec![source.clone()])),
         else_: Box::new(Expression::new(ExprKind::Ternary {
             cond: Box::new(binary(BinOp::Eq, mode, Expression::string("ScanBytes"))),
-            then: Box::new(call("ecma.array.from", vec![source.clone()])),
-            else_: Box::new(call(
-                "strings.Split",
-                vec![source, Expression::string("\n")],
-            )),
+            then: Box::new(call("__go_array_from", vec![source.clone()])),
+            else_: Box::new(scanner_line_tokens(source)),
         })),
     })
+}
+
+fn scanner_line_tokens(source: Expression) -> Expression {
+    let source_name = "__go_scanner_lines_source";
+    let tokens_name = "__go_scanner_lines_tokens";
+    let tokens = Expression::ident(tokens_name);
+    lambda_call(vec![
+        var_decl(source_name, source),
+        var_decl(
+            tokens_name,
+            call(
+                "strings.Split",
+                vec![Expression::ident(source_name), Expression::string("\n")],
+            ),
+        ),
+        Statement::new(StmtKind::If {
+            // Split retains a final empty field; ScanLines does not emit it at EOF.
+            cond: binary(
+                BinOp::Or,
+                binary(
+                    BinOp::Eq,
+                    Expression::ident(source_name),
+                    Expression::string(""),
+                ),
+                call(
+                    "strings.HasSuffix",
+                    vec![Expression::ident(source_name), Expression::string("\n")],
+                ),
+            ),
+            then_body: vec![Statement::new(StmtKind::Return(Some(string_slice(
+                tokens.clone(),
+                Expression::int(0),
+                binary(
+                    BinOp::Sub,
+                    call("len", vec![tokens.clone()]),
+                    Expression::int(1),
+                ),
+            ))))],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::Return(Some(tokens))),
+    ])
 }
 
 fn writer_write_string(receiver: Expression, args: &[Argument]) -> Expression {
@@ -1691,6 +1731,69 @@ mod tests {
     use super::*;
     use vybe_ast::Literal;
 
+    #[test]
+    fn scanner_lines_remove_only_the_terminal_split_field() {
+        let expr = scanner_line_tokens(Expression::ident("source"));
+        let ExprKind::Call { callee, .. } = &expr.kind else {
+            panic!("scoped line-token adapter");
+        };
+        let ExprKind::Lambda {
+            body: LambdaBody::Block(body),
+            ..
+        } = &callee.kind
+        else {
+            panic!("line-token body");
+        };
+        assert_eq!(body.len(), 4);
+        let StmtKind::VarDecl { declarations, .. } = &body[0].kind else {
+            panic!("bind source once");
+        };
+        assert!(
+            matches!(&declarations[0].init.as_ref().unwrap().kind, ExprKind::Ident(name) if name == "source")
+        );
+        let StmtKind::VarDecl { declarations, .. } = &body[1].kind else {
+            panic!("split token binding");
+        };
+        let ExprKind::Call { callee, .. } = &declarations[0].init.as_ref().unwrap().kind else {
+            panic!("shared split call");
+        };
+        assert_eq!(call_name(callee).as_deref(), Some("strings.Split"));
+        let StmtKind::If {
+            cond, then_body, ..
+        } = &body[2].kind
+        else {
+            panic!("EOF field guard");
+        };
+        assert!(
+            matches!(&cond.kind, ExprKind::Binary { op: BinOp::Or, left, right }
+            if matches!(&left.kind, ExprKind::Binary { op: BinOp::Eq, .. })
+            && matches!(&right.kind, ExprKind::Call { callee, .. }
+                if call_name(callee).as_deref() == Some("strings.HasSuffix")))
+        );
+        let StmtKind::Return(Some(slice)) = &then_body[0].kind else {
+            panic!("trim terminal field");
+        };
+        let ExprKind::Call { callee, args, .. } = &slice.kind else {
+            panic!("shared slice call");
+        };
+        assert_eq!(
+            call_name(callee).as_deref(),
+            Some("__go_slices_slice_common")
+        );
+        assert!(matches!(
+            &args[1].value.kind,
+            ExprKind::Lit(Literal::Int(0))
+        ));
+        assert!(
+            matches!(&args[2].value.kind, ExprKind::Binary { op: BinOp::Sub, right, .. }
+            if matches!(&right.kind, ExprKind::Lit(Literal::Int(1))))
+        );
+        assert!(
+            matches!(&body[3].kind, StmtKind::Return(Some(Expression { kind: ExprKind::Ident(name), .. }))
+            if name == "__go_scanner_lines_tokens")
+        );
+    }
+
     fn single_call_arg(expr: &Expression, expected_name: &str) -> Option<Expression> {
         let ExprKind::Call { callee, args, .. } = &expr.kind else {
             return None;
@@ -1772,9 +1875,23 @@ pub(crate) fn lambda_call(body: Vec<Statement>) -> Expression {
 }
 
 pub(crate) fn call(name: &str, args: Vec<Expression>) -> Expression {
+    let args: Vec<_> = args.into_iter().map(Argument::positional).collect();
+    if let Some(rewritten) = super::strings::rewrite_call(name, &args) {
+        return rewritten;
+    }
+    // Namespace paths are member expressions, not globals with dotted names.
+    let mut segments = name.split('.');
+    let mut callee = Expression::ident(segments.next().unwrap_or(name));
+    for field in segments {
+        callee = Expression::new(ExprKind::Member {
+            object: Box::new(callee),
+            field: field.to_string(),
+            null_safe: false,
+        });
+    }
     Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident(name)),
-        args: args.into_iter().map(Argument::positional).collect(),
+        callee: Box::new(callee),
+        args,
         optional: false,
     })
 }
@@ -1795,4 +1912,49 @@ fn insert_path(root: &mut Subtree, path: &str, node: NamespaceNode) {
         cursor = children;
     }
     cursor.insert(leaf.to_string(), node);
+}
+
+#[cfg(test)]
+mod generated_call_tests {
+    use super::*;
+
+    #[test]
+    fn generated_namespace_call_uses_member_path() {
+        let expr = call(
+            "strings.Index",
+            vec![Expression::string("a;b"), Expression::string(";")],
+        );
+        let ExprKind::Call { callee, args, .. } = expr.kind else {
+            panic!("expected call");
+        };
+        assert_eq!(args.len(), 2);
+        let ExprKind::Member { object, field, .. } = callee.kind else {
+            panic!("namespace call must not be a dotted global");
+        };
+        assert!(matches!(&object.kind, ExprKind::Ident(name) if name == "strings"));
+        assert_eq!(field, "Index");
+    }
+
+    #[test]
+    fn generated_adapter_call_uses_existing_private_target() {
+        for (public, private) in [
+            ("strings.Fields", "__go_strings_fields"),
+            ("go.strings.TrimSuffix", "__go_strings_trim_suffix"),
+        ] {
+            let expr = call(public, vec![Expression::string("text")]);
+            let ExprKind::Call { callee, .. } = expr.kind else {
+                panic!("expected call");
+            };
+            assert!(matches!(&callee.kind, ExprKind::Ident(name) if name == private));
+        }
+    }
+
+    #[test]
+    fn generated_private_call_remains_identifier() {
+        let expr = call("__go_array_from", vec![Expression::string("ab")]);
+        let ExprKind::Call { callee, .. } = expr.kind else {
+            panic!("expected call");
+        };
+        assert!(matches!(&callee.kind, ExprKind::Ident(name) if name == "__go_array_from"));
+    }
 }

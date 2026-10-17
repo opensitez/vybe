@@ -525,7 +525,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Synthesize only the RTL groups this program can reference. The collection
     // group is source-parsed and expensive, so it is cached and gated hard.
     if !is_unit {
-        let prelude_needs = pascal_prelude_needs(&source, &imports, &body);
+        let prelude_needs = pascal_prelude_needs(&source, &imports);
         let existing_classes: std::collections::HashSet<String> = body
             .iter()
             .filter_map(|s| match &s.kind {
@@ -5432,6 +5432,11 @@ fn pascal_member_expr_type(
 /// disagree about whether `WriteLn` and `writeln` are one name.
 fn language_directives() -> vybe_ast::Directives {
     vybe_ast::Directives {
+        add_concatenates_strings: Some(true),
+        xor_is_logical_for_non_integers: Some(true),
+            logical_ops_bitwise_for_integers: Some(true),
+        integer_cast_truncates: Some(true),
+        concat_stringifies_operands: Some(true),
         // Pascal identifiers are case-insensitive, ASCII — `WriteLn`, `writeln`
         // and `WRITELN` are one identifier. fpc is the ground truth.
         variable_case: Some(vybe_ast::CaseMatch::Folded),
@@ -25595,7 +25600,6 @@ fn rewrite_shadowed_builtin_casts_expr(
 fn pascal_prelude_needs(
     source: &str,
     imports: &[Import],
-    body: &[Statement],
 ) -> PascalPreludeNeeds {
     let uses_generics_collections = imports.iter().any(|import| match &import.kind {
         ImportKind::Simple { path, .. }
@@ -28670,30 +28674,6 @@ fn pascal_pointer_place_alias_for_expr(
     }
 }
 
-fn pascal_expr_from_place(place: &PlaceExpr) -> Expression {
-    match place {
-        PlaceExpr::Ident(name) => Expression::new(ExprKind::Ident(name.clone())),
-        PlaceExpr::Member {
-            object,
-            field,
-            null_safe,
-        } => Expression::new(ExprKind::Member {
-            object: object.clone(),
-            field: field.clone(),
-            null_safe: *null_safe,
-        }),
-        PlaceExpr::Index {
-            object,
-            index,
-            null_safe,
-        } => Expression::new(ExprKind::Index {
-            object: object.clone(),
-            index: index.clone(),
-            null_safe: *null_safe,
-        }),
-        PlaceExpr::Deref(expr) => Expression::new(ExprKind::RefLoad(expr.clone())),
-    }
-}
 
 fn pascal_place_expr_same_place(left: &PlaceExpr, right: &PlaceExpr) -> bool {
     match (left, right) {

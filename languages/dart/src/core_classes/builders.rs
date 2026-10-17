@@ -260,11 +260,6 @@ pub(super) fn or(a: Expression, b: Expression) -> Expression {
     binary(vybe_ast::BinOp::Or, a, b)
 }
 
-/// `<a> && <b>`
-#[allow(dead_code)]
-pub(super) fn and(a: Expression, b: Expression) -> Expression {
-    binary(vybe_ast::BinOp::And, a, b)
-}
 
 pub(super) fn bool_lit(value: bool) -> Expression {
     Expression::with_span(ExprKind::Lit(Literal::Bool(value)), span())

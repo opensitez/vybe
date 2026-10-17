@@ -128,7 +128,7 @@ fn synthesize_all(source: &str) -> Vec<Statement> {
         out.push(plane_class());
     }
     if lowered.contains("matrix3x2") {
-        out.push(matrix3x2_class(&lowered));
+        out.push(matrix3x2_class());
     }
     if lowered.contains("matrix4x4") {
         out.push(matrix4x4_class(&lowered));
@@ -2091,7 +2091,7 @@ fn matrix_ctor(rows: usize, cols: usize) -> ClassMember {
 }
 
 /// `System.Numerics.Matrix3x2` — the 2-D affine transform, three rows of two.
-fn matrix3x2_class(lowered: &str) -> Statement {
+fn matrix3x2_class() -> Statement {
     let (rows, cols) = (3usize, 2usize);
     let mut members = matrix_fields(rows, cols);
     members.push(matrix_ctor(rows, cols));

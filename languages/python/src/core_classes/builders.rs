@@ -475,18 +475,6 @@ pub(super) fn static_field(name: &str, init: Expression) -> ClassMember {
     }
 }
 
-pub(super) fn field(name: &str, init: Expression) -> ClassMember {
-    ClassMember::Field {
-        name: name.to_string(),
-        type_hint: None,
-        init: Some(init),
-        modifiers: Modifiers::default(),
-        with_events: false,
-        array_bounds: None,
-        storage: None,
-    }
-}
-
 /// An instance method. ⛔ Python's receiver is EXPLICIT — `self` must be the
 /// first parameter, exactly as the walker produces for source, or
 /// `normalize_class` (which sets `explicit_self_param`) binds the wrong slot.

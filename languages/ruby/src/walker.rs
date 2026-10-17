@@ -2377,6 +2377,7 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
         body,
         imports,
         directives: vybe_ast::Directives {
+            add_concatenates_strings: Some(true),
             // A ruby method CALL passes the receiver as a leading argument: the
             // callable is the raw function off the class struct and carries no
             // receiver of its own, unlike prototype dispatch (JS/Dart) or
@@ -5749,36 +5750,6 @@ fn ruby_expr_may_be_exception(expr: &Expression) -> bool {
     }
 }
 
-#[allow(dead_code)]
-fn is_ruby_exception_name(name: &str) -> bool {
-    matches!(
-        name,
-        "Exception"
-            | "StandardError"
-            | "RuntimeError"
-            | "ArgumentError"
-            | "TypeError"
-            | "NameError"
-            | "NoMethodError"
-            | "ZeroDivisionError"
-            | "IndexError"
-            | "KeyError"
-            | "FrozenError"
-            | "RangeError"
-            | "FloatDomainError"
-            | "SystemExit"
-            | "SignalException"
-            | "Interrupt"
-            | "ScriptError"
-            | "SyntaxError"
-            | "LoadError"
-            | "NotImplementedError"
-            | "SecurityError"
-            | "NoMemoryError"
-            | "UncaughtThrowError"
-            | "LocalJumpError"
-    )
-}
 
 // ── Break / Next with optional modifier ─────────────────────────────────────
 

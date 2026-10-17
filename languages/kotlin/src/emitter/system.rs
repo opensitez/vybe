@@ -1,13 +1,11 @@
 //! Kotlin-owned `kotlin.system.*` and `kotlin.random.*` adapters.
 
-use std::sync::Arc;
-
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_compiler::primitives::{callable, collections};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 /// `measureTimeMillis { ... }` / `measureNanoTime { ... }`.
 ///

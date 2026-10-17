@@ -47,7 +47,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -128,7 +128,8 @@ fn emit_copy_pairs_to_map(
     lget(&mut chunks[current], pairs_slot, line);
     call_import(chunks, current, "ecma:array", "length", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    // Relational helpers return raw i32, including their shared-call path.
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], pairs_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -164,7 +165,7 @@ fn emit_scan_pairs_for_name(
     lget(&mut chunks[current], pairs_slot, line);
     call_import(chunks, current, "ecma:array", "length", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     lget(&mut chunks[current], pairs_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -177,7 +178,7 @@ fn emit_scan_pairs_for_name(
     call_import(chunks, current, "ecma:array", "get", 2, line);
     lget(&mut chunks[current], name_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+
     chunks[current].emit_if(line);
     lget(&mut chunks[current], pair_slot, line);
     chunks[current].emit_f64_const(1.0, line);
@@ -265,7 +266,7 @@ pub fn emit_php_putenv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lget(&mut chunks[current], pos_slot, line);
     chunks[current].emit_f64_const(-1.0, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+
     chunks[current].emit_if_value(line);
     lget(&mut chunks[current], overlay_slot, line);
     lget(&mut chunks[current], assignment_slot, line);

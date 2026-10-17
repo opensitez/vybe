@@ -29,12 +29,8 @@ case_sensitive = true
 # `bool f = 5>3`, `flag switch{true=>…}`, and `n.HasValue` behave/print as
 # `True`/`False` instead of flattening to `1`/`0`.
 materialize_bool_results = true
-# `5 / 2 == 2`: `/` truncates when both operands are integers (C# / Java / C /
-# Go semantics). VB opts out — its `/` is always real division, `\` is integer.
-integer_division_on_slash = true
 string_indexing = "zero_based"
 entry_point = "Main"
-dynamic_add = true
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md).
 uses_normalize_class = true
@@ -169,6 +165,7 @@ __vybe_csharp_checked_byte_cast = { emit = "common:dotnet.checked_byte_cast", mi
 "__csharp_array_clone"     = { emit = "common:collections.clone",   min_args = 1, max_args = 1 }
 "__csharp_delegate_combine" = { emit = "common:delegates.combine",  min_args = 2, max_args = 2 }
 "__csharp_delegate_remove"  = { emit = "common:delegates.remove",   min_args = 2, max_args = 2 }
+"__csharp_interpolation_value" = { emit = "common:dotnet.interpolation_value", min_args = 1, max_args = 1 }
 "__csharp_to_string"       = { emit = "common:dotnet.tostring",     min_args = 1, max_args = 1 }
 "__csharp_object_assign"   = { emit = "common:reflection.assign",   min_args = 2, max_args = 255 }
 

@@ -109,6 +109,7 @@ fn emit_is_file_obj(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     chunks[current].emit_string_const("__fpath", line);
     call_import(chunks, current, "ecma:object", "hasIn", 2, line);
+    call_import(chunks, current, "wasm:js-boolean", "cast", 1, line);
 }
 
 /// Push `mode.includes(<c>)`.
@@ -117,11 +118,6 @@ fn emit_mode_has(chunks: &mut [Chunk], current: usize, mode: u16, c: &str, line:
     chunks[current].emit_string_const(c, line);
     call_import(chunks, current, "ecma:string", "includes", 2, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
-}
-
-fn emit_empty_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_array_new_fixed(0, 0, line);
-    call_import(chunks, current, "ecma:uint8array", "from", 1, line);
 }
 
 fn emit_reload_file_data(

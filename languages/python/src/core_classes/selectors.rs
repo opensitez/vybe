@@ -1,32 +1,12 @@
 //! `selectors` module classes over ordinary class/object machinery.
 
 use super::builders::*;
-use vybe_ast::{BinOp, BreakTarget, Statement, StmtKind};
+use vybe_ast::Statement;
 
 type Expr = vybe_ast::Expression;
 
-fn op(o: BinOp, l: Expr, r: Expr) -> Expr {
-    binary(o, l, r)
-}
-
-fn len_of(e: Expr) -> Expr {
-    call_global("len", vec![e])
-}
-
 fn contains(haystack: Expr, needle: Expr) -> Expr {
     call_global("__py_contains__", vec![haystack, needle])
-}
-
-fn missing(e: Expr) -> Expr {
-    op(
-        BinOp::Or,
-        is_none(e.clone()),
-        op(BinOp::StrictEq, e, str_lit("undefined")),
-    )
-}
-
-fn break_stmt() -> Statement {
-    Statement::with_span(StmtKind::Break(BreakTarget::Implicit), span())
 }
 
 fn key_for(fileobj: Expr, events: Expr, data: Expr) -> Expr {

@@ -51,19 +51,19 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
 fn call_import_into(
-    _imports: &mut Chunk,
+    _imports: &Chunk,
     code: &mut Chunk,
     module: &str,
     name: &str,
     argc: u8,
     line: u32,
 ) {
-    let idx = code.add_import(module.to_string(), name.to_string());
+    let idx = code.add_import(module, name);
     code.emit_call(idx, argc, line);
 }
 
@@ -74,6 +74,13 @@ fn call_ref(chunk: &mut Chunk, argc: u8, line: u32) {
 fn ref_func(chunk: &mut Chunk, func_idx: usize, line: u32) {
     chunk.emit_op_u16(Op::REF_FUNC, func_idx as u16, line);
     chunk.emit(0, line);
+}
+
+fn call_known_one_arg(chunk: &mut Chunk, target: usize, declaration: &Chunk, line: u32) {
+    chunk.emit_direct_defined_call(
+        u32::try_from(target).expect("serialization helper index exceeds u32"),
+        declaration, false, line,
+    ).expect("serialization helper requires a fixed capture-free signature");
 }
 
 fn struct_get_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
@@ -143,7 +150,8 @@ fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) {
     lget(chunk, value_slot, line);
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_if(line);
+    // The DUP-retained value is consumed by DROP/test inside either arm.
+    chunk.emit_if_params(line, 1, 0);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op(Op::RETURN, line);
@@ -159,7 +167,7 @@ fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) {
     chunk.emit_end(line);
 }
 
-fn emit_is_array_into(imports: &mut Chunk, code: &mut Chunk, value_slot: u16, line: u32) {
+fn emit_is_array_into(imports: &Chunk, code: &mut Chunk, value_slot: u16, line: u32) {
     lget(code, value_slot, line);
     call_import_into(imports, code, "ecma:array", "isArray", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(code, line);
@@ -174,7 +182,7 @@ fn bump_loop_index(chunk: &mut Chunk, i_slot: u16, line: u32) {
 
 fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let helper_idx = chunks.len();
-    let types = chunks[0].types.clone();
+    let types = &chunks[0].types;
 
     let mut helper = create_function_chunk("__php_unserialize_alloc", 1);
     helper.alloc_scratch(1);
@@ -182,7 +190,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let obj_slot = alloc_local(&mut helper);
 
     {
-        let imports = &mut chunks[0];
+        let imports = &chunks[0];
         emit_nullish_return(&mut helper, class_slot, line);
 
         for (idx, ty) in types.iter().enumerate().filter(|(_, ty)| !ty.is_interface) {
@@ -264,8 +272,9 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
 fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let helper_idx = chunks.len();
-    let types = chunks[0].types.clone();
+    let types = &chunks[0].types;
     let mut helper = create_function_chunk("__php_serialize_value", 1);
+    let recursive_signature = helper.clone();
     helper.alloc_scratch(1);
 
     let value_slot = 0;
@@ -281,7 +290,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let method_slot = alloc_local(&mut helper);
 
     {
-        let imports = &mut chunks[0];
+        let imports = &chunks[0];
         emit_nullish_return(&mut helper, value_slot, line);
 
         // boolean test
@@ -331,11 +340,10 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         vybe_compiler::primitives::ops::emit_dyn_lt(&mut helper, line);
         helper_loop_cond(&mut helper, line);
         lget(&mut helper, items_slot, line);
-        ref_func(&mut helper, helper_idx, line);
         lget(&mut helper, value_slot, line);
         lget(&mut helper, i_slot, line);
         helper.emit_op(Op::ARRAY_GET, line);
-        call_ref(&mut helper, 1, line);
+        call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
         call_import_into(imports, &mut helper, "ecma:array", "push", 2, line);
         helper.emit_op(Op::DROP, line);
         bump_loop_index(&mut helper, i_slot, line);
@@ -352,7 +360,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut helper, tmp_slot, line);
         helper.emit_dup(line);
         helper.emit_op(Op::REF_IS_NULL, line);
-        helper.emit_if(line);
+        helper.emit_if_params(line, 1, 0);
         helper.emit_op(Op::DROP, line);
         helper.emit_else(line);
         {
@@ -381,9 +389,8 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut helper, i_slot, line);
         helper.emit_op(Op::ARRAY_GET, line);
         lset(&mut helper, key_slot, line);
-        ref_func(&mut helper, helper_idx, line);
         dynamic_get_from_slots(&mut helper, value_slot, key_slot, line);
-        call_ref(&mut helper, 1, line);
+        call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
         lset(&mut helper, tmp_slot, line);
         dynamic_set_from_slots(&mut helper, assoc_slot, key_slot, tmp_slot, line);
         bump_loop_index(&mut helper, i_slot, line);
@@ -438,9 +445,8 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut helper, value_slot, line);
         call_ref(&mut helper, 1, line);
         lset(&mut helper, tmp_slot, line);
-        ref_func(&mut helper, helper_idx, line);
         lget(&mut helper, tmp_slot, line);
-        call_ref(&mut helper, 1, line);
+        call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
         lset(&mut helper, tmp_slot, line);
         set_struct_from_slot(&mut helper, out_slot, "payload", tmp_slot, line);
         lget(&mut helper, out_slot, line);
@@ -507,9 +513,8 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lset(&mut helper, key_slot, line);
         dynamic_get_from_slots(&mut helper, value_slot, key_slot, line);
         lset(&mut helper, tmp_slot, line);
-        ref_func(&mut helper, helper_idx, line);
         lget(&mut helper, tmp_slot, line);
-        call_ref(&mut helper, 1, line);
+        call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
         lset(&mut helper, tmp_slot, line);
         dynamic_set_from_slots(&mut helper, assoc_slot, key_slot, tmp_slot, line);
         bump_loop_index(&mut helper, i_slot, line);
@@ -550,9 +555,8 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
                 struct_get_key(&mut helper, &ClassSlot::internal(field), line);
                 lset(&mut helper, tmp_slot, line);
 
-                ref_func(&mut helper, helper_idx, line);
                 lget(&mut helper, tmp_slot, line);
-                call_ref(&mut helper, 1, line);
+                call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
                 lset(&mut helper, tmp_slot, line);
                 dynamic_set_from_slots(&mut helper, assoc_slot, key_slot, tmp_slot, line);
             }
@@ -628,9 +632,8 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         helper.emit_br(1, line);
         helper.emit_end(line);
 
-        ref_func(&mut helper, helper_idx, line);
         lget(&mut helper, tmp_slot, line);
-        call_ref(&mut helper, 1, line);
+        call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
         lset(&mut helper, tmp_slot, line);
         dynamic_set_from_slots(&mut helper, assoc_slot, key_slot, tmp_slot, line);
         bump_loop_index(&mut helper, i_slot, line);
@@ -647,6 +650,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line: u32) -> usize {
     let helper_idx = chunks.len();
     let mut helper = create_function_chunk("__php_unserialize_value", 1);
+    let recursive_signature = helper.clone();
     helper.alloc_scratch(1);
 
     let node_slot = 0;
@@ -664,7 +668,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
     let method_slot = alloc_local(&mut helper);
 
     {
-        let imports = &mut chunks[0];
+        let imports = &chunks[0];
         emit_nullish_return(&mut helper, node_slot, line);
 
         // boolean test
@@ -698,7 +702,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, kind_slot, line);
         helper.emit_dup(line);
         helper.emit_op(Op::REF_IS_NULL, line);
-        helper.emit_if(line);
+        helper.emit_if_params(line, 1, 0);
         helper.emit_op(Op::DROP, line);
         lget(&mut helper, node_slot, line);
         helper.emit_op(Op::RETURN, line);
@@ -731,11 +735,10 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, n_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_lt(&mut helper, line);
         helper_loop_cond(&mut helper, line);
-        ref_func(&mut helper, helper_idx, line);
         lget(&mut helper, items_slot, line);
         lget(&mut helper, i_slot, line);
         helper.emit_op(Op::ARRAY_GET, line);
-        call_ref(&mut helper, 1, line);
+        call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
         lset(&mut helper, tmp_slot, line);
         lget(&mut helper, out_slot, line);
         lget(&mut helper, tmp_slot, line);
@@ -750,7 +753,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, assoc_slot, line);
         helper.emit_dup(line);
         helper.emit_op(Op::REF_IS_NULL, line);
-        helper.emit_if(line);
+        helper.emit_if_params(line, 1, 0);
         helper.emit_op(Op::DROP, line);
         helper.emit_else(line);
         {
@@ -789,9 +792,8 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, i_slot, line);
         helper.emit_op(Op::ARRAY_GET, line);
         lset(&mut helper, key_slot, line);
-        ref_func(&mut helper, helper_idx, line);
         dynamic_get_from_slots(&mut helper, assoc_slot, key_slot, line);
-        call_ref(&mut helper, 1, line);
+        call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
         lset(&mut helper, tmp_slot, line);
         lget(&mut helper, out_slot, line);
         lget(&mut helper, key_slot, line);
@@ -859,10 +861,9 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         helper.emit_if(line);
         lget(&mut helper, method_slot, line);
         lget(&mut helper, out_slot, line);
-        ref_func(&mut helper, helper_idx, line);
         lget(&mut helper, node_slot, line);
         struct_get_key(&mut helper, &ClassSlot::internal("payload"), line);
-        call_ref(&mut helper, 1, line);
+        call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
         call_ref(&mut helper, 2, line);
         helper.emit_op(Op::DROP, line);
         helper.emit_end(line);
@@ -890,9 +891,8 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, i_slot, line);
         helper.emit_op(Op::ARRAY_GET, line);
         lset(&mut helper, key_slot, line);
-        ref_func(&mut helper, helper_idx, line);
         dynamic_get_from_slots(&mut helper, fields_slot, key_slot, line);
-        call_ref(&mut helper, 1, line);
+        call_known_one_arg(&mut helper, helper_idx, &recursive_signature, line);
         lset(&mut helper, tmp_slot, line);
         dynamic_set_from_slots(&mut helper, out_slot, key_slot, tmp_slot, line);
         bump_loop_index(&mut helper, i_slot, line);
@@ -943,25 +943,160 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         helper.emit_end(line);
     }
 
+    // Every branch above returns: null/undefined/scalars, missing kind,
+    // array kind, or the object-kind fallback. Standard Wasm does not infer
+    // that fact through nested void IF joins; mark their impossible fallthrough.
+    helper.emit_op(Op::UNREACHABLE, line);
     chunks.push(helper);
     helper_idx
 }
 
 pub fn emit_php_serialize(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let helper_idx = build_php_serialize_helper(chunks, line);
+    emit_php_serialize_with_helper(chunks, current, helper_idx, line);
+}
+
+fn emit_php_serialize_with_helper(chunks: &mut Vec<Chunk>, current: usize, helper_idx: usize, line: u32) {
     let chunk = &mut chunks[current];
     let value_slot = alloc_local(chunk);
     lset(chunk, value_slot, line);
-    ref_func(chunk, helper_idx, line);
     lget(chunk, value_slot, line);
-    call_ref(chunk, 1, line);
+    let encode = chunk.add_import("php:serialization", "encodeScalarArray");
+    chunk.emit_call(encode, 1, line);
+    let encoded_slot = alloc_local(chunk);
+    lset(chunk, encoded_slot, line);
+    lget(chunk, encoded_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    lget(chunk, value_slot, line);
     let _ = chunk;
+    if !vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+        chunks, current, helper_idx, 1, line,
+    ) {
+        let chunk = &mut chunks[current];
+        chunk.emit_op(Op::DROP, line);
+        ref_func(chunk, helper_idx, line);
+        lget(chunk, value_slot, line);
+        call_ref(chunk, 1, line);
+    }
     call_import(chunks, current, "ecma:json", "stringify", 1, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], encoded_slot, line);
+    chunks[current].emit_end(line);
 }
 
+// The general serializer embeds only this ordered class/field projection.
+// Preserve its source line too: sharing may not silently change diagnostics.
+fn serialize_context_key(chunks: &[Chunk], line: u32) -> Vec<u8> {
+    fn text(key: &mut Vec<u8>, value: &str) {
+        key.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        key.extend_from_slice(value.as_bytes());
+    }
+    let mut key = line.to_le_bytes().to_vec();
+    for ty in chunks[0].types.iter().filter(|ty| !ty.is_interface) {
+        key.push(1);
+        text(&mut key, &ty.name);
+        for field in ty.fields.iter().filter(|field| !matches!(field.as_str(),
+            "__type" | "__types" | "__control_name" | "__super" | "vybe$assoc_keys_csv")) {
+            key.push(2);
+            text(&mut key, field);
+        }
+        key.push(0);
+    }
+    key
+}
+
+fn standalone_serialize_factory_unused() -> Chunk {
+    unreachable!("serializer uses its context-dependent append-only factory")
+}
+fn standalone_serialize_caller_unused(_: &mut Chunk, _: usize, _: u32) {
+    unreachable!("serializer uses its existing context-dependent caller adaptation")
+}
+
+// Allocation embeds concrete type-table indices and method targets. Include
+// interfaces in the enumeration: adding one shifts later concrete indices.
+fn unserialize_context_key(chunks: &[Chunk], line: u32) -> Vec<u8> {
+    fn text(key: &mut Vec<u8>, value: &str) {
+        key.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        key.extend_from_slice(value.as_bytes());
+    }
+    let mut key = line.to_le_bytes().to_vec();
+    for (index, ty) in chunks[0].types.iter().enumerate().filter(|(_, ty)| !ty.is_interface) {
+        key.push(1);
+        key.extend_from_slice(&(index as u64).to_le_bytes());
+        text(&mut key, &ty.name);
+        for field in &ty.fields {
+            key.push(2);
+            text(&mut key, field);
+        }
+        for (name, target) in &ty.methods {
+            key.push(3);
+            text(&mut key, name);
+            key.extend_from_slice(&(*target as u64).to_le_bytes());
+        }
+        key.push(0);
+    }
+    key
+}
+
+fn invoke_unserialize_one(chunks: &mut Vec<Chunk>, current: usize, helper: usize, line: u32) {
+    emit_php_unserialize_with_helper(chunks, current, helper, 1, line);
+}
+
+fn invoke_unserialize_two(chunks: &mut Vec<Chunk>, current: usize, helper: usize, line: u32) {
+    emit_php_unserialize_with_helper(chunks, current, helper, 2, line);
+}
+
+pub static HELPER_DEFINITIONS: &[vybe_compiler::primitives::helper_templates::Definition] = &[
+    vybe_compiler::primitives::helper_templates::Definition {
+        contract: vybe_compiler::primitives::helper_templates::Contract::ContextualAppendOnlyUnit {
+            key: serialize_context_key,
+            build: build_php_serialize_helper,
+            invoke: emit_php_serialize_with_helper,
+        },
+        operation: "php.serialize", namespace: "php", version: 1,
+        parser: crate::parse, producer: super::dispatch::dispatch, arity: 1,
+        helper_name: "__php_serialize_value",
+        factory: standalone_serialize_factory_unused,
+        caller: standalone_serialize_caller_unused,
+    },
+    vybe_compiler::primitives::helper_templates::Definition {
+        contract: vybe_compiler::primitives::helper_templates::Contract::ContextualAppendOnlyUnit {
+            key: unserialize_context_key,
+            build: build_php_unserialize_provider,
+            invoke: invoke_unserialize_one,
+        },
+        operation: "php.unserialize", namespace: "php", version: 1,
+        parser: crate::parse, producer: super::dispatch::dispatch, arity: 1,
+        helper_name: "__php_unserialize_value",
+        factory: standalone_serialize_factory_unused,
+        caller: standalone_serialize_caller_unused,
+    },
+    vybe_compiler::primitives::helper_templates::Definition {
+        contract: vybe_compiler::primitives::helper_templates::Contract::ContextualAppendOnlyUnit {
+            key: unserialize_context_key,
+            build: build_php_unserialize_provider,
+            invoke: invoke_unserialize_two,
+        },
+        operation: "php.unserialize", namespace: "php", version: 1,
+        parser: crate::parse, producer: super::dispatch::dispatch, arity: 2,
+        helper_name: "__php_unserialize_value",
+        factory: standalone_serialize_factory_unused,
+        caller: standalone_serialize_caller_unused,
+    },
+];
+
 pub fn emit_php_unserialize(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let helper_idx = build_php_unserialize_provider(chunks, line);
+    emit_php_unserialize_with_helper(chunks, current, helper_idx, argc, line);
+}
+
+fn build_php_unserialize_provider(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let alloc_idx = build_php_alloc_helper(chunks, line);
-    let helper_idx = build_php_unserialize_helper(chunks, alloc_idx, line);
+    build_php_unserialize_helper(chunks, alloc_idx, line)
+}
+
+fn emit_php_unserialize_with_helper(chunks: &mut Vec<Chunk>, current: usize, helper_idx: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc > 1 {
         let _options_slot = alloc_local(chunk);
@@ -973,10 +1108,38 @@ pub fn emit_php_unserialize(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     let _ = chunk;
     call_import(chunks, current, "php:serialization", "toJson", 1, line);
     call_import(chunks, current, "ecma:json", "parse", 1, line);
+    if vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+        chunks, current, helper_idx, 1, line,
+    ) {
+        return;
+    }
     let chunk = &mut chunks[current];
     let parsed_slot = alloc_local(chunk);
     lset(chunk, parsed_slot, line);
     ref_func(chunk, helper_idx, line);
     lget(chunk, parsed_slot, line);
     call_ref(chunk, 1, line);
+}
+
+#[cfg(test)]
+mod compact_serialization_tests {
+    use super::*;
+
+    #[test]
+    fn serialization_outer_and_self_calls_are_direct() {
+        let mut chunks = vec![Chunk::new("serialize-caller")];
+        emit_php_serialize(&mut chunks, 0, 1, 1);
+        assert_eq!(chunks[0].direct_defined_calls.len(), 1);
+        assert!(chunks[1].direct_defined_calls.len() >= 4);
+        assert!(chunks[1].direct_defined_calls.values().all(|edge| edge.target == 1));
+    }
+
+    #[test]
+    fn unserialization_outer_and_self_calls_are_direct() {
+        let mut chunks = vec![Chunk::new("unserialize-caller")];
+        emit_php_unserialize(&mut chunks, 0, 1, 1);
+        assert_eq!(chunks[0].direct_defined_calls.len(), 1);
+        assert!(chunks[2].direct_defined_calls.len() >= 3);
+        assert!(chunks[2].direct_defined_calls.values().all(|edge| edge.target == 2));
+    }
 }

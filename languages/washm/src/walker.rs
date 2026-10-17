@@ -325,10 +325,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports: Vec::new(),
         directives: Directives {
+            add_concatenates_strings: Some(true),
             spread_arguments: Some(SpreadArguments::Positional),
             equality_fallback: Some(vybe_ast::EqualityFallback::EcmaAbstract),
             type_resolution: Some(vybe_ast::TypeResolution::Dynamic),
             operator_dispatch: Some(vybe_ast::OperatorDispatch::Ecma),
+            dynamic_numeric_dispatch: Some(true),
             ..Default::default()
         },
     })
@@ -557,13 +559,6 @@ fn bash_object_set(obj: Expression, key: Expression, value: Expression) -> Expre
 }
 fn bash_object_set_stmt(obj: Expression, key: Expression, value: Expression) -> Statement {
     expr_stmt(bash_object_set(obj, key, value))
-}
-fn call_named_args(name: &str, args: Vec<Argument>) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(ident(name)),
-        args,
-        optional: false,
-    })
 }
 fn bash_sprintf_array(fmt: Expression, args: Vec<ShellArg>) -> Expression {
     call_named("__bash_sprintf_array", vec![fmt, shell_args_array(args)])
@@ -3172,18 +3167,6 @@ impl Lowered {
         match self.value {
             Some(cmd) => vec![cmd.status_stmt()],
             None => self.stmts,
-        }
-    }
-    fn into_expr(self) -> Cmd {
-        match self.value {
-            Some(cmd) => cmd,
-            None => {
-                let mut stmts = self.stmts;
-                stmts.push(Statement::new(StmtKind::Return(Some(ident(
-                    "__bash_status",
-                )))));
-                Cmd::status(shell_state_iife(stmts))
-            }
         }
     }
     fn into_current_expr(self) -> Cmd {

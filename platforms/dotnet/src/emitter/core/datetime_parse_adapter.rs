@@ -877,7 +877,7 @@ fn build_sweep_chunk(exact_idx: usize, line: u32) -> Chunk {
 
     // NaN is the only value not equal to itself, so `r != r` IS "no pattern has
     // matched yet". Each candidate runs only while that holds.
-    let mut sweep = |c: &mut Chunk, pattern: &str| {
+    let sweep = |c: &mut Chunk, pattern: &str| {
         get(c, result, line);
         get(c, result, line);
         c.emit_op(Op::F64_NE, line);

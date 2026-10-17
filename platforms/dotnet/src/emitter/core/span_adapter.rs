@@ -15,7 +15,7 @@ use super::array_adapter;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 use super::object_fields::field_slot;
 
@@ -33,15 +33,6 @@ fn set_field(chunk: &mut Chunk, object_slot: u16, field: &str, value_slot: u16, 
     );
 }
 
-fn set_string_field(chunk: &mut Chunk, object_slot: u16, field: &str, value: &str, line: u32) {
-    class_slots::emit_class_set(
-        chunk,
-        ObjSource::Local(object_slot),
-        &field_slot(field),
-        ValueSource::ConstStr(value.to_string()),
-        line,
-    );
-}
 
 fn get_field(chunk: &mut Chunk, object_slot: u16, field: &str, line: u32) {
     class_slots::emit_class_get(

@@ -21,13 +21,12 @@
 //!
 //! Pattern: `emitter/core/datatable_adapter.rs`.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::ops;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::opcode::heaptype::HT_EXTERN;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 use super::object_fields::field_slot;
 
@@ -148,6 +147,10 @@ fn emit_rows(chunks: &mut [Chunk], current: usize, bs_slot: u16, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_SET, ds_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, ds_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, ds_slot, line);
+        let undefined = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(undefined, 1, line);
+        chunk.emit_op(Op::I32_OR, line);
         chunk.emit_if_value(line);
     }
     collections::emit_array_new(chunks, current, 0, line);
@@ -161,6 +164,11 @@ fn emit_rows(chunks: &mut [Chunk], current: usize, bs_slot: u16, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_SET, rows_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, rows_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
+        // A bare list has no rows property; its missing read is Undefined.
+        chunk.emit_op_u16(Op::LOCAL_GET, rows_slot, line);
+        let undefined = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(undefined, 1, line);
+        chunk.emit_op(Op::I32_OR, line);
         chunk.emit_if_value(line);
         chunk.emit_op_u16(Op::LOCAL_GET, ds_slot, line);
         chunk.emit_else(line);
@@ -189,16 +197,20 @@ fn emit_count_to_slot(chunks: &mut [Chunk], current: usize, bs_slot: u16, line: 
 ///
 /// Stack in: `[bs]`   Stack out: `[null]`
 pub fn emit_bindingsource_move(chunks: &mut [Chunk], current: usize, mode: Move, line: u32) {
-    let bs_slot = {
-        let chunk = &mut chunks[current];
-        let slot = reserve_slot(chunk);
-        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
-        slot
-    };
-    let count_slot = emit_count_to_slot(chunks, current, bs_slot, line);
-    let chunk = &mut chunks[current];
-    let pos_slot = reserve_slot(chunk);
+    emit_move(chunks, current, MoveInput::Static(mode), line);
+}
 
+/// Only the compiler-private navigator body passes this evaluated enum slot.
+/// Public Move APIs and their exact inline emission remain unchanged.
+pub(super) fn emit_bindingsource_move_from_private_mode(
+    chunks: &mut [Chunk], current: usize, mode_slot: u16, line: u32,
+) {
+    emit_move(chunks, current, MoveInput::PrivateLocal(mode_slot), line);
+}
+
+enum MoveInput { Static(Move), PrivateLocal(u16) }
+
+fn emit_position(chunk: &mut Chunk, bs_slot: u16, count_slot: u16, mode: Move, line: u32) {
     match mode {
         Move::First => chunk.emit_f64_const(0.0, line),
         Move::Next => {
@@ -215,6 +227,37 @@ pub fn emit_bindingsource_move(chunks: &mut [Chunk], current: usize, mode: Move,
             chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
             chunk.emit_f64_const(-1.0, line);
             ops::emit_dyn_add(chunk, line);
+        }
+    }
+}
+
+fn emit_move(chunks: &mut [Chunk], current: usize, mode: MoveInput, line: u32) {
+    let bs_slot = {
+        let chunk = &mut chunks[current];
+        let slot = reserve_slot(chunk);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        slot
+    };
+    let count_slot = emit_count_to_slot(chunks, current, bs_slot, line);
+    let chunk = &mut chunks[current];
+    let pos_slot = reserve_slot(chunk);
+
+    match mode {
+        MoveInput::Static(mode) => emit_position(chunk, bs_slot, count_slot, mode, line),
+        MoveInput::PrivateLocal(slot) => {
+            // Selector codes originate only in four generated wrappers.
+            // These comparisons are raw standard i32 operations, not writable
+            // dynamic comparison helpers; no user callback is added.
+            for (code, mode) in [(0, Move::First), (1, Move::Next), (2, Move::Previous)] {
+                chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+                chunk.emit_i32_const(code, line);
+                chunk.emit_op(Op::I32_EQ, line);
+                chunk.emit_if_value(line);
+                emit_position(chunk, bs_slot, count_slot, mode, line);
+                chunk.emit_else(line);
+            }
+            emit_position(chunk, bs_slot, count_slot, Move::Last, line);
+            for _ in 0..3 { chunk.emit_end(line); }
         }
     }
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);

@@ -20,7 +20,6 @@ string_indexing = "zero_based"
 entry_point = "main"
 uses_normalize_class = true
 uses_common_resolver = true
-dynamic_add = true
 # `dynamic_member_access` is deliberately NOT set. Kotlin declares its classes,
 # so a member read resolves against the class model the way Java, Dart and C#
 # do. On the dynamic path `this.n` compiles to the JS member sequence, which
@@ -40,11 +39,6 @@ has_undefined_value = true
 # raw WASM i32 condition: `println(1 == 1)` must print `true`, not `1`. Same
 # reason Go and C# declare it.
 materialize_bool_results = true
-# `7 / 2` is 3 but `7.0 / 2.0` is 3.5 — Kotlin truncates only when BOTH operands
-# are integers. The walker used to force `(a / b) | 0` on every division, which
-# made every result an integer; the shared emitter now decides from this flag
-# plus the `[builtin_types] int` spellings below.
-integer_division_on_slash = true
 has_ecma_globals = true
 ecma_object_literals = true
 tuple_literals_tagged = true

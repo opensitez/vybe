@@ -1,12 +1,11 @@
 //! Auto-extracted `dotnet.*` dispatch (language-specific routing lives in the
 //! language module; the common dispatcher delegates here).
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_compiler::primitives::instructions::core_wasm;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 /// The declared field order for a drawing value type — the SAME list that
 /// `class_to_component_class` puts on the `ClassType`, so the order a ctor
@@ -450,7 +449,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     }
     if let Some(key) = name.strip_prefix("dotnet.monthcalendar_prop_set.") {
         crate::emitter::core::month_calendar_adapter::emit_property_set(
-            &mut chunks[current], key, line,
+            chunks, current, key, line,
         );
         return true;
     }
@@ -4378,6 +4377,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── PHP DateTime / DateTimeImmutable / DateInterval adapters ──
         // Bytecode-only — composes existing `ecma:date.*` host fns into
         // the PHP-shaped surface. See `emitter/php/datetime_adapter.rs`.
+        "dotnet.interpolation_value" => crate::emitter::core::string_format_adapter::emit_interpolation_value(
+            chunks, current, line,
+        ),
         "dotnet.string_format" => crate::emitter::core::string_format_adapter::emit_string_format(
             chunks, current, argc, line,
         ),
@@ -4461,16 +4463,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::visualbasic_adapter::emit_vb_beep(chunks, current, line)
         }
         "dotnet.vb_filecopy" => {
-            crate::emitter::core::visualbasic_adapter::emit_vb_filecopy(chunks, current, argc, line)
+            crate::emitter::core::visualbasic_adapter::emit_vb_filecopy(chunks, current, line)
         }
         "dotnet.vb_kill" => {
-            crate::emitter::core::visualbasic_adapter::emit_vb_kill(chunks, current, argc, line)
+            crate::emitter::core::visualbasic_adapter::emit_vb_kill(chunks, current, line)
         }
-        "dotnet.vb_fileexists" => crate::emitter::core::visualbasic_adapter::emit_vb_fileexists(
-            chunks, current, argc, line,
-        ),
+        "dotnet.vb_fileexists" => crate::emitter::core::visualbasic_adapter::emit_vb_fileexists(chunks, current, line),
         "dotnet.vb_filelen" => {
-            crate::emitter::core::visualbasic_adapter::emit_vb_filelen(chunks, current, argc, line)
+            crate::emitter::core::visualbasic_adapter::emit_vb_filelen(chunks, current, line)
         }
         "dotnet.vb_freefile" => {
             crate::emitter::core::visualbasic_adapter::emit_vb_freefile(chunks, current, argc, line)
@@ -4515,19 +4515,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::visualbasic_adapter::emit_vb_chdir(chunks, current, argc, line)
         }
         "dotnet.vb_mkdir" => {
-            crate::emitter::core::visualbasic_adapter::emit_vb_mkdir(chunks, current, argc, line)
+            crate::emitter::core::visualbasic_adapter::emit_vb_mkdir(chunks, current, line)
         }
         "dotnet.vb_rmdir" => {
-            crate::emitter::core::visualbasic_adapter::emit_vb_rmdir(chunks, current, argc, line)
+            crate::emitter::core::visualbasic_adapter::emit_vb_rmdir(chunks, current, line)
         }
         "dotnet.vb_name" => {
-            crate::emitter::core::visualbasic_adapter::emit_vb_name(chunks, current, argc, line)
+            crate::emitter::core::visualbasic_adapter::emit_vb_name(chunks, current, line)
         }
         "dotnet.vb_get" => {
-            crate::emitter::core::visualbasic_adapter::emit_vb_get(chunks, current, argc, line)
+            crate::emitter::core::visualbasic_adapter::emit_vb_get(chunks, current, line)
         }
         "dotnet.vb_put" => {
-            crate::emitter::core::visualbasic_adapter::emit_vb_put(chunks, current, argc, line)
+            crate::emitter::core::visualbasic_adapter::emit_vb_put(chunks, current, line)
         }
         "dotnet.vb_app_path" => {
             crate::emitter::core::visualbasic_adapter::emit_vb_app_path(chunks, current, argc, line)
@@ -4572,7 +4572,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::visualbasic_adapter::emit_vb_app(chunks, current, argc, line)
         }
         "dotnet.vb_open" => {
-            crate::emitter::core::visualbasic_adapter::emit_vb_open(chunks, current, argc, line)
+            crate::emitter::core::visualbasic_adapter::emit_vb_open(chunks, current, line)
         }
         "dotnet.vb_dir" => {
             crate::emitter::core::visualbasic_adapter::emit_vb_dir(chunks, current, argc, line)
@@ -5149,6 +5149,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::filesystem_adapter::emit_directory_delete(
                 chunks, current, argc, line,
             )
+        }
+        "dotnet.console_numeric_value" => {
+            crate::emitter::core::console_adapter::emit_console_numeric_value(&mut chunks[current], line)
         }
         "dotnet.console_writeline" => {
             // `WriteLine()` with no argument is a bare newline; `WriteLine(v)`
@@ -6771,102 +6774,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.try_peek_back" => crate::emitter::core::collections_adapter::emit_try_out(
             chunks, current, false, true, line,
         ),
-        "dotnet.concurrent_stack_try_pop_range" => {
-            crate::emitter::core::collections_adapter::emit_concurrent_stack_try_pop_range(
-                chunks, current, argc, line,
-            )
-        }
-        "dotnet.dict_try_update" => {
-            crate::emitter::core::collections_adapter::emit_dict_try_update(chunks, current, line)
-        }
-        "dotnet.dict_try_remove" => {
-            crate::emitter::core::collections_adapter::emit_dict_try_remove(chunks, current, line)
-        }
-        "dotnet.dict_get_or_add" => {
-            crate::emitter::core::collections_adapter::emit_dict_get_or_add(chunks, current, line)
-        }
-        "dotnet.dict_add_or_update" => {
-            crate::emitter::core::collections_adapter::emit_dict_add_or_update(
-                chunks, current, line,
-            )
-        }
-        "dotnet.nullability_info_context_new" => {
-            crate::emitter::core::reflection_adapter::emit_nullability_info_context_new(
-                chunks, current, argc, line,
-            )
-        }
-        "dotnet.custom_attribute_data" => {
-            crate::emitter::core::reflection_adapter::emit_custom_attribute_data(
-                chunks, current, argc, line,
-            )
-        }
-        // `OpCodes.<member>` — one common per member, so the emitter knows
-        // WHICH opcode without a second table keyed the other way.
-        other
-            if other
-                .starts_with(crate::emitter::core::reflection_adapter::OPCODE_COMMON_PREFIX) =>
-        {
-            let member =
-                &other[crate::emitter::core::reflection_adapter::OPCODE_COMMON_PREFIX.len()..];
-            crate::emitter::core::reflection_adapter::emit_opcode(
-                &mut chunks[current],
-                member,
-                line,
-            )
-        }
-        "dotnet.async_local_new" => crate::emitter::core::parallel_adapter::emit_async_local_new(
-            chunks, current, argc, line,
-        ),
-        "dotnet.parallel_options_new" => {
-            crate::emitter::core::parallel_adapter::emit_parallel_options_new(
-                chunks, current, argc, line,
-            )
-        }
-        "dotnet.parallel_for" => {
-            crate::emitter::core::parallel_adapter::emit_parallel_for(chunks, current, argc, line)
-        }
-        "dotnet.parallel_for_each" => {
-            crate::emitter::core::parallel_adapter::emit_parallel_for_each(
-                chunks, current, argc, line,
-            )
-        }
-        "dotnet.parallel_invoke" => crate::emitter::core::parallel_adapter::emit_parallel_invoke(
-            chunks, current, argc, line,
-        ),
-        "dotnet.partitioner_create" => {
-            crate::emitter::core::parallel_adapter::emit_partitioner_create(
-                chunks, current, argc, line,
-            )
-        }
-        "dotnet.partitioner_get_partitions" => {
-            crate::emitter::core::parallel_adapter::emit_partitioner_get_partitions(
-                chunks, current, argc, line,
-            )
-        }
-        "dotnet.try_take_front" => {
-            chunks[current].emit_op(Op::DROP, line);
-            vybe_compiler::primitives::collections::emit_shift(chunks, current, line);
-        }
-        "dotnet.try_take_back" => {
-            chunks[current].emit_op(Op::DROP, line);
-            vybe_compiler::primitives::collections::emit_pop(chunks, current, line);
-        }
-        "dotnet.try_peek_front" => {
-            chunks[current].emit_op(Op::DROP, line);
-            chunks[current].emit_i32_const(0, line);
-            vybe_compiler::primitives::collections::emit_get(chunks, current, line);
-        }
-        "dotnet.try_peek_back" => {
-            chunks[current].emit_op(Op::DROP, line);
-            let recv = chunks[current].alloc_scratch(1);
-            chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-            vybe_compiler::primitives::collections::emit_len(chunks, current, line);
-            chunks[current].emit_i32_const(1, line);
-            chunks[current].emit_op(Op::I32_SUB, line);
-            vybe_compiler::primitives::collections::emit_get(chunks, current, line);
-        }
         "dotnet.choose" => emit_choose(&mut chunks[current], argc, line),
         "dotnet.switch" => emit_switch(&mut chunks[current], argc, line),
         "dotnet.vb_str_dup" => {
@@ -6979,9 +6886,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.bigint_equals" => {
             crate::emitter::core::biginteger_adapter::emit_equals(chunks, current, line)
-        }
-        "dotnet.bigint_zero" => {
-            crate::emitter::core::biginteger_adapter::emit_zero(chunks, current, line)
         }
         "dotnet.bigint_one" => {
             crate::emitter::core::biginteger_adapter::emit_one(chunks, current, line)

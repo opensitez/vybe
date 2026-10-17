@@ -71,7 +71,6 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn emit_throw_object_disposed(chunks: &mut [Chunk], current: usize, line: u32) {
-    let chunk = &mut chunks[current];
     crate::emitter::core::exceptions::emit_new_typed(
         chunks,
         current,

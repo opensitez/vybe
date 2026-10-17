@@ -26,6 +26,7 @@ pub mod datetime_adapter;
 // bound from the PHP profile's `[builtins]` section. No JS
 // polyfills; no PHP-specific host fns.
 pub mod array_adapter;
+pub mod argument_emission;
 pub mod autoload_adapter;
 pub mod call_adapter;
 pub mod ctype_adapter;
@@ -33,6 +34,7 @@ pub mod db_adapter;
 pub mod dispatch;
 pub mod empty_adapter;
 pub mod env_adapter;
+pub mod extract_adapter;
 pub mod error_adapter;
 pub mod fiber_adapter;
 pub mod filesystem_adapter;
@@ -43,6 +45,7 @@ pub mod json_adapter;
 pub mod math_adapter;
 pub mod mysqli_adapter;
 pub mod numeric_adapter;
+pub mod named_args_adapter;
 pub mod output_adapter;
 pub mod packing_adapter;
 pub mod pdo_adapter;
@@ -53,6 +56,7 @@ pub mod serialization_adapter;
 pub mod session_adapter;
 pub mod spl_adapter;
 pub mod string_adapter;
+mod str_replace_adapter;
 pub mod superglobal_adapter;
 pub mod time_adapter;
 pub mod type_guard;
@@ -60,3 +64,5 @@ pub mod url_adapter;
 pub mod version_adapter;
 pub mod weak_adapter;
 pub mod xml_adapter;
+
+pub mod foreach_protocol;

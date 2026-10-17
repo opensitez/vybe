@@ -30,4 +30,8 @@ pub(super) fn emit_php_empty_condition(chunks: &mut [Chunk], current: usize, lin
 
     lset(chunk, value_slot, line);
     crate::emitter::array_adapter::emit_php_empty_from_slot(chunks, current, value_slot, line);
+    // The shared predicate returns a Boolean; condition consumers require i32.
+    let chunk = &mut chunks[current];
+    let cast = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast, 1, line);
 }

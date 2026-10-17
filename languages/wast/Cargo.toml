@@ -11,6 +11,8 @@ name = "vybe_language_wast"
 [dependencies]
 grameo = { path = "../../crates/grameo" }
 inventory = { workspace = true }
+semver = "1.0"
+wat = "1.261.0"
 vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
 # `(module binary "…")` embeds a module as raw BYTES, so the wast front end
@@ -25,6 +27,8 @@ vybe_platform_wasm = { workspace = true }
 vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
+vybe_platform_ecma = { workspace = true }
+wasmparser = "0.261.0"
 
 
 [build-dependencies]

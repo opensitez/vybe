@@ -23,7 +23,6 @@ use vybe_compiler::primitives::ops;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 
 use super::object_fields::field_slot;

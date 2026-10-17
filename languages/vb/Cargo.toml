@@ -18,6 +18,7 @@ chrono = "0.4"
 vybe_platform_dotnet = { workspace = true }
 
 [dev-dependencies]
+vybe_platform_web = { workspace = true }
 vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }

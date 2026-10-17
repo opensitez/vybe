@@ -1,0 +1,272 @@
+--- a/languages/python/src/grammar.pest
++++ b/languages/python/src/grammar.pest
+@@ -564,3 +564,6 @@
+ //@grameo pratt postfix atom=pratt_scalar_atom trailing=preserve
+ //@grameo operator postfix owned_member_op precedence=10 fixity=postfix
+ owned_member_op = { "." ~ identifier }
++
++//@grameo operator postfix owned_scalar_index_op precedence=10 fixity=postfix
++owned_scalar_index_op = { "[" ~ pratt_scalar_atom ~ "]" }
+--- a/languages/python/src/walker/direct_ast.rs
++++ b/languages/python/src/walker/direct_ast.rs
+@@ -23,6 +23,7 @@
+ #[derive(Clone, Copy)]
+ enum Replay {
+     Member { raw: grameo::Span, span: Span },
++    Index { span: Span },
+     Leaf {
+         rule: Rule,
+         raw: grameo::Span,
+@@ -41,7 +42,7 @@
+ impl Replay {
+     fn span(&mut self) -> &mut Span {
+         match self {
+-            Self::Leaf { span, .. } | Self::List { span, .. } | Self::Binary { span, .. } | Self::Member {span,..} => span,
++            Self::Leaf { span, .. } | Self::List { span, .. } | Self::Binary { span, .. } | Self::Member {span,..} | Self::Index {span} => span,
+         }
+     }
+ }
+@@ -98,6 +99,11 @@
+     let mut stack = Vec::new();
+     for event in replay {
+         match *event {
++            Replay::Index {span} => {
++                let index=stack.pop().expect("index operand");
++                let object=stack.pop().expect("index object");
++                stack.push(Expression::with_span(ExprKind::Index {object:Box::new(object),index:Box::new(index),null_safe:false},span));
++            }
+             Replay::Member {raw,span} => {
+                 let object=stack.pop().expect("member object");
+                 stack.push(Expression::with_span(ExprKind::Member {object:Box::new(object),field:source[raw.start-start..raw.end-start].trim().strip_prefix('.').unwrap().trim().to_owned(),null_safe:false},span));
+@@ -1016,7 +1022,7 @@
+ // postfix boundary, just as the contextual capture walker did.
+ fn normalize_contextual_expression(walker: &mut PyWalker, expression: Expression) -> Expression {
+     let original_span = expression.span;
+-    if matches!(expression.kind,ExprKind::Member{..}) {return members::normalize(walker,expression);}
++    if matches!(expression.kind,ExprKind::Member{..}|ExprKind::Index{..}) {return members::normalize(walker,expression);}
+     let kind = match expression.kind {
+         ExprKind::Array(mut elements) => {
+             for element in &mut elements {
+@@ -1516,7 +1522,15 @@
+             if pair.as_rule()==Rule::postfix_chain && pair.clone().into_inner().next().is_some_and(|p|p.as_rule()==Rule::identifier) {*args+=1;}
+             1+pair.into_inner().map(|pair|count(pair,args)).sum::<usize>()
+         }
++        fn index_count(pair:Pair<'_,Rule>)->usize {
++            let own=usize::from(pair.as_rule()==Rule::postfix_chain && pair.clone().into_inner().next().is_some_and(|p|p.as_rule()==Rule::subscript));
++            own+pair.into_inner().map(index_count).sum::<usize>()
++        }
+         for (label,path) in [
++            ("list_index","tests/python/data_structures/list_index_access.py"),
++            ("linecache","tests/python/python_linecache_cache_ops/test_linecache_cache_entry_structure.py"),
++            ("getitem","tests/python/oop_inheritance_extended/dunder_getitem.py"),
++            ("class_getitem","tests/python/oop_meta_descriptor_spec/class_getitem_compile.py"),
+             ("numbers","tests/python/python_numbers_abstract_hierarchy/test_numbers_subclass_integral_implementation.py"),
+             ("property","tests/python/python_property_advanced/test_property_getter.py"),
+             ("pydoc","tests/python/python_pydoc_documentation_renderer/test_pydoc_render_doc_text_mode.py"),
+@@ -1526,12 +1540,17 @@
+             let mut before=Ast::new(&source);
+             let tree=crate::native_grammar::Parser.build_captures(Rule::program,&source,&mut WithoutMembers(&mut before)).unwrap();
+             let mut matched=0;
+-            let before_nodes=tree.into_typed_pairs().into_iter().map(|pair|count(pair,&mut matched)).sum::<usize>();
++            let pairs=tree.into_typed_pairs();
++            let matched_indices=pairs.clone().map(index_count).sum::<usize>();
++            let before_nodes=pairs.into_iter().map(|pair|count(pair,&mut matched)).sum::<usize>();
+             let mut after=Ast::new(&source);
+             let tree=crate::native_grammar::Parser.build_captures(Rule::program,&source,&mut after).unwrap();
+             let after_nodes=tree.into_typed_pairs().into_iter().map(|pair|count(pair,&mut 0)).sum::<usize>();
+             let owned=after.expressions.values().map(|cached|cached.replay.iter().filter(|r|matches!(r,Replay::Member{..})).count()).sum::<usize>()
+                 + after.statements.values().map(|cached|cached.replay.iter().filter(|r|matches!(r,Replay::Member{..})).count()).sum::<usize>();
++            let owned_indices=after.expressions.values().map(|cached|cached.replay.iter().filter(|r|matches!(r,Replay::Index{..})).count()).sum::<usize>()
++                +after.statements.values().map(|cached|cached.replay.iter().filter(|r|matches!(r,Replay::Index{..})).count()).sum::<usize>();
++            println!("{label} matched_index_operations={matched_indices} owned_index_operations={owned_indices}");
+             let before_statements=before.statements.len();
+             let after_statements=after.statements.len();
+             let before_returns=before.statements.values().filter(|c|matches!(c.rule,Rule::return_stmt | Rule::return_inline)).count();
+@@ -1764,7 +1783,8 @@
+                 _ => panic!("acceptance mismatch: {source}"),
+             }
+         }
+-    }    #[test]
++    }
++    #[test]
+     fn opaque_identifier_lexer_preserves_scope_keywords_trivia_and_rollback() {
+         for input in [
+             "classify=1\nTrue_=2\nassert_=3\nx=classify+True_+assert_\n",
+@@ -1790,4 +1810,56 @@
+         }
+     }
+ 
+-}
++    #[test]
++    fn index_postfix_preserves_live_scopes_and_rollback() {
++        for input in [
++            "a=[1,2]\ni=1\nx=a[i]\n",
++            "def f(a,i):\n    return a[i]\n",
++            "a=[[1,2]]\nx=a[0][1]\n",
++            "class I:\n    def __index__(self): return 1\ni=I()\na=[1,2]\nx=a[i]\n",
++            "class C:\n    def __getitem__(self,i): return i\nc=C()\nx=c[1]\n",
++            "class C:\n    @classmethod\n    def __class_getitem__(cls,i): return i\nx=C[int]\n",
++            "def outer(a):\n    i=0\n    def inner():\n        nonlocal i\n        return a[i]\n    return inner\n",
++            "class C:\n    value=[1,2]\nc=C()\nx=c.value[0]\ny=c.value[1].real\n",
++            "a=[1,2]\na[0]=3\ndel a[1]\n",
++            "a=[1,2]\nx=a[(1)]\ny=a[0:1]\nz=a[-1]\n",
++            "a=[1,2]\ni=1\ndel i\nx=a[i]\n",
++            "a=[1,2]\ndel a\nx=a[0]\ny=a[i].field\n",
++            "def gen(a):\n    for i in [0,1]:\n        yield a[i]\n",
++        ] {
++            assert_eq!(scoped_module_snapshot(super::super::parse(input)),scoped_module_snapshot(super::super::parse_with_direct_literals(input)),"{input}");
++        }
++        for source in ["a[i]","C[int]","a[0]"] {
++            set_line_index(source);
++            let mut ast=Ast::new(source);
++            let pair=crate::native_grammar::Parser.build_captures(Rule::expression,source,&mut ast).unwrap().into_typed_pairs().next().unwrap();
++            let mut walker=PyWalker::default();walker.direct_lists=ast.finish();walker.direct_input=Some((source.as_ptr() as usize,source.len()));
++            for special in [true,false,true] {
++                let mut reference=PyWalker::default();
++                if source=="a[i]" {
++                    if special {walker.py_deleted_names.insert("i".into());reference.py_deleted_names.insert("i".into());}
++                    else {walker.py_deleted_names.remove("i");}
++                } else if source=="a[0]" {
++                    if special {walker.py_deleted_names.insert("a".into());reference.py_deleted_names.insert("a".into());}
++                    else {walker.py_deleted_names.remove("a");}
++                } else if special {walker.py_defined_classes.insert("C".into());reference.py_defined_classes.insert("C".into());}
++                else {walker.py_defined_classes.remove("C");}
++                let owned=walk_expression(&mut walker,pair.clone()).unwrap();
++                let expected=walk_expression(&mut reference,PythonParser::parse(Rule::expression,source).unwrap().next().unwrap()).unwrap();
++                assert_eq!(format!("{owned:?}"),format!("{expected:?}"),"reused {source} special={special}");
++            }
++        }
++        for input in ["a[i]", "a[0][1]", "a.b[i].c", "a [ 0 ]", "a[0", "a[]", "a[0].", "a[0](", "a[0:1]", "a[0]=1\n"] {
++            set_line_index(input);
++            for limit in 1..128 {
++                for options in [grameo::MatchOptions{max_steps:limit,..Default::default()},grameo::MatchOptions{max_rule_depth:limit,..Default::default()}] {
++                    let mut ast=Ast::new(input);
++                    let entry=if input.contains('\n') {"program"} else {"expression"};
++                    let result=grameo::engine::build_compact_capture_program(&crate::native_grammar::Parser,entry,input,options,&mut ast);
++                    if result.is_err() {assert!(ast.arena.values().is_empty(),"{input} limit={limit}");assert!(!ast.active());}
++                }
++            }
++        }
++    }
++
++}
+--- a/languages/python/src/walker/direct_ast/members.rs
++++ b/languages/python/src/walker/direct_ast/members.rs
+@@ -10,9 +10,19 @@
+     let mut member=false;
+     loop {
+         while bytes.get(cursor).is_some_and(|b|matches!(b,b' '|b'\t'|b'\r')) {cursor+=1;}
+-        if bytes.get(cursor)!=Some(&b'.') {
+-            return member && !matches!(bytes.get(cursor),Some(b'('|b'['));
++        if bytes.get(cursor)==Some(&b'[') {
++            cursor+=1;
++            while bytes.get(cursor).is_some_and(|b|matches!(b,b' '|b'\t'|b'\r')) {cursor+=1;}
++            if !bytes.get(cursor).is_some_and(|b|b.is_ascii_alphanumeric() || *b==b'_') {return false;}
++            cursor+=1;
++            while bytes.get(cursor).is_some_and(|b|b.is_ascii_alphanumeric() || *b==b'_') {cursor+=1;}
++            while bytes.get(cursor).is_some_and(|b|matches!(b,b' '|b'\t'|b'\r')) {cursor+=1;}
++            if bytes.get(cursor)!=Some(&b']') {return false;}
++            cursor+=1;
++            member=true;
++            continue;
+         }
++        if bytes.get(cursor)!=Some(&b'.') {return member && bytes.get(cursor)!=Some(&b'(');}
+         cursor+=1;
+         while bytes.get(cursor).is_some_and(|b|matches!(b,b' '|b'\t'|b'\r')) {cursor+=1;}
+         if !bytes.get(cursor).is_some_and(|b|b.is_ascii_alphabetic() || *b==b'_') {return false;}
+@@ -24,6 +34,7 @@
+ 
+ pub(super) fn reduce(ast: &mut Ast<'_>, op: grameo::Span) {
+     let Some(source)=ast.source else {return;};
++    if source[op.start..op.end].trim().starts_with('[') { reduce_index(ast,op); return; }
+     let Some(id)=ast.arena.values().last().copied() else {return;};
+     let Value::Ready{metadata,..}=ast.arena.get(id) else {return;};
+     if metadata.raw.end>op.start {return;}
+@@ -57,7 +68,55 @@
+     });
+ }
+ 
++fn reduce_index(ast: &mut Ast<'_>, op: grameo::Span) {
++    // Pratt operators match without descendant semantic callbacks. This rule
++    // certifies one lexical scalar, so construct exactly that context-neutral
++    // operand from its consumed span; scope normalization remains deferred.
++    let Some(source)=ast.source else {return;};
++    let operand=&source[op.start+1..op.end-1];
++    let text=operand.trim();
++    let rule=match text {
++        "True"=>Rule::true_kw,"False"=>Rule::false_kw,"None"=>Rule::none_kw,
++        _ if text.as_bytes().first().is_some_and(u8::is_ascii_digit)=>Rule::numeric_literal,
++        _=>Rule::identifier,
++    };
++    let Some(kind)=leaf(rule,text) else {return;};
++    let start=op.start+1+operand.len()-operand.trim_start().len();
++    let raw=grameo::Span{start,end:start+text.len()};
++    let expression_span=span(raw);
++    let id=ast.arena.alloc(Value::Ready{expression:Expression::with_span(kind,expression_span),metadata:Metadata{raw,anchor:None,anchor_rule:rule,sequence:false,contextual:rule==Rule::identifier,layer:0,boundary:raw.end},replay:vec![Replay::Leaf{rule,raw,span:expression_span}]});
++    ast.arena.push(id);
++    let values=ast.arena.values();
++    if values.len()<2 {return;}
++    let (left,right)=(values[values.len()-2],values[values.len()-1]);
++    let (Value::Ready{metadata:lm,..},Value::Ready{metadata:rm,..})=(ast.arena.get(left),ast.arena.get(right)) else {return;};
++    if lm.raw.end>op.start || rm.raw.start<=op.start || rm.raw.end>=op.end {return;}
++    ast.arena.pop();ast.arena.pop();
++    let id=ast.arena.binary_with_metadata(left,right,|left,right| {
++        let (Value::Ready{expression:mut object,metadata:lm,replay:mut le},Value::Ready{expression:mut index,metadata:rm,replay:mut re})=(left,right) else {unreachable!()};
++        let undo=Undo::Binary(lm,rm,le.len(),object.span,index.span);
++        if lm.layer==7 {object.span=Span::default();*le.last_mut().unwrap().span()=object.span;}
++        index.span=Span::default();*re.last_mut().unwrap().span()=index.span;
++        le.extend(re);
++        let raw=grameo::Span{start:lm.raw.start,end:op.end};
++        let expression=Expression::with_span(ExprKind::Index{object:Box::new(object),index:Box::new(index),null_safe:false},span(raw));
++        le.push(Replay::Index{span:expression.span});
++        (Value::Ready{expression,metadata:Metadata{raw,anchor:None,anchor_rule:Rule::postfix,sequence:false,contextual:true,layer:7,boundary:raw.end},replay:le},undo)
++    },|value,undo| {
++        let (Value::Ready{expression,mut replay,..},Undo::Binary(lm,rm,count,left_span,right_span))=(value,undo) else {unreachable!()};
++        let ExprKind::Index{mut object,mut index,..}=expression.kind else {unreachable!()};
++        assert!(matches!(replay.pop(),Some(Replay::Index{..})));
++        let mut re=replay.split_off(count);object.span=left_span;index.span=right_span;
++        *replay.last_mut().unwrap().span()=left_span;*re.last_mut().unwrap().span()=right_span;
++        (Value::Ready{expression:*object,metadata:lm,replay},Value::Ready{expression:*index,metadata:rm,replay:re})
++    });
++    ast.arena.push(id);
++}
++
+ pub(super) fn normalize(walker: &mut PyWalker, mut expression: Expression) -> Expression {
++    let mut probe=&expression;
++    while let ExprKind::Member{object,..}=&probe.kind {probe=object;}
++    if matches!(probe.kind,ExprKind::Index{..}) {return normalize_index_chain(walker,expression);}
+     let original_span=expression.span;
+     if let ExprKind::Member{object,..}=&expression.kind
+         && !matches!(object.kind,ExprKind::Member{..})
+@@ -82,3 +141,31 @@
+     expression.span=original_span;
+     expression
+ }
++
++fn normalize_index_chain(walker: &mut PyWalker, mut expression: Expression) -> Expression {
++    enum Op {Member(String),Index(Expression)}
++    let original_span=expression.span;
++    let mut ops=Vec::new();
++    loop {
++        match expression.kind {
++            ExprKind::Member{object,field,..}=>{ops.push(Op::Member(field));expression=*object;}
++            ExprKind::Index{object,index,..}=>{ops.push(Op::Index(*index));expression=*object;}
++            _=>break,
++        }
++    }
++    // The captured postfix walker leaves its primary raw until final read normalization.
++    let mut expression=expression;
++    for op in ops.into_iter().rev() {
++        expression=match op {
++            Op::Member(field)=>lower_python_owned_member(walker,expression,field),
++            Op::Index(index)=>{
++                let mut index=normalize_contextual_expression(walker,index);
++                index.span=Span::default();
++                let index=if python_class_getitem_target(walker,&expression) {index} else {python_index_operand(walker,&expression,index)};
++                Expression::new(ExprKind::Index{object:Box::new(expression),index:Box::new(index),null_safe:false})
++            }
++        };
++    }
++    let mut expression=desugar_member_reads(walker,expression);
++    expression.span=original_span;expression
++}

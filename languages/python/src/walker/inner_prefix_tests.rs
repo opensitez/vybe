@@ -1,0 +1,7 @@
+use super::*;
+fn snapshot(source:&str,on:bool)->String{direct_ast::recipes::inner_control(on);format!("{:?}",crate::parse(source))}
+#[test]fn inner_public_fixtures(){
+ for source in ["x=[]\n","x=[y]\n","x=[y,z,]\n","x=[i for i in items]\n","x=[i for i in items if i]\n","x=a[b]\n","x=a[:]\n","x=a[::]\n","x=a[b:c:d]\n","x=a[b,c]\n","x=a[b:,c]\n","x=a[b:c:]\n","x=a[:c:d]\n","x=a[::d]\n","x=a[]\n","x=a[b c]\n","x=[y for]\n","x=[y,,z]\n","x=a[b:c:d:e]\n","class C:\n    def f(self):\n        return [self.values[self.index]]\n","x=[(a:=b)]\n","x=[f'hi {y}']\n"]{let a=snapshot(source,false);let b=snapshot(source,true);assert_eq!(a,b,"{source}");assert_eq!(b,format!("{:?}",crate::parse_with_peg(source)),"PEG {source}");}
+ for n in [2,4,6,8,12]{for head in ["[","a["]{let source=format!("x={}y{}\n",head.repeat(n),"]".repeat(n));let a=snapshot(&source,false);let b=snapshot(&source,true);assert_eq!(a,b);assert!(direct_ast::recipes::inner_admissions()>0);}}
+}
+#[test]#[ignore="actual public manifest"]fn inner_public_corpus(){let m=std::env::var("PY_FRONTEND_CORPUS_MANIFEST").unwrap();let(mut ok,mut err,mut admitted)=(0,0,0);for path in std::fs::read_to_string(m).unwrap().lines(){let source=std::fs::read_to_string(path).unwrap();let a=snapshot(&source,false);let b=snapshot(&source,true);admitted+=direct_ast::recipes::inner_admissions();assert_eq!(a,b,"control {path}");assert_eq!(b,format!("{:?}",crate::parse_with_peg(&source)),"PEG {path}");if b.starts_with("Ok("){ok+=1}else{err+=1}}println!("inner public accepted={ok} rejected={err} admission_queries={admitted}");}

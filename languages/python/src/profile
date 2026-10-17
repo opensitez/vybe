@@ -51,7 +51,6 @@ slice_step_zero_raises = true
 # repr/type()/slicing distinguish it. Read by the shared tuple lowering.
 tuple_literals_tagged = true
 base_keyword = "super"
-dynamic_add = true
 # Route bracket reads/writes (`d['k']`, `d['k'] = v`) through the dynamic
 # collection-key path (string keys → struct_get/set, numeric → array_get/set)
 # instead of the numeric-only ARRAY_GET path. Without this, `d['a']` coerces
@@ -101,6 +100,21 @@ uses_normalize_class = true
 __pyadd__       = { emit = "common:python.pyadd",            min_args = 2, max_args = 2 }
 "str.maketrans" = { emit = "common:python.str_maketrans", min_args = 1, max_args = 3 }
 # `list(x)`/`sorted(x)` iterate a dict's KEYS, not its entry pairs.
+# Compiler-owned string appends in the bytes helper declarations.
+__py_known_string_concat = { emit = "common:strings.concat", min_args = 2, max_args = 2 }
+# Hex digits come from a fixed ASCII table with indices in 0..15.
+__py_known_string_char_at = { emit = "common:str_char_at", min_args = 2, max_args = 2 }
+# Compiler-owned repr fragments use existing array append/join primitives.
+__py_known_repr_piece_push = { emit = "common:array_push", min_args = 2, max_args = 2 }
+__py_known_repr_piece_join = { emit = "common:collections.join", min_args = 2, max_args = 2 }
+__py_known_byte_char_code = { emit = "common:str_char_code_at", min_args = 2, max_args = 2 }
+__py_known_byte_substring = { emit = "common:strings.substring", min_args = 3, max_args = 3 }
+# Compiler-owned byte payload operations: existing shared primitives.
+__py_known_byte_length = { emit = "common:array_length", min_args = 1, max_args = 1 }
+__py_known_byte_get = { emit = "common:collections.get", min_args = 2, max_args = 2 }
+# Compiler-owned byte counter: standard Wasm i32 operations.
+__py_known_byte_index_lt = { emit = "opcode:i32_lt_u", min_args = 2, max_args = 2, i32_condition = true }
+__py_known_byte_index_add = { emit = "opcode:i32_add", min_args = 2, max_args = 2 }
 __py_iter_array__ = { emit = "common:python.iter_array",     min_args = 1, max_args = 1 }
 __py_custom_iter_array = { emit = "common:python.iter_array", min_args = 1, max_args = 1 }
 __py_is_dict      = { emit = "common:python.is_dict",        min_args = 1, max_args = 1 }

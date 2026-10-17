@@ -154,7 +154,7 @@ pub fn register(fw: &mut Framework<'_>) {
         Box::new(|_, args| {
             if let Some(Value::Object(handle)) = args.first() {
                 let mut handle = handle.lock().unwrap();
-                handle.properties.remove("__php_directory_index");
+                handle.properties.shift_remove("__php_directory_index");
                 handle.kind = ObjectKind::Array(Vec::new());
             }
             Value::Null

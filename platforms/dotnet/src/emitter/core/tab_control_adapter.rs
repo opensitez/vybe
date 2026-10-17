@@ -65,6 +65,8 @@ fn if_node(chunk: &mut Chunk, node: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, node, line);
     let truthy = chunk.add_import("ecma:boolean", "toBoolean");
     chunk.emit_call(truthy, 1, line);
+    let checked_bool = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(checked_bool, 1, line);
     chunk.emit_if(line);
 }
 
@@ -96,16 +98,19 @@ fn tab_state(chunk: &mut Chunk, control: u16, line: u32) -> (u16, u16) {
     globals::emit_read(chunk, TAB_STATES, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let create_block = chunk.emit_block(line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(0, line);
+    // An uninitialized registry is Undefined, a non-null Wasm externref.
+    // Probe DUP's existing root so the global is read exactly once.
+    chunk.emit_op_u16(Op::LOCAL_GET, chunk.dup_slot.expect("dup reserved its root"), line);
+    let undefined = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_params(line, 1, 1);
     chunk.emit_op(Op::DROP, line);
     let new = chunk.add_import("ecma:object", "new");
     chunk.emit_call(new, 0, line);
     core_wasm::dup(chunk, line);
     globals::emit_write(chunk, TAB_STATES, line);
     chunk.emit_end(line);
-    chunk.patch_block(create_block);
     chunk.emit_op_u16(Op::LOCAL_SET, registry, line);
 
     let id = attribute_get(chunk, control, "id", line);

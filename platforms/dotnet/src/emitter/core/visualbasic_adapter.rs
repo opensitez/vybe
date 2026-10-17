@@ -1,7 +1,7 @@
 //! Shared Microsoft.VisualBasic runtime helpers for .NET languages.
 
 use std::sync::Arc;
-use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::{fs_path, paths};
 
@@ -146,19 +146,19 @@ fn load_next_input_record(
     chunk.emit_op(Op::ARRAY_SET, line);
 }
 
-pub fn emit_vb_filecopy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_filecopy(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_copy(&mut chunks[current], line);
 }
 
-pub fn emit_vb_kill(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_kill(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_remove(&mut chunks[current], line);
 }
 
-pub fn emit_vb_fileexists(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_fileexists(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_exists(&mut chunks[current], line);
 }
 
-pub fn emit_vb_filelen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_filelen(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_file_size(&mut chunks[current], line);
 }
 
@@ -447,23 +447,23 @@ pub fn emit_vb_chdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
-pub fn emit_vb_mkdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_mkdir(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_mkdir(&mut chunks[current], line);
 }
 
-pub fn emit_vb_rmdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_rmdir(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_remove(&mut chunks[current], line);
 }
 
-pub fn emit_vb_name(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_name(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_rename(&mut chunks[current], line);
 }
 
-pub fn emit_vb_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_get(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_read_file(&mut chunks[current], line);
 }
 
-pub fn emit_vb_put(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_put(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_write_file(&mut chunks[current], line);
 }
 
@@ -657,7 +657,7 @@ pub fn emit_vb_app(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_host_call(chunks, current, "wasi:cli", "args", argc, line);
 }
 
-pub fn emit_vb_open(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_vb_open(chunks: &mut [Chunk], current: usize, line: u32) {
     fs_path::emit_read_file(&mut chunks[current], line);
 }
 

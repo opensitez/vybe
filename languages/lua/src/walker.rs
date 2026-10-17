@@ -46,6 +46,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // that DECLARES it and `t:m()` is sugar that PASSES it, so the receiver
         // arrives at the call site like any other argument.
         directives: vybe_ast::Directives {
+            add_concatenates_strings: Some(true),
+            concat_stringifies_operands: Some(true),
+            dynamic_numeric_dispatch: Some(true),
             method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
             // Every callable declares a leading receiver parameter, not only
             // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,

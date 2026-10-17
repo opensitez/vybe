@@ -100,6 +100,7 @@ pub fn normalize_class(
             } => {
                 let (canonical_name, _) = crate::protocol::canonical_method(name);
                 m.properties.push(NormalProperty {
+                    raw_setter: None,
                     span: span.clone(),
                     canonical_name,
                     source_name: name.clone(),

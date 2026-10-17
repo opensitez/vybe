@@ -1012,19 +1012,6 @@ fn assignment_operator(text: &str) -> String {
     "=".to_string()
 }
 
-fn operator_name(op: &str) -> String {
-    match op {
-        "=" => "Equals",
-        "+=" => "PlusEquals",
-        "-=" => "MinusEquals",
-        "*=" => "MultiplyEquals",
-        "/=" => "DivideEquals",
-        "%=" => "RemainderEquals",
-        "??=" => "QuestionQuestionEquals",
-        other => other,
-    }
-    .to_string()
-}
 
 fn binary_operator_name(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
@@ -2741,22 +2728,6 @@ fn ast_canonical_type_ref_name(name: &str) -> String {
     type_accelerator(trimmed).unwrap_or(trimmed).to_string()
 }
 
-fn ast_type_literal_expr(name: &str) -> Expression {
-    let name = type_accelerator(name).unwrap_or(name).trim();
-    let mut segments = name.split('.').filter(|part| !part.is_empty());
-    let Some(first) = segments.next() else {
-        return Expression::null();
-    };
-    let mut expr = Expression::ident(first);
-    for segment in segments {
-        expr = Expression::new(ExprKind::Member {
-            object: Box::new(expr),
-            field: segment.to_string(),
-            null_safe: false,
-        });
-    }
-    expr
-}
 
 fn variable_path_expr(path: &str) -> Expression {
     let (scope, user_path) = path

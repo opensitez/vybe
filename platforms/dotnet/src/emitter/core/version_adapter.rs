@@ -210,7 +210,6 @@ fn emit_validate_version_parts(
     chunk.emit_end(line);
 
     emit_validate_number_slot(chunks, current, major_slot, false, line);
-    let chunk = &mut chunks[current];
     emit_validate_number_slot(chunks, current, minor_slot, false, line);
     emit_validate_optional_number_slot(chunks, current, len_slot, 3, build_slot, line);
     emit_validate_optional_number_slot(chunks, current, len_slot, 4, revision_slot, line);
@@ -259,7 +258,6 @@ fn emit_version_parts_from_string(
     );
 
     if validate {
-        let chunk = &mut chunks[current];
         emit_validate_version_parts(
             chunks,
             current,
@@ -270,7 +268,6 @@ fn emit_version_parts_from_string(
             revision_slot,
             line,
         );
-        let chunk = &mut chunks[current];
     }
 }
 

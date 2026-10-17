@@ -4,29 +4,62 @@
 //! as additional args to the adapter. Methods are bound as named props on a
 //! struct so `$ref->getName()` dispatches via STRUCT_GET + callable invoke.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ResolvedSlot, ValueSource,
 };
 use vybe_compiler::primitives::reflection;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 fn sconst(c: &mut Chunk, s: &str) -> ResolvedSlot {
     class_slots::resolve_interned(c, &ClassSlot::internal(s), &PlainNames)
+}
+
+// Reflection methods have no captures or class-specific state. Match the
+// emitted recipe and ABI, not just a generated name. Every reflector still
+// receives its own method slots and mutable fields.
+fn append_helper(chunks: &mut Vec<Chunk>, helper: Chunk) -> usize {
+    if let Some(index) = chunks.iter().position(|old| {
+        old.name == helper.name
+            && old.source_path.is_none()
+            && old.code == helper.code
+            && old.constants == helper.constants
+            && old.imports == helper.imports
+            && old.global_imports == helper.global_imports
+            && old.arity == helper.arity
+            && old.param_count == helper.param_count
+            && old.result_arity == helper.result_arity
+            && old.local_count == helper.local_count
+            && old.i64_locals == helper.i64_locals
+            && old.takes_receiver == helper.takes_receiver
+            && old.is_method == helper.is_method
+            && old.module_receiver_abi == helper.module_receiver_abi
+            && old.capture_count == 0
+            && old.direct_entry_has_captures == helper.direct_entry_has_captures
+            && old.declared_func_type == helper.declared_func_type
+            && old.native_func_type == helper.native_func_type
+            && !old.is_async
+            && !old.is_generator
+            && old.types.is_empty()
+    }) {
+        index
+    } else {
+        chunks.push(helper);
+        chunks.len() - 1
+    }
 }
 
 /// `() -> this.<field>`.
 fn build_field_getter(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) -> usize {
     let mut c = Chunk::new(name);
     c.arity = 1;
+    c.takes_receiver = true;
     let cs_slot = class_slots::resolve(&ClassSlot::Internal((field).to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// `() -> this.<field>` returning a boolean.
@@ -34,11 +67,25 @@ fn build_bool_getter(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     build_field_getter(chunks, name, field, line)
 }
 
+fn build_function_is_anonymous(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__refl_fn_isanonymous");
+    c.arity = 1;
+    c.takes_receiver = true;
+    let name = class_slots::resolve(&ClassSlot::Internal("name".to_string()), &PlainNames);
+    class_slots::emit_class_get(&mut c, ObjSource::Local(0), &name, Dest::Stack, line);
+    c.emit_string_const("{closure}", line);
+    vybe_compiler::primitives::ops::emit_js_strict_eq(&mut c, line);
+    c.emit_op(Op::RETURN, line);
+    c.local_count = c.local_count.max(1);
+    append_helper(chunks, c)
+}
+
 /// `() -> this.<field> !== null` — the `hasX()` half of an optional `getX()`
 /// surface, so the presence test and the value never disagree.
 fn build_has_field(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) -> usize {
     let mut c = Chunk::new(name);
     c.arity = 1;
+    c.takes_receiver = true;
     let cs_slot = class_slots::resolve(&ClassSlot::Internal((field).to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
@@ -47,14 +94,14 @@ fn build_has_field(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) 
     vybe_compiler::primitives::ops::emit_dyn_not(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// `getValue($obj)` → `Reflect.get($obj, this.prop)`.
 fn build_reflect_get(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) -> usize {
     let mut c = Chunk::new(name);
     c.arity = 2;
+    c.takes_receiver = true;
     let k = sconst(&mut c, field);
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
@@ -62,14 +109,14 @@ fn build_reflect_get(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// `setValue($obj, $v)` → `Reflect.set($obj, this.prop, $v)`.
 fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) -> usize {
     let mut c = Chunk::new(name);
     c.arity = 3;
+    c.takes_receiver = true;
     let k = sconst(&mut c, field);
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
@@ -80,8 +127,7 @@ fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(3);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// ReflectionProperty::setRawValue bypasses property hooks, unlike setValue.
@@ -89,28 +135,45 @@ fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
 fn build_reflect_set_raw(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_setrawvalue");
     c.arity = 3;
-    let prop = sconst(&mut c, "prop");
+    c.takes_receiver = true;
+    let member = sconst(&mut c, "__member");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    class_slots::emit_class_get(&mut c, ObjSource::Stack, &prop, Dest::Local(3), line);
-    let slot = class_slots::resolve(&ClassSlot::Dynamic(ValueSource::Local(3)), &PlainNames);
-    class_slots::emit_class_set(
-        &mut c,
-        ObjSource::Local(1),
-        &slot,
-        ValueSource::Local(2),
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &member, Dest::Stack, line);
+    c.emit_f64_const(8.0, line);
+    let from_f64 = c.add_import("wasm:js-number", "fromF64");
+    c.emit_call(from_f64, 1, line);
+    let get = c.add_import("ecma:array", "get");
+    c.emit_call(get, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, 3, line);
+    c.emit_op_u16(Op::LOCAL_GET, 3, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op_u16(Op::LOCAL_GET, 3, line);
+    let undefined = c.add_import("wasm:js-undefined", "test");
+    c.emit_call(undefined, 1, line);
+    c.emit_op(Op::I32_OR, line);
+    c.emit_if(line);
+    super::type_guard::emit_throw_const(
+        std::slice::from_mut(&mut c),
+        0,
+        "Error",
+        "Property has no writable backing storage",
         line,
     );
-    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    c.emit_end(line);
+    c.emit_op_u16(Op::LOCAL_GET, 3, line);
+    c.emit_op_u16(Op::LOCAL_GET, 1, line);
+    c.emit_op_u16(Op::LOCAL_GET, 2, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut c, 2, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(4);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// `invoke($obj, $arg)` → `Reflect.get($obj, this.method)($obj, $arg)`.
 fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_invoke");
     c.arity = 3;
+    c.takes_receiver = true;
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("method").to_string()), &PlainNames);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
@@ -121,36 +184,42 @@ fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut c, 2, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(3);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// `implementsInterface($name)` → check if $name is in this.__interfaces array.
 fn build_implements_interface(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_implements");
     c.arity = 2; // this, interface_name
+                 // Host method dispatch must supply the receiver consumed by local 0.
+                 // Arity alone does not distinguish a receiver from an ordinary argument.
+    c.takes_receiver = true;
     let cs_slot = class_slots::resolve(
         &ClassSlot::Internal(("__interfaces").to_string()),
         &PlainNames,
     );
-    let indexof_i = c.add_import("ecma:array".to_string(), "indexOf".to_string());
+    let indexof_i = c.add_import("ecma:array", "indexOf");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_call(indexof_i, 2, line);
     // indexOf returns -1 if not found; >= 0 means found
+    let to_f64 = c.add_import("wasm:js-number", "toF64");
+    c.emit_call(to_f64, 1, line);
     c.emit_f64_const(0.0, line);
-    vybe_compiler::primitives::ops::emit_dyn_ge(&mut c, line);
+    c.emit_op(Op::F64_GE, line);
+    let to_boolean = c.add_import("wasm:js-boolean", "fromI32");
+    c.emit_call(to_boolean, 1, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// `getMethods($filter)` → if filter==1, return __methods_public; else __methods.
 fn build_get_methods(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_getMethods");
     c.arity = 2; // this, filter
+    c.takes_receiver = true;
     let all_k = sconst(&mut c, "__methods");
     let pub_k = sconst(&mut c, "__methods_public");
     // if filter == 1 → __methods_public, else → __methods
@@ -166,14 +235,14 @@ fn build_get_methods(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_end(line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// `getProperties($filter)` → if filter==1, return __fields_public; else __fields.
 fn build_get_properties(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_getProperties");
     c.arity = 2; // this, filter
+    c.takes_receiver = true;
     let cs_slot_1 = class_slots::resolve_interned(
         &mut c,
         &ClassSlot::Internal(("__fields").to_string()),
@@ -196,8 +265,7 @@ fn build_get_properties(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_end(line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// `getParentClass()` → return a new ReflectionClass for the parent, or null.
@@ -217,8 +285,7 @@ fn build_get_parameters(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_call(copy, 1, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// `getAttributes()` → return __attributes array. Filtering is normalized by
@@ -239,8 +306,7 @@ fn build_get_doc_comment(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_bool_const(false, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = 1;
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// ReflectionClass::newInstance[Args]() constructs the class named by this
@@ -265,8 +331,7 @@ fn build_new_instance(chunks: &mut Vec<Chunk>, with_args: bool, line: u32) -> us
     c.emit_call(instantiate, 2, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(c.arity as u16);
-    chunks.push(c);
-    chunks.len() - 1
+    append_helper(chunks, c)
 }
 
 /// Stamp `__type`, set fields, bind methods, leave instance on stack.
@@ -286,7 +351,8 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
     let getname = build_field_getter(chunks, "__refl_class_name", "name", line);
     let isabstract = build_bool_getter(chunks, "__refl_isabstract", "__is_abstract", line);
-    let isinstantiable = build_bool_getter(chunks, "__refl_isinstantiable", "__is_instantiable", line);
+    let isinstantiable =
+        build_bool_getter(chunks, "__refl_isinstantiable", "__is_instantiable", line);
     let implements = build_implements_interface(chunks, line);
     let get_methods = build_get_methods(chunks, line);
     let get_properties = build_get_properties(chunks, line);
@@ -298,6 +364,27 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let get_params = build_get_parameters(chunks, line);
     let new_instance = build_new_instance(chunks, false, line);
     let new_instance_args = build_new_instance(chunks, true, line);
+
+    // Every method installed on this reflection object consumes local 0 as
+    // its receiver, including helpers built by the other reflection adapters.
+    for method in [
+        getname,
+        isabstract,
+        isinstantiable,
+        implements,
+        get_methods,
+        get_properties,
+        get_parent,
+        get_attrs,
+        get_ctor,
+        get_doc_comment,
+        get_file_name,
+        get_params,
+        new_instance,
+        new_instance_args,
+    ] {
+        chunks[method].takes_receiver = true;
+    }
 
     let chunk = &mut chunks[current];
 
@@ -420,7 +507,10 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_end(line);
         chunk.emit_op_u16(Op::LOCAL_GET, live_class_slot, line);
         vybe_compiler::primitives::dynamic_symbols::emit_throw_if_unresolved(
-            chunk, "ReflectionException", "Class does not exist", line,
+            chunk,
+            "ReflectionException",
+            "Class does not exist",
+            line,
         );
         let metadata_key = sconst(chunk, "__php_reflection_metadata");
         class_slots::emit_class_get(chunk, ObjSource::Stack, &metadata_key, Dest::Stack, line);
@@ -431,10 +521,20 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
         for (index, slot) in [
-            abstract_slot, parent_slot, ifaces_slot, methods_slot, fields_slot,
-            methods_pub_slot, fields_pub_slot, attrs_slot, ctor_params_slot,
+            abstract_slot,
+            parent_slot,
+            ifaces_slot,
+            methods_slot,
+            fields_slot,
+            methods_pub_slot,
+            fields_pub_slot,
+            attrs_slot,
+            ctor_params_slot,
             instantiable_slot,
-        ].into_iter().enumerate() {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             chunk.emit_op_u16(Op::LOCAL_GET, metadata_slot, line);
             chunk.emit_f64_const(index as f64, line);
             chunk.emit_op(Op::ARRAY_GET, line);
@@ -663,6 +763,14 @@ pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     let prop_slot = chunk.alloc_scratch(1);
     let class_slot = chunk.alloc_scratch(1);
     let this_slot = chunk.alloc_scratch(1);
+    let ctor_slot = chunk.alloc_scratch(1);
+    let member_slot = chunk.alloc_scratch(1);
+    if argc >= 4 {
+        chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
+    } else {
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
+    }
     if argc >= 3 {
         chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
     } else {
@@ -671,6 +779,11 @@ pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     }
     chunk.emit_op_u16(Op::LOCAL_SET, prop_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, class_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, prop_slot, line);
+    reflection::emit_reflect_field_by_name(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, member_slot, line);
     finish(
         chunk,
         this_slot,
@@ -679,6 +792,7 @@ pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
             ("prop", prop_slot),
             ("class", class_slot),
             ("__attributes", attrs_slot),
+            ("__member", member_slot),
         ],
         &[
             ("getname", getname),
@@ -694,6 +808,7 @@ pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
 /// `new ReflectionFunction($name, $paramCount, $requiredParams)`.
 pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let getname = build_field_getter(chunks, "__refl_fn_name", "name", line);
+    let is_anonymous = build_function_is_anonymous(chunks, line);
     let get_params_count = build_field_getter(chunks, "__refl_fn_nparams", "__param_count", line);
     let get_required = build_field_getter(chunks, "__refl_fn_nreq", "__required_params", line);
     let get_params = build_get_parameters(chunks, line);
@@ -771,6 +886,7 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
         ],
         &[
             ("getname", getname),
+            ("isanonymous", is_anonymous),
             ("getnumberofparameters", get_params_count),
             ("getnumberofrequiredparameters", get_required),
             ("getparameters", get_params),

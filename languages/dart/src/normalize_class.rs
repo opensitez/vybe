@@ -186,6 +186,7 @@ pub fn normalize_class(
                     )
                 });
                 m.properties.push(NormalProperty {
+                    raw_setter: None,
                     span: span.clone(),
                     canonical_name: canonical,
                     source_name: pname.clone(),

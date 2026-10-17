@@ -220,6 +220,8 @@ expr_switch_stmt = {
 switch_init = _{
     switch_short_var_init
     | switch_assignment_init
+    | switch_inc_dec_init
+    | switch_expression_init
 }
 
 switch_short_var_init = {
@@ -228,6 +230,14 @@ switch_short_var_init = {
 
 switch_assignment_init = {
     expression_list ~ assign_op ~ expression_list ~ ";"
+}
+
+switch_inc_dec_init = {
+    primary ~ ("++" | "--") ~ ";"
+}
+
+switch_expression_init = {
+    expression ~ ";"
 }
 
 expr_case_clause = {
@@ -346,7 +356,8 @@ range_clause = {
 
 // ── Jump statements ─────────────────────────────────────────────────────────
 
-return_statement = { "return" ~ expression_list? ~ ";"? }
+return_keyword = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
+return_statement = { return_keyword ~ expression_list? ~ ";"? }
 break_statement    = { "break"    ~ ident_name? ~ ";"? }
 continue_statement = { "continue" ~ ident_name? ~ ";"? }
 fallthrough_statement = { "fallthrough" ~ ";"? }

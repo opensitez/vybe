@@ -727,8 +727,7 @@ fn resolve_global_callable_name(chunks: &mut [Chunk], current: usize, slot: u16,
     call_import(chunks, current, "ecma:object", "get", 2, line);
     lset(&mut chunks[current], resolved, line);
 
-    lget(&mut chunks[current], resolved, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(chunks, current, resolved, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], resolved, line);
@@ -886,16 +885,14 @@ fn preserve_prototype_from_constructor(
     chunks[current].emit_string_const("constructor", line);
     call_import(chunks, current, "ecma:object", "get", 2, line);
     lset(&mut chunks[current], ctor, line);
-    lget(&mut chunks[current], ctor, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(chunks, current, ctor, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], ctor, line);
     chunks[current].emit_string_const("prototype", line);
     call_import(chunks, current, "ecma:object", "get", 2, line);
     lset(&mut chunks[current], proto, line);
-    lget(&mut chunks[current], proto, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(chunks, current, proto, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], target, line);
@@ -985,8 +982,7 @@ fn emit_named_store_object(
     call_import(chunks, current, "ecma:object", "get", 2, line);
     lset(&mut chunks[current], store, line);
 
-    lget(&mut chunks[current], store, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_null_or_undefined(chunks, current, store, line);
     chunks[current].emit_if(line);
     new_object(&mut chunks[current], line);
     lset(&mut chunks[current], store, line);
@@ -1193,6 +1189,31 @@ fn emit_slot_is_null_or_undefined(chunks: &mut [Chunk], current: usize, slot: u1
     lget(&mut chunks[current], slot, line);
     call_import(chunks, current, "wasm:js-undefined", "test", 1, line);
     chunks[current].emit_op(Op::I32_OR, line);
+}
+
+#[cfg(test)]
+mod absent_store_tests {
+    use super::*;
+    use vybe_runtime::{Value, VM};
+
+    #[test]
+    fn first_pickle_store_is_created_and_reused_on_the_same_vm() {
+        let mut chunks = vec![Chunk::new("pickle_store_presence_regression")];
+        let global = chunks[0].alloc_scratch(1);
+        let store = chunks[0].alloc_scratch(1);
+        emit_named_store_object(&mut chunks, 0, STORE_KEY, global, store, 0);
+        lget(&mut chunks[0], store, 0);
+        chunks[0].emit_op(Op::RETURN, 0);
+        let mut vm = VM::new();
+        vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+        let first = vm.run(chunks.clone()).expect("first store creation");
+        let Value::Object(first) = first else { panic!("missing store must become an object"); };
+        first.lock().unwrap().set("saved".into(), Value::I32(42));
+        let second = vm.run(chunks).expect("store reuse");
+        let Value::Object(second) = second else { panic!("existing store must remain an object"); };
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(second.lock().unwrap().get("saved"), Value::I32(42));
+    }
 }
 
 fn emit_path_slot_is_present(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {

@@ -6,12 +6,11 @@
 //! `ecma:lua` host surface, so these adapters delegate to common emitter
 //! primitives.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 fn call1(chunk: &mut Chunk, import_idx: u16, line: u32) {
     chunk.emit_call(import_idx, 1, line);
@@ -85,13 +84,6 @@ fn emit_lua_slot_str_eq_const(chunk: &mut Chunk, slot: u16, value: &str, line: u
     chunk.emit_op(Op::I32_EQ, line);
 }
 
-fn emit_lua_slot_matches_any(chunk: &mut Chunk, slot: u16, values: &[&str], line: u32) {
-    i32_const(chunk, 0, line);
-    for value in values {
-        emit_lua_slot_str_eq_const(chunk, slot, value, line);
-        chunk.emit_op(Op::I32_OR, line);
-    }
-}
 
 fn emit_object_get_const_key(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
     load(chunk, obj_slot, line);
@@ -2208,7 +2200,6 @@ fn emit_lua_key_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
 }
 
-#[allow(dead_code)]
 fn raw_ne(chunk: &mut Chunk, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);

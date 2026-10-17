@@ -155,10 +155,15 @@ fn expand_replacement(
 }
 
 fn replace_scalar(pattern: &Pattern, replacement: &str, input: &str) -> Value {
+    replace_scalar_counted(pattern, replacement, input, usize::MAX).0
+}
+
+fn replace_scalar_counted(pattern: &Pattern, replacement: &str, input: &str, limit: usize) -> (Value, usize) {
+    let mut count = 0;
     let mut output = Vec::with_capacity(input.len());
     let (mut end, mut search, mut retry_nonempty) = (0, 0, false);
     let mut captures = pattern.regex.capture_locations();
-    while search <= input.len() {
+    while count < limit && search <= input.len() {
         let regex = if retry_nonempty {
             pattern.nonempty_regex.as_ref()
         } else {
@@ -169,7 +174,7 @@ fn replace_scalar(pattern: &Pattern, replacement: &str, input: &str) -> Value {
                 Ok(found) => found,
                 Err(error) => {
                     record_error(&error);
-                    return Value::Null;
+                    return (Value::Null, count);
                 }
             },
             None => None,
@@ -196,12 +201,13 @@ fn replace_scalar(pattern: &Pattern, replacement: &str, input: &str) -> Value {
             &captures,
             input.as_bytes(),
         );
+        count += 1;
         end = found.end();
         search = end;
         retry_nonempty = found.start() == found.end();
     }
     output.extend_from_slice(&input.as_bytes()[end..]);
-    Value::String(Arc::from(String::from_utf8_lossy(&output).as_ref()))
+    (Value::String(Arc::from(String::from_utf8_lossy(&output).as_ref())), count)
 }
 
 fn replace_subject(pattern: &Pattern, replacement: &str, subject: &Value) -> Value {
@@ -223,6 +229,34 @@ fn replace_subject(pattern: &Pattern, replacement: &str, subject: &Value) -> Val
         return Value::Object(heap::alloc(snapshot));
     }
     replace_scalar(pattern, replacement, &subject.to_string())
+}
+
+// Limit applies separately to each pattern in each subject string. Preserve
+// array keys and accumulate the replacements for the language out parameter.
+fn replace_subject_counted(pattern: &Pattern, replacement: &str, subject: &Value, limit: usize) -> (Value, usize) {
+    if let Value::Object(object) = subject {
+        let mut snapshot = object.lock().unwrap().clone();
+        let mut total = 0;
+        match &mut snapshot.kind {
+            ObjectKind::Array(items) => {
+                for item in items {
+                    let (value, count) = replace_subject_counted(pattern, replacement, item, limit);
+                    if matches!(value, Value::Null) { return (Value::Null, total + count); }
+                    *item = value; total += count;
+                }
+            }
+            ObjectKind::Map(items) => {
+                for item in items.values_mut() {
+                    let (value, count) = replace_subject_counted(pattern, replacement, item, limit);
+                    if matches!(value, Value::Null) { return (Value::Null, total + count); }
+                    *item = value; total += count;
+                }
+            }
+            _ => return replace_scalar_counted(pattern, replacement, &subject.to_string(), limit),
+        }
+        return (Value::Object(heap::alloc(snapshot)), total);
+    }
+    replace_scalar_counted(pattern, replacement, &subject.to_string(), limit)
 }
 
 fn match_result(status: Value, matches: Object) -> Value {
@@ -533,6 +567,49 @@ pub fn register(fw: &mut Framework<'_>) {
         LAST_ERROR.with(|state| Value::String(Arc::from(error_message(state.get()))))
     }));
     let patterns = Arc::new(PatternCache::default());
+    let validation_patterns = patterns.clone();
+    fw.register_host_fn("php:regex", "validPattern", Box::new(move |_, args| {
+        Value::Bool(args.first().is_some_and(|literal|
+            cached_pattern(&validation_patterns, literal.to_string()).is_some()))
+    }));
+    let iterator_patterns = patterns.clone();
+    fw.register_host_fn("php:regex", "iteratorEntry", Box::new(move |_, args| {
+        let [literal, Value::String(subject), mode, flags, preg_flags, replacement, ..] = args else {
+            return array(vec![Value::Bool(false), Value::Null]);
+        };
+        let Some(pattern) = cached_pattern(&iterator_patterns, literal.to_string()) else {
+            return array(vec![Value::Bool(false), Value::Null]);
+        };
+        let found = match pattern.regex.find(subject.as_bytes()) {
+            Ok(found) => found.is_some_and(|found| !pattern.anchored || found.start() == 0),
+            Err(error) => {
+                record_error(&error);
+                return array(vec![Value::Bool(false), Value::Null]);
+            }
+        };
+        let preg_flags = preg_flags.as_i32();
+        let (accepted, output) = match mode.as_i32() {
+            0 => (found, Value::Null),
+            1 => {
+                let result = match_with_offsets(&pattern, subject, preg_flags, 0);
+                let parts = values(&result).unwrap_or_default();
+                (found, parts.get(1).cloned().unwrap_or(Value::Null))
+            }
+            2 => (found, match_all_groups(&pattern, subject, preg_flags & 2 != 0, preg_flags & 256 != 0)),
+            3 => {
+                let result = split(&pattern, subject, -1, preg_flags);
+                (values(&result).is_some_and(|items| items.len() > 1), result)
+            }
+            4 => {
+                let replacement = if matches!(replacement, Value::Null | Value::Undefined) {
+                    String::new()
+                } else { replacement.to_string() };
+                (found, replace_subject(&pattern, &replacement, &Value::String(subject.clone())))
+            }
+            _ => return array(vec![Value::Bool(false), Value::Null]),
+        };
+        array(vec![Value::Bool(if flags.as_i32() & 2 != 0 { !accepted } else { accepted }), output])
+    }));
     let test_patterns = patterns.clone();
     fw.register_host_fn("php:regex", "test", Box::new(move |_, args| {
         let literal = args.first().map(ToString::to_string).unwrap_or_default();
@@ -562,6 +639,19 @@ pub fn register(fw: &mut Framework<'_>) {
             }
         }),
     );
+    let counted_patterns = patterns.clone();
+    fw.register_host_fn("php:regex", "replaceLimitedCount", Box::new(move |_, args| {
+        let [subject, literal, replacement, limit, ..] = args else {
+            return array(vec![Value::Null, Value::I32(0)]);
+        };
+        let limit = limit.as_f64();
+        let limit = if limit < 0.0 { usize::MAX } else { limit as usize };
+        let (value, count) = match cached_pattern(&counted_patterns, literal.to_string()) {
+            Some(pattern) => replace_subject_counted(&pattern, &replacement.to_string(), subject, limit),
+            None => (Value::Null, 0),
+        };
+        array(vec![value, Value::F64(count as f64)])
+    }));
     for (name, set_order) in [("matchAllGroups", false), ("matchAllSetOrder", true)] {
         let group_patterns = patterns.clone();
         fw.register_host_fn(

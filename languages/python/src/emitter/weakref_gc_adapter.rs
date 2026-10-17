@@ -43,8 +43,7 @@ pub fn emit_ref(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let get = chunks[current].add_import("ecma:object", "get");
     chunks[current].emit_call(get, 2, line);
     super::adapter_util::lset(&mut chunks[current], list, line);
-    lget(&mut chunks[current], list, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::runtime_adapter::emit_slot_is_null_or_undefined(&mut chunks[current], list, line);
     chunks[current].emit_if(line);
     collections::emit_array_new(chunks, current, 0, line);
     super::adapter_util::lset(&mut chunks[current], list, line);
@@ -243,12 +242,32 @@ pub fn emit_getweakrefs(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let get = chunks[current].add_import("ecma:object", "get");
     chunks[current].emit_call(get, 2, line);
     super::adapter_util::lset(&mut chunks[current], found, line);
-    lget(&mut chunks[current], found, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    super::runtime_adapter::emit_slot_is_null_or_undefined(&mut chunks[current], found, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
     lget(&mut chunks[current], found, line);
     chunks[current].emit_else(line);
     collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_end(line);
+}
+
+#[cfg(test)]
+mod absent_bookkeeping_tests {
+    use super::*;
+    use vybe_runtime::{Value, VM};
+
+    #[test]
+    fn object_without_weakref_bookkeeping_returns_empty_list() {
+        let mut chunks = vec![Chunk::new("weakref_missing_bookkeeping")];
+        vybe_compiler::primitives::globals::emit_read(&mut chunks[0], "input", 0);
+        emit_getweakrefs(&mut chunks, 0, 1, 0);
+        chunks[0].emit_op(Op::RETURN, 0);
+        vybe_compiler::primitives::globals::declare_free_globals(&mut chunks);
+        vybe_compiler::primitives::globals::normalize_global_table(&mut chunks);
+        let mut vm = VM::new();
+        vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+        vm.set_global("input", Value::Object(vybe_runtime::heap::alloc(vybe_runtime::value::Object::new())));
+        let Value::Object(refs) = vm.run(chunks).expect("missing weakref metadata fallback") else { panic!("weakrefs fallback must be a list"); };
+        assert!(matches!(&refs.lock().unwrap().kind, vybe_runtime::value::ObjectKind::Array(entries) if entries.is_empty()));
+    }
 }

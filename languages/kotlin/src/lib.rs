@@ -8,7 +8,6 @@ pub mod protocol;
 pub mod tree_register;
 mod walker;
 
-#[allow(dead_code)]
 mod native_grammar {
     include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
 }

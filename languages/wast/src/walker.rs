@@ -27,6 +27,10 @@
 // ============================================================================
 
 use super::{Rule, WastParser};
+#[path = "walker/component_interfaces.rs"]
+mod component_interfaces;
+#[path = "walker/component_instances.rs"]
+mod component_instances;
 
 use grameo::compat::Pair;
 use std::collections::HashMap;
@@ -43,6 +47,8 @@ use vybe_ast::*;
 /// what makes those two different things.
 #[derive(Default)]
 struct WastWalker {
+    component_projection: HashMap<(usize, usize), ComponentProjection>,
+    component_interface_binaries: HashMap<(usize, usize), std::sync::Arc<vybe_ast::canon::ComponentBinary>>,
     func_index_arities: Vec<usize>,
     func_name_arities: HashMap<String, usize>,
     func_index_results: Vec<usize>,
@@ -108,6 +114,8 @@ struct WastWalker {
     /// runtime trap.
     type_rec_shape: HashMap<String, String>,
     memory_slots: Vec<usize>,
+    /// Script memory slot -> address width, retained across module imports.
+    memory_is_64: HashMap<usize, bool>,
     /// One entry per `(memory …)` FIELD, in order: the script slot it owns and
     /// whether it merely aliases an imported memory. `walk_memory_field` counts
     /// fields, not index-space entries, so it cannot read `memory_slots`.
@@ -161,8 +169,6 @@ struct WastWalker {
     /// names. Without this the assertion had nothing to consult and 202 of
     /// them discharged unchecked.
     module_export_types: HashMap<String, HashMap<String, ExternType>>,
-    /// Per function NAME: its param and result value types.
-    func_name_sigs: HashMap<String, (Vec<String>, Vec<String>)>,
     export_global_map: HashMap<String, String>,
     module_global_exports: HashMap<String, HashMap<String, String>>,
     /// An imported global's local binding name → the EXPORTING module's
@@ -214,43 +220,35 @@ struct WastWalker {
     /// callee, so nothing has to be declared anywhere.
     host_import_alias: HashMap<String, String>,
 
-    /// The component's TYPE space — `$id -> typeidx`, plus its length, so an
-    /// unnamed `(type …)` still advances the index every later row counts on.
-    /// Separate from `core_type_space` for the reason `CalleeRef` keeps `Core`
-    /// and `Component` apart: they are different index spaces, and one integer
-    /// serving both is how a mis-wired definition ends up looking correct.
+    /// Component-local type names map to indices in the shared payload table.
     comp_type_index: HashMap<String, u32>,
-    comp_type_space: u32,
-    /// Where THIS component's type index 0 sits in the shared `comp_types`
-    /// payload vector.
-    ///
-    /// ⛔ `comp_type_space` is a per-component COUNT (the spec gives every
-    /// component its own type index space starting at 0) while `comp_types` is
-    /// one flat vector for the whole program, because `VM::canon_types` is one
-    /// table. Those two cannot both be right without an offset: a nested
-    /// component that declared a type after the outer had declared one reset
-    /// the counter to 0 while the vector kept growing, so the inner's
-    /// `(type $t)` got index 0 and its declaration sat at index 1.
-    ///
-    /// In a debug build that tripped the `debug_assert_eq!` below. In a release
-    /// build it was SILENT: `canon lift (type $t)` read the OUTER component's
-    /// type and lifted with a signature the source never wrote.
-    comp_type_base: u32,
+    /// Local typeidx -> global payload index. Nested instantiation can append
+    /// to `comp_types` between two declarations in this component.
+    comp_type_slots: Vec<u32>,
     /// The component's FUNCTION space — what `canon lower` indexes. Not the
     /// type space: `(type $t)` and `(func $t)` are different entities.
     comp_func_index: HashMap<String, u32>,
+    comp_import_funcs: HashMap<String, u32>,
     /// That space itself. `canon lift` is its producer: the spec says a lift
     /// DEFINES a component function, and `canon lower`'s callee indexes here.
     /// Until it existed `lower` could not name a callee and could not learn
     /// its type — `Binary.md:297` gives the lower row NO `ft` immediate,
     /// because `canon_lower(callee, ft, opts, …)` takes `ft` FROM THE CALLEE.
     comp_func_space: Vec<CompFunc>,
+    comp_func_links: Vec<vybe_ast::canon::ComponentFuncLink>,
+    comp_instance_links: vybe_ast::canon::ComponentInstanceLinks,
+    comp_interface_funcs: HashMap<u32, std::sync::Arc<component_instances::InstanceInterface>>,
+    comp_instance_types: HashMap<u32, std::sync::Arc<component_instances::InstanceType>>,
+    comp_binary_type_indices: HashMap<(usize, usize), std::sync::Arc<Vec<Option<usize>>>>,
+    comp_binding_targets: Option<(usize, usize, HashMap<u32, u32>)>,
+    comp_import_instances: HashMap<String, std::sync::Arc<CompInstance>>,
+    component_binary_scope: Option<(usize, usize)>,
     /// The component's INSTANCE index space, in declaration order, plus its
     /// names. `(alias export <instanceidx> …)` resolves against this the way
     /// `(alias core export …)` resolves against `core_instances`; the two are
     /// deliberately separate spaces, because `(instance 0)` at component level
     /// and `(core instance 0)` name different entities.
-    comp_instances: Vec<CompInstance>,
+    comp_instances: Vec<std::sync::Arc<CompInstance>>,
     comp_instance_index: HashMap<String, u32>,
     /// The component's own EXPORT table — `(export "name" (func $f))`.
     ///
@@ -261,13 +259,12 @@ struct WastWalker {
     /// export table of the instance `(instance (instantiate <componentidx>))`
     /// produces.
     ///
-    /// ⛔ That instantiation does not exist yet, so nothing reads this today.
-    /// It is recorded rather than dropped because the alternative is to walk
-    /// an `(export …)` for its index-space effect and silently lose the name,
-    /// and because the consumer is the very next item on the list — not an
-    /// indefinite park. Say so if it is still unread by the time anything else
-    /// lands.
+    /// The script-level `(component instance …)` command captures this table
+    /// for named and bare component invokes.
     comp_exports: HashMap<String, u32>,
+    comp_export_types: HashMap<String, u32>,
+    /// Script instance id -> component function exports for named invokes.
+    script_component_instances: HashMap<String, HashMap<String, u32>>,
     /// The names each scope has taken, for the STRONGLY-UNIQUE rule. Two
     /// tables because `Explainer.md:2837` scopes the rule to imports OR
     /// exports, not both together.
@@ -280,9 +277,12 @@ struct WastWalker {
     /// `(alias …)` are walked, and an unbound `$id` in one of them refuses.
     core_type_index: HashMap<String, u32>,
     core_type_space: u32,
+    core_type_kinds: Vec<CoreTypeKind>,
     core_func_index: HashMap<String, u32>,
     core_memory_index: HashMap<String, u32>,
+    core_memory_space: Vec<u32>,
     core_table_index: HashMap<String, u32>,
+    core_table_space: Vec<usize>,
     /// The core function index space ITSELF. `core_func_index` names entries
     /// in here; a positional `(core func 0)` indexes it directly. Both
     /// spellings had a name map and no space to name, which is why every one
@@ -301,6 +301,8 @@ struct WastWalker {
     /// go, which is why `VM::canon_functypes` was empty and `canon lift`
     /// trapped on `$ft` even when the source declared the type.
     comp_types: Vec<vybe_ast::canon::TypeDecl>,
+    /// Inline composite types take real slots before their enclosing declaration.
+    anonymous_comp_types: Vec<bool>,
     /// A canon row's `(core func $id)` binder → `(spec name, canonidx)`.
     ///
     /// This is what makes a canon definition REACHABLE. Without it a core
@@ -315,6 +317,8 @@ struct WastWalker {
     /// module's — the same module instantiated twice may be given different
     /// imports, which is the entire point of `instantiate`.
     component_imports: HashMap<(String, String), CoreFunc>,
+    component_memory_imports: HashMap<(String, String), usize>,
+    component_table_imports: HashMap<(String, String), usize>,
 }
 
 /// One entry in a component's CORE FUNCTION index space.
@@ -331,6 +335,12 @@ enum CoreFunc {
     Canon(String, u32),
     /// A function exported by an instantiated core module: `(class, method)`.
     Module(String, String),
+}
+
+enum CoreExtern {
+    Func(CoreFunc),
+    Memory(usize),
+    Table(usize),
 }
 
 /// One entry in a component's FUNCTION index space.
@@ -353,30 +363,51 @@ struct CompFunc {
     functype: Option<u32>,
 }
 
-/// What a `(core instance …)` published: its export table.
+struct ComponentWalk {
+    exports: HashMap<String, u32>,
+    type_exports: HashMap<String, u32>,
+    imports: HashMap<String, u32>,
+    instance_imports: HashMap<String, std::sync::Arc<CompInstance>>,
+}
+
+enum ComponentArgument {
+    Func(u32),
+    Instance(std::sync::Arc<CompInstance>),
+}
+
+/// What a `(core instance …)` published: its function, memory and table exports.
 ///
 /// The values are `CoreFunc` rather than method names because an instance
 /// assembled from `<core:inlineexport>*` may export a CANON row, which has no
 /// method — and an alias into it must get back the same kind of item a `with`
-/// clause would.
+/// clause would. Memory exports retain their script slots for canonical
+/// `memory` options.
 #[derive(Clone, Debug, Default)]
 struct CoreInstance {
     funcs: HashMap<String, CoreFunc>,
+    memories: HashMap<String, usize>,
+    tables: HashMap<String, usize>,
 }
 
 /// What an `(instance …)` published: its export table, at COMPONENT level.
 ///
-/// A component instance exports component items, so the values are indices
-/// into `comp_func_space` rather than `CoreFunc`s — a component instance
-/// cannot export a core function, and conflating the two is exactly the
+/// A component instance exports component items, so functions index
+/// `comp_func_space` and types index `comp_types`, rather than `CoreFunc`s — a
+/// component instance cannot export a core function, and conflating these is the
 /// index-space confusion the separate spaces exist to prevent.
 ///
-/// Only the function sort is present because only the function sort has a
-/// producer today. A `(export "t" (type 0))` refuses rather than being
-/// dropped, so the export table can never be quietly incomplete.
+/// Functions and types retain their own payload indices; other sorts still
+/// require a producer and cannot be silently dropped from this table.
 #[derive(Clone, Debug, Default)]
 struct CompInstance {
     funcs: HashMap<String, u32>,
+    types: HashMap<String, u32>,
+}
+
+#[derive(Default)]
+struct ComponentProjection {
+    types: Vec<u32>,
+    canon: Vec<usize>,
 }
 
 /// Payload arity of exception tag `name` (0 if undeclared).
@@ -2208,10 +2239,15 @@ fn emit_folded_stmtwise(
                 ..
             } = call.kind
             {
-                let mut tail_args = vec![*callee];
+                let is_ref_call = matches!(&callee.kind, ExprKind::Ident(name) if name == "call_ref");
+                let mut tail_args = if is_ref_call { Vec::new() } else { vec![*callee] };
                 tail_args.extend(call_args.into_iter().map(|a| a.value));
                 statements.push(Statement::with_span(
-                    StmtKind::Expr(make_call("__wasm_return_call", tail_args, span)),
+                    StmtKind::Expr(make_call(
+                        if is_ref_call { "return_call_ref" } else { "__wasm_return_call" },
+                        tail_args,
+                        span,
+                    )),
                     span,
                 ));
             } else {
@@ -2854,20 +2890,1591 @@ fn prepend_spectest_module(__w: &mut WastWalker, body: &mut Vec<Statement>) -> R
     let _line_index = vybe_ast::line_index::LineIndex::install(SPECTEST_MODULE);
     let pairs = WastParser::parse(Rule::program, SPECTEST_MODULE)
         .map_err(|e| format!("internal: the spectest module does not parse: {e}"))?;
+    let mut components = HashMap::new();
     for top in pairs {
         match top.as_rule() {
             Rule::program => {
                 for cmd in top.into_inner() {
                     if cmd.as_rule() != Rule::EOI {
-                        walk_script_cmd(__w, cmd, body)?;
+                        walk_script_cmd(__w, cmd, body, &mut components)?;
                     }
                 }
             }
             Rule::EOI => {}
-            _ => walk_script_cmd(__w, top, body)?,
+            _ => walk_script_cmd(__w, top, body, &mut components)?,
         }
     }
     Ok(())
+}
+
+/// Preserve the component layer only when every declaration has an exact
+/// binary representation. Other component forms continue through the script
+/// walker until their typed binary definitions are implemented.
+fn simple_component_binary(
+    command: Pair<Rule>,
+    __w: &mut WastWalker,
+) -> Option<vybe_ast::canon::ComponentBinary> {
+    if let Some(binary) = component_interfaces::take(command.clone(), __w) {
+        return Some(binary);
+    }
+    simple_component_binary_at(command, __w)
+}
+
+fn binary_valspec(
+    spec: &vybe_ast::canon::ValSpec,
+    type_indices: &HashMap<u32, u32>,
+) -> Option<vybe_ast::canon::ValSpec> {
+    use vybe_ast::canon::ValSpec;
+    fn optional(
+        spec: Option<&ValSpec>,
+        type_indices: &HashMap<u32, u32>,
+    ) -> Option<Option<ValSpec>> {
+        match spec {
+            Some(spec) => Some(Some(binary_valspec(spec, type_indices)?)),
+            None => Some(None),
+        }
+    }
+    Some(match spec {
+        ValSpec::Prim(_) | ValSpec::Flags(_) | ValSpec::Enum(_) => spec.clone(),
+        ValSpec::Ref(index) => ValSpec::Ref(*type_indices.get(index)?),
+        ValSpec::Own(index) => ValSpec::Own(*type_indices.get(index)?),
+        ValSpec::Borrow(index) => ValSpec::Borrow(*type_indices.get(index)?),
+        ValSpec::List(inner) => ValSpec::List(Box::new(binary_valspec(inner, type_indices)?)),
+        ValSpec::ListFixed(inner, len) => {
+            ValSpec::ListFixed(Box::new(binary_valspec(inner, type_indices)?), *len)
+        }
+        ValSpec::Record(fields) => ValSpec::Record(fields.iter()
+            .map(|(name, ty)| Some((name.clone(), binary_valspec(ty, type_indices)?)))
+            .collect::<Option<_>>()?),
+        ValSpec::Variant(cases) => ValSpec::Variant(cases.iter()
+            .map(|(name, ty)| Some((name.clone(), optional(ty.as_ref(), type_indices)?)))
+            .collect::<Option<_>>()?),
+        ValSpec::Tuple(items) => ValSpec::Tuple(items.iter()
+            .map(|ty| binary_valspec(ty, type_indices))
+            .collect::<Option<_>>()?),
+        ValSpec::Option(inner) => ValSpec::Option(Box::new(binary_valspec(inner, type_indices)?)),
+        ValSpec::Result(ok, err) => ValSpec::Result(
+            optional(ok.as_deref(), type_indices)?.map(Box::new),
+            optional(err.as_deref(), type_indices)?.map(Box::new),
+        ),
+        ValSpec::Map(key, value) => ValSpec::Map(
+            Box::new(binary_valspec(key, type_indices)?),
+            Box::new(binary_valspec(value, type_indices)?),
+        ),
+        ValSpec::Stream(ty) => {
+            ValSpec::Stream(optional(ty.as_deref(), type_indices)?.map(Box::new))
+        }
+        ValSpec::Future(ty) => {
+            ValSpec::Future(optional(ty.as_deref(), type_indices)?.map(Box::new))
+        }
+    })
+}
+
+fn binary_function_type(
+    declaration: &vybe_ast::canon::TypeDecl,
+    type_indices: &HashMap<u32, u32>,
+) -> Option<vybe_ast::canon::ComponentBinaryDef> {
+    use vybe_ast::canon::{ComponentBinaryDef, TypeDecl};
+    let TypeDecl::Func { params, result, is_async } = declaration else { return None };
+    let params = params.iter().map(|(name, ty)| Some((name.clone(),
+        binary_valspec(ty, type_indices)?)))
+        .collect::<Option<_>>()?;
+    let result = match result {
+        Some(ty) => Some(binary_valspec(ty, type_indices)?),
+        None => None,
+    };
+    Some(ComponentBinaryDef::FuncType { params, result, is_async: *is_async })
+}
+
+fn emit_anonymous_binary_types(
+    walker: &WastWalker,
+    source_types: &[u32],
+    cursor: &mut usize,
+    binary: &mut vybe_ast::canon::ComponentBinary,
+    type_count: &mut u32,
+    type_indices: &mut HashMap<u32, u32>,
+    source_indices: &mut Vec<u32>,
+) -> Option<()> {
+    use vybe_ast::canon::{ComponentBinaryDef, TypeDecl};
+    while let Some(&source) = source_types.get(*cursor) {
+        if !walker.anonymous_comp_types.get(source as usize).copied().unwrap_or(false) {
+            break;
+        }
+        let TypeDecl::Value(spec) = walker.comp_types.get(source as usize)? else { return None };
+        let definition = binary_valspec(spec, type_indices)?;
+        let index = *type_count;
+        *type_count = type_count.checked_add(1)?;
+        binary.definitions.push(ComponentBinaryDef::ValueType(definition));
+        type_indices.insert(source, index);
+        source_indices.push(index);
+        *cursor += 1;
+    }
+    Some(())
+}
+
+fn simple_component_binary_at(
+    command: Pair<Rule>,
+    __w: &WastWalker,
+) -> Option<vybe_ast::canon::ComponentBinary> {
+    use vybe_ast::canon::{
+        ComponentBinary, ComponentBinaryCanonOption, CoreExportKind,
+        ComponentBinaryDef, TypeDecl,
+    };
+
+    fn binary_type_index(
+        pair: &Pair<Rule>,
+        names: &HashMap<String, u32>,
+        source_indices: &[u32],
+    ) -> Option<u32> {
+        let index = resolve_idx(pair, "component type", names).ok()?;
+        if pair.as_str().starts_with('$') {
+            Some(index)
+        } else {
+            source_indices.get(index as usize).copied()
+        }
+    }
+
+    fn binary_core_reference(
+        reference: &Pair<Rule>,
+        kind: CoreExportKind,
+        binary: &mut ComponentBinary,
+        instance_names: &HashMap<String, u32>,
+        instance_count: u32,
+        names: &HashMap<String, u32>,
+        count: &mut u32,
+    ) -> Option<u32> {
+        let index = idx_child(reference)?;
+        let mut paths = reference.clone().into_inner()
+            .filter(|part| part.as_rule() == Rule::string);
+        if let Some(path) = paths.next() {
+            if paths.next().is_some() { return None; }
+            let instance = resolve_idx(&index, "core instance", instance_names).ok()?;
+            if instance >= instance_count { return None; }
+            binary.definitions.push(ComponentBinaryDef::CoreAliasInstanceExport {
+                instance, name: component_name(path.as_str(), "core alias").ok()?, kind,
+            });
+            let index = *count;
+            *count = index.checked_add(1)?;
+            Some(index)
+        } else {
+            let index = resolve_idx(&index, "core reference", names).ok()?;
+            (index < *count).then_some(index)
+        }
+    }
+
+    fn binary_core_exports<'i>(
+        items: impl Iterator<Item = Pair<'i, Rule>>,
+        binary: &mut ComponentBinary,
+        instance_names: &HashMap<String, u32>,
+        instance_count: u32,
+        names: [&HashMap<String, u32>; 3],
+        counts: &mut [u32; 3],
+    ) -> Option<Vec<vybe_ast::canon::CoreInstanceExport>> {
+        let mut exports = Vec::new();
+        for export in items {
+            if export.as_rule() != Rule::core_inlineexport { return None; }
+            let mut fields = export.into_inner();
+            let name = component_name(fields.next()?.as_str(), "core export").ok()?;
+            let target = fields.next()?;
+            let mut parts = target.clone().into_inner();
+            if fields.next().is_some() { return None; }
+            let sort = parts.next()?;
+            let (kind, space) = match sort.as_str() {
+                "func" => (CoreExportKind::Func, 0),
+                "table" => (CoreExportKind::Table, 1),
+                "memory" => (CoreExportKind::Memory, 2),
+                _ => return None,
+            };
+            let index = binary_core_reference(&target, kind, binary,
+                instance_names, instance_count, names[space], &mut counts[space])?;
+            exports.push(vybe_ast::canon::CoreInstanceExport { name, kind, index });
+        }
+        Some(exports)
+    }
+
+    fn binary_options(
+        source: &Pair<Rule>,
+        binary: &mut ComponentBinary,
+        instance_names: &HashMap<String, u32>,
+        instance_count: u32,
+        names: [&HashMap<String, u32>; 2],
+        mut counts: [&mut u32; 2],
+    ) -> Option<Vec<ComponentBinaryCanonOption>> {
+        fn visit(
+            source: &Pair<Rule>,
+            binary: &mut ComponentBinary,
+            instance_names: &HashMap<String, u32>,
+            instance_count: u32,
+            names: [&HashMap<String, u32>; 2],
+            counts: &mut [&mut u32; 2],
+            out: &mut Vec<ComponentBinaryCanonOption>,
+        ) -> Option<()> {
+            if source.as_rule() == Rule::canonopt {
+                let text = source.as_str().trim();
+                let option = match text {
+                    "string-encoding=utf8" => ComponentBinaryCanonOption::Utf8,
+                    "string-encoding=utf16" => ComponentBinaryCanonOption::Utf16,
+                    "string-encoding=latin1+utf16" => ComponentBinaryCanonOption::CompactUtf16,
+                    "async" => ComponentBinaryCanonOption::Async,
+                    _ => {
+                        let (rule, kind, space) = if text.starts_with("(memory") {
+                            (Rule::core_memidx_ref, CoreExportKind::Memory, 1)
+                        } else {
+                            (Rule::core_funcidx_ref, CoreExportKind::Func, 0)
+                        };
+                        let reference = find_rule(source, rule)?;
+                        let index = binary_core_reference(&reference, kind, binary,
+                            instance_names, instance_count, names[space], &mut *counts[space])?;
+                        if space == 1 {
+                            ComponentBinaryCanonOption::Memory(index)
+                        } else if text.starts_with("(realloc") {
+                            ComponentBinaryCanonOption::Realloc(index)
+                        } else if text.starts_with("(post-return") {
+                            ComponentBinaryCanonOption::PostReturn(index)
+                        } else if text.starts_with("(callback") {
+                            ComponentBinaryCanonOption::Callback(index)
+                        } else {
+                            return None;
+                        }
+                    }
+                };
+                out.push(option);
+            } else {
+                for child in source.clone().into_inner() {
+                    visit(&child, binary, instance_names, instance_count, names, counts, out)?;
+                }
+            }
+            Some(())
+        }
+        let mut out = Vec::new();
+        visit(source, binary, instance_names, instance_count, names, &mut counts, &mut out)?;
+        Some(out)
+    }
+
+    let component = if command.as_rule() == Rule::script_cmd {
+        command.into_inner().next()?
+    } else {
+        command
+    };
+    if component.as_rule() != Rule::component {
+        return None;
+    }
+    let span = component.as_span();
+    let empty_projection = ComponentProjection::default();
+    let projection = __w.component_projection.get(&(span.start(), span.end()))
+        .unwrap_or(&empty_projection);
+    let type_cursor = &mut 0_usize;
+    let canon_cursor = &mut 0_usize;
+
+    let mut binary = ComponentBinary::default();
+    let mut module_names = HashMap::new();
+    let mut instance_names = HashMap::new();
+    let mut type_names = HashMap::new();
+    let mut type_indices = HashMap::new();
+    let mut source_type_indices = Vec::new();
+    let mut func_names = HashMap::new();
+    let mut core_func_names = HashMap::new();
+    let mut core_table_names = HashMap::new();
+    let mut core_type_names = HashMap::new();
+    let mut core_memory_names = HashMap::new();
+    let mut component_names = HashMap::new();
+    let mut component_instance_names = HashMap::new();
+    let mut func_type_indices = std::collections::HashSet::new();
+    let mut module_count = 0_u32;
+    let mut instance_count = 0_u32;
+    let mut component_count = 0_u32;
+    let mut component_instance_count = 0_u32;
+    let mut type_count = 0_u32;
+    let mut func_count = 0_u32;
+    let mut core_func_count = 0_u32;
+    let mut core_table_count = 0_u32;
+    let mut core_type_count = 0_u32;
+    let mut core_memory_count = 0_u32;
+    for def in component.into_inner() {
+        let def = if def.as_rule() == Rule::component_definition {
+            def.into_inner().next()?
+        } else {
+            continue;
+        };
+        let binary_source = def.clone();
+        match def.as_rule() {
+            Rule::core_type_def => {
+                use vybe_ast::canon::ComponentCoreValType as T;
+                let name = def.clone().into_inner()
+                    .find(|part| part.as_rule() == Rule::id)
+                    .map(|part| part.as_str()[1..].to_string());
+                let composite = def.into_inner()
+                    .find(|part| part.as_rule() == Rule::composite_type)?;
+                let mut parts = composite.into_inner();
+                let func = parts.next()?;
+                if func.as_rule() != Rule::func_type || parts.next().is_some() {
+                    return None;
+                }
+                let signature = sig_from_params(&func, &HashMap::new())?;
+                let value_type = |value| match value {
+                    Vt::Num("i32") => Some(T::I32),
+                    Vt::Num("i64") => Some(T::I64),
+                    Vt::Num("f32") => Some(T::F32),
+                    Vt::Num("f64") => Some(T::F64),
+                    Vt::Num("v128") => Some(T::V128),
+                    _ => None,
+                };
+                binary.definitions.push(ComponentBinaryDef::CoreFuncType {
+                    params: signature.params.into_iter().map(value_type).collect::<Option<_>>()?,
+                    results: signature.results.into_iter().map(value_type).collect::<Option<_>>()?,
+                });
+                if let Some(name) = name {
+                    core_type_names.insert(name, core_type_count);
+                }
+                core_type_count += 1;
+            }
+            Rule::comp_func => {
+                let mut bind = None;
+                let mut exports = Vec::new();
+                let mut type_part = None;
+                let mut lift = None;
+                for part in def.into_inner() {
+                    match part.as_rule() {
+                        Rule::id => bind = Some(part.as_str()[1..].to_string()),
+                        Rule::comp_func_export => {
+                            if part.clone().into_inner().any(|p| p.as_rule() == Rule::versionsuffix) {
+                                return None;
+                            }
+                            let name = part.into_inner()
+                                .find(|p| p.as_rule() == Rule::externnamelit)?;
+                            exports.push(component_name(name.as_str(), "inline function export").ok()?);
+                        }
+                        Rule::comp_func_type => type_part = Some(part),
+                        Rule::comp_inline_lift => lift = Some(part),
+                        _ => return None,
+                    }
+                }
+                let decl = __w.canon_section.get(*projection.canon.get(*canon_cursor)?)?;
+                if decl.builtin != "lift" {
+                    return None;
+                }
+                let type_part = type_part?;
+                let named_type = type_part.clone().into_inner()
+                    .find(|part| part.as_rule() == Rule::index);
+                let type_index = if let Some(index) = named_type {
+                    binary_type_index(&index, &type_names, &source_type_indices)?
+                } else {
+                    emit_anonymous_binary_types(__w, &projection.types, type_cursor, &mut binary,
+                        &mut type_count, &mut type_indices, &mut source_type_indices)?;
+                    let source_index = *projection.types.get(*type_cursor)?;
+                    let definition = binary_function_type(__w.comp_types.get(source_index as usize)?,
+                        &type_indices)?;
+                    let index = type_count;
+                    binary.definitions.push(definition);
+                    type_indices.insert(source_index, index);
+                    source_type_indices.push(index);
+                    func_type_indices.insert(index);
+                    type_count += 1;
+                    *type_cursor += 1;
+                    index
+                };
+                if !func_type_indices.contains(&type_index) {
+                    return None;
+                }
+                let reference = find_rule(&lift?, Rule::core_funcidx_ref)?;
+                let core_func = binary_core_reference(&reference, CoreExportKind::Func,
+                    &mut binary, &instance_names, instance_count,
+                    &core_func_names, &mut core_func_count)?;
+                let options = binary_options(&binary_source, &mut binary,
+                    &instance_names, instance_count, [&core_func_names, &core_memory_names],
+                    [&mut core_func_count, &mut core_memory_count])?;
+                binary.definitions.push(ComponentBinaryDef::CanonLift {
+                    core_func,
+                    type_index,
+                    options,
+                });
+                let lifted_func = func_count;
+                if let Some(bind) = bind {
+                    func_names.insert(bind, lifted_func);
+                }
+                func_count += 1;
+                *canon_cursor += 1;
+                for name in exports {
+                    binary.definitions.push(ComponentBinaryDef::ExportFunc {
+                        name,
+                        index: lifted_func,
+                        type_index: None,
+                    });
+                    func_count += 1;
+                }
+            }
+            Rule::comp_type => {
+                emit_anonymous_binary_types(__w, &projection.types, type_cursor, &mut binary,
+                    &mut type_count, &mut type_indices, &mut source_type_indices)?;
+                let mut name = None;
+                for field in def.into_inner() {
+                    match field.as_rule() {
+                        Rule::id => name = Some(field.as_str()[1..].to_string()),
+                        Rule::deftype => {}
+                        _ => return None,
+                    }
+                }
+                let source_type = *projection.types.get(*type_cursor)?;
+                let definition = match __w.comp_types.get(source_type as usize)? {
+                    TypeDecl::Value(spec) => {
+                        ComponentBinaryDef::ValueType(binary_valspec(spec, &type_indices)?)
+                    }
+                    declaration @ TypeDecl::Func { .. } => {
+                        let definition = binary_function_type(declaration, &type_indices)?;
+                        func_type_indices.insert(type_count);
+                        definition
+                    }
+                    TypeDecl::Resource { rep, dtor, .. } => ComponentBinaryDef::ResourceType {
+                        rep: *rep,
+                        dtor: match dtor {
+                            None => None,
+                            Some(_) => {
+                                let dtor = find_rule(&binary_source, Rule::resource_dtor)?;
+                                let reference = find_rule(&dtor, Rule::core_funcidx_ref)?;
+                                Some(binary_core_reference(&reference, CoreExportKind::Func,
+                                    &mut binary, &instance_names, instance_count,
+                                    &core_func_names, &mut core_func_count)?)
+                            }
+                        },
+                    },
+                    _ => return None,
+                };
+                binary.definitions.push(definition);
+                type_indices.insert(source_type, type_count);
+                source_type_indices.push(type_count);
+                if let Some(name) = name {
+                    type_names.insert(name, type_count);
+                }
+                type_count += 1;
+                *type_cursor += 1;
+            }
+            Rule::comp_export => {
+                let mut name = None;
+                let mut bind = None;
+                let mut target = None;
+                let mut ascription = None;
+                for field in def.into_inner() {
+                    match field.as_rule() {
+                        Rule::externnamelit => {
+                            name = Some(component_name(field.as_str(), "export").ok()?)
+                        }
+                        Rule::externidx => target = Some(field),
+                        Rule::id => bind = Some(field.as_str()[1..].to_string()),
+                        Rule::externtype => ascription = Some(field),
+                        _ => return None,
+                    }
+                }
+                let target = target?;
+                let mut parts = target.into_inner();
+                let sort = parts.next()?;
+                if sort.as_rule() != Rule::comp_sort_kw && sort.as_rule() != Rule::core_sort {
+                    return None;
+                }
+                let index = parts.next()?;
+                if index.as_rule() != Rule::index || parts.next().is_some() {
+                    return None;
+                }
+                match sort.as_str() {
+                    "module" if sort.as_rule() == Rule::core_sort => {
+                        let index = resolve_idx(&index, "core module", &module_names).ok()?;
+                        if index >= module_count { return None; }
+                        binary.definitions.push(ComponentBinaryDef::ExportCoreModule {
+                            name: name?, index,
+                        });
+                        if let Some(bind) = bind { module_names.insert(bind, module_count); }
+                        module_count = module_count.checked_add(1)?;
+                    }
+                    "instance" if sort.as_rule() == Rule::comp_sort_kw => {
+                        let index = resolve_idx(&index, "component instance", &component_instance_names).ok()?;
+                        if index >= component_instance_count { return None; }
+                        binary.definitions.push(ComponentBinaryDef::ExportInstance {
+                            name: name?, index,
+                        });
+                        if let Some(bind) = bind {
+                            component_instance_names.insert(bind, component_instance_count);
+                        }
+                        component_instance_count = component_instance_count.checked_add(1)?;
+                    }
+                    "type" if sort.as_rule() == Rule::comp_sort_kw => {
+                        let index = binary_type_index(
+                            &index, &type_names, &source_type_indices,
+                        )?;
+                        if index >= type_count {
+                            return None;
+                        }
+                        binary
+                            .definitions
+                            .push(ComponentBinaryDef::ExportType { name: name?, index });
+                        if func_type_indices.contains(&index) {
+                            func_type_indices.insert(type_count);
+                        }
+                        if let Some(bind) = bind {
+                            type_names.insert(bind, type_count);
+                        }
+                        type_indices.insert(*projection.types.get(*type_cursor)?, type_count);
+                        source_type_indices.push(type_count);
+                        type_count += 1;
+                        *type_cursor += 1;
+                    }
+                    "func" if sort.as_rule() == Rule::comp_sort_kw => {
+                        let index = resolve_idx(&index, "component function", &func_names).ok()?;
+                        if index >= func_count {
+                            return None;
+                        }
+                        let type_index = match ascription {
+                            None => None,
+                            Some(ascription) => {
+                                if find_rule(&ascription, Rule::functype_c).is_some() {
+                                    emit_anonymous_binary_types(__w, &projection.types, type_cursor,
+                                        &mut binary, &mut type_count, &mut type_indices,
+                                        &mut source_type_indices)?;
+                                    let source = *projection.types.get(*type_cursor)?;
+                                    binary.definitions.push(binary_function_type(
+                                        __w.comp_types.get(source as usize)?, &type_indices,
+                                    )?);
+                                    type_indices.insert(source, type_count);
+                                    source_type_indices.push(type_count);
+                                    func_type_indices.insert(type_count);
+                                    *type_cursor += 1;
+                                    let index = type_count;
+                                    type_count = type_count.checked_add(1)?;
+                                    Some(index)
+                                } else {
+                                    let index = find_rule(&ascription, Rule::index)?;
+                                    Some(binary_type_index(&index, &type_names, &source_type_indices)?)
+                                }
+                            }
+                        };
+                        binary.definitions.push(ComponentBinaryDef::ExportFunc {
+                            name: name?, index, type_index,
+                        });
+                        if let Some(bind) = bind {
+                            func_names.insert(bind, func_count);
+                        }
+                        func_count += 1;
+                    }
+                    _ => return None,
+                }
+            }
+            Rule::comp_import => {
+                let mut name = None;
+                let mut ty = None;
+                for field in def.into_inner() {
+                    match field.as_rule() {
+                        Rule::externnamelit => {
+                            name = Some(component_name(field.as_str(), "import").ok()?)
+                        }
+                        Rule::externtype => ty = Some(field),
+                        _ => return None,
+                    }
+                }
+                let mut binder = None;
+                let mut sort = None;
+                let mut index = None;
+                let ty = ty?;
+                let inline = ty.clone().into_inner().find(|field| field.as_rule() == Rule::functype_c);
+                let type_index = if let Some(inline) = inline {
+                    emit_anonymous_binary_types(__w, &projection.types, type_cursor, &mut binary,
+                        &mut type_count, &mut type_indices, &mut source_type_indices)?;
+                    binder = inline.into_inner().find(|field| field.as_rule() == Rule::id)
+                        .map(|field| field.as_str()[1..].to_string());
+                    let source_type = *projection.types.get(*type_cursor)?;
+                    let definition = binary_function_type(__w.comp_types.get(source_type as usize)?,
+                        &type_indices)?;
+                    let index = type_count;
+                    binary.definitions.push(definition);
+                    type_indices.insert(source_type, index);
+                    source_type_indices.push(index);
+                    func_type_indices.insert(index);
+                    type_count += 1;
+                    *type_cursor += 1;
+                    index
+                } else {
+                    for field in ty.into_inner() {
+                        match field.as_rule() {
+                            Rule::comp_sort_kw => sort = Some(field.as_str().to_string()),
+                            Rule::id => binder = Some(field.as_str()[1..].to_string()),
+                            Rule::index => index = Some(field),
+                            _ => return None,
+                        }
+                    }
+                    if sort.as_deref() != Some("func") {
+                        return None;
+                    }
+                    binary_type_index(&index?, &type_names, &source_type_indices)?
+                };
+                if !func_type_indices.contains(&type_index) {
+                    return None;
+                }
+                binary.definitions.push(ComponentBinaryDef::ImportFunc {
+                    name: name?,
+                    type_index,
+                });
+                if let Some(binder) = binder {
+                    func_names.insert(binder, func_count);
+                }
+                func_count += 1;
+            }
+            Rule::core_func_inline_lower | Rule::core_func_inline_builtin | Rule::canon => {
+                let decl = __w.canon_section.get(*projection.canon.get(*canon_cursor)?)?;
+                if decl.builtin == "lift" {
+                    let source_type = decl.functype?;
+                    let type_index = if let Some(index) = type_indices.get(&source_type) {
+                        *index
+                    } else {
+                        emit_anonymous_binary_types(__w, &projection.types, type_cursor, &mut binary,
+                            &mut type_count, &mut type_indices, &mut source_type_indices)?;
+                        if projection.types.get(*type_cursor).copied()? != source_type { return None; }
+                        let definition = binary_function_type(__w.comp_types.get(source_type as usize)?, &type_indices)?;
+                        let index = type_count;
+                        binary.definitions.push(definition);
+                        type_indices.insert(source_type, index);
+                        source_type_indices.push(index);
+                        func_type_indices.insert(index);
+                        type_count += 1;
+                        *type_cursor += 1;
+                        index
+                    };
+                    if !func_type_indices.contains(&type_index) { return None; }
+                    let reference = find_rule(&def, Rule::core_funcidx_ref)?;
+                    let core_func = binary_core_reference(&reference, CoreExportKind::Func,
+                        &mut binary, &instance_names, instance_count,
+                        &core_func_names, &mut core_func_count)?;
+                    let options = binary_options(&binary_source, &mut binary,
+                        &instance_names, instance_count, [&core_func_names, &core_memory_names],
+                        [&mut core_func_count, &mut core_memory_count])?;
+                    binary.definitions.push(ComponentBinaryDef::CanonLift { core_func, type_index, options });
+                    let external = find_rule(&def, Rule::externtype)?;
+                    let binder = external.into_inner().find_map(|part| {
+                        if part.as_rule() == Rule::id {
+                            Some(part)
+                        } else if part.as_rule() == Rule::functype_c {
+                            part.into_inner().find(|part| part.as_rule() == Rule::id)
+                        } else { None }
+                    });
+                    if let Some(binder) = binder {
+                        func_names.insert(binder.as_str()[1..].to_string(), func_count);
+                    }
+                    func_count += 1;
+                    *canon_cursor += 1;
+                    continue;
+                } else if decl.builtin == "error-context.drop" {
+                    binary.definitions.push(ComponentBinaryDef::CanonErrorContextDrop);
+                    core_func_count += 1;
+                } else if matches!(decl.builtin.as_str(), "error-context.new" | "error-context.debug-message") {
+                    let options = binary_options(&binary_source, &mut binary,
+                        &instance_names, instance_count, [&core_func_names, &core_memory_names],
+                        [&mut core_func_count, &mut core_memory_count])?;
+                    binary.definitions.push(if decl.builtin == "error-context.new" {
+                        ComponentBinaryDef::CanonErrorContextNew { options }
+                    } else {
+                        ComponentBinaryDef::CanonErrorContextDebugMessage { options }
+                    });
+                    core_func_count += 1;
+                } else if matches!(decl.builtin.as_str(), "resource.new" | "resource.drop" | "resource.rep") {
+                    let type_index = *type_indices.get(&decl.ty?)?;
+                    binary.definitions.push(match decl.builtin.as_str() {
+                        "resource.new" => ComponentBinaryDef::CanonResourceNew { type_index },
+                        "resource.drop" => ComponentBinaryDef::CanonResourceDrop { type_index },
+                        "resource.rep" => ComponentBinaryDef::CanonResourceRep { type_index },
+                        _ => unreachable!(),
+                    });
+                    core_func_count += 1;
+                } else if matches!(decl.builtin.as_str(), "context.get" | "context.set") {
+                    let (ty, slot) = decl.context.as_ref()?;
+                    let ty = match ty.as_str() {
+                        "i32" => vybe_ast::canon::ComponentCoreValType::I32,
+                        "i64" => vybe_ast::canon::ComponentCoreValType::I64,
+                        _ => return None,
+                    };
+                    binary.definitions.push(ComponentBinaryDef::CanonContext {
+                        set: decl.builtin == "context.set", ty, slot: *slot,
+                    });
+                    core_func_count += 1;
+                } else if matches!(decl.builtin.as_str(), "task.cancel" | "subtask.cancel"
+                    | "subtask.drop" | "backpressure.inc" | "backpressure.dec") {
+                    binary.definitions.push(match decl.builtin.as_str() {
+                        "task.cancel" => ComponentBinaryDef::CanonTaskCancel,
+                        "subtask.cancel" => ComponentBinaryDef::CanonSubtaskCancel { is_async: decl.is_async },
+                        "subtask.drop" => ComponentBinaryDef::CanonSubtaskDrop,
+                        "backpressure.inc" => ComponentBinaryDef::CanonBackpressureInc,
+                        "backpressure.dec" => ComponentBinaryDef::CanonBackpressureDec,
+                        _ => unreachable!(),
+                    });
+                    core_func_count += 1;
+                } else if matches!(decl.builtin.as_str(), "waitable-set.new"
+                    | "waitable-set.drop" | "waitable.join"
+                    | "waitable-set.wait" | "waitable-set.poll") {
+                    if decl.cancellable { return None; }
+                    let operation = match decl.builtin.as_str() {
+                        "waitable-set.new" => ComponentBinaryDef::CanonWaitableSetNew,
+                        "waitable-set.drop" => ComponentBinaryDef::CanonWaitableSetDrop,
+                        "waitable.join" => ComponentBinaryDef::CanonWaitableJoin,
+                        operation => {
+                            let reference = find_rule(&def, Rule::core_memidx_ref)?;
+                            let memory = binary_core_reference(&reference, CoreExportKind::Memory,
+                                &mut binary, &instance_names, instance_count,
+                                &core_memory_names, &mut core_memory_count)?;
+                            if operation == "waitable-set.wait" {
+                                ComponentBinaryDef::CanonWaitableSetWait { memory }
+                            } else { ComponentBinaryDef::CanonWaitableSetPoll { memory } }
+                        }
+                    };
+                    binary.definitions.push(operation);
+                    core_func_count += 1;
+                } else if matches!(decl.builtin.as_str(),
+                    "thread.resume-later" | "thread.suspend" | "thread.yield"
+                    | "thread.suspend-then-resume" | "thread.yield-then-resume"
+                    | "thread.suspend-then-promote" | "thread.yield-then-promote") {
+                    if decl.cancellable { return None; }
+                    let operation = match decl.builtin.as_str() {
+                        "thread.resume-later" => ComponentBinaryDef::CanonThreadResumeLater,
+                        "thread.suspend" => ComponentBinaryDef::CanonThreadSuspend,
+                        "thread.yield" => ComponentBinaryDef::CanonThreadYield,
+                        "thread.suspend-then-resume" => ComponentBinaryDef::CanonThreadSuspendThenResume,
+                        "thread.yield-then-resume" => ComponentBinaryDef::CanonThreadYieldThenResume,
+                        "thread.suspend-then-promote" => ComponentBinaryDef::CanonThreadSuspendThenPromote,
+                        "thread.yield-then-promote" => ComponentBinaryDef::CanonThreadYieldThenPromote,
+                        _ => unreachable!(),
+                    };
+                    binary.definitions.push(operation);
+                    core_func_count += 1;
+                } else if decl.builtin == "thread.index" {
+                    binary.definitions.push(ComponentBinaryDef::CanonThreadIndex);
+                    core_func_count += 1;
+                } else if decl.builtin == "thread.new-indirect" {
+                    let resolve_ref = |rule, names: &HashMap<String, u32>, count| {
+                        let reference = find_rule(&def, rule)?;
+                        let index = if reference.as_str().starts_with('(') {
+                            let mut parts = reference.into_inner();
+                            let index = parts.next()?;
+                            if index.as_rule() != Rule::index || parts.next().is_some() {
+                                return None;
+                            }
+                            index
+                        } else {
+                            reference.into_inner().next()?
+                        };
+                        let index = resolve_idx(&index, "core worker reference", names).ok()?;
+                        (index < count).then_some(index)
+                    };
+                    binary.definitions.push(ComponentBinaryDef::CanonThreadNewIndirect {
+                        type_index: resolve_ref(Rule::core_typeidx_ref, &core_type_names, core_type_count)?,
+                        table_index: resolve_ref(Rule::core_tableidx_ref, &core_table_names, core_table_count)?,
+                    });
+                    core_func_count += 1;
+                } else if decl.builtin == "lower" {
+                    let callee = find_rule(&def, Rule::funcidx_ref)?;
+                    let mut callee_parts = callee.into_inner();
+                    let index = callee_parts.next()?;
+                    if index.as_rule() != Rule::index || callee_parts.next().is_some() {
+                        return None;
+                    }
+                    let func = resolve_idx(&index, "component function", &func_names).ok()?;
+                    if func >= func_count {
+                        return None;
+                    }
+                    let options = binary_options(&binary_source, &mut binary,
+                        &instance_names, instance_count, [&core_func_names, &core_memory_names],
+                        [&mut core_func_count, &mut core_memory_count])?;
+                    binary.definitions.push(ComponentBinaryDef::CanonLower {
+                        func,
+                        options,
+                    });
+                    core_func_count += 1;
+                } else if decl.builtin == "task.return" && def.as_rule() == Rule::canon {
+                    let result = if let Some(result) = find_rule(&def, Rule::func_result_c) {
+                        if decl.results.len() != 1 {
+                            return None;
+                        }
+                        let value = find_rule(&result, Rule::valtype)?;
+                        let source_type = value.into_inner().next()?;
+                        match source_type.as_rule() {
+                            Rule::index => {
+                                let index = binary_type_index(
+                                    &source_type, &type_names, &source_type_indices,
+                                )?;
+                                if index >= type_count {
+                                    return None;
+                                }
+                                Some(vybe_ast::canon::ValSpec::Ref(index))
+                            }
+                            Rule::defvaltype => {
+                                emit_anonymous_binary_types(__w, &projection.types, type_cursor, &mut binary,
+                                    &mut type_count, &mut type_indices, &mut source_type_indices)?;
+                                let source_type = *projection.types.get(*type_cursor)?;
+                                if decl.results[0] != source_type {
+                                    return None;
+                                }
+                                let TypeDecl::Value(spec) = __w.comp_types.get(source_type as usize)? else {
+                                    return None;
+                                };
+                                let mapped = binary_valspec(spec, &type_indices)?;
+                                let binary_result = if matches!(mapped, vybe_ast::canon::ValSpec::Prim(_)) {
+                                    mapped
+                                } else {
+                                    let index = type_count;
+                                    binary.definitions.push(ComponentBinaryDef::ValueType(mapped));
+                                    type_count += 1;
+                                    type_indices.insert(source_type, index);
+                                    source_type_indices.push(index);
+                                    vybe_ast::canon::ValSpec::Ref(index)
+                                };
+                                *type_cursor += 1;
+                                Some(binary_result)
+                            }
+                            _ => return None,
+                        }
+                    } else {
+                        if !decl.results.is_empty() {
+                            return None;
+                        }
+                        None
+                    };
+                    let options = binary_options(&binary_source, &mut binary,
+                        &instance_names, instance_count, [&core_func_names, &core_memory_names],
+                        [&mut core_func_count, &mut core_memory_count])?;
+                    binary.definitions.push(ComponentBinaryDef::CanonTaskReturn {
+                        result,
+                        options,
+                    });
+                    core_func_count += 1;
+                } else if let Some((kind, operation)) = decl.builtin.split_once('.') {
+                    use vybe_ast::canon::{ComponentBinaryAsyncKind as Kind,
+                        ComponentBinaryAsyncOperation as Operation};
+                    let kind = match kind {
+                        "stream" => Kind::Stream,
+                        "future" => Kind::Future,
+                        _ => return None,
+                    };
+                    let operation = match operation {
+                        "new" => Operation::New,
+                        "read" => Operation::Read,
+                        "write" => Operation::Write,
+                        "cancel-read" => Operation::CancelRead { is_async: decl.is_async },
+                        "cancel-write" => Operation::CancelWrite { is_async: decl.is_async },
+                        "drop-readable" => Operation::DropReadable,
+                        "drop-writable" => Operation::DropWritable,
+                        "forward" => Operation::Forward,
+                        _ => return None,
+                    };
+                    let type_index = *type_indices.get(&decl.ty?)?;
+                    let options = binary_options(&binary_source, &mut binary,
+                        &instance_names, instance_count, [&core_func_names, &core_memory_names],
+                        [&mut core_func_count, &mut core_memory_count])?;
+                    binary.definitions.push(ComponentBinaryDef::CanonAsync {
+                        kind, operation, type_index,
+                        options,
+                    });
+                    core_func_count += 1;
+                } else {
+                    return None;
+                }
+                if let Some(binder) = &decl.binder {
+                    core_func_names.insert(binder.clone(), core_func_count.checked_sub(1)?);
+                }
+                *canon_cursor += 1;
+            }
+            Rule::component => {
+                let name = def
+                    .clone()
+                    .into_inner()
+                    .find(|part| part.as_rule() == Rule::id)
+                    .map(|part| part.as_str()[1..].to_string());
+                let nested = simple_component_binary_at(def, __w)?;
+                binary
+                    .definitions
+                    .push(ComponentBinaryDef::NestedComponent(std::sync::Arc::new(nested)));
+                if let Some(name) = name {
+                    component_names.insert(name, component_count);
+                }
+                component_count += 1;
+            }
+            Rule::comp_instance => {
+                let mut name = None;
+                let mut expr = None;
+                for part in def.into_inner() {
+                    match part.as_rule() {
+                        Rule::id => name = Some(part.as_str()[1..].to_string()),
+                        Rule::instanceexpr => expr = Some(part),
+                        _ => return None,
+                    }
+                }
+                let mut parts = expr?.into_inner();
+                let instantiate = parts.next()?;
+                if instantiate.as_rule() != Rule::comp_instantiate || parts.next().is_some() {
+                    return None;
+                }
+                let mut fields = instantiate.into_inner();
+                let target = fields.next()?;
+                if target.as_rule() != Rule::index {
+                    return None;
+                }
+                let component = resolve_idx(&target, "component", &component_names).ok()?;
+                if component >= component_count {
+                    return None;
+                }
+                let mut args = Vec::new();
+                for field in fields {
+                    if field.as_rule() != Rule::instantiatearg {
+                        return None;
+                    }
+                    let mut arg = field.into_inner();
+                    let import = arg.next()?;
+                    let target = arg.next()?;
+                    if import.as_rule() != Rule::string
+                        || target.as_rule() != Rule::externidx
+                        || arg.next().is_some()
+                    {
+                        return None;
+                    }
+                    let mut target_parts = target.into_inner();
+                    let sort = target_parts.next()?;
+                    let index = target_parts.next()?;
+                    if sort.as_rule() != Rule::comp_sort_kw
+                        || sort.as_str() != "func"
+                        || index.as_rule() != Rule::index
+                    {
+                        return None;
+                    }
+                    let path = target_parts.collect::<Vec<_>>();
+                    let index = if path.is_empty() {
+                        let index = resolve_idx(&index, "component function", &func_names).ok()?;
+                        if index >= func_count {
+                            return None;
+                        }
+                        index
+                    } else {
+                        if path.len() != 1 || path[0].as_rule() != Rule::string {
+                            return None;
+                        }
+                        let instance = resolve_idx(
+                            &index,
+                            "component instance",
+                            &component_instance_names,
+                        )
+                        .ok()?;
+                        if instance >= component_instance_count {
+                            return None;
+                        }
+                        binary.definitions.push(ComponentBinaryDef::AliasInstanceExport {
+                            instance,
+                            name: component_name(path[0].as_str(), "component argument").ok()?,
+                            kind: vybe_ast::canon::ComponentItemKind::Func,
+                        });
+                        let alias = func_count;
+                        func_count += 1;
+                        alias
+                    };
+                    args.push(vybe_ast::canon::ComponentItemRef {
+                        name: component_name(import.as_str(), "component argument").ok()?,
+                        kind: vybe_ast::canon::ComponentItemKind::Func,
+                        index,
+                    });
+                }
+                binary
+                    .definitions
+                    .push(ComponentBinaryDef::ComponentInstance { component, args });
+                if let Some(name) = name {
+                    component_instance_names.insert(name, component_instance_count);
+                }
+                component_instance_count += 1;
+            }
+            Rule::comp_alias => {
+                if def.clone().into_inner().any(|part| part.as_rule() == Rule::core_sort) {
+                    let mut instance = None;
+                    let mut name = None;
+                    let mut sort = None;
+                    let mut binder = None;
+                    for part in def.into_inner() {
+                        match part.as_rule() {
+                            Rule::index => instance = Some(part),
+                            Rule::string => name = Some(component_name(part.as_str(), "core alias").ok()?),
+                            Rule::core_sort => sort = Some(part.as_str().to_string()),
+                            Rule::id => binder = Some(part.as_str()[1..].to_string()),
+                            _ => return None,
+                        }
+                    }
+                    let instance = resolve_idx(&instance?, "core instance", &instance_names).ok()?;
+                    if instance >= instance_count { return None; }
+                    let kind = match sort?.as_str() {
+                        "func" => {
+                            if let Some(binder) = binder { core_func_names.insert(binder, core_func_count); }
+                            core_func_count += 1;
+                            CoreExportKind::Func
+                        }
+                        "table" => {
+                            if let Some(binder) = binder { core_table_names.insert(binder, core_table_count); }
+                            core_table_count += 1;
+                            CoreExportKind::Table
+                        }
+                        "memory" => {
+                            if let Some(binder) = binder { core_memory_names.insert(binder, core_memory_count); }
+                            core_memory_count += 1;
+                            CoreExportKind::Memory
+                        }
+                        _ => return None,
+                    };
+                    binary.definitions.push(ComponentBinaryDef::CoreAliasInstanceExport {
+                        instance, name: name?, kind,
+                    });
+                    continue;
+                }
+                let mut instance = None;
+                let mut name = None;
+                let mut sort = None;
+                let mut binder = None;
+                for part in def.into_inner() {
+                    match part.as_rule() {
+                        Rule::index => instance = Some(part),
+                        Rule::externnamelit => {
+                            name = Some(component_name(part.as_str(), "alias").ok()?)
+                        }
+                        Rule::sort_c => sort = Some(part),
+                        Rule::id => binder = Some(part.as_str()[1..].to_string()),
+                        _ => return None,
+                    }
+                }
+                let mut sort_parts = sort?.into_inner();
+                let kind = sort_parts.next()?;
+                if kind.as_rule() != Rule::comp_sort_kw || kind.as_str() != "func" {
+                    return None;
+                }
+                if sort_parts.next().is_some() {
+                    return None;
+                }
+                let instance =
+                    resolve_idx(&instance?, "component instance", &component_instance_names)
+                        .ok()?;
+                if instance >= component_instance_count {
+                    return None;
+                }
+                binary
+                    .definitions
+                    .push(ComponentBinaryDef::AliasInstanceExport {
+                        instance,
+                        name: name?,
+                        kind: vybe_ast::canon::ComponentItemKind::Func,
+                    });
+                if let Some(binder) = binder {
+                    func_names.insert(binder, func_count);
+                }
+                func_count += 1;
+            }
+            Rule::core_module_def => {
+                let mut module_text = String::from("(module");
+                let mut has_fields = false;
+                for field in def.into_inner() {
+                    match field.as_rule() {
+                        Rule::id => {
+                            module_names.insert(field.as_str()[1..].to_string(), module_count);
+                        }
+                        Rule::module_definition_kw => {}
+                        Rule::module_field | Rule::rec_group => {
+                            module_text.push(' ');
+                            module_text.push_str(field.as_str());
+                            has_fields = true;
+                        }
+                        _ => return None,
+                    }
+                }
+                module_text.push(')');
+                let bytes = if has_fields {
+                    wat::parse_str(&module_text).ok()?
+                } else {
+                    vec![0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]
+                };
+                binary.definitions.push(ComponentBinaryDef::CoreModule(bytes));
+                module_count += 1;
+            }
+            Rule::core_func_inline_alias => {
+                let mut bind = None;
+                let mut instance = None;
+                let mut name = None;
+                for part in def.into_inner() {
+                    match part.as_rule() {
+                        Rule::id => bind = Some(part.as_str()[1..].to_string()),
+                        Rule::index => instance = Some(part),
+                        Rule::string => name = Some(part),
+                        _ => return None,
+                    }
+                }
+                let instance = resolve_idx(&instance?, "core instance", &instance_names).ok()?;
+                if instance >= instance_count {
+                    return None;
+                }
+                binary.definitions.push(ComponentBinaryDef::CoreAliasInstanceExport {
+                    instance,
+                    name: component_name(name?.as_str(), "core alias").ok()?,
+                    kind: CoreExportKind::Func,
+                });
+                if let Some(bind) = bind {
+                    core_func_names.insert(bind, core_func_count);
+                }
+                core_func_count += 1;
+            }
+            Rule::core_instance_def => {
+                let mut name = None;
+                let mut expr = None;
+                for part in def.into_inner() {
+                    match part.as_rule() {
+                        Rule::id => name = Some(part.as_str()[1..].to_string()),
+                        Rule::core_instanceexpr => expr = Some(part),
+                        _ => return None,
+                    }
+                }
+                let mut parts = expr?.into_inner();
+                match parts.next() {
+                    Some(instantiate) if instantiate.as_rule() == Rule::core_instantiate => {
+                        let mut fields = instantiate.into_inner();
+                        let target = fields.next()?;
+                        if target.as_rule() != Rule::index {
+                            return None;
+                        }
+                        let module = resolve_idx(&target, "core module", &module_names).ok()?;
+                        if module >= module_count {
+                            return None;
+                        }
+                        let mut args = Vec::new();
+                        for field in fields {
+                            if field.as_rule() != Rule::core_instantiatearg {
+                                return None;
+                            }
+                            let mut arg = field.into_inner();
+                            let import = arg.next()?;
+                            let target = arg.next()?;
+                            if import.as_rule() != Rule::string {
+                                return None;
+                            }
+                            let instance = if target.as_rule() == Rule::index {
+                                if arg.next().is_some() { return None; }
+                                let instance = resolve_idx(&target, "core instance", &instance_names).ok()?;
+                                if instance >= instance_count { return None; }
+                                instance
+                            } else if target.as_rule() == Rule::core_inlineexport {
+                                let mut counts = [core_func_count, core_table_count, core_memory_count];
+                                let exports = binary_core_exports(
+                                    std::iter::once(target).chain(arg), &mut binary,
+                                    &instance_names, instance_count,
+                                    [&core_func_names, &core_table_names, &core_memory_names], &mut counts,
+                                )?;
+                                [core_func_count, core_table_count, core_memory_count] = counts;
+                                binary.definitions.push(ComponentBinaryDef::CoreInstanceFromExports(exports));
+                                let instance = instance_count;
+                                instance_count = instance_count.checked_add(1)?;
+                                instance
+                            } else {
+                                return None;
+                            };
+                            let import = component_name(import.as_str(), "core instance").ok()?;
+                            args.push((import, instance));
+                        }
+                        if parts.next().is_some() {
+                            return None;
+                        }
+                        binary
+                            .definitions
+                            .push(ComponentBinaryDef::CoreInstance { module, args });
+                    }
+                    None => binary
+                        .definitions
+                        .push(ComponentBinaryDef::CoreInstanceFromExports(Vec::new())),
+                    Some(first) if first.as_rule() == Rule::core_inlineexport => {
+                        let mut counts = [core_func_count, core_table_count, core_memory_count];
+                        let exports = binary_core_exports(
+                            std::iter::once(first).chain(parts), &mut binary,
+                            &instance_names, instance_count,
+                            [&core_func_names, &core_table_names, &core_memory_names], &mut counts,
+                        )?;
+                        [core_func_count, core_table_count, core_memory_count] = counts;
+                        binary.definitions.push(ComponentBinaryDef::CoreInstanceFromExports(exports));
+                    }
+                    _ => return None,
+                }
+                if let Some(name) = name {
+                    instance_names.insert(name, instance_count);
+                }
+                instance_count += 1;
+            }
+            _ => return None,
+        }
+    }
+    Some(binary)
+}
+
+#[cfg(test)]
+mod component_binary_scope_tests {
+    use super::*;
+    use vybe_ast::canon::{ComponentBinaryDef, TypeDecl, ValSpec};
+
+    #[test]
+    fn core_module_body_is_preserved_in_component_binary() {
+        let source = "(component
+          (core module $M
+            (func (export \"answer\") (result i32) i32.const 42))
+          (core instance $i (instantiate $M)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let mut walker = WastWalker::default();
+        walk_component(&mut walker, pair, &mut Vec::new()).expect("component walk");
+
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        let ComponentBinaryDef::CoreModule(module) = &binary.definitions[0] else {
+            panic!("expected core module definition");
+        };
+        assert!(module.len() > 8, "core function body must not be discarded");
+        let bytes = vybe_platform_wasm::write_component_binary(&binary)
+            .expect("component binary validates");
+        assert_eq!(vybe_platform_wasm::read_component_binary(&bytes).unwrap(), binary);
+    }
+
+    #[test]
+    fn lifted_core_export_is_emitted_as_component_function() {
+        let source = "(component
+          (core module $M
+            (func (export \"answer\") (result i32) i32.const 42))
+          (core instance $i (instantiate $M))
+          (func $f (result u32) (canon lift (core func $i \"answer\")))
+          (export \"answer\" (func $f)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let mut walker = WastWalker::default();
+        walk_component(&mut walker, pair, &mut Vec::new()).expect("component walk");
+
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        assert!(matches!(binary.definitions[2], ComponentBinaryDef::FuncType { .. }));
+        assert!(matches!(binary.definitions[3], ComponentBinaryDef::CoreAliasInstanceExport { .. }));
+        assert!(matches!(binary.definitions[4], ComponentBinaryDef::CanonLift { .. }));
+        assert!(matches!(binary.definitions[5], ComponentBinaryDef::ExportFunc { .. }));
+        let bytes = vybe_platform_wasm::write_component_binary(&binary)
+            .expect("component binary validates");
+        assert_eq!(vybe_platform_wasm::read_component_binary(&bytes).unwrap(), binary);
+    }
+
+    #[test]
+    fn lifted_named_core_alias_keeps_core_function_index() {
+        let source = "(component
+          (core module $M
+            (func (export \"answer\") (result i32) i32.const 42))
+          (core instance $i (instantiate $M))
+          (core func $answer (alias core export $i \"answer\"))
+          (func $f (result u32) (canon lift (core func $answer)))
+          (export \"answer\" (func $f)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let mut walker = WastWalker::default();
+        walk_component(&mut walker, pair, &mut Vec::new()).expect("component walk");
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        assert!(matches!(binary.definitions[4], ComponentBinaryDef::CanonLift {
+            core_func: 0, ..
+        }));
+        let bytes = vybe_platform_wasm::write_component_binary(&binary)
+            .expect("component binary validates");
+        assert_eq!(vybe_platform_wasm::read_component_binary(&bytes).unwrap(), binary);
+    }
+
+    #[test]
+    fn lifted_imported_core_function_preserves_instance_wiring() {
+        let source = "(component
+          (core module $Producer
+            (func (export \"step\") (param i32) (result i32)
+              local.get 0 i32.const 1 i32.add))
+          (core instance $p (instantiate $Producer))
+          (core module $Consumer
+            (import \"m\" \"step\" (func $step (param i32) (result i32)))
+            (func (export \"answer\") (result i32)
+              i32.const 41 call $step))
+          (core instance $c (instantiate $Consumer (with \"m\" (instance $p))))
+          (func $f (result u32) (canon lift (core func $c \"answer\")))
+          (export \"answer\" (func $f)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let mut walker = WastWalker::default();
+        walk_component(&mut walker, pair, &mut Vec::new()).expect("component walk");
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        assert!(matches!(binary.definitions[3], ComponentBinaryDef::CoreInstance {
+            module: 1, ref args
+        } if args == &[("m".into(), 0)]));
+        let bytes = vybe_platform_wasm::write_component_binary(&binary)
+            .expect("component binary validates");
+        assert_eq!(vybe_platform_wasm::read_component_binary(&bytes).unwrap(), binary);
+    }
+
+    #[test]
+    fn inline_task_return_result_preserves_following_explicit_type_index() {
+        let source = "(component
+          (canon task.return (result u32) (core func $ret))
+          (type $later u64)
+          (canon task.return (result $later) (core func $later_ret)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let mut walker = WastWalker::default();
+        walk_component(&mut walker, pair, &mut Vec::new()).expect("component type resolution");
+        assert!(matches!(walker.comp_types[0], TypeDecl::Value(ValSpec::Prim(ref s)) if s == "u32"));
+        assert!(matches!(walker.comp_types[1], TypeDecl::Value(ValSpec::Prim(ref s)) if s == "u64"));
+        assert_eq!(walker.canon_section[0].results, vec![0]);
+        assert_eq!(walker.canon_section[1].results, vec![1]);
+
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        assert_eq!(
+            binary.definitions,
+            vec![
+                ComponentBinaryDef::CanonTaskReturn {
+                    result: Some(ValSpec::Prim("u32".into())),
+                    options: vec![],
+                },
+                ComponentBinaryDef::ValueType(ValSpec::Prim("u64".into())),
+                ComponentBinaryDef::CanonTaskReturn {
+                    result: Some(ValSpec::Ref(0)),
+                    options: vec![],
+                },
+            ]
+        );
+        let bytes = vybe_platform_wasm::write_component_binary(&binary)
+            .expect("task.return component validates");
+        assert_eq!(
+            vybe_platform_wasm::read_component_binary(&bytes).unwrap(),
+            binary
+        );
+    }
+
+    #[test]
+    fn inline_composite_task_result_remaps_later_type_references() {
+        let source = "(component
+          (type $first u32)
+          (canon task.return (result (option $first)) (core func $ret))
+          (type $later (option $first))
+          (canon task.return (result 1) (core func $later_ret)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let mut walker = WastWalker::default();
+        walk_component(&mut walker, pair, &mut Vec::new()).expect("component type resolution");
+        assert_eq!(walker.canon_section[0].results, vec![1]);
+        assert_eq!(walker.canon_section[1].results, vec![1]);
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        assert_eq!(
+            binary.definitions,
+            vec![
+                ComponentBinaryDef::ValueType(ValSpec::Prim("u32".into())),
+                ComponentBinaryDef::ValueType(ValSpec::Option(Box::new(ValSpec::Ref(0)))),
+                ComponentBinaryDef::CanonTaskReturn {
+                    result: Some(ValSpec::Ref(1)),
+                    options: vec![],
+                },
+                ComponentBinaryDef::ValueType(ValSpec::Option(Box::new(ValSpec::Ref(0)))),
+                ComponentBinaryDef::CanonTaskReturn {
+                    result: Some(ValSpec::Ref(1)),
+                    options: vec![],
+                },
+            ]
+        );
+        let bytes = vybe_platform_wasm::write_component_binary(&binary)
+            .expect("composite task.return validates");
+        assert_eq!(
+            vybe_platform_wasm::read_component_binary(&bytes).unwrap(),
+            binary
+        );
+    }
+
+    #[test]
+    fn nested_instantiation_does_not_renumber_outer_type_indices() {
+        let source = "(component
+          (type $first u8)
+          (component $child (type u16))
+          (instance $i (instantiate $child))
+          (type $second u32)
+          (type (list 1))
+          (type (list $second)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let mut walker = WastWalker::default();
+        walk_component(&mut walker, pair, &mut Vec::new()).expect("component type resolution");
+        assert!(matches!(walker.comp_types[0], TypeDecl::Value(ValSpec::Prim(ref s)) if s == "u8"));
+        assert!(matches!(walker.comp_types[1], TypeDecl::Value(ValSpec::Prim(ref s)) if s == "u16"));
+        assert!(matches!(walker.comp_types[2], TypeDecl::Value(ValSpec::Prim(ref s)) if s == "u32"));
+        assert!(matches!(walker.comp_types[3], TypeDecl::Value(ValSpec::List(ref inner)) if matches!(inner.as_ref(), ValSpec::Ref(2))));
+        assert!(matches!(walker.comp_types[4], TypeDecl::Value(ValSpec::List(ref inner)) if matches!(inner.as_ref(), ValSpec::Ref(2))));
+    }
+
+    #[test]
+    fn nested_types_do_not_leak_into_outer_type_space() {
+        let source = "(component
+          (type u8)
+          (component $child (type u16))
+          (instance $i (instantiate $child))
+          (type (list 1)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let error = match walk_component(&mut WastWalker::default(), pair, &mut Vec::new()) {
+            Ok(_) => panic!("nested type 0 must not become outer type 1"),
+            Err(error) => error,
+        };
+        assert!(error.contains("type index out of bounds"), "{error}");
+    }
+
+    #[test]
+    fn canon_lower_accepts_component_instance_export_path() {
+        let source = "(component
+          (component $child
+            (core module $m (func (export \"f\") (result i32) (i32.const 7)))
+            (core instance $i (instantiate $m))
+            (func (export \"f\") (result u32) (canon lift (core func $i \"f\"))))
+          (instance $instance (instantiate $child))
+          (canon lower (func $instance \"f\") (core func $lowered)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let mut walker = WastWalker::default();
+        walk_component(&mut walker, pair, &mut Vec::new())
+            .expect("instance export path must resolve for canon lower");
+        let lower = walker.canon_section.last().expect("lower canonical row");
+        assert_eq!(lower.builtin, "lower");
+        assert!(matches!(&lower.callee, Some(vybe_ast::canon::CanonCallee::Component(_))));
+        assert!(lower.functype.is_some());
+    }
+
+    #[test]
+    fn nested_core_module_names_do_not_shadow_across_instances() {
+        let source = "(component
+          (component $a
+            (core module $Core (func (export \"first\") (result i32) (i32.const 1)))
+            (core instance $i (instantiate $Core))
+            (func (export \"first\") (result u32) (canon lift (core func $i \"first\"))))
+          (component $b
+            (core module $Core (func (export \"second\") (result i32) (i32.const 2)))
+            (core instance $i (instantiate $Core))
+            (func (export \"second\") (result u32) (canon lift (core func $i \"second\"))))
+          (instance $left (instantiate $a))
+          (instance $right (instantiate $b)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let mut walker = WastWalker::default();
+        let mut body = Vec::new();
+        walk_component(&mut walker, pair, &mut body).expect("nested instantiations");
+        let classes: Vec<_> = body
+            .iter()
+            .filter_map(|stmt| match &stmt.kind {
+                StmtKind::ClassDecl { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(classes.len(), 2);
+        assert_ne!(classes[0], classes[1]);
+        let lifted_classes: Vec<_> = walker
+            .canon_section
+            .iter()
+            .filter_map(|decl| match &decl.callee {
+                Some(vybe_ast::canon::CanonCallee::CoreExport { class, .. }) => {
+                    Some(class.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lifted_classes, classes);
+
+        let module = crate::parse(source).expect("component script");
+        let profile = vybe_compiler::profile::parse_profile(crate::profile_source())
+            .expect("WAST profile");
+        vybe_compiler::primitives::Compiler::with_profile(profile)
+            .compile(&module)
+            .expect("distinct core module classes must compile");
+    }
+
+    #[test]
+    fn nested_function_imports_use_local_binary_index_spaces() {
+        let source = "(component
+          (type $ft (func))
+          (import \"f\" (func $f (type $ft)))
+          (component $child
+            (type $inner_ft (func))
+            (import \"x\" (func $x (type $inner_ft)))
+            (export \"go\" (func $x)))
+          (instance $i (instantiate $child (with \"x\" (func $f))))
+          (alias export $i \"go\" (func $g))
+          (export \"run\" (func $g)))";
+        let pair = WastParser::parse(Rule::component, source)
+            .expect("component grammar")
+            .next()
+            .expect("component pair");
+        let func_type = TypeDecl::Func {
+            params: vec![],
+            result: None,
+            is_async: false,
+        };
+        let mut walker = WastWalker::default();
+        walker.comp_types = vec![func_type.clone(), func_type];
+        let binary = simple_component_binary(pair, &walker).expect("ordered binary definitions");
+        assert!(matches!(
+            binary.definitions.get(2),
+            Some(ComponentBinaryDef::NestedComponent(_))
+        ));
+        let bytes = vybe_platform_wasm::write_component_binary(&binary)
+            .expect("nested component validates");
+        assert_eq!(
+            vybe_platform_wasm::read_component_binary(&bytes).unwrap(),
+            binary
+        );
+    }
+}
+
+fn is_component_command(command: &Pair<Rule>) -> bool {
+    if command.as_rule() == Rule::component {
+        return true;
+    }
+    command.as_rule() == Rule::script_cmd
+        && command
+            .clone()
+            .into_inner()
+            .next()
+            .is_some_and(|inner| inner.as_rule() == Rule::component)
+}
+
+fn component_name(raw: &str, context: &str) -> Result<String, String> {
+    String::from_utf8(unquote_to_bytes(raw))
+        .map_err(|_| format!("{context}: name is not valid UTF-8"))
 }
 
 pub fn parse(source: &str) -> Result<Module, String> {
@@ -2882,6 +4489,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let mut __w_owned = WastWalker::default();
     let __w = &mut __w_owned;
     let mut body = Vec::new();
+    let mut components = HashMap::new();
+    let mut component_binary = None;
+    let mut component_source = false;
+    let mut command_count = 0_usize;
     // The `spectest` host module the script runner predefines — ONLY when this
     // script actually names it.
     //
@@ -2899,12 +4510,24 @@ pub fn parse(source: &str) -> Result<Module, String> {
             Rule::program => {
                 for cmd in top.into_inner() {
                     if cmd.as_rule() != Rule::EOI {
-                        walk_script_cmd(__w, cmd, &mut body)?;
+                        command_count += 1;
+                        component_source |= is_component_command(&cmd);
+                        let binary_candidate = (command_count == 1).then(|| cmd.clone());
+                        walk_script_cmd(__w, cmd, &mut body, &mut components)?;
+                        component_binary =
+                            binary_candidate.and_then(|cmd| simple_component_binary(cmd, __w));
                     }
                 }
             }
             Rule::EOI => {}
-            _ => walk_script_cmd(__w, top, &mut body)?,
+            _ => {
+                command_count += 1;
+                component_source |= is_component_command(&top);
+                let binary_candidate = (command_count == 1).then(|| top.clone());
+                walk_script_cmd(__w, top, &mut body, &mut components)?;
+                component_binary =
+                    binary_candidate.and_then(|top| simple_component_binary(top, __w));
+            }
         }
     }
 
@@ -2918,12 +4541,20 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // The canon section this walk built, in canonidx order. Empty unless
         // the source declared a `(component …)`.
         canon: vybe_ast::canon::ComponentSection {
+            component_source,
+            binary: component_binary.map(std::sync::Arc::new),
             defs: std::mem::take(&mut __w_owned.canon_section),
             types: std::mem::take(&mut __w_owned.comp_types),
             funcs: std::mem::take(&mut __w_owned.comp_func_space)
                 .into_iter()
                 .map(|f| f.canonidx)
                 .collect(),
+            func_links: std::mem::take(&mut __w_owned.comp_func_links),
+            instance_links: if __w_owned.comp_instance_links.imports.is_empty() {
+                None
+            } else {
+                Some(std::sync::Arc::new(std::mem::take(&mut __w_owned.comp_instance_links)))
+            },
         },
         name: "main".into(),
         language: Lang::Unknown,
@@ -2943,6 +4574,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // nothing — and it is why NO wast module we emitted would load on a
         // spec engine. wast maps to INSTRUCTIONS; it has no function objects.
         directives: vybe_ast::Directives {
+            add_concatenates_strings: Some(true),
             functions_are_objects: Some(false),
             type_resolution: Some(vybe_ast::TypeResolution::Static),
             operator_dispatch: Some(vybe_ast::OperatorDispatch::StaticBuiltin),
@@ -2970,40 +4602,72 @@ fn walk_embedded_module_text(
 ) -> Result<(), String> {
     let pairs = WastParser::parse(Rule::program, text)
         .map_err(|e| format!("Parse error in embedded module: {}", e))?;
+    let mut components = HashMap::new();
     for top in pairs {
         if top.as_rule() != Rule::program {
             continue;
         }
         for cmd in top.into_inner() {
             if cmd.as_rule() != Rule::EOI {
-                walk_script_cmd(__w, cmd, body)?;
+                walk_script_cmd(__w, cmd, body, &mut components)?;
             }
         }
     }
     Ok(())
 }
 
-fn walk_script_cmd(
+fn walk_script_cmd<'i>(
     __w: &mut WastWalker,
-    pair: Pair<Rule>,
+    pair: Pair<'i, Rule>,
     body: &mut Vec<Statement>,
+    components: &mut HashMap<String, Pair<'i, Rule>>,
 ) -> Result<(), String> {
     match pair.as_rule() {
         Rule::script_cmd => {
             let inner = pair.into_inner().next().ok_or("Empty script_cmd")?;
-            walk_script_cmd(__w, inner, body)
+            walk_script_cmd(__w, inner, body, components)
         }
         // `inline_module` is a module's field list written bare at the top level
         // — structurally identical to `module` minus the wrapper, so it walks
         // through the same path (it has no `id`, hence no named-module target).
         Rule::module | Rule::inline_module => {
+            // A bare invoke targets the latest script definition, not an
+            // earlier component whose export happens to share its name.
+            __w.comp_exports.clear();
             body.extend(walk_module(__w, pair)?);
             Ok(())
         }
         // `(component …)` — the Component Model's OUTER text format
         // (`Explainer.md` §2). Not a module field and not core WASM: it WRAPS
         // core modules and adds the spaces core WASM has no syntax for.
-        Rule::component => walk_component(__w, pair, body).map(|_| ()),
+        Rule::component => {
+            if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+                components.insert(id.as_str()[1..].to_string(), pair.clone());
+            }
+            __w.comp_exports = walk_component(__w, pair, body)?.exports;
+            Ok(())
+        }
+        Rule::script_component_instance => {
+            let ids: Vec<String> = pair
+                .into_inner()
+                .filter(|c| c.as_rule() == Rule::id)
+                .map(|c| c.as_str()[1..].to_string())
+                .collect();
+            let definition = ids
+                .last()
+                .ok_or("component instance: missing component id")?;
+            let component = components
+                .get(definition)
+                .ok_or_else(|| format!("component instance: unknown component `${definition}`"))?
+                .clone();
+            let exports = walk_component(__w, component, body)?.exports;
+            if ids.len() == 2 {
+                __w.script_component_instances
+                    .insert(ids[0].clone(), exports.clone());
+            }
+            __w.comp_exports = exports;
+            Ok(())
+        }
         // `(module quote "…")` defers a module given as WAT *text*: unquote the
         // string pieces, concatenate, and parse them as a real module.
         Rule::module_quote_cmd => {
@@ -3041,7 +4705,9 @@ fn walk_script_cmd(
             body.push(walk_assert_return(__w, pair)?);
             Ok(())
         }
-        Rule::assert_trap | Rule::assert_instantiation_trap => {
+        Rule::assert_trap
+        | Rule::assert_instantiation_trap
+        | Rule::assert_component_instantiation_trap => {
             body.push(walk_assert_trap(__w, pair)?);
             Ok(())
         }
@@ -3153,8 +4819,21 @@ fn component_definition_kind(rule: Rule) -> &'static str {
 /// module's imports cannot be resolved until the instantiation that supplies
 /// them has been read, and the instantiation comes after the module.
 struct CoreModules<'i> {
-    defs: Vec<Pair<'i, Rule>>,
+    defs: Vec<CoreModule<'i>>,
     names: HashMap<String, u32>,
+}
+
+#[derive(Clone)]
+enum CoreModule<'i> {
+    Local(Pair<'i, Rule>),
+    Imported(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CoreTypeKind {
+    Module,
+    Worker(vybe_ast::canon::ComponentCoreValType),
+    Other,
 }
 
 /// A component's COMPONENT index space.
@@ -3178,7 +4857,13 @@ fn walk_component(
     __w: &mut WastWalker,
     pair: Pair<Rule>,
     body: &mut Vec<Statement>,
-) -> Result<HashMap<String, u32>, String> {
+) -> Result<ComponentWalk, String> {
+    let span = pair.as_span();
+    let projection_key = (span.start(), span.end());
+    let binary_source = pair.clone();
+    component_interfaces::normalize(pair.clone(), __w)?;
+    let mut validate_export_types = false;
+    let mut projection = ComponentProjection::default();
     // Per component, never shared with a nested one: each has its own spaces.
     let mut modules = CoreModules {
         defs: Vec::new(),
@@ -3194,11 +4879,9 @@ fn walk_component(
     // renumbered the outer's type space and an inner alias stayed visible
     // outside it — silently, because both sides are small integers.
     //
-    // `canon_section`/`canon_binder` stay SHARED on purpose: there is one
-    // VM-level canon section (`VM::canon_defs`), so canonidx has to keep
-    // counting across nested components. A name collision between an inner and
-    // an outer binder therefore refuses, which is conservative rather than
-    // wrong.
+    // `canon_section` stays shared: the VM has one canonical row table and
+    // indices keep counting across instances. Binder names are component-local
+    // core function names and are scoped with the other index maps below.
     //
     // `comp_func_space` and `comp_types` are shared for the same reason and a
     // sharper one: they are the AST PAYLOAD this walk produces, not scratch for
@@ -3207,21 +4890,31 @@ fn walk_component(
     // what `canon lower: $callee 0 is not in the component function index space
     // (have 0)` was reporting. Only the NAME maps are per-component.
     let saved = ComponentSpaces::take(__w);
+    __w.component_binary_scope = Some(projection_key);
     for def in pair.into_inner() {
         match def.as_rule() {
             // The component's own `$id`. Components are not yet addressable as
             // instantiation targets, so nothing binds it.
-            Rule::id => {}
+            Rule::id | Rule::module_definition_kw => {}
             Rule::component_definition => {
                 let inner = def
                     .into_inner()
                     .next()
                     .ok_or("component: empty definition")?;
+                let is_instantiation = inner.as_rule() == Rule::comp_instance;
+                validate_export_types |= inner.as_rule() == Rule::comp_export
+                    && inner.clone().into_inner().any(|field| field.as_rule() == Rule::externtype);
+                let type_start = __w.comp_types.len();
+                let canon_start = __w.canon_section.len();
                 if let Err(e) =
                     walk_component_definition(__w, inner, body, &mut modules, &mut components)
                 {
                     saved.restore(__w);
                     return Err(e);
+                }
+                if !is_instantiation {
+                    projection.types.extend((type_start..__w.comp_types.len()).map(|i| i as u32));
+                    projection.canon.extend(canon_start..__w.canon_section.len());
                 }
             }
             other => {
@@ -3242,27 +4935,50 @@ fn walk_component(
     // index that is still valid out here. Scoping that space would have made
     // every returned index dangle.
     let exports = std::mem::take(&mut __w.comp_exports);
+    let type_exports = std::mem::take(&mut __w.comp_export_types);
+    let imports = std::mem::take(&mut __w.comp_import_funcs);
+    let instance_imports = std::mem::take(&mut __w.comp_import_instances);
+    __w.component_projection.insert(projection_key, projection);
+    if validate_export_types
+        && !__w.component_interface_binaries.contains_key(&projection_key) {
+        let validation = simple_component_binary_at(binary_source, __w)
+            .ok_or_else(|| "export ascription requires a representable typed component".to_string())
+            .and_then(|binary| vybe_platform_wasm::write_component_binary(&binary).map(|_| ()));
+        if let Err(error) = validation {
+            saved.restore(__w);
+            return Err(error);
+        }
+    }
     saved.restore(__w);
-    Ok(exports)
+    Ok(ComponentWalk { exports, type_exports, imports, instance_imports })
 }
 
 /// The index spaces a component owns, lifted out so a nested `(component …)`
 /// gets fresh ones and the enclosing component gets its own back.
 #[derive(Default)]
 struct ComponentSpaces {
+    component_binary_scope: Option<(usize, usize)>,
+    comp_import_instances: HashMap<String, std::sync::Arc<CompInstance>>,
     core_func_space: Vec<CoreFunc>,
     core_func_index: HashMap<String, u32>,
+    core_memory_index: HashMap<String, u32>,
+    core_memory_space: Vec<u32>,
+    core_table_index: HashMap<String, u32>,
+    core_table_space: Vec<usize>,
+    canon_binder: HashMap<String, (String, u32)>,
     core_instances: Vec<CoreInstance>,
     core_instance_index: HashMap<String, u32>,
     comp_type_index: HashMap<String, u32>,
-    comp_type_space: u32,
-    comp_type_base: u32,
+    comp_type_slots: Vec<u32>,
     core_type_index: HashMap<String, u32>,
     core_type_space: u32,
+    core_type_kinds: Vec<CoreTypeKind>,
     comp_func_index: HashMap<String, u32>,
-    comp_instances: Vec<CompInstance>,
+    comp_import_funcs: HashMap<String, u32>,
+    comp_instances: Vec<std::sync::Arc<CompInstance>>,
     comp_instance_index: HashMap<String, u32>,
     comp_exports: HashMap<String, u32>,
+    comp_export_types: HashMap<String, u32>,
     export_names: ExternNames,
     import_names: ExternNames,
 }
@@ -3271,23 +4987,28 @@ impl ComponentSpaces {
     /// Move the walker's spaces out, leaving it with empty ones.
     fn take(__w: &mut WastWalker) -> Self {
         ComponentSpaces {
+            component_binary_scope: __w.component_binary_scope.take(),
+            comp_import_instances: std::mem::take(&mut __w.comp_import_instances),
             core_func_space: std::mem::take(&mut __w.core_func_space),
             core_func_index: std::mem::take(&mut __w.core_func_index),
+            core_memory_index: std::mem::take(&mut __w.core_memory_index),
+            core_memory_space: std::mem::take(&mut __w.core_memory_space),
+            core_table_index: std::mem::take(&mut __w.core_table_index),
+            core_table_space: std::mem::take(&mut __w.core_table_space),
+            canon_binder: std::mem::take(&mut __w.canon_binder),
             core_instances: std::mem::take(&mut __w.core_instances),
             core_instance_index: std::mem::take(&mut __w.core_instance_index),
             comp_type_index: std::mem::take(&mut __w.comp_type_index),
-            comp_type_space: std::mem::take(&mut __w.comp_type_space),
-            // The nested component's own index space starts at 0 and its
-            // declarations are appended, so its base is the vector's length AT
-            // ENTRY. `take` leaves 0 behind, which is wrong here — the base has
-            // to be SET, not cleared, which is why this is not a `take`.
-            comp_type_base: std::mem::replace(&mut __w.comp_type_base, __w.comp_types.len() as u32),
+            comp_type_slots: std::mem::take(&mut __w.comp_type_slots),
             core_type_index: std::mem::take(&mut __w.core_type_index),
             core_type_space: std::mem::take(&mut __w.core_type_space),
+            core_type_kinds: std::mem::take(&mut __w.core_type_kinds),
             comp_func_index: std::mem::take(&mut __w.comp_func_index),
+            comp_import_funcs: std::mem::take(&mut __w.comp_import_funcs),
             comp_instances: std::mem::take(&mut __w.comp_instances),
             comp_instance_index: std::mem::take(&mut __w.comp_instance_index),
             comp_exports: std::mem::take(&mut __w.comp_exports),
+            comp_export_types: std::mem::take(&mut __w.comp_export_types),
             export_names: std::mem::take(&mut __w.export_names),
             import_names: std::mem::take(&mut __w.import_names),
         }
@@ -3295,19 +5016,28 @@ impl ComponentSpaces {
 
     /// Put them back, discarding whatever the nested component built.
     fn restore(self, __w: &mut WastWalker) {
+        __w.component_binary_scope = self.component_binary_scope;
+        __w.comp_import_instances = self.comp_import_instances;
         __w.core_func_space = self.core_func_space;
         __w.core_func_index = self.core_func_index;
+        __w.core_memory_index = self.core_memory_index;
+        __w.core_memory_space = self.core_memory_space;
+        __w.core_table_index = self.core_table_index;
+        __w.core_table_space = self.core_table_space;
+        __w.canon_binder = self.canon_binder;
         __w.core_instances = self.core_instances;
         __w.core_instance_index = self.core_instance_index;
         __w.comp_type_index = self.comp_type_index;
-        __w.comp_type_space = self.comp_type_space;
-        __w.comp_type_base = self.comp_type_base;
+        __w.comp_type_slots = self.comp_type_slots;
         __w.core_type_index = self.core_type_index;
         __w.core_type_space = self.core_type_space;
+        __w.core_type_kinds = self.core_type_kinds;
         __w.comp_func_index = self.comp_func_index;
+        __w.comp_import_funcs = self.comp_import_funcs;
         __w.comp_instances = self.comp_instances;
         __w.comp_instance_index = self.comp_instance_index;
         __w.comp_exports = self.comp_exports;
+        __w.comp_export_types = self.comp_export_types;
         __w.export_names = self.export_names;
         __w.import_names = self.import_names;
     }
@@ -3322,12 +5052,20 @@ fn walk_component_definition<'i>(
 ) -> Result<(), String> {
     match pair.as_rule() {
         Rule::core_module_def => {
-            // DECLARED, not walked. See `CoreModules`.
+            // Validate the core module when declared, but execute it only on
+            // instantiation. Both forms have the same module_field children.
+            validate_module(&pair)?;
+            let mut export_names = std::collections::HashSet::new();
+            if let Some(reason) = module_invalid_walk(pair.clone(), &mut export_names)
+                .or_else(|| stack_typing_reason_in(&pair))
+            {
+                return Err(reason);
+            }
             let idx = modules.defs.len() as u32;
             if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
                 modules.names.insert(id.as_str()[1..].to_string(), idx);
             }
-            modules.defs.push(pair);
+            modules.defs.push(CoreModule::Local(pair));
             Ok(())
         }
         Rule::core_instance_def => walk_core_instance(__w, pair, body, modules),
@@ -3343,12 +5081,58 @@ fn walk_component_definition<'i>(
             Ok(())
         }
         Rule::comp_instance => walk_comp_instance(__w, pair, body, components),
-        Rule::comp_export => walk_comp_export(__w, pair),
-        Rule::comp_import => walk_comp_import(__w, pair),
+        Rule::comp_export => walk_comp_export(__w, pair, modules),
+        Rule::comp_import => walk_comp_import(__w, pair, modules),
         Rule::comp_alias => walk_comp_alias(__w, pair),
         Rule::comp_type => walk_comp_type(__w, pair),
         Rule::comp_func => walk_comp_func(__w, pair),
         Rule::core_type_def => walk_core_type(__w, pair),
+        Rule::core_func_inline_alias => {
+            let parts: Vec<_> = pair.into_inner().collect();
+            let instance = parts
+                .iter()
+                .find(|part| part.as_rule() == Rule::index)
+                .ok_or("inline core alias: missing instance")?;
+            let name = parts
+                .iter()
+                .find(|part| part.as_rule() == Rule::string)
+                .ok_or("inline core alias: missing export name")?;
+            let binder = parts.iter().find(|part| part.as_rule() == Rule::id);
+            alias_core_export_item(__w, instance, name, "func", binder)
+        }
+        Rule::core_func_inline_lower => {
+            let mut binder = None;
+            let mut lower = None;
+            for child in pair.into_inner() {
+                match child.as_rule() {
+                    Rule::id => binder = Some(child.as_str()[1..].to_string()),
+                    Rule::canon_lower_inline => lower = Some(child),
+                    _ => {}
+                }
+            }
+            let mut decl =
+                walk_canon_lower(__w, lower.ok_or("inline canon lower: missing function")?)?;
+            decl.binder = binder;
+            register_canon_decl(__w, decl)
+        }
+        Rule::core_func_inline_builtin => {
+            let mut binder = None;
+            let mut builtin = None;
+            for child in pair.into_inner() {
+                match child.as_rule() {
+                    Rule::id => binder = Some(child.as_str()[1..].to_string()),
+                    Rule::canon_builtin => builtin = Some(child),
+                    _ => {}
+                }
+            }
+            let mut decl = walk_canon_builtin(
+                __w,
+                builtin.ok_or("inline canon builtin: missing operation")?,
+                false,
+            )?;
+            decl.binder = binder;
+            register_canon_decl(__w, decl)
+        }
         Rule::canon => walk_canon(__w, pair),
         other => Err(format!(
             "component: {} parses but has no walk yet",
@@ -3389,15 +5173,25 @@ fn walk_core_instance<'i>(
         // already exist rather than instantiated from a module. It runs no
         // code; it only names things, so all it contributes is an export
         // table.
-        let mut funcs: HashMap<String, CoreFunc> = HashMap::new();
+        let mut exports = CoreInstance::default();
         for exp in expr.into_inner() {
             if exp.as_rule() != Rule::core_inlineexport {
                 continue;
             }
             let (name, item) = core_inlineexport_item(__w, &exp)?;
-            funcs.insert(name, item);
+            match item {
+                CoreExtern::Func(func) => {
+                    exports.funcs.insert(name, func);
+                }
+                CoreExtern::Memory(slot) => {
+                    exports.memories.insert(name, slot);
+                }
+                CoreExtern::Table(slot) => {
+                    exports.tables.insert(name, slot);
+                }
+            }
         }
-        publish_core_instance(__w, inst_name, CoreInstance { funcs });
+        publish_core_instance(__w, inst_name, exports);
         return Ok(());
     };
 
@@ -3407,36 +5201,29 @@ fn walk_core_instance<'i>(
         .find(|c| c.as_rule() == Rule::index)
         .ok_or("core instance: (instantiate …) names no module")?;
     let midx = resolve_idx(&target, "core module", &modules.names)?;
-    let module = modules.defs.get(midx as usize).cloned().ok_or_else(|| {
-        format!(
-            "core instance: core module {midx} is not declared (have {})",
-            modules.defs.len()
-        )
-    })?;
+    let module = match modules.defs.get(midx as usize) {
+        Some(CoreModule::Local(module)) => module.clone(),
+        Some(CoreModule::Imported(name)) => {
+            return Err(format!(
+                "core instance: imported core module `{name}` has no linked definition"
+            ));
+        }
+        None => {
+            return Err(format!(
+                "core instance: core module {midx} is not declared (have {})",
+                modules.defs.len()
+            ));
+        }
+    };
 
-    // The class `walk_module` will publish this instance's exports under.
-    // Computed BEFORE the walk, because `walk_module` advances `module_seq`.
-    //
-    // A module carrying an `$id` is published under that id, so instantiating
-    // it twice republishes ONE class and the second instance shadows the
-    // first. That is a real fidelity limit of the class-per-module model, not
-    // something this function can paper over — an alias into either instance
-    // resolves to the same class.
-    let class = module
-        .clone()
-        .into_inner()
-        .find(|c| c.as_rule() == Rule::id)
-        .map(|c| c.as_str()[1..].to_string())
-        .unwrap_or_else(|| {
-            if __w.module_seq == 0 {
-                "__wasm_module".to_string()
-            } else {
-                format!("__wasm_module_{}", __w.module_seq)
-            }
-        });
+    // The component's module id is local to that component; every
+    // instantiation needs a distinct emitted class and export table.
+    let class = format!("__wasm_core_instance_{}", __w.module_seq);
 
     // Build this instantiation's import wiring, then walk the module under it.
     let mut supplied: HashMap<(String, String), CoreFunc> = HashMap::new();
+    let mut supplied_memories: HashMap<(String, String), usize> = HashMap::new();
+    let mut supplied_tables: HashMap<(String, String), usize> = HashMap::new();
     for arg in inst.into_inner() {
         if arg.as_rule() != Rule::core_instantiatearg {
             continue;
@@ -3445,18 +5232,34 @@ fn walk_core_instance<'i>(
             .clone()
             .into_inner()
             .find(|c| c.as_rule() == Rule::string)
-            .map(|c| unquote(c.as_str()))
             .ok_or("core instance: (with …) names no import module")?;
+        let import_module = component_name(import_module.as_str(), "core instance")?;
         let mut any = false;
+        let mut inline_instance = CoreInstance::default();
         for exp in arg.clone().into_inner() {
             if exp.as_rule() != Rule::core_inlineexport {
                 continue;
             }
             any = true;
             let (name, item) = core_inlineexport_item(__w, &exp)?;
-            supplied.insert((import_module.clone(), name), item);
+            match item {
+                CoreExtern::Func(func) => {
+                    inline_instance.funcs.insert(name.clone(), func.clone());
+                    supplied.insert((import_module.clone(), name), func);
+                }
+                CoreExtern::Memory(slot) => {
+                    inline_instance.memories.insert(name.clone(), slot);
+                    supplied_memories.insert((import_module.clone(), name), slot);
+                }
+                CoreExtern::Table(slot) => {
+                    inline_instance.tables.insert(name.clone(), slot);
+                    supplied_tables.insert((import_module.clone(), name), slot);
+                }
+            }
         }
-        if !any {
+        if any {
+            publish_core_instance(__w, None, inline_instance);
+        } else {
             // `(with "m" (instance <idx>))` — every export of that instance
             // fills the slot, under its own name. Whole-instance wiring, which
             // is what a module importing several names from one namespace
@@ -3480,12 +5283,22 @@ fn walk_core_instance<'i>(
             for (ename, item) in src.funcs {
                 supplied.insert((import_module.clone(), ename), item);
             }
+            for (ename, slot) in src.memories {
+                supplied_memories.insert((import_module.clone(), ename), slot);
+            }
+            for (ename, slot) in src.tables {
+                supplied_tables.insert((import_module.clone(), ename), slot);
+            }
         }
     }
 
     let saved = std::mem::replace(&mut __w.component_imports, supplied);
-    let walked = walk_module(__w, module);
+    let saved_memories = std::mem::replace(&mut __w.component_memory_imports, supplied_memories);
+    let saved_tables = std::mem::replace(&mut __w.component_table_imports, supplied_tables);
+    let walked = walk_module_with_class(__w, module, Some(class.clone()));
     __w.component_imports = saved;
+    __w.component_memory_imports = saved_memories;
+    __w.component_table_imports = saved_tables;
     body.extend(walked?);
 
     // Publish the instance's export table. `module_exports` is keyed by class
@@ -3499,7 +5312,13 @@ fn walk_core_instance<'i>(
                 .collect()
         })
         .unwrap_or_default();
-    publish_core_instance(__w, inst_name, CoreInstance { funcs });
+    let memories = __w
+        .module_memory_exports
+        .get(&class)
+        .cloned()
+        .unwrap_or_default();
+    let tables = __w.module_table_exports.get(&class).cloned().unwrap_or_default();
+    publish_core_instance(__w, inst_name, CoreInstance { funcs, memories, tables });
     Ok(())
 }
 
@@ -3516,15 +5335,15 @@ fn publish_core_instance(__w: &mut WastWalker, name: Option<String>, inst: CoreI
 
 /// `(export <name> <core:externidx>)` → the name it publishes and the item.
 fn core_inlineexport_item(
-    __w: &WastWalker,
+    __w: &mut WastWalker,
     exp: &Pair<Rule>,
-) -> Result<(String, CoreFunc), String> {
+) -> Result<(String, CoreExtern), String> {
     let name = exp
         .clone()
         .into_inner()
         .find(|c| c.as_rule() == Rule::string)
-        .map(|c| unquote(c.as_str()))
         .ok_or("core instance: (export …) has no name")?;
+    let name = component_name(name.as_str(), "core instance")?;
     let target = exp
         .clone()
         .into_inner()
@@ -3539,14 +5358,14 @@ fn core_inlineexport_item(
 /// a bare integer positionally. They used to be two different refusals because
 /// the space did not exist — the name map was read and never written, so every
 /// `$b` was "not bound" and every integer had nothing to index.
-fn core_externidx_item(__w: &WastWalker, target: &Pair<Rule>) -> Result<CoreFunc, String> {
+fn core_externidx_item(__w: &mut WastWalker, target: &Pair<Rule>) -> Result<CoreExtern, String> {
     let sort = target
         .clone()
         .into_inner()
         .find(|c| c.as_rule() == Rule::core_sort)
         .map(|c| c.as_str().trim().to_string())
         .unwrap_or_default();
-    if sort != "func" {
+    if sort != "func" && sort != "memory" && sort != "table" {
         return Err(format!(
             "core instance: `(core {sort} …)` — only a core FUNCTION can be supplied \
              to an import so far; the {sort} index space has no producer"
@@ -3557,10 +5376,43 @@ fn core_externidx_item(__w: &WastWalker, target: &Pair<Rule>) -> Result<CoreFunc
         .into_inner()
         .find(|c| c.as_rule() == Rule::index)
         .ok_or("core instance: exported item names no index")?;
+    let path: Vec<_> = target
+        .clone()
+        .into_inner()
+        .filter(|c| c.as_rule() == Rule::string)
+        .collect();
+    if !path.is_empty() {
+        if path.len() != 1 {
+            return Err("core instance: only one core instance export name is supported".into());
+        }
+        alias_core_export_item(__w, &idx, &path[0], &sort, None)?;
+        return match sort.as_str() {
+            "func" => __w.core_func_space.last().cloned().map(CoreExtern::Func),
+            "memory" => __w.core_memory_space.last().copied()
+                .map(|slot| CoreExtern::Memory(slot as usize)),
+            "table" => __w.core_table_space.last().copied().map(CoreExtern::Table),
+            _ => unreachable!(),
+        }.ok_or_else(|| "core instance: anonymous alias was not published".into());
+    }
+    if sort == "memory" {
+        let midx = resolve_idx(&idx, "core memory", &__w.core_memory_index)?;
+        return __w
+            .core_memory_space
+            .get(midx as usize)
+            .copied()
+            .map(|slot| CoreExtern::Memory(slot as usize))
+            .ok_or_else(|| format!("core instance: core memory {midx} is not defined"));
+    }
+    if sort == "table" {
+        let tidx = resolve_idx(&idx, "core table", &__w.core_table_index)?;
+        return __w.core_table_space.get(tidx as usize).copied().map(CoreExtern::Table)
+            .ok_or_else(|| format!("core instance: core table {tidx} is not defined"));
+    }
     let fidx = resolve_idx(&idx, "core func", &__w.core_func_index)?;
     __w.core_func_space
         .get(fidx as usize)
         .cloned()
+        .map(CoreExtern::Func)
         .ok_or_else(|| {
             format!(
                 "core instance: core func {fidx} is not defined (have {})",
@@ -3586,105 +5438,192 @@ fn core_externidx_item(__w: &WastWalker, target: &Pair<Rule>) -> Result<CoreFunc
 /// table each.
 #[derive(Default)]
 struct ExternNames {
-    /// folded key → the names as the source wrote them
-    ///
-    /// ⛔ A **LIST**, not one name. `foo` and `[constructor]foo` fold to the
-    /// same key and are legitimately both present (clause 1), so a key can hold
-    /// two. With one slot the constructor OVERWRITES the label, and a second
-    /// `foo` then compares only against `[constructor]foo`, is exempted by
-    /// clause 1, and is ACCEPTED — while the spec lists adding `foo` twice as a
-    /// validation error. A new name must be exempt against EVERY name already
-    /// under its key, not just the last one written.
-    by_key: HashMap<String, Vec<String>>,
-    /// folded MEMBER label of an `[annotation]a.b` name → the name as written
-    by_member: HashMap<String, String>,
+    /// Canonical collision key -> original spelling for diagnostics.
+    by_key: HashMap<String, String>,
 }
 
-/// The collision key of an extern name — `Explainer.md:2832`, clause 3:
-/// "Lowercase all the acronyms … Strip any `[...]` annotation prefix".
-///
-/// Lowercasing the whole string is equivalent to lowercasing the acronyms: a
-/// `label` is fragments that are each entirely lower-case (`word`) or entirely
-/// upper-case (`acronym`), so no mixed-case fragment exists to preserve. ASCII,
-/// because the `label` grammar is ASCII.
+/// Explainer.md "Name Uniqueness": fold case/hyphens, collapse an annotated
+/// `l.l` to `l`, then retain only constructor and setter annotations.
 fn extern_name_key(name: &str) -> String {
-    extern_name_body(name).to_ascii_lowercase()
+    let normalized: String = name
+        .bytes()
+        .filter(|byte| *byte != b'-')
+        .map(|byte| (byte as char).to_ascii_lowercase())
+        .collect();
+    let mut body = normalized.as_str();
+    let mut retained = String::new();
+    let mut annotated = false;
+    while let Some(rest) = body.strip_prefix('[') {
+        let (annotation, next) = rest
+            .split_once(']')
+            .expect("validated extern name has a closed annotation");
+        annotated = true;
+        if matches!(annotation, "constructor" | "set") {
+            retained.push('[');
+            retained.push_str(annotation);
+            retained.push(']');
+        }
+        body = next;
+    }
+    if annotated {
+        if let Some((owner, member)) = body.split_once('.') {
+            if owner == member {
+                return owner.to_string();
+            }
+        }
+    }
+    retained.push_str(body);
+    retained
 }
 
-/// `name` with any `[...]` annotation prefix removed.
-fn extern_name_body(name: &str) -> &str {
-    match name.strip_prefix('[') {
-        Some(rest) => match rest.split_once(']') {
-            Some((_, body)) => body,
-            None => name,
-        },
-        None => name,
-    }
+fn name_matches_rule(rule: Rule, name: &str) -> bool {
+    WastParser::parse(rule, name)
+        .ok()
+        .and_then(|mut pairs| pairs.next())
+        .is_some_and(|pair| pair.as_str() == name)
 }
 
-/// The label AFTER the dot in an `[annotation]a.b` name.
-///
-/// ⛔ Clause 2 is written `[*]l.l` and reads as though both dotted labels must
-/// equal the bare name. THE EXAMPLES SAY OTHERWISE, and they are decisive:
-/// adding `bar` to a set containing `[method]foo.bar` is listed as a validation
-/// error, and NOTHING ELSE in that set collides with `bar` under clause 3. So
-/// the rule is that a bare `l` collides with any `[*]x.l` — the SECOND label.
-///
-/// The stated rationale confirms it: the point is "pathological cases where two
-/// unique-in-the-component names get mapped to the same source-language
-/// identifier". A method `bar` and a free function `bar` both become `bar` in a
-/// generated binding; `[method]foo.bar` alongside `foo` does not.
-fn extern_name_member(name: &str) -> Option<&str> {
-    let body = extern_name_body(name);
-    if body.len() == name.len() {
-        // No annotation — a plain dotted name is not the `[*]a.b` shape.
-        return None;
+fn validate_extern_name(name: &str) -> Result<(), String> {
+    let kebab_error = |part: &str| format!("`{part}` is not in kebab case");
+    let extern_error = || format!("`{name}` is not a valid extern name");
+
+    if let Some((body, version)) = name.split_once('@') {
+        if body.contains(':') {
+            semver::Version::parse(version).map_err(|error| error.to_string())?;
+        }
     }
-    body.split_once('.').map(|(_, member)| member)
+    if let Some((_, rest)) = name.split_once(':') {
+        let body = rest.split_once('@').map_or(rest, |(body, _)| body);
+        if let Some((package, projection)) = body.split_once('/') {
+            if package.contains(':') {
+                return Err("expected `/` after package name".into());
+            }
+            if let Some((_, remaining)) = projection.split_once('/') {
+                return Err(format!("trailing characters found: `/{remaining}`"));
+            }
+        }
+    }
+    if name_matches_rule(Rule::externname, name) {
+        return Ok(());
+    }
+
+    if name.contains([':', '/']) {
+        if !name.contains(':') {
+            return Err(kebab_error(name));
+        }
+        let body = name.split_once('@').map_or(name, |(body, _)| body);
+        let Some((namespaces, projection)) = body.split_once('/') else {
+            if let Some((_, package)) = body.rsplit_once(':') {
+                if package.is_empty() {
+                    return Err(kebab_error(package));
+                }
+            }
+            return Err(extern_error());
+        };
+        if let Some(empty) = namespaces
+            .split(':')
+            .chain(projection.split('/'))
+            .find(|part| part.is_empty())
+        {
+            return Err(kebab_error(empty));
+        }
+        let Some((_, _package)) = namespaces.rsplit_once(':') else {
+            return Err(extern_error());
+        };
+        for part in namespaces.split(':') {
+            if !name_matches_rule(Rule::words_checked, part) {
+                if part.as_bytes().first().is_some_and(u8::is_ascii_digit)
+                    || name_matches_rule(Rule::label, part)
+                {
+                    return Err(extern_error());
+                }
+                return Err(kebab_error(part));
+            }
+        }
+        for part in projection.split('/') {
+            if !name_matches_rule(Rule::label, part) {
+                return Err(kebab_error(part));
+            }
+        }
+        return Err(extern_error());
+    }
+
+    let label = name
+        .strip_prefix("[constructor]")
+        .or_else(|| name.strip_prefix("[method]"))
+        .or_else(|| name.strip_prefix("[static]"))
+        .or_else(|| name.strip_prefix("[get]"))
+        .or_else(|| name.strip_prefix("[set]"))
+        .unwrap_or(name);
+    let label = label
+        .strip_prefix("[get]")
+        .or_else(|| label.strip_prefix("[set]"))
+        .unwrap_or(label);
+    for part in label.split('.') {
+        if !name_matches_rule(Rule::label, part) {
+            return Err(kebab_error(part));
+        }
+    }
+    Err(extern_error())
 }
 
 impl ExternNames {
     /// Record `name`, or refuse if it is not STRONGLY-UNIQUE against what is
     /// already here — `Explainer.md:2826`.
     fn insert(&mut self, what: &str, name: &str) -> Result<(), String> {
+        validate_extern_name(name)?;
         let key = extern_name_key(name);
-        // Clause 1: `l` and `[constructor]l` ARE strongly-unique, for the SAME
-        // label — compared RAW, before folding, or `foo-bar` and
-        // `[constructor]foo-BAR` would be let through when the spec's own
-        // example lists that pair as an error.
-        let ctor_pair = |a: &str, b: &str| b.strip_prefix("[constructor]").is_some_and(|l| l == a);
-        for prev in self.by_key.get(&key).into_iter().flatten() {
-            if !ctor_pair(prev, name) && !ctor_pair(name, prev) {
-                return Err(format!(
-                    "{what}: \"{name}\" is not strongly-unique against \"{prev}\" \
-                     (Explainer.md:2826 — annotations stripped and acronyms lowercased, \
-                     both are `{key}`)"
-                ));
-            }
-        }
-        // Clause 2, both directions.
-        if let Some(member) = extern_name_member(name) {
-            let mk = member.to_ascii_lowercase();
-            if let Some(prev) = self.by_key.get(&mk).and_then(|v| v.first()) {
-                return Err(format!(
-                    "{what}: \"{name}\" is not strongly-unique against \"{prev}\" \
-                     (Explainer.md:2829 — a bare `{member}` and an annotated `….{member}` \
-                     generate the same binding name)"
-                ));
-            }
-        } else if let Some(prev) = self.by_member.get(&key) {
+        if let Some(prev) = self.by_key.get(&key) {
             return Err(format!(
-                "{what}: \"{name}\" is not strongly-unique against \"{prev}\" \
-                 (Explainer.md:2829 — a bare `{name}` and an annotated `….{name}` \
-                 generate the same binding name)"
+                "{what} name `{name}` conflicts with previous name `{prev}`"
             ));
         }
-        if let Some(member) = extern_name_member(name) {
-            self.by_member
-                .insert(member.to_ascii_lowercase(), name.to_string());
-        }
-        self.by_key.entry(key).or_default().push(name.to_string());
+        self.by_key.insert(key, name.to_string());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod extern_name_tests {
+    use super::{ExternNames, Rule, name_matches_rule, validate_extern_name};
+
+    #[test]
+    fn interface_prefix_errors_distinguish_kebab_from_extern_shape() {
+        assert!(name_matches_rule(Rule::words_checked, "wasi"));
+        assert!(!name_matches_rule(Rule::words_checked, "HtTp"));
+        for name in ["A:b/c", "1:b/c", "ns-A:b/c", "ns:A/b", "ns:1/a", "ns:pkg-A/b"] {
+            assert_eq!(
+                validate_extern_name(name).unwrap_err(),
+                format!("`{name}` is not a valid extern name"),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            validate_extern_name("wasi:HtTp/types").unwrap_err(),
+            "`HtTp` is not in kebab case"
+        );
+    }
+
+    #[test]
+    fn canonical_names_follow_component_model_annotations() {
+        for (first, second, conflicts) in [
+            ("foo", "[constructor]foo", false),
+            ("foo", "[get]foo", true),
+            ("foo", "[set]foo", false),
+            ("bar", "[method]foo.bar", false),
+            ("foo", "[method]foo.foo", true),
+            ("[method][get]foo.bar", "[method][set]foo.bar", false),
+            ("[method][get]foo.bar", "[static][get]foo.bar", true),
+            ("foo-bar", "[method]foo-bar.foobar", true),
+        ] {
+            let mut names = ExternNames::default();
+            names.insert("import", first).unwrap();
+            assert_eq!(
+                names.insert("import", second).is_err(),
+                conflicts,
+                "{first} / {second}",
+            );
+        }
     }
 }
 
@@ -3701,7 +5640,11 @@ impl ExternNames {
 /// compiles and then refuses at the CALL with the linker named. That ordering
 /// is the point: a component may legitimately declare an import it never calls,
 /// and refusing at the declaration would reject a valid component.
-fn walk_comp_import(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+fn walk_comp_import(
+    __w: &mut WastWalker,
+    pair: Pair<Rule>,
+    modules: &mut CoreModules<'_>,
+) -> Result<(), String> {
     let text = pair.as_str().trim();
     if let Some(a) = pair
         .clone()
@@ -3721,14 +5664,41 @@ fn walk_comp_import(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String
         .clone()
         .into_inner()
         .find(|c| c.as_rule() == Rule::externnamelit)
-        .map(|c| unquote(c.as_str()))
         .ok_or("import: no import name")?;
+    let name = component_name(name.as_str(), "import")?;
     __w.import_names.insert("import", &name)?;
     let ty = pair
         .clone()
         .into_inner()
         .find(|c| c.as_rule() == Rule::externtype)
         .ok_or("import: no external type")?;
+    if let Some(module_ty) = ty
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::core_module_type_ref)
+    {
+        let type_idx = module_ty
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::index)
+            .ok_or("core module import: missing type index")?;
+        let idx = resolve_idx(&type_idx, "core type", &__w.core_type_index)?;
+        match __w.core_type_kinds.get(idx as usize) {
+            Some(CoreTypeKind::Module) => {}
+            Some(CoreTypeKind::Other | CoreTypeKind::Worker(_)) => {
+                return Err(format!("core type index {idx} is not a module type"));
+            }
+            None => return Err("core type index out of bounds".into()),
+        }
+        let module_idx = modules.defs.len() as u32;
+        if let Some(id) = module_ty.into_inner().find(|c| c.as_rule() == Rule::id) {
+            modules
+                .names
+                .insert(id.as_str()[1..].to_string(), module_idx);
+        }
+        modules.defs.push(CoreModule::Imported(name));
+        return Ok(());
+    }
     let tytext = ty.as_str().trim();
     // Only the `(func $x (type $ft))` shape has a producer. The rest name
     // index spaces nothing fills — refuse each by what it would need, not with
@@ -3740,7 +5710,19 @@ fn walk_comp_import(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String
         .find(|c| c.as_rule() == Rule::comp_sort_kw)
         .map(|c| c.as_str().trim().to_string())
         .unwrap_or_default();
-    if sort != "func" {
+    let inline_func = ty
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::functype_c);
+    if sort == "instance" {
+        let index = ty.clone().into_inner().find(|c| c.as_rule() == Rule::index)
+            .ok_or("instance import: missing interface type index")?;
+        let type_index = resolve_comp_type(__w, &index)?;
+        let binder = ty.clone().into_inner().find(|c| c.as_rule() == Rule::id)
+            .map(|c| c.as_str()[1..].to_string());
+        return component_instances::import(__w, name, type_index, binder);
+    }
+    if sort != "func" && inline_func.is_none() {
         return Err(format!(
             "import: `{text}` — {}",
             if head.starts_with("core") {
@@ -3759,14 +5741,30 @@ fn walk_comp_import(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String
             }
         ));
     }
-    let i = ty
-        .clone()
-        .into_inner()
-        .find(|c| c.as_rule() == Rule::index)
-        .ok_or_else(|| {
-            format!("import: `{tytext}` — a `(func …)` import must name its `(type $ft)`")
-        })?;
-    let ft = resolve_comp_type(__w, &i)?;
+    let (ft, id) = if let Some(inline) = inline_func {
+        let id = inline
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::id)
+            .map(|c| c.as_str()[1..].to_string());
+        let decl = function_type_decl(__w, inline.into_inner())?;
+        (append_inline_func_type(__w, decl)?, id)
+    } else {
+        let i = ty
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::index)
+            .ok_or_else(|| {
+                format!("import: `{tytext}` — a `(func …)` import must name its `(type $ft)`")
+            })?;
+        let ft = require_component_func_type(__w, resolve_comp_type(__w, &i)?)?;
+        let id = ty
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::id)
+            .map(|c| c.as_str()[1..].to_string());
+        (ft, id)
+    };
     let fidx = __w.comp_func_space.len() as u32;
     __w.comp_func_space.push(CompFunc {
         // EMPTY on purpose — see `CompFunc`. Nothing in this component defines
@@ -3774,11 +5772,33 @@ fn walk_comp_import(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String
         canonidx: None,
         functype: Some(ft),
     });
-    if let Some(id) = ty.into_inner().find(|c| c.as_rule() == Rule::id) {
-        __w.comp_func_index
-            .insert(id.as_str()[1..].to_string(), fidx);
+    __w.comp_import_funcs.insert(name, fidx);
+    if let Some(id) = id {
+        __w.comp_func_index.insert(id, fidx);
     }
     Ok(())
+}
+
+fn copy_component_func(__w: &mut WastWalker, source: u32) -> Result<u32, String> {
+    let entry = __w
+        .comp_func_space
+        .get(source as usize)
+        .cloned()
+        .ok_or_else(|| format!("component function {source} is not defined"))?;
+    let copy = __w.comp_func_space.len() as u32;
+    if entry.canonidx.is_none() {
+        let functype = entry
+            .functype
+            .ok_or_else(|| format!("component function {source} has no function type"))?;
+        __w.comp_func_links.push(vybe_ast::canon::ComponentFuncLink {
+            import: copy,
+            supplied: source,
+            expected_type: functype,
+            supplied_type: functype,
+        });
+    }
+    __w.comp_func_space.push(entry);
+    Ok(copy)
 }
 
 /// `(export <id>? <externnamelit> <attribute>* <externidx> <externtype>?)`.
@@ -3796,7 +5816,11 @@ fn walk_comp_import(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String
 /// Treating `$x` as a second name for `$f` would look right until something
 /// indexed positionally past the export, at which point every later index is
 /// off by one — the `GLOBAL_GET` shape again.
-fn walk_comp_export(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+fn walk_comp_export<'i>(
+    __w: &mut WastWalker,
+    pair: Pair<'i, Rule>,
+    modules: &mut CoreModules<'i>,
+) -> Result<(), String> {
     let text = pair.as_str().trim();
     // The leading `id?` is a DIRECT child; the one inside `<externidx>` is a
     // great-grandchild (externidx → index → id), so this cannot confuse them.
@@ -3820,42 +5844,110 @@ fn walk_comp_export(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String
             a.as_str().trim()
         ));
     }
-    if pair
+    let ascription = pair
         .clone()
         .into_inner()
-        .any(|c| c.as_rule() == Rule::externtype)
-    {
-        // The trailing ascription narrows the exported item's type. Accepting
-        // it without checking would report a type the export was never proven
-        // to have.
-        return Err(format!(
-            "export: `{text}` — the trailing `<externtype>` ascribes a type to the \
-             export, and nothing checks it against the item being exported"
-        ));
-    }
+        .find(|c| c.as_rule() == Rule::externtype);
     let name = pair
         .clone()
         .into_inner()
         .find(|c| c.as_rule() == Rule::externnamelit)
-        .map(|c| unquote(c.as_str()))
         .ok_or("export: no export name")?;
+    let name = component_name(name.as_str(), "export")?;
     let target = pair
         .clone()
         .into_inner()
         .find(|c| c.as_rule() == Rule::externidx)
         .ok_or("export: names nothing")?;
+    if ascription.is_some() && !target.clone().into_inner().next()
+        .is_some_and(|sort| sort.as_rule() == Rule::comp_sort_kw && sort.as_str() == "func")
+    {
+        return Err("export: non-function type ascriptions are not yet supported".into());
+    }
     // `Explainer.md:2826` — STRONGLY-UNIQUE, not exact-string equality. The
     // table folds only the KEY; the value keeps the name as written, because
     // the exported name is what a host matches on.
     __w.export_names.insert("export", &name)?;
+    if let Some(sort) = target.clone().into_inner().next() {
+        if sort.as_rule() == Rule::comp_sort_kw && sort.as_str() == "instance" {
+            let mut parts = target.into_inner();
+            let _ = parts.next();
+            let index = parts.next().ok_or("export: instance target has no index")?;
+            if index.as_rule() != Rule::index || parts.next().is_some() {
+                return Err("export: instance paths are not yet supported".into());
+            }
+            let src = resolve_idx(&index, "component instance", &__w.comp_instance_index)?;
+            let instance = __w.comp_instances.get(src as usize)
+                .ok_or("instance index out of bounds")?.clone();
+            let index = u32::try_from(__w.comp_instances.len())
+                .map_err(|_| "component instance index overflow")?;
+            __w.comp_instances.push(instance);
+            if let Some(bind) = bind { __w.comp_instance_index.insert(bind, index); }
+            return Ok(());
+        }
+        if sort.as_rule() == Rule::core_sort && sort.as_str() == "module" {
+            let mut parts = target.into_inner();
+            let _ = parts.next();
+            let index = parts.next().ok_or("export: module target has no index")?;
+            if index.as_rule() != Rule::index || parts.next().is_some() {
+                return Err("export: core module paths are not yet supported".into());
+            }
+            let src = resolve_idx(&index, "core module", &modules.names)?;
+            let declaration = modules.defs.get(src as usize)
+                .ok_or("module index out of bounds")?.clone();
+            let index = u32::try_from(modules.defs.len())
+                .map_err(|_| "core module index overflow")?;
+            modules.defs.push(declaration);
+            if let Some(bind) = bind { modules.names.insert(bind, index); }
+            return Ok(());
+        }
+        if sort.as_rule() == Rule::comp_sort_kw && sort.as_str() == "type" {
+            let mut parts = target.into_inner();
+            let _ = parts.next();
+            let index = parts.next().ok_or("export: type target has no index")?;
+            if index.as_rule() != Rule::index || parts.next().is_some() {
+                return Err("export: type paths are not yet supported".into());
+            }
+            let src = resolve_comp_type(__w, &index)?;
+            let idx = component_instances::alias_type(__w, src)?;
+            __w.comp_export_types.insert(name, idx);
+            if let Some(bind) = bind {
+                __w.comp_type_index.insert(bind, idx);
+            }
+            return Ok(());
+        }
+    }
     let src = comp_externidx_func(__w, "export", &target)?;
-    let entry = __w
-        .comp_func_space
-        .get(src as usize)
-        .cloned()
-        .ok_or_else(|| format!("export: `{text}` names component func {src}, which is gone"))?;
-    let fidx = __w.comp_func_space.len() as u32;
-    __w.comp_func_space.push(entry);
+    let ascribed_type = match ascription {
+        None => None,
+        Some(ascription) => {
+            let inline = ascription.clone().into_inner()
+                .find(|part| part.as_rule() == Rule::functype_c);
+            let ty = if let Some(inline) = inline {
+                let declaration = function_type_decl(__w, inline.into_inner())?;
+                append_inline_func_type(__w, declaration)?
+            } else {
+                let sort = ascription.clone().into_inner()
+                    .find(|part| part.as_rule() == Rule::comp_sort_kw)
+                    .ok_or("export: expected a function type ascription")?;
+                if sort.as_str() != "func" {
+                    return Err("export: expected a function type ascription".into());
+                }
+                let index = ascription.into_inner().find(|part| part.as_rule() == Rule::index)
+                    .ok_or("export: function ascription has no type index")?;
+                require_component_func_type(__w, resolve_comp_type(__w, &index)?)?
+            };
+            Some(ty)
+        }
+    };
+    let fidx = copy_component_func(__w, src)
+        .map_err(|e| format!("export: `{text}`: {e}"))?;
+    if let Some(functype) = ascribed_type {
+        __w.comp_func_space[fidx as usize].functype = Some(functype);
+        if let Some(link) = __w.comp_func_links.last_mut().filter(|link| link.import == fidx) {
+            link.expected_type = functype;
+        }
+    }
     if let Some(n) = bind {
         __w.comp_func_index.insert(n, fidx);
     }
@@ -3892,8 +5984,8 @@ fn alias_component_export(
     let name = inner
         .next()
         .filter(|c| c.as_rule() == Rule::externnamelit)
-        .map(|c| unquote(c.as_str()))
         .ok_or("alias export: no export name")?;
+    let name = component_name(name.as_str(), "alias export")?;
     let sort = pair
         .clone()
         .into_inner()
@@ -3906,10 +5998,18 @@ fn alias_component_export(
                 String::new()
             }
         });
+    if sort == "type" {
+        let source = *inst.types.get(&name)
+            .ok_or_else(|| format!("alias export: instance {iidx} exports no type `{name}`"))?;
+        let index = component_instances::alias_type(__w, source)?;
+        if let Some(binder) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+            __w.comp_type_index.insert(binder.as_str()[1..].to_string(), index);
+        }
+        return Ok(index);
+    }
     if sort != "func" {
         return Err(format!(
-            "alias export: `({sort} …)` — only a component FUNCTION can be aliased so \
-             far; the {sort} index space has no producer"
+            "alias export: `({sort} …)` — the {sort} index space has no alias producer"
         ));
     }
     let src = *inst.funcs.get(&name).ok_or_else(|| {
@@ -3924,18 +6024,8 @@ fn alias_component_export(
             }
         )
     })?;
-    let entry = __w
-        .comp_func_space
-        .get(src as usize)
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "alias export: `{}` names component func {src}, which is gone",
-                text.trim()
-            )
-        })?;
-    let fidx = __w.comp_func_space.len() as u32;
-    __w.comp_func_space.push(entry);
+    let fidx = copy_component_func(__w, src)
+        .map_err(|e| format!("alias export: `{}`: {e}", text.trim()))?;
     let bind = inline_bind.or_else(|| {
         pair.clone()
             .into_inner()
@@ -3987,29 +6077,122 @@ fn instantiate_component<'i>(
             components.defs.len()
         )
     })?;
-    // ⛔ A `(with …)` supplies one of the component's IMPORTS, and an imported
-    // component function has no defining row anywhere — the one case that
-    // genuinely needs the component linker. Accepting the clause and ignoring
-    // it would instantiate with the import unsupplied and then fail at the
-    // CALL, naming the wrong thing.
-    if let Some(arg) = inst
+    let mut supplied = HashMap::new();
+    for arg in inst
         .clone()
         .into_inner()
-        .find(|c| c.as_rule() == Rule::instantiatearg)
+        .filter(|c| c.as_rule() == Rule::instantiatearg)
     {
-        return Err(format!(
-            "instance: `{}` supplies an IMPORT to a component instantiation, which needs \
-             the component linker (see cmplan.md §Deferred to export). A component with \
-             no imports instantiates without any `(with …)`",
-            arg.as_str().trim()
-        ));
+        let mut parts = arg.into_inner();
+        let name = parts.next().ok_or("component link: missing import name")?;
+        let target = parts.next().ok_or("component link: missing import value")?;
+        if name.as_rule() != Rule::string
+            || target.as_rule() != Rule::externidx
+            || parts.next().is_some()
+        {
+            return Err("component link: malformed typed argument".into());
+        }
+        let name = component_name(name.as_str(), "component import argument")?;
+        let source = if target.clone().into_inner().next()
+            .is_some_and(|sort| sort.as_rule() == Rule::comp_sort_kw && sort.as_str() == "instance") {
+            let mut parts = target.clone().into_inner();
+            let _ = parts.next();
+            let index = parts.next().ok_or("component link: instance argument has no index")?;
+            if index.as_rule() != Rule::index || parts.next().is_some() {
+                return Err("component link: nested instance argument paths require typed projection".into());
+            }
+            let index = resolve_idx(&index, "component instance", &__w.comp_instance_index)?;
+            ComponentArgument::Instance(__w.comp_instances.get(index as usize)
+                .ok_or("component link: instance argument out of bounds")?.clone())
+        } else {
+            ComponentArgument::Func(comp_externidx_func(__w, "component link", &target)?)
+        };
+        if supplied.insert(name.clone(), source).is_some() {
+            return Err(format!("component link: duplicate argument `{name}`"));
+        }
     }
     // Run it. `walk_component` installs its own scopes, so the inner
     // component's names cannot leak out here and the outer's are invisible
     // inside.
-    let exports = walk_component(__w, def, body)?;
+    let child = walk_component(__w, def, body)?;
+    for (name, &import) in &child.imports {
+        let source = supplied
+            .remove(name)
+            .ok_or_else(|| format!("component link: missing function import `{name}`"))?;
+        let ComponentArgument::Func(source) = source else {
+            return Err(format!("component link: import `{name}` expected function, found instance"));
+        };
+        let expected_type = __w.comp_func_space[import as usize]
+            .functype
+            .ok_or_else(|| format!("component link: import `{name}` has no type"))?;
+        let supplied_type = __w.comp_func_space[source as usize]
+            .functype
+            .ok_or_else(|| format!("component link: supplied function `{name}` has no type"))?;
+        __w.comp_func_links.push(vybe_ast::canon::ComponentFuncLink {
+            import,
+            supplied: source,
+            expected_type,
+            supplied_type,
+        });
+    }
+    let mut instance_imports: Vec<_> = child.instance_imports.iter().collect();
+    instance_imports.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    for (name, expected) in instance_imports {
+        let source = supplied.remove(name)
+            .ok_or_else(|| format!("component link: missing instance import `{name}`"))?;
+        let ComponentArgument::Instance(source) = source else {
+            return Err(format!("component link: import `{name}` expected instance, found func"));
+        };
+        for (name, &expected_type) in &expected.types {
+            let actual_type = *source.types.get(name)
+                .ok_or_else(|| format!("component link: missing expected type export `{name}`"))?;
+            let expected_layout = component_layout_type(
+                &vybe_ast::canon::ValSpec::Ref(expected_type), &__w.comp_types)?;
+            let actual_layout = component_layout_type(
+                &vybe_ast::canon::ValSpec::Ref(actual_type), &__w.comp_types)?;
+            if expected_layout != actual_layout {
+                return Err(format!("component link: type export `{name}` does not match"));
+            }
+        }
+        let instance = u32::try_from(__w.comp_instance_links.instances.len())
+            .map_err(|_| "component link: instance binding index overflow")?;
+        let mut exports: Vec<_> = source.funcs.iter().map(|(name, &index)| {
+            Ok(vybe_ast::canon::ComponentInstanceExport {
+                item: vybe_ast::canon::ComponentItemRef {
+                    name: name.clone(), kind: vybe_ast::canon::ComponentItemKind::Func, index,
+                },
+                function_type: Some(__w.comp_func_space.get(index as usize)
+                    .and_then(|func| func.functype)
+                    .ok_or_else(|| format!("component link: export `{name}` has no function type"))?),
+            })
+        }).collect::<Result<_, String>>()?;
+        exports.extend(source.types.iter().map(|(name, &index)|
+            vybe_ast::canon::ComponentInstanceExport {
+                item: vybe_ast::canon::ComponentItemRef {
+                    name: name.clone(), kind: vybe_ast::canon::ComponentItemKind::Type, index,
+                }, function_type: None,
+            }));
+        exports.sort_unstable_by(|left, right| left.item.name.cmp(&right.item.name));
+        __w.comp_instance_links.instances.push(exports);
+        let mut required: Vec<_> = expected.funcs.iter().collect();
+        required.sort_unstable_by(|left, right| left.0.cmp(right.0));
+        for (name, &import) in required {
+            let expected_type = __w.comp_func_space.get(import as usize)
+                .and_then(|func| func.functype)
+                .ok_or("component link: instance import has no function type")?;
+            __w.comp_instance_links.imports.push(vybe_ast::canon::ComponentInstanceFunctionImport {
+                instance, name: name.clone(), import, expected_type,
+            });
+        }
+    }
+    if let Some(name) = supplied.keys().next() {
+        return Err(format!("component link: child has no import `{name}`"));
+    }
+    let exports = child.exports;
     let idx = __w.comp_instances.len() as u32;
-    __w.comp_instances.push(CompInstance { funcs: exports });
+    __w.comp_instances.push(std::sync::Arc::new(CompInstance {
+        funcs: exports, types: child.type_exports,
+    }));
     if let Some(n) = name {
         __w.comp_instance_index.insert(n, idx);
     }
@@ -4043,6 +6226,8 @@ fn walk_comp_instance<'i>(
     // `<inlineexport>*` — an instance assembled from items that already exist.
     // It runs no code; all it contributes is an export table.
     let mut funcs: HashMap<String, u32> = HashMap::new();
+    let mut types: HashMap<String, u32> = HashMap::new();
+    let mut export_names = ExternNames::default();
     for exp in expr.into_inner() {
         if exp.as_rule() != Rule::inlineexport {
             continue;
@@ -4065,17 +6250,29 @@ fn walk_comp_instance<'i>(
             .clone()
             .into_inner()
             .find(|c| c.as_rule() == Rule::externnamelit)
-            .map(|c| unquote(c.as_str()))
             .ok_or("instance: (export …) has no name")?;
+        let ename = component_name(ename.as_str(), "instance export")?;
+        export_names.insert("export", &ename)?;
         let target = exp
             .clone()
             .into_inner()
             .find(|c| c.as_rule() == Rule::externidx)
             .ok_or("instance: (export …) names nothing")?;
-        funcs.insert(ename, comp_externidx_func(__w, "instance", &target)?);
+        if target.clone().into_inner().next()
+            .is_some_and(|sort| sort.as_rule() == Rule::comp_sort_kw && sort.as_str() == "type") {
+            let mut parts = target.into_inner();
+            let _ = parts.next();
+            let index = parts.next().ok_or("instance: type export has no index")?;
+            if index.as_rule() != Rule::index || parts.next().is_some() {
+                return Err("instance: nested type export paths require typed projection".into());
+            }
+            types.insert(ename, resolve_comp_type(__w, &index)?);
+        } else {
+            funcs.insert(ename, comp_externidx_func(__w, "instance", &target)?);
+        }
     }
     let idx = __w.comp_instances.len() as u32;
-    __w.comp_instances.push(CompInstance { funcs });
+    __w.comp_instances.push(std::sync::Arc::new(CompInstance { funcs, types }));
     if let Some(n) = name {
         __w.comp_instance_index.insert(n, idx);
     }
@@ -4089,7 +6286,7 @@ fn walk_comp_instance<'i>(
 /// instance cannot export a core item, and a bare index does not say which
 /// index space it means — resolving it as a function would be a guess that
 /// looks right whenever the two spaces happen to line up.
-fn comp_externidx_func(__w: &WastWalker, what: &str, target: &Pair<Rule>) -> Result<u32, String> {
+fn comp_externidx_func(__w: &mut WastWalker, what: &str, target: &Pair<Rule>) -> Result<u32, String> {
     let text = target.as_str().trim();
     if text
         .trim_start_matches('(')
@@ -4118,23 +6315,43 @@ fn comp_externidx_func(__w: &WastWalker, what: &str, target: &Pair<Rule>) -> Res
              {sort} index space has no producer"
         ));
     }
-    if target
-        .clone()
-        .into_inner()
-        .any(|c| c.as_rule() == Rule::string)
-    {
-        return Err(format!(
-            "{what}: `{text}` — the trailing name form addresses an export PATH through \
-             an instance, which needs the same resolution `(alias export …)` does; spell \
-             it as an alias instead"
-        ));
-    }
     let idx = target
         .clone()
         .into_inner()
         .find(|c| c.as_rule() == Rule::index)
         .ok_or_else(|| format!("{what}: the item names no index"))?;
-    let fidx = resolve_idx(&idx, "component func", &__w.comp_func_index)?;
+    resolve_component_func_reference(__w, what, target, &idx)
+}
+
+fn resolve_component_func_reference(
+    __w: &mut WastWalker,
+    what: &str,
+    target: &Pair<Rule>,
+    idx: &Pair<Rule>,
+) -> Result<u32, String> {
+    let text = target.as_str().trim();
+    let path: Vec<_> = target
+        .clone()
+        .into_inner()
+        .filter(|c| c.as_rule() == Rule::string)
+        .collect();
+    if !path.is_empty() {
+        if path.len() != 1 {
+            return Err(format!(
+                "{what}: `{text}` — nested instance export paths are not yet supported"
+            ));
+        }
+        let instance = resolve_idx(idx, "component instance", &__w.comp_instance_index)?;
+        let name = component_name(path[0].as_str(), what)?;
+        let src = __w
+            .comp_instances
+            .get(instance as usize)
+            .and_then(|instance| instance.funcs.get(&name))
+            .copied()
+            .ok_or_else(|| format!("{what}: instance {instance} exports no function `{name}`"))?;
+        return copy_component_func(__w, src);
+    }
+    let fidx = resolve_idx(idx, "component func", &__w.comp_func_index)?;
     if fidx as usize >= __w.comp_func_space.len() {
         return Err(format!(
             "{what}: component func {fidx} is not defined (have {})",
@@ -4169,22 +6386,68 @@ fn walk_comp_alias(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String>
             text.trim()
         ));
     }
-    let iidx = resolve_idx(&iref, "core instance", &__w.core_instance_index)?;
+    let name = inner
+        .next()
+        .filter(|c| c.as_rule() == Rule::string)
+        .ok_or("alias core export: no export name")?;
+    let sort = inner
+        .clone()
+        .find(|c| c.as_rule() == Rule::core_sort)
+        .map(|c| c.as_str().trim().to_string())
+        .unwrap_or_default();
+    let binder = inner.find(|c| c.as_rule() == Rule::id);
+    alias_core_export_item(__w, &iref, &name, &sort, binder.as_ref())
+}
+
+fn alias_core_export_item(
+    __w: &mut WastWalker,
+    iref: &Pair<Rule>,
+    name: &Pair<Rule>,
+    sort: &str,
+    binder: Option<&Pair<Rule>>,
+) -> Result<(), String> {
+    let iidx = resolve_idx(iref, "core instance", &__w.core_instance_index)?;
     let inst = __w
         .core_instances
         .get(iidx as usize)
-        .cloned()
         .ok_or_else(|| {
             format!(
                 "alias core export: core instance {iidx} is not declared (have {})",
                 __w.core_instances.len()
             )
         })?;
-    let name = inner
-        .next()
-        .filter(|c| c.as_rule() == Rule::string)
-        .map(|c| unquote(c.as_str()))
-        .ok_or("alias core export: no export name")?;
+    let name = component_name(name.as_str(), "alias core export")?;
+    if sort == "table" {
+        let slot = *inst.tables.get(&name).ok_or_else(|| {
+            format!("alias core export: core instance {iidx} exports no table `{name}`")
+        })?;
+        let tidx = __w.core_table_space.len() as u32;
+        __w.core_table_space.push(slot);
+        if let Some(id) = binder {
+            __w.core_table_index.insert(id.as_str()[1..].to_string(), tidx);
+        }
+        return Ok(());
+    }
+    if sort == "memory" {
+        let slot = *inst.memories.get(&name).ok_or_else(|| {
+            format!("alias core export: core instance {iidx} exports no memory `{name}`")
+        })?;
+        let slot = u32::try_from(slot)
+            .map_err(|_| "alias core export: memory slot exceeds u32".to_string())?;
+        let memidx = __w.core_memory_space.len() as u32;
+        __w.core_memory_space.push(slot);
+        if let Some(id) = binder {
+            __w.core_memory_index
+                .insert(id.as_str()[1..].to_string(), memidx);
+        }
+        return Ok(());
+    }
+    if sort != "func" {
+        return Err(format!(
+            "alias core export: `(core {sort} …)` — only core function and memory \
+             exports can be aliased so far; the {sort} index space has no producer"
+        ));
+    }
     let item = inst.funcs.get(&name).cloned().ok_or_else(|| {
         let mut have: Vec<&str> = inst.funcs.keys().map(|s| s.as_str()).collect();
         have.sort_unstable();
@@ -4197,20 +6460,9 @@ fn walk_comp_alias(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String>
             }
         )
     })?;
-    let sort = inner
-        .clone()
-        .find(|c| c.as_rule() == Rule::core_sort)
-        .map(|c| c.as_str().trim().to_string())
-        .unwrap_or_default();
-    if sort != "func" {
-        return Err(format!(
-            "alias core export: `(core {sort} …)` — only a core FUNCTION can be \
-             aliased so far; the {sort} index space has no producer"
-        ));
-    }
     let fidx = __w.core_func_space.len() as u32;
     __w.core_func_space.push(item);
-    if let Some(id) = inner.find(|c| c.as_rule() == Rule::id) {
+    if let Some(id) = binder {
         __w.core_func_index
             .insert(id.as_str()[1..].to_string(), fidx);
     }
@@ -4224,15 +6476,9 @@ fn walk_comp_alias(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String>
 /// advances the space whether or not it is named. Skipping an unnamed one
 /// would silently renumber every row after it.
 fn walk_comp_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
-    // LOCAL for the source's own numbering, GLOBAL for the payload vector the
-    // VM indexes. The name map stores the GLOBAL one so nothing has to
-    // remember to add the base at every lookup.
-    let idx = __w.comp_type_base + __w.comp_type_space;
-    __w.comp_type_space += 1;
-    if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
-        __w.comp_type_index
-            .insert(id.as_str()[1..].to_string(), idx);
-    }
+    let is_instance = pair.clone().into_inner().find(|c| c.as_rule() == Rule::deftype)
+        .and_then(|c| c.into_inner().next()).is_some_and(|c| c.as_rule() == Rule::instancetype);
+    let local = __w.comp_type_slots.len();
     // The body IS walked now. It used to advance a bare counter and drop the
     // declaration, which is why `VM::canon_functypes` was empty and
     // `canon lift` trapped on `$ft` even when the source declared the type.
@@ -4252,17 +6498,224 @@ fn walk_comp_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
         .and_then(|d| d.into_inner().next());
     let decl = match body {
         Some(b) => match type_decl(__w, &b)? {
-            vybe_ast::canon::TypeDecl::Resource(_) => vybe_ast::canon::TypeDecl::Resource(bound),
+            vybe_ast::canon::TypeDecl::Resource { rep, dtor, .. } => {
+                vybe_ast::canon::TypeDecl::Resource {
+                    name: bound.clone(),
+                    rep,
+                    dtor,
+                }
+            }
             other => other,
         },
         None => vybe_ast::canon::TypeDecl::Opaque("type".to_string()),
     };
+    validate_type_value_refs(&decl, &__w.comp_types, &__w.comp_type_slots)?;
+    validate_component_type_size(&decl, &__w.comp_types)?;
+    let idx = __w.comp_types.len() as u32;
     __w.comp_types.push(decl);
-    debug_assert_eq!(
-        __w.comp_types.len() as u32,
-        __w.comp_type_base + __w.comp_type_space
-    );
+    __w.comp_type_slots.push(idx);
+    if is_instance { component_instances::register(__w, idx, local)?; }
+    if let Some(bound) = bound {
+        __w.comp_type_index.insert(bound, idx);
+    }
     Ok(())
+}
+
+fn validate_type_value_refs(
+    decl: &vybe_ast::canon::TypeDecl,
+    types: &[vybe_ast::canon::TypeDecl],
+    slots: &[u32],
+) -> Result<(), String> {
+    use vybe_ast::canon::{TypeDecl, ValSpec};
+
+    fn check(spec: &ValSpec, types: &[TypeDecl], slots: &[u32]) -> Result<(), String> {
+        match spec {
+            ValSpec::Ref(idx) => match slots.binary_search(idx) {
+                Ok(local) => match types.get(*idx as usize) {
+                    Some(TypeDecl::Value(_)) => Ok(()),
+                    Some(_) => Err(format!("type index {local} is not a defined type")),
+                    None => Err("type index out of bounds".into()),
+                },
+                Err(_) => Err("type index out of bounds".into()),
+            },
+            ValSpec::List(inner) | ValSpec::ListFixed(inner, _) | ValSpec::Option(inner) => {
+                check(inner, types, slots)
+            }
+            ValSpec::Stream(Some(inner)) | ValSpec::Future(Some(inner)) => {
+                check(inner, types, slots)
+            }
+            ValSpec::Result(ok, err) => {
+                if let Some(ok) = ok {
+                    check(ok, types, slots)?;
+                }
+                if let Some(err) = err {
+                    check(err, types, slots)?;
+                }
+                Ok(())
+            }
+            ValSpec::Record(fields) => {
+                for (_, field) in fields {
+                    check(field, types, slots)?;
+                }
+                Ok(())
+            }
+            ValSpec::Variant(cases) => {
+                for (_, payload) in cases {
+                    if let Some(payload) = payload {
+                        check(payload, types, slots)?;
+                    }
+                }
+                Ok(())
+            }
+            ValSpec::Tuple(items) => {
+                for item in items {
+                    check(item, types, slots)?;
+                }
+                Ok(())
+            }
+            ValSpec::Map(key, value) => {
+                check(key, types, slots)?;
+                check(value, types, slots)
+            }
+            ValSpec::Prim(_)
+            | ValSpec::Flags(_)
+            | ValSpec::Enum(_)
+            | ValSpec::Stream(None)
+            | ValSpec::Future(None)
+            | ValSpec::Own(_)
+            | ValSpec::Borrow(_) => Ok(()),
+        }
+    }
+
+    match decl {
+        TypeDecl::Value(value) => check(value, types, slots),
+        TypeDecl::Func { params, result, .. } => {
+            for (_, value) in params {
+                check(value, types, slots)?;
+            }
+            if let Some(value) = result {
+                check(value, types, slots)?;
+            }
+            Ok(())
+        }
+        TypeDecl::Opaque(_) | TypeDecl::Resource { .. } => Ok(()),
+    }
+}
+
+fn component_layout_type(
+    spec: &vybe_ast::canon::ValSpec,
+    types: &[vybe_ast::canon::TypeDecl],
+) -> Result<vybe_runtime::component::ValType, String> {
+    use vybe_ast::canon::{TypeDecl, ValSpec};
+    use vybe_runtime::component::ValType;
+    fn layout_type(spec: &ValSpec, types: &[TypeDecl]) -> Result<ValType, String> {
+        Ok(match spec {
+            ValSpec::Prim(name) => match name.as_str() {
+                "bool" => ValType::Bool,
+                "s8" => ValType::S8,
+                "u8" => ValType::U8,
+                "s16" => ValType::S16,
+                "u16" => ValType::U16,
+                "s32" => ValType::I32,
+                "u32" => ValType::U32,
+                "s64" => ValType::I64,
+                "u64" => ValType::U64,
+                "f32" => ValType::F32,
+                "f64" => ValType::F64,
+                "char" => ValType::Char,
+                "string" => ValType::String,
+                "error-context" => ValType::ErrorContext,
+                _ => return Err(format!("unknown component value type `{name}`")),
+            },
+            ValSpec::List(elem) => ValType::List(Box::new(layout_type(elem, types)?)),
+            ValSpec::ListFixed(elem, count) => {
+                ValType::ListFixed(Box::new(layout_type(elem, types)?), *count)
+            }
+            ValSpec::Record(fields) => ValType::Record(
+                fields
+                    .iter()
+                    .map(|(name, ty)| Ok((name.clone(), layout_type(ty, types)?)))
+                    .collect::<Result<Vec<_>, String>>()?,
+            ),
+            ValSpec::Tuple(items) => ValType::Record(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, ty)| Ok((index.to_string(), layout_type(ty, types)?)))
+                    .collect::<Result<Vec<_>, String>>()?,
+            ),
+            ValSpec::Variant(cases) => ValType::Variant(
+                cases
+                    .iter()
+                    .map(|(name, payload)| {
+                        Ok((
+                            name.clone(),
+                            payload
+                                .as_ref()
+                                .map(|ty| layout_type(ty, types))
+                                .transpose()?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            ),
+            ValSpec::Enum(labels) => {
+                ValType::Variant(labels.iter().map(|name| (name.clone(), None)).collect())
+            }
+            ValSpec::Flags(labels) => ValType::Flags(labels.clone()),
+            ValSpec::Option(inner) => ValType::Option(Box::new(layout_type(inner, types)?)),
+            ValSpec::Result(ok, err) => ValType::Result(
+                ok.as_ref()
+                    .map(|ty| layout_type(ty, types).map(Box::new))
+                    .transpose()?,
+                err.as_ref()
+                    .map(|ty| layout_type(ty, types).map(Box::new))
+                    .transpose()?,
+            ),
+            ValSpec::Map(key, value) => ValType::List(Box::new(ValType::Record(vec![
+                ("0".into(), layout_type(key, types)?),
+                ("1".into(), layout_type(value, types)?),
+            ]))),
+            ValSpec::Stream(Some(elem)) => ValType::Stream(Box::new(layout_type(elem, types)?)),
+            ValSpec::Future(Some(elem)) => ValType::Future(Box::new(layout_type(elem, types)?)),
+            // An untyped stream/future is a four-byte handle. The child is
+            // only a layout witness here; no runtime type is emitted.
+            ValSpec::Stream(None) => ValType::Stream(Box::new(ValType::Bool)),
+            ValSpec::Future(None) => ValType::Future(Box::new(ValType::Bool)),
+            ValSpec::Own(index) => ValType::Own(index.to_string()),
+            ValSpec::Borrow(index) => ValType::Borrow(index.to_string()),
+            ValSpec::Ref(index) => match types.get(*index as usize) {
+                Some(TypeDecl::Value(inner)) => layout_type(inner, types)?,
+                _ => return Err(format!("type index {index} is not a value type")),
+            },
+        })
+    }
+
+    layout_type(spec, types)
+}
+
+fn validate_component_type_size(
+    decl: &vybe_ast::canon::TypeDecl,
+    types: &[vybe_ast::canon::TypeDecl],
+) -> Result<(), String> {
+    use vybe_ast::canon::TypeDecl;
+
+    let check = |spec: &vybe_ast::canon::ValSpec| -> Result<(), String> {
+        let ty = component_layout_type(spec, types)?;
+        vybe_runtime::canon_layout::validate_value_type_size(&ty).map_err(str::to_string)
+    };
+    match decl {
+        TypeDecl::Value(spec) => check(spec),
+        TypeDecl::Func { params, result, .. } => {
+            for (_, spec) in params {
+                check(spec)?;
+            }
+            if let Some(spec) = result {
+                check(spec)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Inverted component function declarations. A lift defines a canonical
@@ -4290,8 +6743,8 @@ fn walk_comp_func(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
                 let name = child
                     .into_inner()
                     .find(|part| part.as_rule() == Rule::externnamelit)
-                    .map(|part| unquote(part.as_str()))
                     .ok_or("inline function export: missing name")?;
+                let name = component_name(name.as_str(), "inline function export")?;
                 exports.push(name);
             }
             Rule::comp_func_type => type_part = Some(child),
@@ -4307,10 +6760,10 @@ fn walk_comp_func(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
                 .into_inner()
                 .find(|child| child.as_rule() == Rule::index);
             if let Some(index) = named {
-                resolve_comp_type(__w, &index)?
+                require_component_func_type(__w, resolve_comp_type(__w, &index)?)?
             } else {
                 let decl = function_type_decl(__w, part.into_inner())?;
-                append_inline_func_type(__w, decl)
+                append_inline_func_type(__w, decl)?
             }
         } else {
             append_inline_func_type(
@@ -4318,8 +6771,9 @@ fn walk_comp_func(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
                 vybe_ast::canon::TypeDecl::Func {
                     params: Vec::new(),
                     result: None,
+                    is_async: false,
                 },
-            )
+            )?
         };
         let fidx = __w.comp_func_space.len() as u32;
         let decl = walk_canon_lift(__w, lift, Some((functype, bind)))?;
@@ -4335,53 +6789,156 @@ fn walk_comp_func(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
     };
     for name in exports {
         __w.export_names.insert("export", &name)?;
-        let entry = __w.comp_func_space[fidx as usize].clone();
-        let export_idx = __w.comp_func_space.len() as u32;
-        __w.comp_func_space.push(entry);
+        let export_idx = copy_component_func(__w, fidx)?;
         __w.comp_exports.insert(name, export_idx);
     }
     Ok(())
 }
 
 /// One `<deftype>` alternative → the AST's record of it.
-fn type_decl(__w: &WastWalker, b: &Pair<Rule>) -> Result<vybe_ast::canon::TypeDecl, String> {
+fn type_decl(__w: &mut WastWalker, b: &Pair<Rule>) -> Result<vybe_ast::canon::TypeDecl, String> {
     use vybe_ast::canon::TypeDecl;
     Ok(match b.as_rule() {
         Rule::functype_c => function_type_decl(__w, b.clone().into_inner())?,
-        // `resourcetype`, `componenttype`, `instancetype` occupy their index and
-        // nothing reads their shape yet. Recorded rather than skipped: skipping
-        // one renumbers every later typeidx.
+        // Every declaration occupies its type index. Resource declarations
+        // also retain representation width and the optional core destructor.
         // The NAME is filled in by `walk_comp_type`, which is where the
         // binder is in scope.
-        Rule::resourcetype => TypeDecl::Resource(None),
-        Rule::componenttype => TypeDecl::Opaque("component".to_string()),
-        Rule::instancetype => TypeDecl::Opaque("instance".to_string()),
+        Rule::resourcetype => {
+            let rep = b
+                .clone()
+                .into_inner()
+                .find(|part| part.as_rule() == Rule::resource_rep)
+                .map(|part| match part.as_str() {
+                    "i64" => vybe_ast::canon::ResourceRep::I64,
+                    _ => vybe_ast::canon::ResourceRep::I32,
+                })
+                .ok_or("resource type is missing its representation")?;
+            let dtor = b
+                .clone()
+                .into_inner()
+                .find(|part| part.as_rule() == Rule::resource_dtor)
+                .and_then(|part| {
+                    part.into_inner()
+                        .find(|part| part.as_rule() == Rule::core_funcidx_ref)
+                })
+                .map(|reference| resolve_lift_callee(__w, &reference))
+                .transpose()?;
+            TypeDecl::Resource {
+                name: None,
+                rep,
+                dtor,
+            }
+        }
+        Rule::componenttype => {
+            validate_declared_type_names(b.clone())?;
+            TypeDecl::Opaque("component".to_string())
+        }
+        Rule::instancetype => {
+            validate_declared_type_names(b.clone())?;
+            TypeDecl::Opaque("instance".to_string())
+        }
         Rule::defvaltype => TypeDecl::Value(val_spec_inner(__w, b)?),
         other => TypeDecl::Opaque(format!("{other:?}")),
     })
 }
 
+fn validate_declared_type_names(pair: Pair<Rule>) -> Result<(), String> {
+    let mut imports = ExternNames::default();
+    let mut exports = ExternNames::default();
+    for child in pair.into_inner() {
+        let mut declaration = child;
+        while matches!(
+            declaration.as_rule(),
+            Rule::componentdecl | Rule::instancedecl
+        ) {
+            declaration = declaration
+                .into_inner()
+                .next()
+                .ok_or("declared component type contains an empty declaration")?;
+        }
+        match declaration.as_rule() {
+            Rule::importdecl | Rule::exportdecl => {
+                let name = declaration
+                    .clone()
+                    .into_inner()
+                    .find(|part| part.as_rule() == Rule::externnamelit)
+                    .ok_or("declared type import/export has no external name")?;
+                let name = component_name(name.as_str(), "declared type import/export")?;
+                if declaration.as_rule() == Rule::importdecl {
+                    imports.insert("import", &name)?;
+                } else {
+                    exports.insert("export", &name)?;
+                }
+                for nested in declaration.into_inner() {
+                    if nested.as_rule() == Rule::externtype {
+                        validate_declared_type_names(nested)?;
+                    }
+                }
+            }
+            Rule::componenttype
+            | Rule::instancetype
+            | Rule::deftype
+            | Rule::externtype
+            | Rule::comp_type => validate_declared_type_names(declaration)?,
+            Rule::core_type_def => {
+                if let Some(module_type) = declaration
+                    .into_inner()
+                    .find(|part| part.as_rule() == Rule::core_moduletype)
+                {
+                    validate_core_module_type(&module_type)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_component_labels<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    kind: &str,
+    short_kind: &str,
+) -> Result<(), String> {
+    let names: Vec<&str> = names.into_iter().collect();
+    let mut seen = HashMap::new();
+    for &name in &names {
+        if name.is_empty() {
+            return Err(format!("{kind} name cannot be empty"));
+        }
+        if let Some(previous) = seen.insert(name.to_ascii_lowercase(), name) {
+            return Err(format!(
+                "{kind} name `{name}` conflicts with previous {short_kind} name `{previous}`"
+            ));
+        }
+    }
+    for name in names {
+        if !name_matches_rule(Rule::label, name) {
+            return Err(format!("{kind} name `{name}` is not in kebab case"));
+        }
+    }
+    Ok(())
+}
+
 fn function_type_decl<'i>(
-    __w: &WastWalker,
+    __w: &mut WastWalker,
     parts: impl Iterator<Item = Pair<'i, Rule>>,
 ) -> Result<vybe_ast::canon::TypeDecl, String> {
     let mut params = Vec::new();
     let mut result = None;
+    let mut is_async = false;
     for c in parts {
         match c.as_rule() {
             Rule::async_kw => {
-                return Err(
-                    "component functype: async is not represented in the canonical type payload"
-                        .into(),
-                );
+                is_async = true;
             }
             Rule::func_param_c => {
                 let mut it = c.into_inner();
                 let name = it
                     .next()
                     .filter(|x| x.as_rule() == Rule::labellit)
-                    .map(|x| unquote(x.as_str()))
                     .ok_or("component functype: (param …) has no label")?;
+                let name = component_name(name.as_str(), "component parameter")?;
                 let ty = it
                     .find(|x| x.as_rule() == Rule::valtype)
                     .ok_or("component functype: (param …) has no type")?;
@@ -4397,37 +6954,82 @@ fn function_type_decl<'i>(
             _ => {}
         }
     }
-    Ok(vybe_ast::canon::TypeDecl::Func { params, result })
+    validate_component_labels(
+        params.iter().map(|(name, _)| name.as_str()),
+        "function parameter",
+        "parameter",
+    )?;
+    Ok(vybe_ast::canon::TypeDecl::Func {
+        params,
+        result,
+        is_async,
+    })
 }
 
-fn append_inline_func_type(__w: &mut WastWalker, decl: vybe_ast::canon::TypeDecl) -> u32 {
-    let idx = __w.comp_type_base + __w.comp_type_space;
-    __w.comp_type_space += 1;
+fn append_inline_func_type(
+    __w: &mut WastWalker,
+    decl: vybe_ast::canon::TypeDecl,
+) -> Result<u32, String> {
+    validate_type_value_refs(&decl, &__w.comp_types, &__w.comp_type_slots)?;
+    validate_component_type_size(&decl, &__w.comp_types)?;
+    let idx = __w.comp_types.len() as u32;
     __w.comp_types.push(decl);
-    idx
+    __w.comp_type_slots.push(idx);
+    Ok(idx)
 }
 
 /// Resolve a `<typeidx>` in the COMPONENT type space.
 ///
-/// ⛔ A bare integer is the component's OWN index — the spec gives every
-/// component a type index space starting at 0 — while `comp_types` is one flat
-/// vector for the whole program because `VM::canon_types` is one table. So a
-/// positional reference has to be rebased and a `$name` must not be: the name
-/// map already stores the global index.
-///
-/// One function so the base is applied in exactly one place. Adding it at each
-/// call site is how `case_sensitive` went wrong — 33 sites, 23 forgot.
+/// Bare indices are local; named indices already map to the shared payload.
 fn resolve_comp_type(__w: &WastWalker, pair: &Pair<Rule>) -> Result<u32, String> {
     let raw = pair.as_str().trim();
-    if raw.starts_with('$') {
-        return resolve_idx(pair, "component type", &__w.comp_type_index);
+    let idx = if raw.starts_with('$') {
+        resolve_idx(pair, "component type", &__w.comp_type_index)?
+    } else {
+        let local = resolve_idx(pair, "component type", &__w.comp_type_index)?;
+        *__w.comp_type_slots
+            .get(local as usize)
+            .ok_or("type index out of bounds")?
+    };
+    if __w.comp_type_slots.binary_search(&idx).is_err()
+        || idx as usize >= __w.comp_types.len()
+    {
+        return Err("type index out of bounds".into());
     }
-    let local = resolve_idx(pair, "component type", &__w.comp_type_index)?;
-    Ok(__w.comp_type_base + local)
+    Ok(idx)
+}
+
+fn require_component_func_type(__w: &WastWalker, idx: u32) -> Result<u32, String> {
+    let local = __w
+        .comp_type_slots
+        .binary_search(&idx)
+        .map_err(|_| "type index out of bounds")?;
+    match __w.comp_types.get(idx as usize) {
+        Some(vybe_ast::canon::TypeDecl::Func { .. }) => Ok(idx),
+        Some(_) => Err(format!("type index {local} is not a function type")),
+        None => Err("type index out of bounds".into()),
+    }
 }
 
 /// `<valtype>` → the AST's spelling of it. `valtype ::= <typeidx> | <defvaltype>`.
-fn val_spec(__w: &WastWalker, v: &Pair<Rule>) -> Result<vybe_ast::canon::ValSpec, String> {
+fn val_spec(__w: &mut WastWalker, v: &Pair<Rule>) -> Result<vybe_ast::canon::ValSpec, String> {
+    use vybe_ast::canon::{TypeDecl, ValSpec};
+    let spec = val_spec_unhoisted(__w, v)?;
+    if matches!(spec, ValSpec::Prim(_) | ValSpec::Ref(_)) {
+        return Ok(spec);
+    }
+    let declaration = TypeDecl::Value(spec);
+    validate_type_value_refs(&declaration, &__w.comp_types, &__w.comp_type_slots)?;
+    validate_component_type_size(&declaration, &__w.comp_types)?;
+    let index = u32::try_from(__w.comp_types.len()).map_err(|_| "component type index overflow")?;
+    __w.comp_types.push(declaration);
+    __w.comp_type_slots.push(index);
+    __w.anonymous_comp_types.resize(__w.comp_types.len(), false);
+    __w.anonymous_comp_types[index as usize] = true;
+    Ok(ValSpec::Ref(index))
+}
+
+fn val_spec_unhoisted(__w: &mut WastWalker, v: &Pair<Rule>) -> Result<vybe_ast::canon::ValSpec, String> {
     use vybe_ast::canon::ValSpec;
     let inner = v
         .clone()
@@ -4443,7 +7045,7 @@ fn val_spec(__w: &WastWalker, v: &Pair<Rule>) -> Result<vybe_ast::canon::ValSpec
 }
 
 /// The `<defvaltype>` alternatives.
-fn val_spec_inner(__w: &WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::canon::ValSpec, String> {
+fn val_spec_inner(__w: &mut WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::canon::ValSpec, String> {
     use vybe_ast::canon::ValSpec;
     let text = d.as_str().trim();
     let mut children = d.clone().into_inner().peekable();
@@ -4460,7 +7062,7 @@ fn val_spec_inner(__w: &WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::canon::V
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
-    let vals = |w: &WastWalker,
+    let vals = |w: &mut WastWalker,
                 it: &mut dyn Iterator<Item = Pair<Rule>>|
      -> Result<Vec<ValSpec>, String> {
         let mut out = Vec::new();
@@ -4482,13 +7084,21 @@ fn val_spec_inner(__w: &WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::canon::V
                 let name = it
                     .next()
                     .filter(|x| x.as_rule() == Rule::labellit)
-                    .map(|x| unquote(x.as_str()))
                     .ok_or("record: (field …) has no label")?;
+                let name = component_name(name.as_str(), "record field")?;
                 let ty = it
                     .find(|x| x.as_rule() == Rule::valtype)
                     .ok_or("record: (field …) has no type")?;
                 fields.push((name, val_spec(__w, &ty)?));
             }
+            if fields.is_empty() {
+                return Err("record type must have at least one field".into());
+            }
+            validate_component_labels(
+                fields.iter().map(|(name, _)| name.as_str()),
+                "record field",
+                "field",
+            )?;
             ValSpec::Record(fields)
         }
         "variant" => {
@@ -4501,14 +7111,22 @@ fn val_spec_inner(__w: &WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::canon::V
                 let name = it
                     .next()
                     .filter(|x| x.as_rule() == Rule::labellit)
-                    .map(|x| unquote(x.as_str()))
                     .ok_or("variant: (case …) has no label")?;
+                let name = component_name(name.as_str(), "variant case")?;
                 let payload = match it.find(|x| x.as_rule() == Rule::valtype) {
                     Some(t) => Some(val_spec(__w, &t)?),
                     None => None,
                 };
                 cases.push((name, payload));
             }
+            if cases.is_empty() {
+                return Err("variant type must have at least one case".into());
+            }
+            validate_component_labels(
+                cases.iter().map(|(name, _)| name.as_str()),
+                "variant case",
+                "case",
+            )?;
             ValSpec::Variant(cases)
         }
         "list" => {
@@ -4529,7 +7147,13 @@ fn val_spec_inner(__w: &WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::canon::V
                 None => ValSpec::List(elem),
             }
         }
-        "tuple" => ValSpec::Tuple(vals(__w, &mut children)?),
+        "tuple" => {
+            let elements = vals(__w, &mut children)?;
+            if elements.is_empty() {
+                return Err("tuple type must have at least one type".into());
+            }
+            ValSpec::Tuple(elements)
+        }
         "option" => ValSpec::Option(Box::new(
             vals(__w, &mut children)?
                 .into_iter()
@@ -4592,11 +7216,22 @@ fn val_spec_inner(__w: &WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::canon::V
         "flags" | "enum" => {
             let labels: Vec<String> = children
                 .filter(|c| c.as_rule() == Rule::labellit)
-                .map(|c| unquote(c.as_str()))
-                .collect();
+                .map(|c| component_name(c.as_str(), &head))
+                .collect::<Result<_, _>>()?;
             if head == "flags" {
+                if labels.is_empty() {
+                    return Err("flags must have at least one entry".into());
+                }
+                if labels.len() > 32 {
+                    return Err("cannot have more than 32 flags".into());
+                }
+                validate_component_labels(labels.iter().map(String::as_str), "flag", "flag")?;
                 ValSpec::Flags(labels)
             } else {
+                if labels.is_empty() {
+                    return Err("enum type must have at least one variant".into());
+                }
+                validate_component_labels(labels.iter().map(String::as_str), "enum tag", "tag")?;
                 ValSpec::Enum(labels)
             }
         }
@@ -4625,11 +7260,117 @@ fn val_spec_inner(__w: &WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::canon::V
 /// `(core type <id>? …)` — the CORE type space, which `thread.new-indirect`
 /// and the spawn rows index. A different space from `walk_comp_type`'s.
 fn walk_core_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+    let module_type = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::core_moduletype);
+    let kind = if let Some(ref module_type) = module_type {
+        validate_core_module_type(module_type)?;
+        CoreTypeKind::Module
+    } else if let Some(signature) = find_rule(&pair, Rule::func_type)
+        .and_then(|function| sig_from_params(&function, &HashMap::new()))
+        .filter(|signature| signature.results.is_empty())
+    {
+        match signature.params.as_slice() {
+            [Vt::Num("i32")] => CoreTypeKind::Worker(vybe_ast::canon::ComponentCoreValType::I32),
+            [Vt::Num("i64")] => CoreTypeKind::Worker(vybe_ast::canon::ComponentCoreValType::I64),
+            _ => CoreTypeKind::Other,
+        }
+    } else {
+        CoreTypeKind::Other
+    };
     let idx = __w.core_type_space;
     __w.core_type_space += 1;
+    __w.core_type_kinds.push(kind);
     if let Some(id) = pair.into_inner().find(|c| c.as_rule() == Rule::id) {
         __w.core_type_index
             .insert(id.as_str()[1..].to_string(), idx);
+    }
+    Ok(())
+}
+
+fn validate_core_module_type(module: &Pair<Rule>) -> Result<(), String> {
+    let mut type_sigs: Vec<Option<FnSig>> = Vec::new();
+    let mut type_names = HashMap::new();
+    let mut imports = std::collections::HashSet::new();
+    let mut exports = std::collections::HashSet::new();
+    for declaration in module.clone().into_inner() {
+        if declaration.as_rule() != Rule::core_moduledecl {
+            continue;
+        }
+        let Some(field) = declaration.into_inner().next() else {
+            continue;
+        };
+        match field.as_rule() {
+            Rule::type_field | Rule::core_alias_outer => {
+                let sig = find_rule(&field, Rule::func_type)
+                    .and_then(|func| sig_from_params(&func, &type_names));
+                if let Some(name) = field
+                    .clone()
+                    .into_inner()
+                    .find(|part| part.as_rule() == Rule::id)
+                {
+                    type_names.insert(name.as_str().to_string(), type_sigs.len());
+                }
+                type_sigs.push(sig);
+            }
+            Rule::core_importdecl | Rule::core_exportdecl => {
+                let names: Vec<String> = field
+                    .clone()
+                    .into_inner()
+                    .filter(|part| part.as_rule() == Rule::string)
+                    .map(|part| component_name(part.as_str(), "core module type"))
+                    .collect::<Result<_, _>>()?;
+                if field.as_rule() == Rule::core_importdecl {
+                    if let [module, name] = names.as_slice() {
+                        let key = format!("{module}:{name}");
+                        if !imports.insert(key.clone()) {
+                            return Err(format!("duplicate import name `{key}`"));
+                        }
+                    }
+                } else if let Some(name) = names.first() {
+                    if !exports.insert(name.clone()) {
+                        return Err(format!("export name `{name}` already defined"));
+                    }
+                }
+                if let Some(typeuse) = find_rule(&field, Rule::typeuse) {
+                    if let Some(index) = typeuse
+                        .clone()
+                        .into_inner()
+                        .find(|part| part.as_rule() == Rule::index)
+                    {
+                        let name = index.as_str();
+                        if name
+                            .parse::<usize>()
+                            .is_ok_and(|idx| idx >= type_sigs.len())
+                            || (name.starts_with('$') && !type_names.contains_key(name))
+                        {
+                            return Err("type index out of bounds".into());
+                        }
+                    } else if let Some(sig) = sig_from_params(&typeuse, &type_names) {
+                        let exists = type_sigs.iter().flatten().any(|prior| {
+                            prior.params == sig.params && prior.results == sig.results
+                        });
+                        if !exists {
+                            type_sigs.push(Some(sig));
+                        }
+                    }
+                }
+                if let Some(memory) = find_rule(&field, Rule::mem_type) {
+                    let memory64 = memory.as_str().trim_start().starts_with("i64");
+                    let max_pages = if memory64 { 1u128 << 48 } else { 65536 };
+                    for limit in memory
+                        .into_inner()
+                        .filter(|part| part.as_rule() == Rule::integer)
+                    {
+                        if parse_wat_u128(limit.as_str()).is_some_and(|n| n > max_pages) {
+                            return Err(format!("memory size must be at most {max_pages}"));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -4669,6 +7410,168 @@ fn idx_child<'a>(pair: &'a Pair<Rule>) -> Option<Pair<'a, Rule>> {
         .find(|c| c.as_rule() == Rule::index)
 }
 
+fn resolve_core_memory_ref(__w: &mut WastWalker, pair: &Pair<Rule>) -> Result<u32, String> {
+    let index = idx_child(pair).ok_or("canon: core memory option carries no index")?;
+    let path: Vec<_> = pair
+        .clone()
+        .into_inner()
+        .filter(|child| child.as_rule() == Rule::string)
+        .collect();
+    if path.is_empty() {
+        let memidx = resolve_idx(&index, "core memory", &__w.core_memory_index)?;
+        return __w
+            .core_memory_space
+            .get(memidx as usize)
+            .copied()
+            .ok_or_else(|| "memory index out of bounds".to_string());
+    }
+    if path.len() != 1 {
+        return Err("canon: core memory reference needs one export name".into());
+    }
+    alias_core_export_item(__w, &index, &path[0], "memory", None)?;
+    __w.core_memory_space.last().copied()
+        .ok_or_else(|| "canon: anonymous memory alias was not published".into())
+}
+
+fn core_export_signature<'a>(
+    __w: &'a WastWalker,
+    class: &str,
+    method: &str,
+) -> Option<(&'a [String], &'a [String])> {
+    let exports = __w.module_exports.get(class)?;
+    let types = __w.module_export_types.get(class)?;
+    exports.iter().find_map(|(name, target)| {
+        if target != method {
+            return None;
+        }
+        match types.get(name)? {
+            ExternType::Func { params, results } => Some((params.as_slice(), results.as_slice())),
+            _ => None,
+        }
+    })
+}
+
+fn core_option_signature<'a>(
+    __w: &'a WastWalker,
+    reference: &vybe_ast::canon::CanonCoreFuncRef,
+) -> Option<(&'a [String], &'a [String])> {
+    use vybe_ast::canon::CanonCoreFuncRef;
+    match reference {
+        CanonCoreFuncRef::CoreExport { class, method } => {
+            core_export_signature(__w, class, method)
+        }
+        CanonCoreFuncRef::Index(index) => match __w.core_func_space.get(*index as usize)? {
+            CoreFunc::Module(class, method) => core_export_signature(__w, class, method),
+            CoreFunc::Canon(..) => None,
+        },
+    }
+}
+
+fn core_type_name(ty: vybe_runtime::canon_flat::CoreType) -> &'static str {
+    use vybe_runtime::canon_flat::CoreType;
+    match ty {
+        CoreType::I32 => "i32",
+        CoreType::I64 => "i64",
+        CoreType::F32 => "f32",
+        CoreType::F64 => "f64",
+    }
+}
+
+fn validate_canon_lift_signature(
+    __w: &WastWalker,
+    decl: &vybe_ast::canon::CanonDecl,
+) -> Result<(), String> {
+    use vybe_ast::canon::{CanonCallee, TypeDecl};
+    use vybe_runtime::canon_flat::{
+        CoreType, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS, flat_count_bounded,
+        flat_types_count_bounded, flatten_type, flatten_types,
+    };
+
+    if decl.builtin != "lift" {
+        return Ok(());
+    }
+    let Some(TypeDecl::Func { params, result, .. }) = decl
+        .functype
+        .and_then(|index| __w.comp_types.get(index as usize))
+    else {
+        return Ok(());
+    };
+    let (actual_params, actual_results) = match decl.callee.as_ref() {
+        Some(CanonCallee::CoreExport { class, method }) => {
+            core_export_signature(__w, class, method)
+        }
+        Some(CanonCallee::Core(index)) => match __w.core_func_space.get(*index as usize) {
+            Some(CoreFunc::Module(class, method)) => core_export_signature(__w, class, method),
+            _ => None,
+        },
+        _ => None,
+    }
+    .ok_or("canon lift: cannot resolve the core callee signature")?;
+    let ptr = if decl
+        .opts
+        .memory
+        .and_then(|memory| __w.memory_is_64.get(&(memory as usize)).copied())
+        .unwrap_or(false)
+    {
+        CoreType::I64
+    } else {
+        CoreType::I32
+    };
+    let param_types = params
+        .iter()
+        .map(|(_, ty)| component_layout_type(ty, &__w.comp_types))
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected_params = if flat_types_count_bounded(param_types.iter(), MAX_FLAT_PARAMS)
+        > MAX_FLAT_PARAMS
+    {
+        vec![ptr]
+    } else {
+        flatten_types(&param_types, ptr)
+    };
+    let expected_results = if decl.opts.is_async {
+        if decl.opts.callback.is_some() {
+            vec![CoreType::I32]
+        } else {
+            Vec::new()
+        }
+    } else if let Some(result) = result {
+        let result = component_layout_type(result, &__w.comp_types)?;
+        if flat_count_bounded(&result, MAX_FLAT_RESULTS) > MAX_FLAT_RESULTS {
+            vec![ptr]
+        } else {
+            flatten_type(&result, ptr)
+        }
+    } else {
+        Vec::new()
+    };
+    let actual_display = |types: &[String]| {
+        format!("[{}]", types.iter().map(|ty| ty.to_ascii_uppercase()).collect::<Vec<_>>().join(", "))
+    };
+    if actual_params.len() != expected_params.len()
+        || !actual_params
+            .iter()
+            .zip(&expected_params)
+            .all(|(actual, expected)| actual == core_type_name(*expected))
+    {
+        return Err(format!(
+            "lowered parameter types `{expected_params:?}` do not match parameter types `{}`",
+            actual_display(actual_params)
+        ));
+    }
+    if actual_results.len() != expected_results.len()
+        || !actual_results
+            .iter()
+            .zip(&expected_results)
+            .all(|(actual, expected)| actual == core_type_name(*expected))
+    {
+        return Err(format!(
+            "lowered result types `{expected_results:?}` do not match result types `{}`",
+            actual_display(actual_results)
+        ));
+    }
+    Ok(())
+}
+
 /// Is this rule one of the atomic keyword rules that names a canon row?
 fn is_canon_op(rule: Rule) -> bool {
     matches!(
@@ -4700,7 +7603,7 @@ fn canon_binder_name(pair: &Pair<Rule>) -> Option<String> {
 
 /// One `<canonopt>` onto the row's options.
 fn apply_canonopt(
-    __w: &WastWalker,
+    __w: &mut WastWalker,
     opts: &mut vybe_ast::canon::CanonOptions,
     pair: Pair<Rule>,
 ) -> Result<(), String> {
@@ -4709,36 +7612,63 @@ fn apply_canonopt(
     // memidx and `(realloc f)` a core funcidx; consulting one map for both is
     // the one-integer-two-index-spaces defect, and it fails silently — the
     // name resolves, to the wrong entity.
-    let idx = |p: &Pair<Rule>, space: &str, names: &HashMap<String, u32>| -> Result<u32, String> {
-        idx_child(p)
-            .ok_or_else(|| format!("canon: {space} option carries no index"))
-            .and_then(|i| resolve_idx(&i, space, names))
-    };
     for child in pair.clone().into_inner() {
         match child.as_rule() {
             Rule::string_encoding_opt => {
                 let enc = child.as_str().trim_start_matches("string-encoding=");
+                if let Some(previous) = &opts.string_encoding {
+                    return Err(format!(
+                        "canonical encoding option `{}` conflicts with option `{}`",
+                        previous.replace('+', "-"),
+                        enc.replace('+', "-")
+                    ));
+                }
                 opts.string_encoding = Some(enc.to_string());
                 return Ok(());
             }
             Rule::async_kw => {
+                if opts.is_async {
+                    return Err("canon: duplicate async option".into());
+                }
                 opts.is_async = true;
                 return Ok(());
             }
             Rule::core_memidx_ref => {
-                opts.memory = Some(idx(&child, "core memory", &__w.core_memory_index)?);
+                if opts.memory.is_some() {
+                    return Err("`memory` is specified more than once".into());
+                }
+                opts.memory = Some(resolve_core_memory_ref(__w, &child)?);
                 return Ok(());
             }
             Rule::core_funcidx_ref => {
                 // Which option this is is decided by the KEYWORD, not the
                 // operand shape — `realloc`, `post-return` and `callback` all
                 // take a core funcidx.
-                let v = Some(idx(&child, "core func", &__w.core_func_index)?);
+                let v = Some(match resolve_lift_callee(__w, &child)? {
+                    vybe_ast::canon::CanonCallee::Core(i) => {
+                        vybe_ast::canon::CanonCoreFuncRef::Index(i)
+                    }
+                    vybe_ast::canon::CanonCallee::CoreExport { class, method } => {
+                        vybe_ast::canon::CanonCoreFuncRef::CoreExport { class, method }
+                    }
+                    vybe_ast::canon::CanonCallee::Component(_) => {
+                        return Err("canon option must name a core function".into());
+                    }
+                });
                 if text.starts_with("(realloc") {
+                    if opts.realloc.is_some() {
+                        return Err("canonical option `realloc` is specified more than once".into());
+                    }
                     opts.realloc = v;
                 } else if text.starts_with("(post-return") {
+                    if opts.post_return.is_some() {
+                        return Err("canonical option `post-return` is specified more than once".into());
+                    }
                     opts.post_return = v;
                 } else if text.starts_with("(callback") {
+                    if opts.callback.is_some() {
+                        return Err("canon: duplicate callback option".into());
+                    }
                     opts.callback = v;
                 } else {
                     return Err(format!("canon: unrecognised option `{text}`"));
@@ -4751,6 +7681,216 @@ fn apply_canonopt(
     Err(format!("canon: unrecognised option `{text}`"))
 }
 
+fn val_spec_contains_dynamic_memory(
+    value: &vybe_ast::canon::ValSpec,
+    types: &[vybe_ast::canon::TypeDecl],
+    visiting: &mut std::collections::HashSet<u32>,
+) -> bool {
+    use vybe_ast::canon::{TypeDecl, ValSpec};
+    match value {
+        ValSpec::Prim(name) => name == "string",
+        ValSpec::List(_) | ValSpec::Map(_, _) => true,
+        ValSpec::ListFixed(inner, _) | ValSpec::Option(inner) => {
+            val_spec_contains_dynamic_memory(inner, types, visiting)
+        }
+        ValSpec::Record(fields) => fields
+            .iter()
+            .any(|(_, field)| val_spec_contains_dynamic_memory(field, types, visiting)),
+        ValSpec::Variant(cases) => cases.iter().any(|(_, payload)| {
+            payload
+                .as_ref()
+                .is_some_and(|value| val_spec_contains_dynamic_memory(value, types, visiting))
+        }),
+        ValSpec::Tuple(items) => items
+            .iter()
+            .any(|item| val_spec_contains_dynamic_memory(item, types, visiting)),
+        ValSpec::Result(ok, err) => ok
+            .iter()
+            .chain(err.iter())
+            .any(|item| val_spec_contains_dynamic_memory(item, types, visiting)),
+        ValSpec::Ref(index) if visiting.insert(*index) => {
+            let dynamic = matches!(types.get(*index as usize), Some(TypeDecl::Value(inner))
+                if val_spec_contains_dynamic_memory(inner, types, visiting));
+            visiting.remove(index);
+            dynamic
+        }
+        ValSpec::Ref(_)
+        | ValSpec::Stream(_)
+        | ValSpec::Future(_)
+        | ValSpec::Flags(_)
+        | ValSpec::Enum(_)
+        | ValSpec::Own(_)
+        | ValSpec::Borrow(_) => false,
+    }
+}
+
+fn validate_canon_memory_options(
+    __w: &WastWalker,
+    decl: &vybe_ast::canon::CanonDecl,
+) -> Result<(), String> {
+    use vybe_ast::canon::TypeDecl;
+    validate_canon_async_type(__w, decl)?;
+    if decl.opts.post_return.is_some() {
+        if decl.builtin != "lift" {
+            return Err("canonical option `post-return` cannot be specified for lowerings".into());
+        }
+        if decl.opts.is_async {
+            return Err("canonical options `async` and `post-return` cannot be combined".into());
+        }
+    }
+    if decl.opts.realloc.is_some() && decl.opts.memory.is_none() {
+        return Err(format!(
+            "canon {}: canonical option `realloc` requires `memory` to also be specified",
+            decl.builtin
+        ));
+    }
+    if let Some(realloc) = &decl.opts.realloc {
+        let memory = decl.opts.memory.expect("realloc requires memory");
+        let is_64 = __w
+            .memory_is_64
+            .get(&(memory as usize))
+            .copied()
+            .ok_or_else(|| format!("canon {}: selected core memory is not declared", decl.builtin))?;
+        let addr = if is_64 { "i64" } else { "i32" };
+        let (params, results) = core_option_signature(__w, realloc).ok_or_else(|| {
+            format!("canon {}: cannot resolve the `realloc` core function signature", decl.builtin)
+        })?;
+        if params.len() != 4
+            || !params.iter().all(|param| param == addr)
+            || results.len() != 1
+            || results[0] != addr
+        {
+            return Err(format!(
+                "canon {}: canonical option `realloc` uses a core function with an incorrect signature",
+                decl.builtin
+            ));
+        }
+    }
+    let Some(TypeDecl::Func { params, result, .. }) = decl
+        .functype
+        .and_then(|index| __w.comp_types.get(index as usize))
+    else {
+        return Ok(());
+    };
+    let dynamic_params = params.iter().any(|(_, value)| {
+        val_spec_contains_dynamic_memory(value, &__w.comp_types, &mut Default::default())
+    });
+    let dynamic_result = result.as_ref().is_some_and(|value| {
+        val_spec_contains_dynamic_memory(value, &__w.comp_types, &mut Default::default())
+    });
+    let (needs_realloc, needs_memory) = if decl.builtin == "lift" {
+        (dynamic_params, dynamic_result)
+    } else {
+        (dynamic_result, dynamic_params)
+    };
+    let param_limit = if decl.builtin == "lower" && decl.opts.is_async {
+        vybe_runtime::canon_flat::MAX_FLAT_ASYNC_PARAMS
+    } else {
+        vybe_runtime::canon_flat::MAX_FLAT_PARAMS
+    };
+    let flat_params = params
+        .iter()
+        .map(|(_, value)| component_layout_type(value, &__w.comp_types))
+        .collect::<Result<Vec<_>, _>>()?;
+    let indirect_params = vybe_runtime::canon_flat::flat_types_count_bounded(
+        flat_params.iter(),
+        param_limit,
+    ) > param_limit;
+    let result_limit = if decl.opts.is_async {
+        if decl.builtin == "lift" {
+            vybe_runtime::canon_flat::MAX_FLAT_PARAMS
+        } else {
+            0
+        }
+    } else {
+        vybe_runtime::canon_flat::MAX_FLAT_RESULTS
+    };
+    let indirect_result = result
+        .as_ref()
+        .map(|value| component_layout_type(value, &__w.comp_types))
+        .transpose()?
+        .is_some_and(|value| {
+            vybe_runtime::canon_flat::flat_count_bounded(&value, result_limit) > result_limit
+        });
+    let needs_realloc = needs_realloc || (decl.builtin == "lift" && indirect_params);
+    let needs_memory = needs_memory
+        || indirect_result
+        || (decl.builtin == "lower" && indirect_params)
+        || (decl.builtin == "lower" && decl.opts.is_async);
+    if (needs_realloc || needs_memory) && decl.opts.memory.is_none() {
+        return Err(format!(
+            "canon {}: canonical option `memory` is required",
+            decl.builtin
+        ));
+    }
+    if needs_realloc && decl.opts.realloc.is_none() {
+        return Err(format!(
+            "canon {}: canonical option `realloc` is required",
+            decl.builtin
+        ));
+    }
+    if let Some(post_return) = &decl.opts.post_return {
+        let (actual_params, actual_results) = core_option_signature(__w, post_return)
+            .ok_or("canon lift: cannot resolve the `post-return` core function signature")?;
+        let ptr = if decl
+            .opts
+            .memory
+            .and_then(|memory| __w.memory_is_64.get(&(memory as usize)).copied())
+            .unwrap_or(false)
+        {
+            vybe_runtime::canon_flat::CoreType::I64
+        } else {
+            vybe_runtime::canon_flat::CoreType::I32
+        };
+        let expected = match result.as_ref() {
+            Some(value) => {
+                let ty = component_layout_type(value, &__w.comp_types)?;
+                if vybe_runtime::canon_flat::flat_count_bounded(
+                    &ty,
+                    vybe_runtime::canon_flat::MAX_FLAT_RESULTS,
+                ) > vybe_runtime::canon_flat::MAX_FLAT_RESULTS
+                {
+                    vec![ptr]
+                } else {
+                    vybe_runtime::canon_flat::flatten_type(&ty, ptr)
+                }
+            }
+            None => Vec::new(),
+        };
+        if actual_params.len() != expected.len()
+            || !actual_params
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual == core_type_name(expected))
+            || !actual_results.is_empty()
+        {
+            return Err(
+                "canonical option `post-return` uses a core function with an incorrect signature"
+                    .into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_canon_async_type(
+    __w: &WastWalker,
+    decl: &vybe_ast::canon::CanonDecl,
+) -> Result<(), String> {
+    if !decl.opts.is_async {
+        return Ok(());
+    }
+    if let Some(vybe_ast::canon::TypeDecl::Func {
+        is_async: false, ..
+    }) = decl
+        .functype
+        .and_then(|index| __w.comp_types.get(index as usize))
+    {
+        return Err("the `async` canonical option requires an async function type".into());
+    }
+    Ok(())
+}
+
 /// `(canon …)` — one row of the canon section.
 fn walk_canon(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
     let body = pair
@@ -4761,33 +7901,36 @@ fn walk_canon(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
     let decl = match row.as_rule() {
         Rule::canon_lift => walk_canon_lift(__w, row, None)?,
         Rule::canon_lower => walk_canon_lower(__w, row)?,
-        Rule::canon_builtin => walk_canon_builtin(__w, row)?,
+        Rule::canon_builtin => walk_canon_builtin(__w, row, true)?,
         other => return Err(format!("canon: unexpected {other:?}")),
     };
-    // A row's binder is how a core module reaches it. Recorded BEFORE the push
-    // so the canonidx is this row's own index.
-    if let Some(binder) = decl.binder.clone() {
+    register_canon_decl(__w, decl)
+}
+
+fn register_canon_decl(
+    __w: &mut WastWalker,
+    decl: vybe_ast::canon::CanonDecl,
+) -> Result<(), String> {
+    // `canon lift` already entered the component-function space. Every other
+    // canonical row defines a core function, including unnamed rows addressed
+    // only by a numeric core function index.
+    if decl.builtin != "lift" {
         let canonidx = __w.canon_section.len() as u32;
-        if let Some((prev, at)) = __w
-            .canon_binder
-            .insert(binder.clone(), (decl.builtin.clone(), canonidx))
-        {
-            return Err(format!(
-                "canon: `${binder}` is already bound by `{prev}` at canonidx {at}; \
-                 a core function binder names one definition"
-            ));
-        }
-        // A canon definition DEFINES a core function — `canon lower` and every
-        // canonical built-in do. Recording it in the core function index space
-        // is what makes `(core func $b)` and a positional `(core func 0)` name
-        // the same entity, and what a later `(alias core export …)` entry sits
-        // beside. Until this existed the space was read in six places and
-        // written in none, so every `$id` in it was "not bound" no matter what
-        // the source declared.
         let fidx = __w.core_func_space.len() as u32;
+        if let Some(binder) = decl.binder.clone() {
+            if let Some((prev, at)) = __w
+                .canon_binder
+                .insert(binder.clone(), (decl.builtin.clone(), canonidx))
+            {
+                return Err(format!(
+                    "canon: `${binder}` is already bound by `{prev}` at canonidx {at}; \
+                     a core function binder names one definition"
+                ));
+            }
+            __w.core_func_index.insert(binder, fidx);
+        }
         __w.core_func_space
             .push(CoreFunc::Canon(decl.builtin.clone(), canonidx));
-        __w.core_func_index.insert(binder, fidx);
     }
     __w.canon_section.push(decl);
     Ok(())
@@ -4809,7 +7952,10 @@ fn walk_canon_lift(
             Rule::core_funcidx_ref => {
                 decl.callee = Some(resolve_lift_callee(__w, &child)?);
             }
-            Rule::canonopt => apply_canonopt(__w, &mut decl.opts, child)?,
+            Rule::canonopt => {
+                apply_canonopt(__w, &mut decl.opts, child)?;
+                validate_canon_async_type(__w, &decl)?;
+            }
             Rule::externtype => {
                 // `bind-id(<externtype>)` — `(func $lifted (type $ft))`. The
                 // binder names the COMPONENT function this row defines, which
@@ -4818,21 +7964,35 @@ fn walk_canon_lift(
                 bind = child
                     .clone()
                     .into_inner()
-                    .find(|c| c.as_rule() == Rule::id)
+                    .find_map(|part| {
+                        if part.as_rule() == Rule::id {
+                            Some(part)
+                        } else if part.as_rule() == Rule::functype_c {
+                            part.into_inner()
+                                .find(|nested| nested.as_rule() == Rule::id)
+                        } else {
+                            None
+                        }
+                    })
                     .map(|c| c.as_str()[1..].to_string());
                 let named = child
                     .clone()
                     .into_inner()
                     .find(|c| c.as_rule() == Rule::index);
                 match named {
-                    Some(i) => decl.functype = Some(resolve_comp_type(__w, &i)?),
+                    Some(i) => {
+                        decl.functype = Some(require_component_func_type(
+                            __w,
+                            resolve_comp_type(__w, &i)?,
+                        )?)
+                    }
                     None => {
                         let func = child
                             .into_inner()
                             .find(|part| part.as_rule() == Rule::functype_c)
                             .ok_or("canon lift: expected a component function type")?;
                         let ty = type_decl(__w, &func)?;
-                        decl.functype = Some(append_inline_func_type(__w, ty));
+                        decl.functype = Some(append_inline_func_type(__w, ty)?);
                     }
                 }
             }
@@ -4856,11 +8016,13 @@ fn walk_canon_lift(
             ));
         }
     }
+    validate_canon_memory_options(__w, &decl)?;
+    validate_canon_lift_signature(__w, &decl)?;
     Ok(decl)
 }
 
 fn resolve_lift_callee(
-    __w: &WastWalker,
+    __w: &mut WastWalker,
     reference: &Pair<Rule>,
 ) -> Result<vybe_ast::canon::CanonCallee, String> {
     use vybe_ast::canon::CanonCallee;
@@ -4872,14 +8034,6 @@ fn resolve_lift_callee(
         .collect();
     let raw = i.as_str().trim();
     let item = if path.is_empty() {
-        if !raw.starts_with('$') {
-            // Bare indices retain the existing core-chunk contract.
-            return Ok(CanonCallee::Core(resolve_idx(
-                &i,
-                "core func",
-                &__w.core_func_index,
-            )?));
-        }
         let fidx = resolve_idx(&i, "core func", &__w.core_func_index)?;
         __w.core_func_space.get(fidx as usize).ok_or_else(|| {
             format!(
@@ -4891,15 +8045,9 @@ fn resolve_lift_callee(
         if path.len() != 1 {
             return Err("canon lift: only one core instance export name is supported".into());
         }
-        let iidx = resolve_idx(&i, "core instance", &__w.core_instance_index)?;
-        let inst = __w
-            .core_instances
-            .get(iidx as usize)
-            .ok_or_else(|| format!("canon lift: core instance {iidx} is not defined"))?;
-        let name = unquote(path[0].as_str());
-        inst.funcs.get(&name).ok_or_else(|| {
-            format!("canon lift: core instance {iidx} has no function export `{name}`")
-        })?
+        alias_core_export_item(__w, &i, &path[0], "func", None)?;
+        __w.core_func_space.last()
+            .ok_or("canon lift: anonymous function alias was not published")?
     };
     match item {
         CoreFunc::Module(class, method) => Ok(CanonCallee::CoreExport {
@@ -4926,7 +8074,7 @@ fn walk_canon_lower(
             Rule::funcidx_ref => {
                 let i = idx_child(&child).ok_or("canon lower: $callee carries no index")?;
                 // A COMPONENT funcidx — a different space from `lift`'s.
-                let fidx = resolve_idx(&i, "component func", &__w.comp_func_index)?;
+                let fidx = resolve_component_func_reference(__w, "canon lower", &child, &i)?;
                 let f = __w.comp_func_space.get(fidx as usize).ok_or_else(|| {
                     format!(
                         "canon lower: component func {fidx} is not in the component \
@@ -4950,12 +8098,14 @@ fn walk_canon_lower(
             _ => {}
         }
     }
+    validate_canon_memory_options(__w, &decl)?;
     Ok(decl)
 }
 
 fn walk_canon_builtin(
     __w: &mut WastWalker,
     row: Pair<Rule>,
+    require_inner_binder: bool,
 ) -> Result<vybe_ast::canon::CanonDecl, String> {
     use vybe_ast::canon::CanonDecl;
     let shape = row.into_inner().next().ok_or("canon: empty builtin")?;
@@ -4967,6 +8117,7 @@ fn walk_canon_builtin(
     let mut idxs: Vec<u32> = Vec::new();
     let mut ctx_valtype: Option<String> = None;
     let mut ctx_slot: Option<u32> = None;
+    let mut saw_inner_binder = false;
 
     for child in shape.into_inner() {
         let r = child.as_rule();
@@ -4981,21 +8132,31 @@ fn walk_canon_builtin(
             // a `canonopt` pair and never reaches here.
             Rule::async_kw => decl.is_async = true,
             Rule::canonopt => apply_canonopt(__w, &mut decl.opts, child)?,
-            Rule::core_func_bind => decl.binder = canon_binder_name(&child),
+            Rule::core_func_bind => {
+                saw_inner_binder = true;
+                decl.binder = canon_binder_name(&child);
+            }
             Rule::core_memidx_ref => {
-                let i = idx_child(&child).ok_or("canon: (memory …) carries no index")?;
-                decl.opts.memory = Some(resolve_idx(&i, "core memory", &__w.core_memory_index)?);
+                decl.opts.memory = Some(resolve_core_memory_ref(__w, &child)?);
             }
             Rule::index => idxs.push(resolve_comp_type(__w, &child)?),
             Rule::core_typeidx_ref => {
                 let i = idx_child(&child).ok_or("canon: core type ref carries no index")?;
-                idxs.push(resolve_idx(&i, "core type", &__w.core_type_index)?);
+                let index = resolve_idx(&i, "core type", &__w.core_type_index)?;
+                decl.worker_param = match __w.core_type_kinds.get(index as usize) {
+                    Some(CoreTypeKind::Worker(param)) => Some(*param),
+                    _ => return Err("canon thread worker type must be (func (param i32)) or (func (param i64))".into()),
+                };
+                idxs.push(index);
             }
             Rule::core_tableidx_ref => {
                 let i = idx_child(&child).ok_or("canon: core table ref carries no index")?;
-                idxs.push(resolve_idx(&i, "core table", &__w.core_table_index)?);
+                let tidx = resolve_idx(&i, "core table", &__w.core_table_index)?;
+                let slot = *__w.core_table_space.get(tidx as usize)
+                    .ok_or_else(|| format!("canon: core table {tidx} is not defined"))?;
+                idxs.push(u32::try_from(slot).map_err(|_| "canon: table slot exceeds u32")?);
             }
-            Rule::valtype => ctx_valtype = Some(child.as_str().trim().to_string()),
+            Rule::val_type => ctx_valtype = Some(child.as_str().trim().to_string()),
             Rule::integer => {
                 ctx_slot = Some(
                     child
@@ -5006,18 +8167,37 @@ fn walk_canon_builtin(
                 )
             }
             Rule::func_result_c => {
-                // `task.return (result <valtype>)?` — the result list. Only an
-                // indexed valtype has a number to record here.
-                if let Some(i) = child
-                    .clone()
-                    .into_inner()
-                    .find(|c| c.as_rule() == Rule::index)
-                {
-                    decl.results.push(resolve_comp_type(__w, &i)?);
-                }
+                let value = child.into_inner().find(|c| c.as_rule() == Rule::valtype)
+                    .ok_or("canon task.return: missing result value type")?;
+                let ty = match val_spec_unhoisted(__w, &value)? {
+                    vybe_ast::canon::ValSpec::Ref(index) => index,
+                    spec => {
+                        let declared = vybe_ast::canon::TypeDecl::Value(spec);
+                        validate_type_value_refs(&declared, &__w.comp_types, &__w.comp_type_slots)?;
+                        validate_component_type_size(&declared, &__w.comp_types)?;
+                        let index = __w.comp_types.len() as u32;
+                        let occupies_type_index = !matches!(
+                            &declared,
+                            vybe_ast::canon::TypeDecl::Value(vybe_ast::canon::ValSpec::Prim(_))
+                        );
+                        __w.comp_types.push(declared);
+                        if occupies_type_index {
+                            __w.comp_type_slots.push(index);
+                        }
+                        index
+                    }
+                };
+                decl.results.push(ty);
             }
             _ => {}
         }
+    }
+
+    if require_inner_binder && !saw_inner_binder {
+        return Err("canon builtin: missing (core func ...) binder".into());
+    }
+    if !require_inner_binder && saw_inner_binder {
+        return Err("inline canon builtin: binder belongs to the enclosing core func".into());
     }
 
     // Assign the positional immediates to their fields, per row.
@@ -5249,6 +8429,14 @@ fn validate_module(pair: &Pair<Rule>) -> Result<(), String> {
 }
 
 fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+    walk_module_with_class(__w, pair, None)
+}
+
+fn walk_module_with_class(
+    __w: &mut WastWalker,
+    pair: Pair<Rule>,
+    internal_class: Option<String>,
+) -> Result<Vec<Statement>, String> {
     validate_module(&pair)?;
     let span = to_span(&pair);
     // A wast script may declare SEVERAL modules; each is a distinct instance,
@@ -5282,13 +8470,13 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         .any(|c| c.as_rule() == Rule::module_definition_kw);
     // The class name is needed by several prescans below (they publish
     // per-module registries keyed by it), so resolve it once, up front.
-    let prescan_class_name = pair
-        .clone()
-        .into_inner()
-        .find(|c| c.as_rule() == Rule::id)
-        .map(|c| c.as_str()[1..].to_string())
-        .unwrap_or_else(|| default_class_name.clone());
-    let mut module_name: Option<String> = None;
+    let prescan_class_name = internal_class.unwrap_or_else(|| {
+        pair.clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::id)
+            .map(|c| c.as_str()[1..].to_string())
+            .unwrap_or_else(|| default_class_name.clone())
+    });
     let mut members: Vec<ClassMember> = Vec::new();
     let mut pre_stmts: Vec<Statement> = Vec::new(); // before class (globals)
     let mut post_stmts: Vec<Statement> = Vec::new(); // after class (start, exports, imports)
@@ -6168,6 +9356,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                 .take(2)
                 .collect();
             let (m, n) = (strings.first()?, strings.get(1)?);
+            if let Some(slot) = __w.component_table_imports.get(&(m.clone(), n.clone())) {
+                return Some(*slot);
+            }
             let class = __w.registered_module_class.get(m)?;
             __w.module_table_exports.get(class)?.get(n).copied()
         });
@@ -6334,8 +9525,13 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                 .take(2)
                 .collect();
             let (m, n) = (strings.first()?, strings.get(1)?);
-            let class = __w.registered_module_class.get(m)?;
-            __w.module_memory_exports.get(class)?.get(n).copied()
+            __w.component_memory_imports
+                .get(&(m.clone(), n.clone()))
+                .copied()
+                .or_else(|| {
+                    let class = __w.registered_module_class.get(m)?;
+                    __w.module_memory_exports.get(class)?.get(n).copied()
+                })
         });
         // An import we cannot resolve — `"spectest"`'s host memory, or a module
         // that was never registered — has no memory to alias.
@@ -6358,6 +9554,16 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                 s
             }
         };
+        if aliased.is_none() {
+            let is_64 = decl.clone().into_inner().any(|part| match part.as_rule() {
+                Rule::addr_type => part.as_str() == "i64",
+                Rule::mem_type => part
+                    .into_inner()
+                    .any(|item| item.as_rule() == Rule::addr_type && item.as_str() == "i64"),
+                _ => false,
+            });
+            __w.memory_is_64.insert(slot, is_64);
+        }
         if let Some(id) = decl.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
             memory_names.insert(id.as_str()[1..].to_string(), slot);
         }
@@ -6919,7 +10125,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         __w.export_func_alias
             .insert(prescan_class_name.clone(), aliased);
     }
-    __w.module_class_name = prescan_class_name;
+    __w.module_class_name = prescan_class_name.clone();
 
     let mut global_decl_idx = 0usize;
     // Table population (inline `(elem …)` abbreviation, init expression) targets
@@ -6934,9 +10140,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     let mut defined_func_seq = 0usize;
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::id => {
-                module_name = Some(child.as_str()[1..].to_string());
-            }
+            Rule::id => {}
             Rule::module_field => {
                 let inner = child.into_inner().next().ok_or("Empty module_field")?;
                 match inner.as_rule() {
@@ -6977,6 +10181,15 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                                 is_sub: false,
                             },
                         ))));
+                    }
+                    // Imported call tags must be declared before function bodies.
+                    Rule::import_field
+                        if inner.clone().into_inner().any(|c| {
+                            c.as_rule() == Rule::import_desc
+                                && c.as_str().trim_start().starts_with("(call_tag")
+                        }) =>
+                    {
+                        pre_stmts.push(walk_imported_call_tag(__w, inner)?);
                     }
                     Rule::import_field => {
                         // An imported tag takes the next slot in the tag index
@@ -7086,19 +10299,6 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     // declarations that must exist before any body references
                     // them.
                     Rule::call_tag_field => pre_stmts.push(walk_call_tag_field(__w, inner)?),
-                    // `(import "m" "e" (call_tag $t …))` — the outer-import
-                    // spelling of the same declaration. Both spellings key on
-                    // the external name so an import and its export are ONE
-                    // tag; identity crossing the boundary is the point.
-                    Rule::import_field
-                        if inner.clone().into_inner().any(|c| {
-                            c.as_rule() == Rule::import_desc
-                                && c.as_str().trim_start().starts_with("(call_tag")
-                        }) =>
-                    {
-                        pre_stmts.push(walk_imported_call_tag(__w, inner)?);
-                    }
-
                     // Active element segment: populate the funcref table so
                     // call_indirect can dispatch through it. Emitted AFTER the
                     // class (a post-stmt) so the `ref.func` tear-off can resolve
@@ -7115,7 +10315,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         }
     }
 
-    let name = module_name.unwrap_or(default_class_name);
+    let name = prescan_class_name;
     let class_name = name.clone();
     let class = Statement::with_span(
         StmtKind::ClassDecl {
@@ -7515,19 +10715,6 @@ enum ExternType {
         ty: String,
         mutable: bool,
     },
-    Memory {
-        min: u64,
-        max: Option<u64>,
-        is64: bool,
-    },
-    Table {
-        elem: String,
-        min: u64,
-        max: Option<u64>,
-    },
-    Tag {
-        params: Vec<String>,
-    },
 }
 
 /// `(assert_unlinkable (module …) "msg")` — instantiating the module against
@@ -7637,7 +10824,6 @@ fn walk_assert_unlinkable(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stat
             ExternType::Func { .. } | ExternType::Global { .. } => return Ok(discharged),
             // Memory/table/tag types are not tracked here, so this import is
             // undecidable and the assertion stays discharged.
-            _ => return Ok(discharged),
         }
     }
 
@@ -7854,21 +11040,6 @@ fn walk_local(
 // emits the right WASM structured-control opcodes (BLOCK, LOOP, BR, BR_IF,
 // RETURN, UNREACHABLE).  Value-producing instructions become expressions.
 
-#[allow(dead_code)]
-fn walk_instr_as_stmts(
-    __w: &mut WastWalker,
-    pair: Pair<Rule>,
-    labels: &mut LabelStack,
-) -> Result<Vec<Statement>, String> {
-    let span = to_span(&pair);
-    let inner = pair.into_inner().next().ok_or("Empty instr")?;
-    match inner.as_rule() {
-        Rule::folded_instr => walk_folded_instr_as_stmts(__w, inner, span, labels),
-        Rule::plain_instr => walk_plain_instr_as_stmts(__w, inner, span, labels),
-        _ => Err(format!("Unexpected instr rule: {:?}", inner.as_rule())),
-    }
-}
-
 /// The WASM trap, as the shared compiler already spells it.
 ///
 /// A zero-argument call named after a WASM instruction is resolved straight
@@ -7901,16 +11072,6 @@ fn walk_instr_as_expr(
 
 // ── Plain instructions ────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
-fn walk_plain_instr_as_stmts(
-    __w: &mut WastWalker,
-    pair: Pair<Rule>,
-    _span: Span,
-    labels: &mut LabelStack,
-) -> Result<Vec<Statement>, String> {
-    fold_instructions(__w, vec![pair], labels)
-}
-
 fn walk_plain_instr_as_expr(
     __w: &mut WastWalker,
     pair: Pair<Rule>,
@@ -7937,170 +11098,6 @@ fn walk_plain_instr_as_expr(
 }
 
 // ── Folded instructions ───────────────────────────────────────────────────────
-
-#[allow(dead_code)]
-fn walk_folded_instr_as_stmts(
-    __w: &mut WastWalker,
-    pair: Pair<Rule>,
-    span: Span,
-    labels: &mut LabelStack,
-) -> Result<Vec<Statement>, String> {
-    // Collect all children so we can inspect the name and process the rest.
-    let mut all_children: Vec<Pair<Rule>> = pair.into_inner().collect();
-    if all_children.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // The name is always first if present.
-    let name = if all_children[0].as_rule() == Rule::instr_name {
-        all_children.remove(0).as_str().to_string()
-    } else {
-        String::new()
-    };
-
-    match name.as_str() {
-        // ── (block $label instr*) → Labeled { label, Block([stmts]) } ─────
-        "block" => {
-            let mut label: Option<String> = None;
-            let mut instr_pairs: Vec<Pair<Rule>> = Vec::new();
-            for child in all_children {
-                match child.as_rule() {
-                    Rule::id => label = Some(child.as_str()[1..].to_string()),
-                    Rule::block_type => {}
-                    Rule::instr => instr_pairs.push(child),
-                    _ => {}
-                }
-            }
-            let effective = labels.push(__w, label.clone(), LabelKind::Block, Vec::new());
-            let body = fold_instructions(__w, instr_pairs, labels)?;
-            labels.pop();
-            let block_stmt = Statement::with_span(StmtKind::Block(body), span);
-            Ok(vec![Statement::with_span(
-                StmtKind::Labeled {
-                    label: effective,
-                    body: Box::new(block_stmt),
-                },
-                span,
-            )])
-        }
-
-        // ── (loop $label instr*) → Labeled { label, While(true, [stmts]) }
-        "loop" => {
-            let mut label: Option<String> = None;
-            let mut instr_pairs: Vec<Pair<Rule>> = Vec::new();
-            for child in all_children {
-                match child.as_rule() {
-                    Rule::id => label = Some(child.as_str()[1..].to_string()),
-                    Rule::block_type => {}
-                    Rule::instr => instr_pairs.push(child),
-                    _ => {}
-                }
-            }
-            let effective = labels.push(__w, label.clone(), LabelKind::Loop, Vec::new());
-            let mut body = fold_instructions(__w, instr_pairs, labels)?;
-            labels.pop();
-            // A WASM loop exits on fall-through; while(true) needs an explicit break.
-            body.push(Statement::with_span(
-                StmtKind::Break(BreakTarget::Implicit),
-                span,
-            ));
-            let while_stmt = Statement::with_span(
-                StmtKind::While {
-                    cond: Expression::bool(true),
-                    body,
-                    else_body: None,
-                },
-                span,
-            );
-            Ok(vec![Statement::with_span(
-                StmtKind::Labeled {
-                    label: effective,
-                    body: Box::new(while_stmt),
-                },
-                span,
-            )])
-        }
-
-        // ── (return instr?) ───────────────────────────────────────────────
-        "return" => {
-            let val = all_children
-                .into_iter()
-                .find(|c| c.as_rule() == Rule::instr)
-                .map(|c| walk_instr_as_expr(__w, c, labels))
-                .transpose()?;
-            Ok(vec![Statement::with_span(StmtKind::Return(val), span)])
-        }
-
-        // ── (unreachable) = WASM trap ─────────────────────────────────────
-        // A trap, NOT a throw. This was `StmtKind::Throw { expr: None }`, which
-        // is an exception: `(block $d (try_table (catch_all $d) unreachable))`
-        // swallowed it and the program exited 0. Per the spec a trap is outside
-        // the exception system and no handler can intercept it. `Op::UNREACHABLE`
-        // returns `Err` straight out of the interpreter loop and never consults
-        // the handler stack.
-        "unreachable" => Ok(vec![Statement::with_span(
-            StmtKind::Expr(trap_expr()),
-            span,
-        )]),
-
-        // ── (br $label) ───────────────────────────────────────────────────
-        "br" => {
-            let lbl = all_children
-                .iter()
-                .find(|c| c.as_rule() == Rule::instr_arg)
-                .and_then(|a| a.clone().into_inner().next())
-                .filter(|c| c.as_rule() == Rule::id)
-                .map(|c| c.as_str()[1..].to_string());
-            Ok(vec![make_br_stmt_opt(lbl.as_deref(), labels, span)])
-        }
-
-        // ── (br_if $label cond) ───────────────────────────────────────────
-        "br_if" => {
-            let mut lbl: Option<String> = None;
-            let mut cond: Option<Expression> = None;
-            for child in &all_children {
-                match child.as_rule() {
-                    Rule::instr_arg => {
-                        if let Some(inner) = child.clone().into_inner().next() {
-                            if inner.as_rule() == Rule::id && lbl.is_none() {
-                                lbl = Some(inner.as_str()[1..].to_string());
-                            } else if cond.is_none() {
-                                cond = Some(instr_arg_inner_to_expr(inner));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            // condition may come from an inner instr
-            if cond.is_none() {
-                for child in all_children {
-                    if child.as_rule() == Rule::instr {
-                        cond = Some(walk_instr_as_expr(__w, child, labels)?);
-                        break;
-                    }
-                }
-            }
-            let cond_expr = cond.unwrap_or(Expression::int(0));
-            let branch = make_br_stmt_opt(lbl.as_deref(), labels, span);
-            Ok(vec![Statement::with_span(
-                StmtKind::If {
-                    cond: cond_expr,
-                    then_body: vec![branch],
-                    else_body: None,
-                    elifs: Vec::new(),
-                },
-                span,
-            )])
-        }
-
-        // ── all other folded instructions → expression statement ──────────
-        _ => {
-            let expr = walk_folded_core(__w, name, all_children, span, labels)?;
-            Ok(vec![Statement::with_span(StmtKind::Expr(expr), span)])
-        }
-    }
-}
 
 fn walk_folded_instr_as_expr(
     __w: &mut WastWalker,
@@ -9026,21 +12023,29 @@ fn map_instr_to_ast(
             Ok(make_call("array_copy", rest, span))
         }
         // ── Constants ─────────────────────────────────────────────────────
-        // i32.const carries a 32-bit pattern: reinterpret the (possibly
-        // unsigned, e.g. 0x80000000) literal into signed i32 range so it stays
-        // exactly representable and the i32 opcodes read the right bits.
+        // Preserve the typed core constant through the AST. A plain Int
+        // literal becomes f64 in the shared expression compiler; the profile
+        // intrinsic instead emits the exact standard i32.const instruction.
         "i32.const" => {
             let v = args.into_iter().next().unwrap_or(Expression::int(0));
             match &v.kind {
                 ExprKind::Lit(Literal::Int(n)) => {
                     let reinterp = (*n as u32) as i32 as i64;
-                    Ok(Expression::with_span(
-                        ExprKind::Lit(Literal::Int(reinterp)),
+                    Ok(make_call(
+                        "i32_const",
+                        vec![Expression::with_span(
+                            ExprKind::Lit(Literal::Int(reinterp)),
+                            span,
+                        )],
                         span,
                     ))
                 }
-                ExprKind::Lit(Literal::BigInt(n)) => Ok(Expression::with_span(
-                    ExprKind::Lit(Literal::Int((*n as u32) as i32 as i64)),
+                ExprKind::Lit(Literal::BigInt(n)) => Ok(make_call(
+                    "i32_const",
+                    vec![Expression::with_span(
+                        ExprKind::Lit(Literal::Int((*n as u32) as i32 as i64)),
+                        span,
+                    )],
                     span,
                 )),
                 _ => Err(format!(
@@ -9049,17 +12054,13 @@ fn map_instr_to_ast(
                 )),
             }
         }
-        // i64.const needs an exact 64-bit value; a plain Int literal compiles to
-        // f64 (losing bits past 2^53), so carry it as the exact-integer literal
-        // the i64 opcodes read via `as_i64`.
+        // i64.const needs exact 64-bit bits, not an f64 or boxed JS BigInt.
         "i64.const" => {
             let v = args.into_iter().next().unwrap_or(Expression::int(0));
             match &v.kind {
-                ExprKind::Lit(Literal::Int(n)) => Ok(Expression::with_span(
-                    ExprKind::Lit(Literal::BigInt(*n)),
-                    span,
-                )),
-                ExprKind::Lit(Literal::BigInt(_)) => Ok(v),
+                ExprKind::Lit(Literal::Int(_) | Literal::BigInt(_)) => {
+                    Ok(make_call("i64_const", vec![v], span))
+                }
                 _ => Err(format!(
                     "i64.const takes an integer literal, not {}",
                     describe_const_operand(&v)
@@ -9266,6 +12267,29 @@ fn map_instr_to_ast(
                     .map_or(callee, |n| Expression::with_span(ExprKind::Ident(n), span)),
                 _ => callee,
             };
+            if let ExprKind::Ident(name) = &callee.kind {
+                if let Some((class, method)) = __w.import_alias.get(name) {
+                    // A multi-result call needs the walker's tuple/destructure lowering.
+                    if let Some(results @ (0 | 1)) = __w.func_name_results.get(name).copied()
+                        && call_args.len() <= u8::MAX as usize
+                    {
+                        let mut operands = vec![
+                            Expression::int(call_args.len() as i64),
+                            Expression::int(results as i64),
+                            Expression::with_span(
+                                ExprKind::Member {
+                                    object: Box::new(Expression::ident(class)),
+                                    field: method.clone(),
+                                    null_safe: false,
+                                },
+                                span,
+                            ),
+                        ];
+                        operands.extend(call_args);
+                        return Ok(make_call("call_ref", operands, span));
+                    }
+                }
+            }
             // A call to a function DEFINED in this module targets a static method
             // of the module class; qualify `Ident(f)` as `ClassName.f`. Imports
             // keep their bare name so the profile builtin table resolves them.
@@ -10664,6 +13688,39 @@ fn walk_tag_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, S
 /// inline `(table t (elem $f …))` abbreviation, its active-segment population
 /// (goes AFTER the class — it references the funcs as static methods, so it must
 /// run once the class exists, exactly like a standalone `(elem …)` field).
+fn table_element_type(__w: &WastWalker, pair: Pair<Rule>) -> Result<Expression, String> {
+    let text = pair.as_str();
+    let children: Vec<_> = pair.into_inner().collect();
+    if let Some(abbreviation) = children.iter().find(|p| p.as_rule() == Rule::ref_type) {
+        return Ok(Expression::string(abbreviation.as_str()));
+    }
+    let mut args = Vec::new();
+    if text.split_whitespace().any(|token| token == "null") {
+        args.push(Expression::ident("null"));
+    }
+    for child in children {
+        let heap = if child.as_rule() == Rule::exact_heap_type {
+            args.push(Expression::ident("exact"));
+            child.into_inner().next()
+        } else if child.as_rule() == Rule::heap_type {
+            Some(child)
+        } else {
+            None
+        };
+        if let Some(heap) = heap {
+            let name = heap.as_str();
+            args.push(if let Some(name) = name.strip_prefix('$') {
+                Expression::ident(&qualify_type_name(__w, name))
+            } else if let Ok(index) = name.parse::<usize>() {
+                Expression::ident(__w.type_index_name.get(index).ok_or_else(|| format!("unknown table element type {index}"))?)
+            } else {
+                Expression::string(name)
+            });
+        }
+    }
+    Ok(make_call("ref", args, Span::default()))
+}
+
 fn walk_table_field(
     __w: &mut WastWalker,
     pair: Pair<Rule>,
@@ -10684,6 +13741,7 @@ fn walk_table_field(
     let mut min_size: u64 = 0;
     let mut max_size: Option<u64> = None;
     let mut has_table_type = false;
+    let mut element_type = Expression::string("funcref");
     // `(table i64 …)` — a 64-bit table index space (memory64).
     let mut is_64 = false;
     // Inline `(table t (elem $f …))` abbreviation: the `index*` funcidx list.
@@ -10700,10 +13758,14 @@ fn walk_table_field(
             // `(table $t i64 funcref (elem …))` — the abbreviation states the
             // index type outside `table_type`.
             Rule::addr_type => is_64 = child.as_str() == "i64",
+            Rule::ref_val_type => element_type = table_element_type(__w, child)?,
             Rule::table_type => {
                 // table_type = addr_type? integer integer? ref_type — the index
                 // type, then min and optional max.
                 has_table_type = true;
+                if let Some(reference) = child.clone().into_inner().find(|p| p.as_rule() == Rule::ref_val_type) {
+                    element_type = table_element_type(__w, reference)?;
+                }
                 is_64 = child
                     .clone()
                     .into_inner()
@@ -10745,6 +13807,7 @@ fn walk_table_field(
         let class = __w.module_class_name.clone();
         let decl = Statement::with_span(
             StmtKind::TableDecl {
+                element_type,
                 min_size: n,
                 max_size: Some(n),
                 is_64,
@@ -10816,6 +13879,7 @@ fn walk_table_field(
     Ok((
         Statement::with_span(
             StmtKind::TableDecl {
+                element_type,
                 min_size,
                 max_size,
                 is_64,
@@ -11344,22 +14408,6 @@ fn array_elem_type(pair: &Pair<Rule>) -> Option<String> {
     None
 }
 
-/// The storage type of one `field_def` (`(field i8)` → `"i8"`, `(field (mut
-/// f64))` → `"f64"`, ref fields → the ref type text). Reuses the same
-/// packed/val-type search as `array_elem_type`.
-fn field_storage_type(field_def: &Pair<Rule>) -> String {
-    array_elem_type(field_def).unwrap_or_else(|| {
-        // Non-numeric storage (a ref type) — record its text so defaults treat
-        // it as a ref (null) rather than a number.
-        for c in field_def.clone().into_inner() {
-            if matches!(c.as_rule(), Rule::storage_type | Rule::ref_val_type) {
-                return c.as_str().to_string();
-            }
-        }
-        String::new()
-    })
-}
-
 /// The WASM default value for a field storage type: `0` for ints (incl. packed
 /// i8/i16), `0.0` for floats, `null` for ref types (`struct.new_default`).
 fn default_value_for_storage_type(ty: &str) -> Expression {
@@ -11703,10 +14751,21 @@ fn walk_data_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
                                 }
                             }
                         }
-                        Rule::instr => offset = Some(walk_instr_as_expr(__w, m, &mut labels)?),
+                        Rule::instr => {
+                            offset = Some(normalize_data_offset_const(walk_instr_as_expr(
+                                __w,
+                                m,
+                                &mut labels,
+                            )?));
+                        }
                         Rule::folded_instr => {
                             let sp = to_span(&m);
-                            offset = Some(walk_folded_instr_as_expr(__w, m, sp, &mut labels)?);
+                            offset = Some(normalize_data_offset_const(walk_folded_instr_as_expr(
+                                __w,
+                                m,
+                                sp,
+                                &mut labels,
+                            )?));
                         }
                         _ => {}
                     }
@@ -11724,6 +14783,21 @@ fn walk_data_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
         },
         span,
     ))
+}
+
+fn normalize_data_offset_const(mut expr: Expression) -> Expression {
+    if let ExprKind::Call { callee, args, .. } = &mut expr.kind {
+        for arg in args.iter_mut() {
+            arg.value =
+                normalize_data_offset_const(std::mem::replace(&mut arg.value, Expression::null()));
+        }
+        if matches!(&callee.kind, ExprKind::Ident(name) if name == "i32_const" || name == "i64_const")
+            && args.len() == 1
+        {
+            return args.remove(0).value;
+        }
+    }
+    expr
 }
 
 fn parse_wat_u64(s: &str) -> u64 {
@@ -11819,6 +14893,49 @@ fn decode_wat_data_string(s: &str) -> Vec<u8> {
 
 // ── WAST script commands ──────────────────────────────────────────────────────
 
+fn resolve_component_canonidx(__w: &mut WastWalker, start: u32) -> Result<u32, String> {
+    let generation = (__w.comp_func_links.len(), __w.comp_instance_links.imports.len());
+    if !__w.comp_binding_targets.as_ref().is_some_and(|(functions, instances, _)|
+        (*functions, *instances) == generation) {
+        let mut targets = HashMap::with_capacity(generation.0 + generation.1);
+        for link in &__w.comp_func_links {
+            if targets.insert(link.import, link.supplied).is_some() {
+                return Err(format!("component function {} has multiple bindings", link.import));
+            }
+        }
+        for link in &__w.comp_instance_links.imports {
+            let table = __w.comp_instance_links.instances.get(link.instance as usize)
+                .ok_or("component instance binding index out of bounds")?;
+            let export = table.iter().find(|export| export.item.name == link.name)
+                .ok_or_else(|| format!("component instance has no export `{}`", link.name))?;
+            if export.item.kind != vybe_ast::canon::ComponentItemKind::Func {
+                return Err(format!("component instance export `{}` is not a function", link.name));
+            }
+            if targets.insert(link.import, export.item.index).is_some() {
+                return Err(format!("component function {} has multiple bindings", link.import));
+            }
+        }
+        __w.comp_binding_targets = Some((generation.0, generation.1, targets));
+    }
+    let targets = &__w.comp_binding_targets.as_ref().unwrap().2;
+    let mut index = start;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        if !seen.insert(index) {
+            return Err(format!("component function {start} has cyclic import bindings"));
+        }
+        let func = __w
+            .comp_func_space
+            .get(index as usize)
+            .ok_or_else(|| format!("component function {index} is missing"))?;
+        if let Some(canonidx) = func.canonidx {
+            return Ok(canonidx);
+        }
+        index = targets.get(&index).copied()
+            .ok_or_else(|| format!("component function {index} has no supplied import"))?;
+    }
+}
+
 fn walk_invoke_cmd(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut func_name = String::new();
@@ -11838,10 +14955,26 @@ fn walk_invoke_cmd(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
             _ => {}
         }
     }
-    // Resolve the exported name to the module class's static method so the call
-    // actually reaches the function (exports are `Class.method`).
-    // A re-exported import answers from the OWNER's class, so it is consulted
-    // before this module's own method table.
+    // A component export names a component function, not a core module method.
+    // Invoke the defining canonical row so `canon lift` establishes its thread
+    // and applies the declared boundary conversions.
+    let component_exports = match module_id.as_ref() {
+        Some(id) => __w.script_component_instances.get(id),
+        None => Some(&__w.comp_exports),
+    };
+    let component_function = component_exports.and_then(|exports| exports.get(&func_name)).copied();
+    let component_callee = component_function
+                .map(|fidx| -> Result<Expression, String> {
+                    let canonidx = resolve_component_canonidx(__w, fidx)?;
+                    // Script invoke is a component call; core imports of lift@N
+                    // keep the flattened result expected by their Wasm signature.
+                    Ok(Expression::ident(&format!(
+                        "host:canon:component-lift@{canonidx}"
+                    )))
+                })
+        .transpose()?;
+    // Core module exports remain static methods. A re-exported import answers
+    // from the owner's class, so it is consulted before this module's methods.
     let resolved = match &module_id {
         Some(m) => __w
             .export_func_alias
@@ -11864,8 +14997,9 @@ fn walk_invoke_cmd(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
                     .map(|method| (__w.module_class_name.clone(), method))
             }),
     };
-    let callee = match resolved {
-        Some((class, method)) => Expression::with_span(
+    let callee = match (component_callee, resolved) {
+        (Some(callee), _) => callee,
+        (None, Some((class, method))) => Expression::with_span(
             ExprKind::Member {
                 object: Box::new(Expression::ident(&class)),
                 field: method,
@@ -11873,7 +15007,7 @@ fn walk_invoke_cmd(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
             },
             span,
         ),
-        None => Expression::ident(&func_name),
+        (None, None) => Expression::ident(&func_name),
     };
     Ok(Statement::with_span(
         StmtKind::Expr(Expression::with_span(
@@ -11925,6 +15059,163 @@ fn result_failure_cond(
     span: Span,
 ) -> Result<Expression, String> {
     let text = child.as_str().trim();
+
+    let composite = if child.as_rule() == Rule::field_list_const {
+        Some(child.clone())
+    } else {
+        child.clone().into_inner().find(|part| {
+            matches!(
+                part.as_rule(),
+                Rule::list_const
+                    | Rule::tuple_const
+                    | Rule::record_const
+                    | Rule::variant_const
+                    | Rule::option_some_const
+                    | Rule::option_none_const
+                    | Rule::result_ok_const
+                    | Rule::result_err_const
+            )
+        })
+    };
+    if let Some(composite) = composite {
+        let neq = |left: Expression, right: Expression| {
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            )
+        };
+        let eq = |left: Expression, right: Expression| {
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            )
+        };
+        let or = |left: Expression, right: Expression| {
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            )
+        };
+        let index = |object: Expression, key: Expression| {
+            Expression::with_span(
+                ExprKind::Index {
+                    object: Box::new(object),
+                    index: Box::new(key),
+                    null_safe: false,
+                },
+                span,
+            )
+        };
+        return match composite.as_rule() {
+            Rule::list_const | Rule::field_list_const | Rule::tuple_const => {
+                let parts: Vec<_> = composite.into_inner().collect();
+                let length = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(actual.clone()),
+                        field: "length".into(),
+                        null_safe: false,
+                    },
+                    span,
+                );
+                let mut failed = or(
+                    eq(actual.clone(), Expression::null()),
+                    neq(length, Expression::int(parts.len() as i64)),
+                );
+                for (i, part) in parts.iter().enumerate() {
+                    failed = or(
+                        failed,
+                        result_failure_cond(
+                            part,
+                            index(actual.clone(), Expression::int(i as i64)),
+                            span,
+                        )?,
+                    );
+                }
+                Ok(failed)
+            }
+            Rule::record_const => {
+                let mut failed = eq(actual.clone(), Expression::null());
+                for field in composite.into_inner() {
+                    let mut parts = field.into_inner();
+                    let key = unquote(parts.next().ok_or("record field has no name")?.as_str());
+                    let value = parts.next().ok_or("record field has no value")?;
+                    failed = or(
+                        failed,
+                        result_failure_cond(
+                            &value,
+                            index(actual.clone(), Expression::string(&key)),
+                            span,
+                        )?,
+                    );
+                }
+                Ok(failed)
+            }
+            Rule::variant_const => {
+                let mut parts = composite.into_inner();
+                let tag = unquote(parts.next().ok_or("variant has no case")?.as_str());
+                if let Some(payload) = parts.next() {
+                    let failed = or(
+                        eq(actual.clone(), Expression::null()),
+                        neq(
+                            index(actual.clone(), Expression::string("tag")),
+                            Expression::string(&tag),
+                        ),
+                    );
+                    Ok(or(
+                        failed,
+                        result_failure_cond(
+                            &payload,
+                            index(actual, Expression::string("val")),
+                            span,
+                        )?,
+                    ))
+                } else {
+                    Ok(neq(actual, Expression::string(&tag)))
+                }
+            }
+            Rule::option_some_const => {
+                let value = composite
+                    .into_inner()
+                    .next()
+                    .ok_or("option.some has no payload")?;
+                result_failure_cond(&value, actual, span)
+            }
+            Rule::option_none_const => Ok(neq(actual, Expression::null())),
+            Rule::result_ok_const => {
+                if let Some(value) = composite.into_inner().next() {
+                    result_failure_cond(&value, actual, span)
+                } else {
+                    Ok(neq(actual, Expression::null()))
+                }
+            }
+            Rule::result_err_const => {
+                let payload = composite.into_inner().next();
+                let failed = eq(actual.clone(), Expression::null());
+                let error_value = index(actual, Expression::string("__wasi_error"));
+                Ok(or(
+                    failed,
+                    if let Some(value) = payload {
+                        result_failure_cond(&value, error_value, span)?
+                    } else {
+                        neq(error_value, Expression::null())
+                    },
+                ))
+            }
+            _ => unreachable!(),
+        };
+    }
 
     // `(either r1 r2 …)` — the relaxed-simd proposal states results the
     // implementation may CHOOSE between (fused vs unfused multiply-add, the
@@ -11989,6 +15280,62 @@ fn result_failure_cond(
     }
     if matches!(bare, "ref.func" | "ref.extern" | "ref.host") {
         return Ok(ref_null_check(actual, false, span));
+    }
+
+    if text.starts_with("(flags.const") {
+        let labels: Vec<String> = child
+            .clone()
+            .into_inner()
+            .filter(|part| part.as_rule() == Rule::string)
+            .map(|part| unquote(part.as_str()))
+            .collect();
+        let values = make_call("__wast_object_values", vec![actual.clone()], span);
+        let filter = make_call(
+            "__wast_array_filter",
+            vec![values, Expression::ident("Boolean")],
+            span,
+        );
+        let mut failed = Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::NotEq,
+                left: Box::new(Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(filter),
+                        field: "length".into(),
+                        null_safe: false,
+                    },
+                    span,
+                )),
+                right: Box::new(Expression::int(labels.len() as i64)),
+            },
+            span,
+        );
+        for label in labels {
+            let missing = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(Expression::with_span(
+                        ExprKind::Index {
+                            object: Box::new(actual.clone()),
+                            index: Box::new(Expression::string(&label)),
+                            null_safe: false,
+                        },
+                        span,
+                    )),
+                    right: Box::new(Expression::bool(true)),
+                },
+                span,
+            );
+            failed = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(failed),
+                    right: Box::new(missing),
+                },
+                span,
+            );
+        }
+        return Ok(failed);
     }
 
     let want = walk_const_expr(child.clone())?;
@@ -12080,7 +15427,32 @@ fn walk_assert_return(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statemen
             want_text(&expected)
         );
         let want = expected.pop().expect("checked len");
-        let cond = result_failure_cond(&want, action, span)?;
+        let flags_result = want.as_str().trim().starts_with("(flags.const");
+        let bind_result = flags_result
+            || want.as_str().trim().starts_with("(either")
+            || [
+                Rule::list_const,
+                Rule::tuple_const,
+                Rule::record_const,
+                Rule::variant_const,
+                Rule::option_some_const,
+                Rule::option_none_const,
+                Rule::result_ok_const,
+                Rule::result_err_const,
+            ]
+            .iter()
+            .any(|rule| find_rule(&want, *rule).is_some());
+        let tmp = if flags_result {
+            "__wast_flags_result"
+        } else {
+            "__wast_result"
+        };
+        let actual = if bind_result {
+            Expression::ident(tmp)
+        } else {
+            action.clone()
+        };
+        let cond = result_failure_cond(&want, actual, span)?;
         let throw = Statement::with_span(
             StmtKind::Throw {
                 expr: Some(Expression::string(&msg)),
@@ -12088,7 +15460,7 @@ fn walk_assert_return(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statemen
             },
             span,
         );
-        return Ok(Statement::with_span(
+        let check = Statement::with_span(
             StmtKind::If {
                 cond,
                 then_body: vec![throw],
@@ -12096,7 +15468,29 @@ fn walk_assert_return(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statemen
                 else_body: None,
             },
             span,
-        ));
+        );
+        if bind_result {
+            return Ok(Statement::with_span(
+                StmtKind::Block(vec![
+                    Statement::with_span(
+                        StmtKind::VarDecl {
+                            declarations: vec![VarDeclarator {
+                                pattern: BindingPattern::Ident(tmp.into()),
+                                type_hint: None,
+                                init: Some(action),
+                                array_bounds: None,
+                                with_events: false,
+                            }],
+                            kind: VarDeclKind::Let,
+                        },
+                        span,
+                    ),
+                    check,
+                ]),
+                span,
+            ));
+        }
+        return Ok(check);
     }
 
     if expected.is_empty() {
@@ -13571,7 +16965,7 @@ fn name_resolution_walk(
     } else {
         depth
     };
-    if matches!(rule, Rule::plain_instr | Rule::folded_instr) {
+    if matches!(rule, Rule::folded_instr) {
         if let Some(n) = instr_head_name(&pair) {
             if matches!(n.as_str(), "br" | "br_if" | "br_table") {
                 for arg in pair.clone().into_inner() {
@@ -13647,7 +17041,7 @@ fn module_invalid_walk(
     // Custom Descriptors' type-section rules. Whole-table, so they run ONCE
     // per module rather than per pair — this recursion reaches `Rule::module`
     // exactly once on its way down.
-    if pair.as_rule() == Rule::module {
+    if matches!(pair.as_rule(), Rule::module | Rule::core_module_def) {
         if let Some(r) = descriptor_invalid_reason(&pair) {
             return Some(r);
         }
@@ -13676,11 +17070,14 @@ fn module_invalid_walk(
     }
     // Name resolution is a WHOLE-MODULE question — it needs the census — so it
     // runs once when the walk reaches the module, not per pair.
-    if pair.as_rule() == Rule::module {
+    if matches!(pair.as_rule(), Rule::module | Rule::core_module_def) {
         if let Some(r) = elem_table_type_mismatch(&pair) {
             return Some(r);
         }
         if let Some(r) = module_name_resolution_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = duplicate_core_import_reason(&pair) {
             return Some(r);
         }
         // Kept alongside the index-space check in the stack-typing pass: this
@@ -17057,6 +20454,11 @@ fn walk_assert_invalid(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stateme
         .find(|c| c.as_rule() == Rule::string)
         .map(|c| unquote(c.as_str()));
     for child in children {
+        if child.as_rule() == Rule::component {
+            examined = true;
+            reason = walk_component(&mut WastWalker::default(), child, &mut Vec::new()).err();
+            break;
+        }
         // The expected diagnostic. ⛔ It used to be parsed and DROPPED, which
         // made every `assert_invalid` assert only that the module was rejected
         // for SOME reason — a module refused for a bad lane index satisfied a
@@ -17172,9 +20574,43 @@ fn walk_assert_invalid(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stateme
 
 fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
+    let children: Vec<_> = pair.into_inner().collect();
+    if let Some(subject) = children.iter().find(|child|
+        matches!(child.as_rule(), Rule::component_quote | Rule::component))
+    {
+        let expected = children.iter().find(|child| child.as_rule() == Rule::string)
+            .map(|child| unquote(child.as_str())).unwrap_or_default();
+        let source = if subject.as_rule() == Rule::component_quote {
+            let mut source = b"(component ".to_vec();
+            for literal in subject.clone().into_inner().filter(|child| child.as_rule() == Rule::string) {
+                source.extend_from_slice(&unquote_to_bytes(literal.as_str()));
+                source.push(b' ');
+            }
+            source.push(b')');
+            source
+        } else {
+            subject.as_str().as_bytes().to_vec()
+        };
+        // QuoteComponent contains a component body; resolve its names with the
+        // standard text encoder, without treating validation errors as syntax.
+        let reason = match std::str::from_utf8(&source) {
+            Ok(source) => wat::parse_str(source).err().map(|error| error.to_string()),
+            Err(_) => Some("malformed UTF-8 encoding".to_string()),
+        };
+        return Ok(match reason {
+            Some(reason) if reason.contains(&expected) => Statement::with_span(StmtKind::Empty, span),
+            reason => Statement::with_span(StmtKind::Throw {
+                expr: Some(Expression::string(&format!(
+                    "assert_malformed failed: expected \"{expected}\", got \"{}\"",
+                    reason.as_deref().unwrap_or("the quoted component parsed"),
+                ))),
+                cause: None,
+            }, span),
+        });
+    }
     let mut quoted: Option<String> = None;
     let mut binary_bytes: Option<Vec<u8>> = None;
-    for child in pair.into_inner() {
+    for child in children {
         if child.as_rule() != Rule::module_or_binary {
             continue;
         }
@@ -17623,10 +21059,18 @@ fn walk_assert_trap(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement,
     // returned a no-op and 54 assertions across 8 files never ran. A module
     // that plainly cannot trap satisfied an assertion that it must, and
     // `multi-memory/data1.wast` and `start.wast` were PASSING on that.
-    let mut module_stmts: Vec<Statement> = Vec::new();
+    let mut instantiation_stmts: Vec<Statement> = Vec::new();
+    let mut has_instantiation_target = false;
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::module => module_stmts = walk_module(__w, child)?,
+            Rule::module => {
+                has_instantiation_target = true;
+                instantiation_stmts = walk_module(__w, child)?;
+            }
+            Rule::component => {
+                has_instantiation_target = true;
+                walk_component(__w, child, &mut instantiation_stmts)?;
+            }
             Rule::action => action_expr = Some(walk_action(__w, child)?),
             // The expected trap text. This used to be parsed and DROPPED,
             // which made every `assert_trap` assert only that SOMETHING went
@@ -17645,7 +21089,7 @@ fn walk_assert_trap(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement,
     let marker = "assert_trap failed: expected a trap";
     let mut body = match action_expr {
         Some(action) => vec![Statement::with_span(StmtKind::Expr(action), span)],
-        None if !module_stmts.is_empty() => module_stmts,
+        None if has_instantiation_target => instantiation_stmts,
         None => return Ok(Statement::with_span(StmtKind::Empty, span)),
     };
     body.push(Statement::with_span(
@@ -17689,21 +21133,6 @@ fn walk_assert_trap(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement,
             else_body: None,
             finally: None,
         },
-        span,
-    ))
-}
-
-#[allow(dead_code)]
-fn walk_assert_generic(pair: Pair<Rule>, fn_name: &str) -> Result<Statement, String> {
-    let span = to_span(&pair);
-    let mut message = String::new();
-    for child in pair.into_inner() {
-        if child.as_rule() == Rule::string {
-            message = unquote(child.as_str());
-        }
-    }
-    Ok(Statement::with_span(
-        StmtKind::Expr(make_call(fn_name, vec![Expression::string(&message)], span)),
         span,
     ))
 }
@@ -17801,7 +21230,124 @@ fn walk_const_expr(pair: Pair<Rule>) -> Result<Expression, String> {
     // `map_instr_to_ast`) so the expected v128 compares byte-identically to the
     // computed one — otherwise the scalar path below would collapse the whole
     // vector to its first lane.
-    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+    let children: Vec<Pair<Rule>> = pair.clone().into_inner().collect();
+    let composite = if pair.as_rule() == Rule::field_list_const {
+        Some(pair)
+    } else {
+        children
+            .iter()
+            .find(|part| {
+                matches!(
+                    part.as_rule(),
+                    Rule::list_const
+                        | Rule::tuple_const
+                        | Rule::record_const
+                        | Rule::variant_const
+                        | Rule::option_some_const
+                        | Rule::option_none_const
+                        | Rule::result_ok_const
+                        | Rule::result_err_const
+                )
+            })
+            .cloned()
+    };
+    if let Some(composite) = composite {
+        return match composite.as_rule() {
+            Rule::list_const | Rule::field_list_const | Rule::tuple_const => {
+                let values = composite
+                    .clone()
+                    .into_inner()
+                    .map(|part| {
+                        Ok(ArrayElement {
+                            key: None,
+                            value: walk_const_expr(part)?,
+                            spread: false,
+                            by_ref: false,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(Expression::with_span(ExprKind::Array(values), span))
+            }
+            Rule::record_const => {
+                let mut props = Vec::new();
+                for field in composite.clone().into_inner() {
+                    let mut parts = field.into_inner();
+                    let key = parts.next().ok_or("record field has no name")?;
+                    let value = parts.next().ok_or("record field has no value")?;
+                    props.push(ObjectProperty::KeyValue {
+                        key: Expression::string(&unquote(key.as_str())),
+                        value: walk_const_expr(value)?,
+                    });
+                }
+                Ok(Expression::with_span(ExprKind::Object(props), span))
+            }
+            Rule::variant_const => {
+                let mut parts = composite.clone().into_inner();
+                let tag = unquote(parts.next().ok_or("variant has no case")?.as_str());
+                if let Some(payload) = parts.next() {
+                    Ok(Expression::with_span(
+                        ExprKind::Object(vec![
+                            ObjectProperty::KeyValue {
+                                key: Expression::string("tag"),
+                                value: Expression::string(&tag),
+                            },
+                            ObjectProperty::KeyValue {
+                                key: Expression::string("val"),
+                                value: walk_const_expr(payload)?,
+                            },
+                        ]),
+                        span,
+                    ))
+                } else {
+                    Ok(Expression::string(&tag))
+                }
+            }
+            Rule::option_some_const => {
+                let value = composite
+                    .clone()
+                    .into_inner()
+                    .next()
+                    .ok_or("option.some has no payload")?;
+                walk_const_expr(value)
+            }
+            Rule::option_none_const => Ok(Expression::null()),
+            Rule::result_ok_const => composite
+                .clone()
+                .into_inner()
+                .next()
+                .map(walk_const_expr)
+                .transpose()
+                .map(|value| value.unwrap_or_else(Expression::null)),
+            Rule::result_err_const => {
+                let payload = composite
+                    .clone()
+                    .into_inner()
+                    .next()
+                    .map(walk_const_expr)
+                    .transpose()?
+                    .unwrap_or_else(Expression::null);
+                Ok(Expression::with_span(
+                    ExprKind::Object(vec![ObjectProperty::KeyValue {
+                        key: Expression::string("__wasi_error"),
+                        value: payload,
+                    }]),
+                    span,
+                ))
+            }
+            _ => unreachable!(),
+        };
+    }
+    if raw_text.starts_with("(flags.const") {
+        let props = children
+            .iter()
+            .filter(|part| part.as_rule() == Rule::string)
+            .map(|part| ObjectProperty::KeyValue {
+                key: Expression::string(&unquote(part.as_str())),
+                value: Expression::bool(true),
+            })
+            .collect();
+        return Ok(Expression::with_span(ExprKind::Object(props), span));
+    }
     if let Some(lane) = children.iter().find(|c| c.as_rule() == Rule::val_lane_type) {
         let mut args = vec![Expression::string(lane.as_str())];
         // An `f32x4` lane is rounded ONCE, to single precision. Reading it as
@@ -17838,6 +21384,47 @@ fn walk_const_expr(pair: Pair<Rule>) -> Result<Expression, String> {
     for child in children {
         match child.as_rule() {
             Rule::integer => {
+                for (name, bits) in [("u8.const", 8), ("u16.const", 16)] {
+                    if raw_text.contains(name) {
+                        let value = parse_unsigned_const(child.as_str())?;
+                        if value >= 1_u64 << bits {
+                            return Err(format!("{name} out of range: {}", child.as_str()));
+                        }
+                        return Ok(Expression::int(value as i64));
+                    }
+                }
+                if raw_text.contains("u32.const") {
+                    let value = parse_unsigned_const(child.as_str())?;
+                    let value = u32::try_from(value)
+                        .map_err(|_| format!("u32.const out of range: {}", child.as_str()))?;
+                    return Ok(Expression::float(value as f64));
+                }
+                if raw_text.contains("u64.const") {
+                    let value = parse_unsigned_const(child.as_str())?;
+                    return Ok(make_call(
+                        "__wast_u64_const",
+                        vec![Expression::string(&value.to_string())],
+                        span,
+                    ));
+                }
+                for (name, bits) in [
+                    ("s8.const", 8),
+                    ("s16.const", 16),
+                    ("s32.const", 32),
+                    ("s64.const", 64),
+                ] {
+                    if raw_text.contains(name) {
+                        let value = parse_signed_const(child.as_str(), bits)?;
+                        return Ok(Expression::with_span(
+                            ExprKind::Lit(if bits == 64 {
+                                Literal::BigInt(value)
+                            } else {
+                                Literal::Int(value)
+                            }),
+                            span,
+                        ));
+                    }
+                }
                 // A FLOAT constant written in integer form —
                 // `(f64.const 9223372036854775808)`, which the spec's own
                 // conversions.wast:246 uses. There was no `f64.const` arm
@@ -17874,13 +21461,8 @@ fn walk_const_expr(pair: Pair<Rule>) -> Result<Expression, String> {
                 // (a plain Int literal compiles to f64, losing bits past 2^53
                 // AND the i64 result's BigInt identity); `f32.const` demotes
                 // to single precision (`Value::F32`).
-                if raw_text.contains("i32.const") || raw_text.contains("u32.const") {
-                    // An `i32.const` or component `u32.const` is a 32-bit pattern:
-                    // `0x80000000` and `0xffffffff` denote i32::MIN and -1. Read
-                    // at 64-bit width they stay positive and never equal the
-                    // wrapped i32 the VM computes, so truncate to two's
-                    // complement 32 (i32, conversions, endianness, int_exprs,
-                    // memory_grow all turn on exactly this).
+                if raw_text.contains("i32.const") {
+                    // A core i32 constant denotes a 32-bit bit pattern.
                     if let ExprKind::Lit(Literal::Int(n)) = &v.kind {
                         return Ok(Expression::with_span(
                             ExprKind::Lit(Literal::Int(*n as u32 as i32 as i64)),
@@ -17907,10 +21489,691 @@ fn walk_const_expr(pair: Pair<Rule>) -> Result<Expression, String> {
                 return Ok(v);
             }
             Rule::string => return Ok(Expression::string(&unquote(child.as_str()))),
+            Rule::bool_literal => return Ok(Expression::bool(child.as_str() == "true")),
             _ => {}
         }
     }
     Ok(Expression::null())
+}
+
+fn parse_unsigned_const(text: &str) -> Result<u64, String> {
+    let clean = text.trim().replace('_', "");
+    let digits = clean.strip_prefix('+').unwrap_or(&clean);
+    let parsed = if let Some(hex) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16)
+    } else {
+        digits.parse::<u64>()
+    };
+    parsed.map_err(|_| format!("unsigned component constant out of range: {text}"))
+}
+
+fn parse_signed_const(text: &str, bits: u32) -> Result<i64, String> {
+    let clean = text.trim().replace('_', "");
+    let (negative, digits) = if let Some(rest) = clean.strip_prefix('-') {
+        (true, rest)
+    } else {
+        (false, clean.strip_prefix('+').unwrap_or(&clean))
+    };
+    let magnitude = if let Some(hex) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
+        u128::from_str_radix(hex, 16)
+    } else {
+        digits.parse::<u128>()
+    }
+    .map_err(|_| format!("signed component constant out of range: {text}"))?;
+    let modulus = 1_u128 << bits;
+    if (negative && magnitude > modulus / 2) || (!negative && magnitude >= modulus) {
+        return Err(format!("signed component constant out of range: {text}"));
+    }
+    let signed = if negative {
+        -(magnitude as i128)
+    } else if magnitude >= modulus / 2 {
+        magnitude as i128 - modulus as i128
+    } else {
+        magnitude as i128
+    };
+    Ok(signed as i64)
+}
+
+#[cfg(test)]
+mod component_value_size_tests {
+    use super::*;
+
+    fn check_component(source: &str) -> Result<(), String> {
+        let pair = WastParser::parse(Rule::component, source)
+            .map_err(|error| error.to_string())?
+            .next()
+            .expect("component pair");
+        walk_component(&mut WastWalker::default(), pair, &mut Vec::new()).map(|_| ())
+    }
+
+    #[test]
+    fn fixed_value_types_use_cm3_memory64_size_limit() {
+        for source in [
+            "(component (type (list u8 268435455)))",
+            "(component (type (list u64 33554431)))",
+            "(component (type (list string 16777215)))",
+            "(component (type (stream (list u8 268435455))))",
+        ] {
+            check_component(source).unwrap_or_else(|error| panic!("{source}: {error}"));
+        }
+        for source in [
+            "(component (type (list u8 268435456)))",
+            "(component (type (list u64 33554432)))",
+            "(component (type (list u64 536870912)))",
+            "(component (type (tuple (list u8 268435455) (list u8 1))))",
+            "(component (type (list (list u8 268435455) 2)))",
+            "(component (type (list string 16777216)))",
+        ] {
+            let error = check_component(source).expect_err(source);
+            assert!(
+                error.contains("exceeds maximum byte size"),
+                "{source}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn proposal_max_value_size_assertions_are_discharged() {
+        let source =
+            include_str!("../../../proposals/component-model/test/validation/max-value-size.wast");
+        let module = crate::parse(source).expect("proposal fixture should normalize");
+        let throws = module
+            .body
+            .iter()
+            .filter(|statement| matches!(statement.kind, StmtKind::Throw { .. }))
+            .count();
+        let discharged = module
+            .body
+            .iter()
+            .filter(|statement| matches!(statement.kind, StmtKind::Empty))
+            .count();
+        assert_eq!(
+            throws, 0,
+            "all seven invalid cases must fail validation for the expected reason"
+        );
+        assert_eq!(
+            discharged, 7,
+            "each invalid assertion must be checked and discharged"
+        );
+    }
+
+    #[test]
+    fn indirect_canonical_results_require_memory_without_expanding_fixed_lists() {
+        let source = include_str!(
+            "../../../tests/wast/wat_component/test_canon_indirect_result_requires_memory.wast"
+        );
+        let module = crate::parse(source).expect("indirect-result assertions should normalize");
+        assert_eq!(
+            module
+                .body
+                .iter()
+                .filter(|statement| matches!(statement.kind, StmtKind::Empty))
+                .count(),
+            2
+        );
+        assert!(!module
+            .body
+            .iter()
+            .any(|statement| matches!(statement.kind, StmtKind::Throw { .. })));
+
+        check_component(
+            "(component (import \"foo\" (func $foo (result u64))) \
+             (canon lower (func $foo) (core func $lowered)))",
+        )
+        .expect("one flat result needs no memory");
+        check_component(
+            "(component (type $wide (list u8 16)) \
+             (import \"foo\" (func $foo (param \"values\" $wide))) \
+             (canon lower (func $foo) (core func $lowered)))",
+        )
+        .expect("sixteen flat parameters need no memory");
+        let error = check_component(
+            "(component (type $wide (list u8 17)) \
+             (import \"foo\" (func $foo (param \"values\" $wide))) \
+             (canon lower (func $foo) (core func $lowered)))",
+        )
+        .expect_err("seventeen flat parameters need memory");
+        assert!(error.contains("canonical option `memory` is required"), "{error}");
+    }
+
+    #[test]
+    fn canonical_option_errors_match_the_proposal_order() {
+        let source = r#"
+            (assert_invalid
+              (component
+                (import "foo" (func $foo (result (tuple u64 u64))))
+                (canon lower (func $foo) (core func $lowered)))
+              "canonical option `memory` is required")
+            (assert_invalid
+              (component
+                (import "foo" (func $foo (result (tuple u64 u64))))
+                (core module $m
+                  (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+                    unreachable))
+                (core instance $i (instantiate $m))
+                (canon lower (func $foo)
+                  (realloc (core func $i "realloc")) (core func $lowered)))
+              "canonical option `realloc` requires `memory` to also be specified")
+        "#;
+        let module = crate::parse(source).expect("both invalid options should be discharged");
+        assert_eq!(
+            module
+                .body
+                .iter()
+                .filter(|statement| matches!(statement.kind, StmtKind::Empty))
+                .count(),
+            2
+        );
+        assert!(!module
+            .body
+            .iter()
+            .any(|statement| matches!(statement.kind, StmtKind::Throw { .. })));
+    }
+
+    #[test]
+    fn conflicting_canonical_encodings_name_both_options() {
+        for (first, second) in [
+            ("utf8", "utf16"),
+            ("utf8", "latin1+utf16"),
+            ("utf16", "latin1+utf16"),
+        ] {
+            let source = format!(
+                "(component (import \"f\" (func $f)) \
+                 (core func $lowered (canon lower (func $f) \
+                 string-encoding={first} string-encoding={second})))"
+            );
+            let error = check_component(&source).expect_err("encoding conflict must be rejected");
+            assert_eq!(
+                error,
+                format!(
+                    "canonical encoding option `{}` conflicts with option `{}`",
+                    first.replace('+', "-"),
+                    second.replace('+', "-")
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn realloc_signature_uses_selected_memory_address_width() {
+        for (memory, addr) in [("1", "i32"), ("i64 1", "i64")] {
+            let valid = format!(
+                "(component
+                   (import \"f\" (func $f (param \"text\" string)))
+                   (core module $m
+                     (memory (export \"mem\") {memory})
+                     (func (export \"realloc\")
+                       (param {addr} {addr} {addr} {addr}) (result {addr}) unreachable))
+                   (core instance $i (instantiate $m))
+                   (canon lower (func $f) (memory (core memory $i \"mem\"))
+                     (realloc (core func $i \"realloc\")) (core func $lowered)))"
+            );
+            check_component(&valid).unwrap_or_else(|error| panic!("{addr}: {error}"));
+            for signature in [
+                format!("(param {addr} {addr} {addr}) (result {addr})"),
+                format!("(param {addr} {addr} {addr} {addr})"),
+            ] {
+                let invalid = valid.replace(
+                    &format!("(param {addr} {addr} {addr} {addr}) (result {addr})"),
+                    &signature,
+                );
+                let error = check_component(&invalid).expect_err("bad realloc signature");
+                assert!(
+                    error.contains("canonical option `realloc` uses a core function with an incorrect signature"),
+                    "{addr}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn realloc_signature_resolves_aliased_core_function_and_memory() {
+        let source = "(component
+            (import \"f\" (func $f (param \"text\" string)))
+            (core module $m
+              (memory (export \"mem\") 1)
+              (func (export \"realloc\")
+                (param i32 i32 i32 i32) (result i32) unreachable))
+            (core instance $i (instantiate $m))
+            (alias core export $i \"mem\" (core memory $mem))
+            (alias core export $i \"realloc\" (core func $realloc))
+            (canon lower (func $f) (memory $mem) (realloc $realloc)
+              (core func $lowered)))";
+        check_component(source).expect("aliased core function signature must resolve");
+        let invalid = source.replace(
+            "(param i32 i32 i32 i32) (result i32)",
+            "(param i32 i32 i32) (result i32)",
+        );
+        let error = check_component(&invalid).expect_err("aliased bad signature must reject");
+        assert!(
+            error.contains("canonical option `realloc` uses a core function with an incorrect signature"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn post_return_signature_matches_lifted_core_results() {
+        for (memory, addr) in [("1", "i32"), ("i64 1", "i64")] {
+            let valid = format!(
+                "(component
+                   (core module $m
+                     (memory (export \"mem\") {memory})
+                     (func (export \"f\") (result {addr}) unreachable)
+                     (func (export \"realloc\")
+                       (param {addr} {addr} {addr} {addr}) (result {addr}) unreachable)
+                     (func (export \"post\") (param {addr})))
+                   (core instance $i (instantiate $m))
+                   (func $f (result string)
+                     (canon lift (core func $i \"f\")
+                       (memory (core memory $i \"mem\"))
+                       (realloc (core func $i \"realloc\"))
+                       (post-return (core func $i \"post\")))))"
+            );
+            check_component(&valid).unwrap_or_else(|error| panic!("{addr}: {error}"));
+            let invalid = valid.replace(
+                &format!("(func (export \"post\") (param {addr}))"),
+                "(func (export \"post\"))",
+            );
+            let error = check_component(&invalid).expect_err("bad post-return signature");
+            assert!(
+                error.contains("canonical option `post-return` uses a core function with an incorrect signature"),
+                "{addr}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn lifted_core_signature_matches_flattened_component_type() {
+        let missing_param = "(component
+            (core module $m (func (export \"f\") (param i32)))
+            (core instance $i (instantiate $m))
+            (func $f (canon lift (core func $i \"f\"))))";
+        assert_eq!(
+            check_component(missing_param).unwrap_err(),
+            "lowered parameter types `[]` do not match parameter types `[I32]`"
+        );
+
+        let missing_result = "(component
+            (core module $m (func (export \"f\") (result i32) unreachable))
+            (core instance $i (instantiate $m))
+            (func $f (canon lift (core func $i \"f\"))))";
+        assert_eq!(
+            check_component(missing_result).unwrap_err(),
+            "lowered result types `[]` do not match result types `[I32]`"
+        );
+
+        let valid = "(component
+            (core module $m (func (export \"f\") (param i32) (result i64) unreachable))
+            (core instance $i (instantiate $m))
+            (func $f (param \"value\" u32) (result u64)
+              (canon lift (core func $i \"f\"))))";
+        check_component(valid).expect("matching lifted core signature");
+    }
+
+    #[test]
+    fn post_return_is_rejected_for_lowering_and_async_lift() {
+        let lower = "(component
+            (import \"f\" (func $f))
+            (core module $m (func (export \"post\")))
+            (core instance $i (instantiate $m))
+            (core func $lowered (canon lower (func $f)
+              (post-return (core func $i \"post\")))))";
+        let error = check_component(lower).expect_err("lowering cannot use post-return");
+        assert!(
+            error.contains("canonical option `post-return` cannot be specified for lowerings"),
+            "{error}"
+        );
+
+        let async_lift = "(component
+            (core module $m
+              (func (export \"f\"))
+              (func (export \"post\")))
+            (core instance $i (instantiate $m))
+            (func $f async (canon lift (core func $i \"f\") async
+              (post-return (core func $i \"post\")))))";
+        let error = check_component(async_lift).expect_err("async lift cannot use post-return");
+        assert!(
+            error.contains("`async` and `post-return` cannot be combined"),
+            "{error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod inline_core_alias_tests {
+    use super::*;
+
+    #[test]
+    fn inline_and_standalone_core_aliases_share_the_function_index_space() {
+        for alias in [
+            "(alias core export $source \"step\" (core func $step))",
+            "(core func $step (alias core export $source \"step\"))",
+        ] {
+            let source = format!(
+                "(component
+                   (core module $Source
+                     (func (export \"step\") (result i32) (i32.const 7)))
+                   (core instance $source (instantiate $Source))
+                   {alias}
+                   (core instance $binding (export \"step\" (func $step))))"
+            );
+            let pair = WastParser::parse(Rule::component, &source)
+                .expect("core alias should parse")
+                .next()
+                .unwrap();
+            let mut walker = WastWalker::default();
+            let mut modules = CoreModules {
+                defs: Vec::new(),
+                names: HashMap::new(),
+            };
+            let mut components = Components {
+                defs: Vec::new(),
+                names: HashMap::new(),
+            };
+            let mut body = Vec::new();
+            for definition in pair.into_inner() {
+                let inner = definition.into_inner().next().unwrap();
+                walk_component_definition(
+                    &mut walker,
+                    inner,
+                    &mut body,
+                    &mut modules,
+                    &mut components,
+                )
+                .unwrap_or_else(|error| panic!("{alias}: {error}"));
+            }
+            assert_eq!(walker.core_func_index.get("step"), Some(&0));
+            assert_eq!(walker.core_func_space.len(), 1);
+            assert_eq!(walker.core_instances.len(), 2);
+        }
+    }
+}
+
+#[cfg(test)]
+mod script_component_instance_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_script_instantiation_binds_distinct_component_exports() {
+        let source = r#"
+            (component $C
+              (core module $M
+                (func (export "f") (result i32) (i32.const 7)))
+              (core instance $m (instantiate $M))
+              (func $f (export "f") (result u32)
+                (canon lift (core func $m "f")))
+              (core func $roundtrip (canon lower (func $f))))
+            (component instance $first $C)
+            (invoke $first "f")
+            (component instance $second $C)
+            (invoke $second "f")
+        "#;
+        let pairs = WastParser::parse(Rule::program, source).expect("script syntax");
+        let mut walker = WastWalker::default();
+        let mut body = Vec::new();
+        let mut components = HashMap::new();
+        for top in pairs {
+            for command in top.into_inner().filter(|c| c.as_rule() != Rule::EOI) {
+                walk_script_cmd(&mut walker, command, &mut body, &mut components)
+                    .expect("component script should normalize");
+            }
+        }
+        let first = walker.script_component_instances["first"]["f"];
+        let second = walker.script_component_instances["second"]["f"];
+        assert_ne!(first, second);
+        assert_ne!(
+            walker.comp_func_space[first as usize].canonidx,
+            walker.comp_func_space[second as usize].canonidx
+        );
+        assert_eq!(walker.canon_section.len(), 6);
+    }
+}
+
+#[cfg(test)]
+mod component_constant_tests {
+    use super::*;
+    extern crate vybe_platform_ecma;
+
+    fn constant(source: &str) -> Expression {
+        let pair = crate::WastParser::parse(Rule::expr, source)
+            .expect("component constant should parse")
+            .next()
+            .expect("constant pair");
+        walk_const_expr(pair).expect("component constant should normalize")
+    }
+
+    #[test]
+    fn option_and_result_constants_use_canonical_value_shapes() {
+        assert!(matches!(
+            constant("(option.none)").kind,
+            ExprKind::Lit(Literal::Null)
+        ));
+        assert!(matches!(
+            constant("(option.some (u32.const 5))").kind,
+            ExprKind::Lit(Literal::Float(value)) if value == 5.0
+        ));
+        assert!(matches!(
+            constant("(result.ok (str.const \"yo\"))").kind,
+            ExprKind::Lit(Literal::Str(value)) if value == "yo"
+        ));
+        let ExprKind::Object(properties) = constant("(result.err (u32.const 404))").kind else {
+            panic!("result.err must retain its error case");
+        };
+        assert!(
+            matches!(properties.as_slice(), [ObjectProperty::KeyValue { key, value }]
+            if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == "__wasi_error")
+            && matches!(&value.kind, ExprKind::Lit(Literal::Float(number)) if *number == 404.0))
+        );
+        let nested =
+            constant("(option.some (tuple.const (str.const \"x\") (result.err (u8.const 7))))");
+        assert!(matches!(nested.kind, ExprKind::Array(items) if items.len() == 2));
+        crate::parse("(assert_return (invoke \"value\") (result.err (u32.const 404)))")
+            .expect("result constant in a script assertion");
+    }
+
+    #[test]
+    fn nested_component_constants_normalize_and_compare_structurally() {
+        let source = "(list.const (variant.const \"event\" (record.const (field \"slot\" u8.const 2) (field \"kind\" enum.const \"ready\"))))";
+        let ExprKind::Array(items) = constant(source).kind else {
+            panic!("list must be an array");
+        };
+        assert_eq!(items.len(), 1);
+        let ExprKind::Object(variant) = &items[0].value.kind else {
+            panic!("payload-bearing variant must have a tag and value");
+        };
+        assert_eq!(variant.len(), 2);
+
+        fn run(
+            source: &str,
+            value: Expression,
+        ) -> Result<vybe_runtime::Value, vybe_runtime::VMError> {
+            let mut module = crate::parse(&format!("(assert_return (invoke \"value\") {source})"))
+                .expect("nested result syntax");
+            let StmtKind::Block(parts) = &mut module.body[0].kind else {
+                panic!("assertion must bind its action once");
+            };
+            let StmtKind::VarDecl { declarations, .. } = &mut parts[0].kind else {
+                panic!("action binding");
+            };
+            declarations[0].init = Some(value);
+            let profile = vybe_compiler::profile::parse_profile(crate::profile_source()).unwrap();
+            let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
+                .compile(&module)
+                .unwrap();
+            let binary = vybe_platform_wasm::write_wasm(&chunks);
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&binary)
+                .expect("standard Wasm");
+            let mut vm = vybe_runtime::VM::new();
+            vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+            vm.run(chunks)
+        }
+
+        if let Err(error) = run(source, constant(source)) {
+            panic!("matching nested component constant failed: {error:?}");
+        }
+        let changed = "(list.const (variant.const \"event\" (record.const (field \"slot\" u8.const 3) (field \"kind\" enum.const \"ready\"))))";
+        let error = run(source, constant(changed)).expect_err("changed field must fail assertion");
+        assert!(error.message.contains("assert_return failed"), "{error:?}");
+
+        let expected_error = "(result.err (u8.const 7))";
+        run(expected_error, constant(expected_error)).expect("matching result.err payload");
+        let error = run(expected_error, constant("(result.err (u8.const 8))"))
+            .expect_err("different result.err payload must fail");
+        assert!(error.message.contains("assert_return failed"), "{error:?}");
+
+        let inline_list =
+            "(record.const (field \"scores\" list.const (u32.const 10) (u32.const 20)))";
+        let ExprKind::Object(fields) = constant(inline_list).kind else {
+            panic!("inline list field must remain a record");
+        };
+        assert!(
+            matches!(fields.as_slice(), [ObjectProperty::KeyValue { value, .. }]
+            if matches!(&value.kind, ExprKind::Array(items) if items.len() == 2))
+        );
+        run(inline_list, constant(inline_list)).expect("matching inline list field");
+        let changed_list =
+            "(record.const (field \"scores\" list.const (u32.const 10) (u32.const 21)))";
+        let error = run(inline_list, constant(changed_list))
+            .expect_err("changed inline list element must fail");
+        assert!(error.message.contains("assert_return failed"), "{error:?}");
+    }
+
+    #[test]
+    fn unsigned_component_constants_keep_their_magnitude() {
+        assert!(matches!(
+            constant("(u32.const 0xffffffff)").kind,
+            ExprKind::Lit(Literal::Float(value)) if value == u32::MAX as f64
+        ));
+        let wide = constant("(u64.const 18446744073709551615)");
+        let ExprKind::Call { callee, args, .. } = wide.kind else {
+            panic!("u64 constant should use an exact BigInt constructor");
+        };
+        assert!(matches!(callee.kind, ExprKind::Ident(ref name) if name == "__wast_u64_const"));
+        assert!(matches!(
+            &args[0].value.kind,
+            ExprKind::Lit(Literal::Str(value)) if value == "18446744073709551615"
+        ));
+        assert!(matches!(
+            constant("(bool.const true)").kind,
+            ExprKind::Lit(Literal::Bool(true))
+        ));
+        assert!(matches!(
+            constant("(char.const \"⛳\")").kind,
+            ExprKind::Lit(Literal::Str(value)) if value == "⛳"
+        ));
+        assert!(matches!(
+            constant("(u8.const 255)").kind,
+            ExprKind::Lit(Literal::Int(255))
+        ));
+        assert!(matches!(
+            constant("(s8.const 0xff)").kind,
+            ExprKind::Lit(Literal::Int(-1))
+        ));
+        assert!(matches!(
+            constant("(s64.const -9223372036854775808)").kind,
+            ExprKind::Lit(Literal::BigInt(i64::MIN))
+        ));
+        assert!(parse_signed_const("0x100", 8).is_err());
+        assert!(parse_unsigned_const("18446744073709551616").is_err());
+    }
+
+    #[test]
+    fn flags_constants_keep_named_members_and_assert_once() {
+        let ExprKind::Object(props) = constant("(flags.const \"a\" \"c\")").kind else {
+            panic!("flags must lower to a record");
+        };
+        assert_eq!(props.len(), 2);
+        for (prop, expected) in props.iter().zip(["a", "c"]) {
+            let ObjectProperty::KeyValue { key, value } = prop else {
+                panic!("flag must be a named property");
+            };
+            assert!(matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == expected));
+            assert!(matches!(&value.kind, ExprKind::Lit(Literal::Bool(true))));
+        }
+        assert!(
+            matches!(constant("(flags.const)").kind, ExprKind::Object(props) if props.is_empty())
+        );
+
+        let script = crate::parse("(assert_return (invoke \"flags\") (flags.const \"a\" \"c\"))")
+            .expect("flags result syntax and lowering");
+        let [statement] = script.body.as_slice() else {
+            panic!("one assertion expected");
+        };
+        let StmtKind::Block(parts) = &statement.kind else {
+            panic!("action must be bound once before checking flags");
+        };
+        assert!(matches!(
+            parts.as_slice(),
+            [
+                Statement {
+                    kind: StmtKind::VarDecl { .. },
+                    ..
+                },
+                Statement {
+                    kind: StmtKind::If { .. },
+                    ..
+                }
+            ]
+        ));
+
+        let profile =
+            vybe_compiler::profile::parse_profile(crate::profile_source()).expect("WAST profile");
+        let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
+            .compile(&script)
+            .expect("flags assertion should compile");
+        assert!(!chunks.is_empty());
+        let binary = vybe_platform_wasm::write_wasm(&chunks);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&binary)
+            .expect("flags assertion must emit standard Wasm");
+    }
+
+    #[test]
+    fn flags_assertion_checks_complete_value_at_runtime() {
+        fn run(flags: &[(&str, bool)]) -> Result<vybe_runtime::Value, vybe_runtime::VMError> {
+            let mut module =
+                crate::parse("(assert_return (invoke \"flags\") (flags.const \"a\" \"c\"))")
+                    .unwrap();
+            let StmtKind::Block(parts) = &mut module.body[0].kind else {
+                panic!("flags assertion must bind the action");
+            };
+            let StmtKind::VarDecl { declarations, .. } = &mut parts[0].kind else {
+                panic!("flags action binding");
+            };
+            declarations[0].init = Some(Expression::new(ExprKind::Object(
+                flags
+                    .iter()
+                    .map(|(name, value)| ObjectProperty::KeyValue {
+                        key: Expression::string(name),
+                        value: Expression::bool(*value),
+                    })
+                    .collect(),
+            )));
+            let profile = vybe_compiler::profile::parse_profile(crate::profile_source()).unwrap();
+            let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
+                .compile(&module)
+                .unwrap();
+            let mut vm = vybe_runtime::VM::new();
+            vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+            vm.run(chunks)
+        }
+
+        assert!(run(&[("a", true), ("b", false), ("c", true)]).is_ok());
+        for flags in [
+            [("a", true), ("b", true), ("c", true)],
+            [("a", true), ("b", false), ("c", false)],
+        ] {
+            let error = run(&flags).expect_err("mismatched flags must fail");
+            assert!(error.message.contains("assert_return failed"), "{error:?}");
+        }
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -18136,14 +22399,6 @@ fn parse_float_at(s: &str, is_f32: bool) -> Expression {
             })
         }
     }
-}
-
-/// Parse a WAT hex float like `0x1.8p1` (= 1.5 × 2¹ = 3.0). Rust's `f64::parse`
-/// rejects hex floats, so the significand (hex integer part + hex fraction) is
-/// read here and scaled by the binary `p` exponent — but read EXACTLY, and
-/// rounded once, for the reason spelled out inside.
-fn parse_hex_float(s: &str) -> Option<f64> {
-    parse_hex_float_at(s, false)
 }
 
 fn parse_hex_float_at(s: &str, is_f32: bool) -> Option<f64> {
@@ -18704,34 +22959,6 @@ fn peek_typeuse_shape(__w: &WastWalker, pair: &Pair<Rule>) -> (usize, usize) {
         );
     }
     (params, results)
-}
-
-fn peek_typeuse_index(pair: &Pair<Rule>) -> Option<String> {
-    let inner = if pair.as_rule() == Rule::instr {
-        pair.clone().into_inner().next()?
-    } else {
-        pair.clone()
-    };
-    // The `(type $sig)` type-use nests identically (`instr_arg → block_type`)
-    // in the plain and folded forms.
-    if !matches!(inner.as_rule(), Rule::plain_instr | Rule::folded_instr) {
-        return None;
-    }
-    for c in inner.into_inner() {
-        if c.as_rule() != Rule::instr_arg {
-            continue;
-        }
-        if let Some(bt) = c.into_inner().next() {
-            if bt.as_rule() == Rule::block_type {
-                for x in bt.into_inner() {
-                    if x.as_rule() == Rule::index {
-                        return Some(x.as_str().trim_start_matches('$').to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 /// The optional table reference of `call_indirect $t (type $sig)` — the first
@@ -19599,10 +23826,16 @@ fn fold_instructions_seeded(
                             ..
                         } = call.kind
                         {
-                            let mut tail_args = vec![*callee];
+                            let is_ref_call =
+                                matches!(&callee.kind, ExprKind::Ident(name) if name == "call_ref");
+                            let mut tail_args = if is_ref_call { Vec::new() } else { vec![*callee] };
                             tail_args.extend(call_args.into_iter().map(|a| a.value));
                             statements.push(Statement::with_span(
-                                StmtKind::Expr(make_call("__wasm_return_call", tail_args, span)),
+                                StmtKind::Expr(make_call(
+                                    if is_ref_call { "return_call_ref" } else { "__wasm_return_call" },
+                                    tail_args,
+                                    span,
+                                )),
                                 span,
                             ));
                         } else {
@@ -21051,6 +25284,27 @@ fn module_fields<'a>(module: &Pair<'a, Rule>) -> Vec<Pair<'a, Rule>> {
             }
         })
         .collect()
+}
+
+fn duplicate_core_import_reason(module: &Pair<Rule>) -> Option<String> {
+    let mut names = std::collections::HashSet::new();
+    for field in module_fields(module) {
+        if field.as_rule() != Rule::import_field {
+            continue;
+        }
+        let parts: Vec<String> = field
+            .into_inner()
+            .filter(|part| part.as_rule() == Rule::string)
+            .map(|part| unquote(part.as_str()))
+            .collect();
+        if let [module, name] = parts.as_slice() {
+            let key = format!("{module}:{name}");
+            if !names.insert(key.clone()) {
+                return Some(format!("duplicate import name `{key}`"));
+            }
+        }
+    }
+    None
 }
 
 /// The first descendant with the given rule, not descending past it.
@@ -22879,7 +27133,7 @@ fn type_one_func(f: &Pair<Rule>, ctx: &TypeCtx) -> Option<String> {
 /// Find the modules under a pair and type each. Used from the two places an
 /// `assert_invalid` module arrives — inline and `(module quote …)`.
 fn stack_typing_reason_in(pair: &Pair<Rule>) -> Option<String> {
-    if pair.as_rule() == Rule::module {
+    if matches!(pair.as_rule(), Rule::module | Rule::core_module_def) {
         // Initializers first: they are typed independently of any function,
         // and a module whose table init is ill-typed says so regardless of
         // what its bodies do.

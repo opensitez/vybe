@@ -58,7 +58,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -93,6 +93,9 @@ fn emit_mark_queryish_prefix(
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
+    // The ECMA import returns a boxed boolean; Wasm IF requires raw i32.
+    let cast = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast, 1, line);
     chunk.emit_if(line);
     core_wasm::i32_const(chunk, line, 1);
     lset(chunk, is_query_slot, line);
@@ -246,7 +249,10 @@ fn emit_mysqli_fetch_row_or_null(chunks: &mut [Chunk], current: usize, line: u32
         let idx = chunk.add_import("ecma:array", "isArray");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    // Array.isArray always returns a Boolean. Unbox the proven result
+    // directly instead of repeating the general truthiness dispatch.
+    let cast = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast, 1, line);
     chunk.emit_if_value(line);
     lget(chunk, cursor_slot, line);
     lget(chunk, rows_slot, line);
@@ -1043,9 +1049,8 @@ pub fn emit_php_mysqli_real_escape_string(
 ) {
     let chunk = &mut chunks[current];
     let data_slot = alloc_local(chunk);
-    let dbh_slot = alloc_local(chunk);
     lset(chunk, data_slot, line);
-    lset(chunk, dbh_slot, line);
+    chunk.emit_op(Op::DROP, line); // Existing escaping does not consume the connection.
 
     lget(chunk, data_slot, line);
     push_str(chunk, "\\", line);
@@ -1054,18 +1059,12 @@ pub fn emit_php_mysqli_real_escape_string(
         let idx = chunk.add_import("ecma:string", "replaceAll");
         chunk.emit_call(idx, 3, line);
     }
-    lset(chunk, data_slot, line);
-
-    lget(chunk, data_slot, line);
     push_str(chunk, "'", line);
     push_str(chunk, "\\'", line);
     {
         let idx = chunk.add_import("ecma:string", "replaceAll");
         chunk.emit_call(idx, 3, line);
     }
-    lset(chunk, data_slot, line);
-
-    lget(chunk, data_slot, line);
 }
 
 pub fn emit_php_mysqli_character_set_name(
@@ -1168,10 +1167,11 @@ pub fn emit_php_mysqli_fetch_all(chunks: &mut [Chunk], current: usize, _argc: u8
 // `db_adapter` statement object. Each drops the receiver + args and returns the
 // documented sentinel; row-count/id state lives as stamped properties.
 
-/// Drop the receiver + `argc` args, then push `result` (a bool sentinel).
+/// Drop `argc` supplied values (including the receiver), then push the sentinel.
+/// The value-method dispatcher has already included the receiver in its count.
 fn emit_stmt_sentinel(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, result: bool) {
     let chunk = &mut chunks[current];
-    for _ in 0..(argc as u16 + 1) {
+    for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
     }
     chunk.emit_bool_const(result, line);

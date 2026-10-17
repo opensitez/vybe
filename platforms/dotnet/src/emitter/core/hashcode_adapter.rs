@@ -34,7 +34,7 @@
 //! compares two values that travel the same path. See [`emit_value_hash`].
 
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
-use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_compiler::primitives::instructions::{host};
 use vybe_compiler::primitives::{collections, errors, object, ops};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;

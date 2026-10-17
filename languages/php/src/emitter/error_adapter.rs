@@ -9,13 +9,11 @@
 //! Control flow uses the shared structured `emit_if_value`/`emit_else`/`emit_end`
 //! helpers rather than hand-managed jumps.
 
-use std::sync::Arc;
-
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 /// Current error handler: `{cb, mask, prev}` object, or null.
 const HANDLER_G: &str = "__php_err_handler";
@@ -58,7 +56,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 

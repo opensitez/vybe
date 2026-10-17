@@ -26,16 +26,6 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn emit_set_string_field(chunk: &mut Chunk, key: &str, value: &str, line: u32) {
-    vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
-    class_slots::emit_class_set(
-        chunk,
-        ObjSource::Stack,
-        &field_slot(key),
-        ValueSource::ConstStr(value.to_string()),
-        line,
-    );
-}
 
 fn encoding_web_name(encoding: &str) -> &str {
     match encoding.to_ascii_lowercase().as_str() {

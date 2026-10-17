@@ -1,10 +1,9 @@
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::instructions::host;
 use vybe_compiler::primitives::object::emit_bind_method_with_slot;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 use super::object_fields::{field_slot, set_both_spellings};
 

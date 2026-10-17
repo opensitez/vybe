@@ -202,53 +202,67 @@ fn exception_constructor(span: &Span) -> ClassMember {
     }
 }
 
-fn exception_base_members(class_name: &str, span: &Span) -> Vec<ClassMember> {
-    let mut members = vec![
-        exception_field(
-            "message",
-            Expression::with_span(ExprKind::Lit(Literal::Str(String::new())), span.clone()),
-        ),
-        exception_field(
-            "code",
-            Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone()),
-        ),
-        exception_field(
-            "previous",
-            Expression::with_span(ExprKind::Lit(Literal::Null), span.clone()),
-        ),
-        exception_field(
-            "cause",
-            Expression::with_span(ExprKind::Lit(Literal::Null), span.clone()),
-        ),
-        exception_constructor(span),
-        exception_method("getMessage", this_field("message", span), span),
-        exception_method("getCode", this_field("code", span), span),
-        exception_method("getPrevious", this_field("previous", span), span),
-        exception_method(
-            "getLine",
-            Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone()),
-            span,
-        ),
-        exception_method(
-            "getFile",
-            Expression::with_span(ExprKind::Lit(Literal::Str(String::new())), span.clone()),
-            span,
-        ),
-        exception_method("getTrace", empty_array(span), span),
-        exception_method(
-            "getTraceAsString",
-            Expression::with_span(
-                ExprKind::Lit(Literal::Str("#0 {main}".to_string())),
-                span.clone(),
+fn exception_members(class_name: &str, span: &Span, define_getters: bool) -> Vec<ClassMember> {
+    // Defaults are initialized through the existing inherited-field helper.
+    // Native subclasses do not redeclare their ancestors' protected storage.
+    let mut members = if define_getters {
+        vec![
+            exception_field(
+                "message",
+                Expression::with_span(ExprKind::Lit(Literal::Str(String::new())), span.clone()),
             ),
-            span,
-        ),
-        exception_method(
-            "__toString",
-            exception_to_string_expr(class_name, span),
-            span,
-        ),
-    ];
+            exception_field(
+                "code",
+                Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone()),
+            ),
+            exception_field(
+                "previous",
+                Expression::with_span(ExprKind::Lit(Literal::Null), span.clone()),
+            ),
+            exception_field(
+                "cause",
+                Expression::with_span(ExprKind::Lit(Literal::Null), span.clone()),
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
+    members.push(exception_constructor(span));
+    // The base classes own these implementations. Re-declaring them in every
+    // builtin subclass generated hundreds of identical method bodies per
+    // compilation. Normal class inheritance keeps their receiver and override
+    // semantics and shares the existing methods instead.
+    if define_getters {
+        members.extend([
+            exception_method("getMessage", this_field("message", span), span),
+            exception_method("getCode", this_field("code", span), span),
+            exception_method("getPrevious", this_field("previous", span), span),
+            exception_method(
+                "getLine",
+                Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone()),
+                span,
+            ),
+            exception_method(
+                "getFile",
+                Expression::with_span(ExprKind::Lit(Literal::Str(String::new())), span.clone()),
+                span,
+            ),
+            exception_method("getTrace", empty_array(span), span),
+            exception_method(
+                "getTraceAsString",
+                Expression::with_span(
+                    ExprKind::Lit(Literal::Str("#0 {main}".to_string())),
+                    span.clone(),
+                ),
+                span,
+            ),
+        ]);
+    }
+    members.push(exception_method(
+        "__toString",
+        exception_to_string_expr(class_name, span),
+        span,
+    ));
     members.push(lsb_class_field(class_name, span));
     members
 }
@@ -272,6 +286,9 @@ fn core_exception_decl(
             interfaces,
             members,
             modifiers: ClassModifiers {
+                linkage: vybe_ast::ClassLinkage::Library {
+                    identity: format!("php:core-exceptions:v5:{name}"),
+                },
                 kind,
                 ..ClassModifiers::default()
             },
@@ -301,7 +318,7 @@ pub(crate) fn declarations() -> Vec<Statement> {
             "Exception",
             None,
             vec!["Throwable".to_string()],
-            exception_base_members("Exception", &span),
+            exception_members("Exception", &span, true),
             ClassKind::Class,
             &span,
         ),
@@ -309,7 +326,7 @@ pub(crate) fn declarations() -> Vec<Statement> {
             "Error",
             None,
             vec!["Throwable".to_string()],
-            exception_base_members("Error", &span),
+            exception_members("Error", &span, true),
             ClassKind::Class,
             &span,
         ),
@@ -346,7 +363,7 @@ pub(crate) fn declarations() -> Vec<Statement> {
             name,
             Some(parent),
             Vec::new(),
-            exception_base_members(name, &span),
+            exception_members(name, &span, false),
             ClassKind::Class,
             &span,
         ));
@@ -360,4 +377,29 @@ pub(crate) fn declarations() -> Vec<Statement> {
         &span,
     ));
     stmts
+}
+
+/// Keep the ordinary class declarations and their topological order, but only
+/// publish requested constructors and their transitive PHP ancestors.
+pub(crate) fn declarations_for(roots: &[&str]) -> Vec<Statement> {
+    let declarations = declarations();
+    let mut needed: std::collections::HashSet<String> =
+        roots.iter().map(|name| (*name).to_string()).collect();
+    loop {
+        let previous = needed.len();
+        for declaration in &declarations {
+            if let StmtKind::ClassDecl { name, parents, interfaces, .. } = &declaration.kind {
+                if needed.contains(name) {
+                    needed.extend(parents.iter().cloned());
+                    needed.extend(interfaces.iter().cloned());
+                }
+            }
+        }
+        if needed.len() == previous {
+            break;
+        }
+    }
+    declarations.into_iter().filter(|declaration| {
+        matches!(&declaration.kind, StmtKind::ClassDecl { name, .. } if needed.contains(name))
+    }).collect()
 }

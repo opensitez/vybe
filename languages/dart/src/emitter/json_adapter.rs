@@ -50,6 +50,12 @@ fn call_ref(chunk: &mut Chunk, argc: u8, line: u32) {
 /// Stack: `[value]` or `[value, toEncodable]` → `[string]`.
 pub fn emit_dart_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let helper = build_clean_helper(chunks, line);
+    emit_dart_json_encode_with_helper(chunks, current, helper, argc, line);
+}
+
+fn emit_dart_json_encode_with_helper(
+    chunks: &mut Vec<Chunk>, current: usize, helper: usize, argc: u8, line: u32,
+) {
     let c = &mut chunks[current];
     let value_slot = slot(c);
     let hook_slot = slot(c);
@@ -67,6 +73,35 @@ pub fn emit_dart_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     call_ref(c, 3, line);
     add_call(c, "ecma:json", "stringify", 1, line);
 }
+
+// This provider consumes no class catalog or enclosing locals: the original
+// cleaner resolves toJson/callbacks dynamically at invocation. Source lines
+// remain in the identity because they are observable in helper diagnostics.
+fn clean_context_key(_: &[Chunk], line: u32) -> Vec<u8> {
+    line.to_be_bytes().to_vec()
+}
+fn invoke_clean_one(chunks: &mut Vec<Chunk>, current: usize, helper: usize, line: u32) {
+    emit_dart_json_encode_with_helper(chunks, current, helper, 1, line);
+}
+fn unused_factory() -> Chunk {
+    unreachable!("Dart JSON cleaner uses a unit-owned contextual factory")
+}
+fn unused_caller(_: &mut Chunk, _: usize, _: u32) {
+    unreachable!("Dart JSON cleaner preserves its original caller adaptation")
+}
+
+/// Explicit producer authority; optional callbacks and other arities retain
+/// the original path. The Owner never adopts a guest's matching chunk name.
+pub static HELPER_DEFINITIONS: &[vybe_compiler::primitives::helper_templates::Definition] = &[
+    vybe_compiler::primitives::helper_templates::Definition {
+        contract: vybe_compiler::primitives::helper_templates::Contract::ContextualAppendOnlyUnit {
+            key: clean_context_key, build: build_clean_helper, invoke: invoke_clean_one,
+        },
+        operation: "dart.json_encode", namespace: "dart", version: 1,
+        parser: crate::parse, producer: super::dispatch::dispatch, arity: 1,
+        helper_name: "__dart_json_clean", factory: unused_factory, caller: unused_caller,
+    },
+];
 
 /// `jsonDecode(text[, reviver])` — parse, typed `FormatException` on
 /// failure, reviver applied bottom-up over the parsed tree.
@@ -164,7 +199,9 @@ fn build_revive_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, i_slot, line);
         // reviver(i, revive(v[i], reviver))
-        chunks[hidx].emit_op_u16(Op::LOCAL_GET, reviver_slot, line);
+        let reviver_receiver = vybe_compiler::primitives::callable::push_callback_from_slot(
+            chunks, hidx, reviver_slot, line,
+        );
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, i_slot, line);
         ref_func(&mut chunks[hidx], hidx, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -172,7 +209,7 @@ fn build_revive_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         collections::emit_get(chunks, hidx, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, reviver_slot, line);
         call_ref(&mut chunks[hidx], 2, line);
-        call_ref(&mut chunks[hidx], 2, line);
+        call_ref(&mut chunks[hidx], 2 + reviver_receiver, line);
         collections::emit_set(chunks, hidx, line);
         chunks[hidx].emit_op(Op::DROP, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -219,7 +256,9 @@ fn build_revive_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, key_slot, line);
         // reviver(k, revive(v[k], reviver))
-        chunks[hidx].emit_op_u16(Op::LOCAL_GET, reviver_slot, line);
+        let reviver_receiver = vybe_compiler::primitives::callable::push_callback_from_slot(
+            chunks, hidx, reviver_slot, line,
+        );
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, key_slot, line);
         ref_func(&mut chunks[hidx], hidx, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -227,7 +266,7 @@ fn build_revive_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         add_call(&mut chunks[hidx], "ecma:object", "get", 2, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, reviver_slot, line);
         call_ref(&mut chunks[hidx], 2, line);
-        call_ref(&mut chunks[hidx], 2, line);
+        call_ref(&mut chunks[hidx], 2 + reviver_receiver, line);
         add_call(&mut chunks[hidx], "ecma:object", "set", 3, line);
         chunks[hidx].emit_op(Op::DROP, line);
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, i_slot, line);

@@ -30,7 +30,6 @@ throwable_is_root = true            # `Throwable` is the universal root; the
                                     # `Error` and `Exception` branches are
                                     # siblings, so `catch (Exception)` does not
                                     # catch `Error`s (matches via __types chain).
-string_aware_relational = true      # `<`/`>`/`<=`/`>=`/`<=>` compare strings
                                     # lexicographically, else numeric/dynamic;
                                     # DateTime operands unboxed first.
 supports_autoload = true            # undefined class ctor → spl_autoload_register
@@ -40,8 +39,8 @@ missing_arg_is_undefined = true     # a param default fires only when the arg is
                                     # keeps `null`, doesn't fall back to default.
                                     # callback, then retry.
 unified_array_map = true          # ONE `array` type: list + dict, autovivifying
-concat_stringifies_operands = true  # PHP `.` uses the shared ToString slot reader.
 function_scoped_variables = true   # `if (true) { $x = 1; } echo $x;` is legal — blocks don't scope
+reference_creates_local = true    # An undeclared reference/out argument creates function-local storage.
 buffered_iterator_methods = true    # $gen->current()/next()/valid()/send()/
                                     # getReturn(); foreach buffers current value.
 source_function_callable_aliases = true # String callables and dynamic name
@@ -55,6 +54,10 @@ callable_objects = true             # `$obj(...)` on a class defining `__invoke`
                                     # ending in a `->__invoke` NAME test — a
                                     # second answer to a question the shared
                                     # call path already answers by role.
+# PHP instance methods dispatch on the runtime receiver unless final/private.
+# Inherited method bodies must observe overrides on the child instance too.
+methods_virtual_by_default = true
+private_methods_bind_lexically = true
 self_keyword = "$this"              # PHP variables canonicalize with the $
                                     # sigil (see strip_dollar in walker.rs).
                                     # `$this` IS the scope name; matching
@@ -70,7 +73,6 @@ fold_callable_names = true         # FUNCTION and CLASS names are not. Declaring
 string_indexing = "zero_based"
 switch_fallthrough = true           # PHP switch falls through like JS/C unless break/return/throw exits.
 # PHP-specific
-dynamic_add = false                 # `+` is numeric only; `.` is concat
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md). Magic methods like
 # __toString / __invoke / __get / __set / __call canonicalise to the
@@ -106,9 +108,16 @@ vprintf             = { emit = "intrinsic:php_vprintf",      min_args = 2, max_a
 vsprintf            = { emit = "intrinsic:php_vsprintf",     min_args = 2, max_args = 2 }
 sscanf              = { emit = "common:php.sscanf",          min_args = 2, max_args = 2 }
 uniqid              = { emit = "common:php.uniqid",          min_args = 0, max_args = 2 }
-__php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 2 }
+__php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 3 }
+__php_extract_scope = { emit = "common:php.extract_scope", min_args = 4, max_args = 4 }
+__php_scope_new = { emit = "common:php.scope_new", min_args = 0, max_args = 0 }
+__php_scope_ref = { emit = "common:php.scope_ref", min_args = 2, max_args = 2 }
+__php_scope_cell = { emit = "common:php.scope_cell", min_args = 1, max_args = 1 }
 __php_global_function = { emit = "host:vybe:php:global_function", min_args = 1, max_args = 1 }
+__php_late_bound_argument = { emit = "common:php.late_bound_argument", min_args = 1, max_args = 1 }
 __php_resolve_function = { emit = "host:php:dynamic:functionByName", min_args = 1, max_args = 1 }
+__php_resolve_class = { emit = "host:php:dynamic:classByName", min_args = 1, max_args = 1 }
+__php_reenter_constructor = { emit = "host:ecma:function:initialize", min_args = 3, max_args = 3 }
 __php_call_user_func_array = { emit = "common:php.call_user_func_array", min_args = 2, max_args = 2 }
 __php_global_get = { emit = "common:php.global_get", min_args = 1, max_args = 1 }
 __php_globals_object = { emit = "common:php.globals_object", min_args = 0, max_args = 0 }
@@ -314,28 +323,20 @@ file                = { emit = "common:php.file",           min_args = 1, max_ar
 # `glob($pattern)` currently supports the common single-`*` filename form
 # used by apps like Keynote, returning matching full paths.
 glob                = { emit = "common:php.glob",           min_args = 1, max_args = 2 }
-# Regex — PHP PCRE → ECMA-262 §22.2 RegExp (Rust regex backing).
-# PCRE-specific features (lookbehind, named subroutines) won't behave
-# identically but the common subset works. Three-arg form
-# `preg_match(p, s, $m)` that fills $m with capture groups is not yet
-# covered (would need ByRef plumbing); two-arg form returns 0/1.
-# PHP preg_* → ECMA-262 §22.2 RegExp. PHP's pattern-first argument
-# convention matches `ecma:regexp.test/exec` directly (string-as-pattern
-# is the first arg). preg_match returns 0/1 — Bool from ecma:regexp.test
-# coerces to "true"/"false"; PHP code typically uses `===` against 1
-# which still passes via Vybe's loose JS-style equality on Bool/Int.
-#
-# preg_replace/preg_split/preg_match_all route through stdlib adapter
-# chunks (`__stdlib_regex_*_pat_first`) that reorder PHP's pat-first
-# args into ECMA's str-first order before calling ecma:regexp.*.
+# Regex — PHP PCRE semantics, with delimiter/modifier handling in the PHP provider.
+# PHP regex declarations select the owning adapters and PCRE provider. The
+# replacement adapter handles pattern arrays, limits and the count reference;
+# its emitted control flow and reference writes use ordinary Wasm operations.
 preg_match          = { emit = "host:php:regex:test",            min_args = 2, max_args = 5 }
 preg_last_error     = { emit = "host:php:regex:lastError",       min_args = 0, max_args = 0 }
 preg_last_error_msg = { emit = "host:php:regex:lastErrorMessage", min_args = 0, max_args = 0 }
 __php_throw_type_error = { emit = "common:php.throw_type_error", min_args = 1, max_args = 1 }
 __php_throw_error      = { emit = "common:php.throw_error",      min_args = 1, max_args = 1 }
 __php_preg_match_offsets = { emit = "host:php:regex:matchWithOffsets", min_args = 4, max_args = 4 }
+__php_regex_valid_pattern = { emit = "host:php:regex:validPattern", min_args = 1, max_args = 1 }
+__php_regex_iterator_entry = { emit = "host:php:regex:iteratorEntry", min_args = 6, max_args = 6 }
 preg_match_all      = { emit = "common:php.regex_match_all_pat_first", min_args = 2, max_args = 5 }
-preg_replace        = { emit = "common:php.regex_replace_pat_first", min_args = 3, max_args = 4 }
+preg_replace        = { emit = "common:php.regex_replace_pat_first", min_args = 3, max_args = 5, pass_by = ["value", "value", "value", "value", "alias"] }
 preg_replace_callback = { emit = "common:php.preg_replace_callback", min_args = 3, max_args = 5 }
 __php_clone_shell   = { emit = "common:php.clone_shell",         min_args = 1, max_args = 1 }
 __php_clone_field_get = { emit = "common:php.clone_field_get",   min_args = 2, max_args = 2 }
@@ -344,6 +345,8 @@ __php_field_get       = { emit = "common:php.field_get",         min_args = 2, m
 __php_field_set       = { emit = "common:php.field_set",         min_args = 3, max_args = 3 }
 __php_clone_helper  = { emit = "common:php.clone_helper",        min_args = 1, max_args = 2 }
 __php_dynamic_method_call = { emit = "common:php.dynamic_method_call", min_args = 3, max_args = 3 }
+__php_bind_named_args = { emit = "common:php.bind_named_args", min_args = 3, max_args = 3 }
+__php_method_for_call = { emit = "host:ecma:value:getMethodForCall", min_args = 3, max_args = 3 }
 __php_method_exists = { emit = "common:php.method_exists", min_args = 2, max_args = 2 }
 preg_split          = { emit = "host:php:regex:split",          min_args = 2, max_args = 4 }
 preg_quote          = { emit = "common:php.preg_quote",          min_args = 1, max_args = 2 }
@@ -481,11 +484,20 @@ is_object           = { emit = "common:php.is_object",           min_args = 1, m
 # ── Array functions ─────────────────────────────────────────────────────────
 
 __vybe_php_array_read = { emit = "common:php.array_read_deref", min_args = 2, max_args = 2 }
+__vybe_php_quiet_index = { emit = "common:php.quiet_index", min_args = 2, max_args = 2 }
 __vybe_php_nested_member_set = { emit = "host:php:array:nested_member_set", min_args = 5, max_args = 5 }
 __vybe_php_local_set = { emit = "host:php:array:local_set", min_args = 3, max_args = 3 }
 __vybe_php_local_append = { emit = "host:php:array:local_append", min_args = 2, max_args = 2 }
 __vybe_php_property_inaccessible = { emit = "host:php:property:isInaccessible", min_args = 3, max_args = 3 }
 __vybe_php_recursive_files = { emit = "host:php:spl:recursiveFiles", min_args = 1, max_args = 1 }
+__php_spl_directory_entries = { emit = "host:php:spl:directoryEntries", min_args = 2, max_args = 2 }
+__php_spl_directory_entry = { emit = "host:php:spl:directoryEntry", min_args = 2, max_args = 2 }
+__php_spl_directory_valid = { emit = "host:php:spl:directoryValid", min_args = 2, max_args = 2 }
+__php_spl_is_dot = { emit = "host:php:spl:isDot", min_args = 1, max_args = 1 }
+__php_spl_has_children = { emit = "host:php:spl:hasChildren", min_args = 3, max_args = 3 }
+__php_spl_extension = { emit = "host:php:spl:extension", min_args = 1, max_args = 1 }
+__php_spl_relative_path = { emit = "host:php:spl:relativePath", min_args = 3, max_args = 3 }
+__php_spl_set_top = { emit = "host:php:spl:setTop", min_args = 2, max_args = 2 }
 __vybe_php_regex_filter = { emit = "host:php:spl:regexFilter", min_args = 2, max_args = 3 }
 count               = { emit = "common:php.count",                min_args = 1, max_args = 2 }
 sizeof              = { emit = "common:php.count",                min_args = 1, max_args = 2 }
@@ -503,7 +515,8 @@ array_rand          = { emit = "common:php.array_rand",            min_args = 1,
 in_array            = { emit = "common:php.in_array",              min_args = 2, max_args = 3 }
 array_search        = { emit = "common:php.array_search",          min_args = 2, max_args = 3 }
 array_slice         = { emit = "common:php.array_slice",           min_args = 2, max_args = 4 }
-array_merge         = { emit = "common:php.array_merge",           min_args = 1, max_args = 255 }
+array_merge         = { emit = "common:php.array_merge",           min_args = 0, max_args = 255 }
+__php_array_merge_args = { emit = "common:php.array_merge_args", min_args = 1, max_args = 1 }
 range               = { emit = "intrinsic:php_range",              min_args = 2, max_args = 3 }
 array_map           = { emit = "common:php.array_map",             min_args = 2, max_args = 255 }
 zip                 = { emit = "common:php.zip",                       min_args = 2, max_args = 255 }
@@ -556,6 +569,12 @@ __php_gen_valid     = { emit = "common:php.generator_valid",       min_args = 1,
 # surface, one CVE surface.
 array_keys          = { emit = "common:php.array_keys",         min_args = 1, max_args = 3 }
 array_values        = { emit = "common:php.array_values",       min_args = 1, max_args = 1 }
+__php_foreach_protocol_current = { emit = "common:php.foreach_protocol_current", min_args = 1, max_args = 1 }
+__php_foreach_protocol_valid = { emit = "common:php.foreach_protocol_valid", min_args = 1, max_args = 1 }
+__php_foreach_protocol_next = { emit = "common:php.foreach_protocol_next", min_args = 1, max_args = 1 }
+__php_foreach_protocol_rewind = { emit = "common:php.foreach_protocol_rewind", min_args = 1, max_args = 1 }
+__php_foreach_protocol_key = { emit = "common:php.foreach_protocol_key", min_args = 1, max_args = 1 }
+__php_foreach_protocol_getiterator = { emit = "common:php.foreach_protocol_getiterator", min_args = 1, max_args = 1 }
 __php_foreach_entries = { emit = "host:ecma:object:entries", min_args = 1, max_args = 1 }
 __php_foreach_get = { emit = "host:ecma:array:get", min_args = 2, max_args = 2 }
 __php_foreach_length = { emit = "host:ecma:array:length", min_args = 1, max_args = 1 }
@@ -749,6 +768,7 @@ file_put_contents   = { emit = "common:php.file_put_contents", min_args = 2, max
 # `wasi:filesystem:exists`/`isFile`/`isDir` are deprecated and will
 # move to `vybe:fs` when the namespace truth-rename lands.
 file_exists         = { emit = "common:php.file_exists",        min_args = 1, max_args = 1 }
+clearstatcache      = { emit = "common:php.clearstatcache",     min_args = 0, max_args = 2 }
 is_file             = { emit = "common:php.is_file",            min_args = 1, max_args = 1 }
 is_dir              = { emit = "common:php.is_dir",             min_args = 1, max_args = 1 }
 is_link             = { emit = "common:php.is_link",            min_args = 1, max_args = 1 }
@@ -845,7 +865,7 @@ ob_get_status       = { emit = "common:php.ob_get_status",       min_args = 0, m
 ob_implicit_flush   = { emit = "common:php.ob_implicit_flush",   min_args = 0, max_args = 1 }
 ob_list_handlers    = { emit = "common:php.ob_list_handlers",    min_args = 0, max_args = 0 }
 ob_gzhandler        = { emit = "common:php.ob_gzhandler",        min_args = 1, max_args = 2 }
-register_shutdown_function = { emit = "intrinsic:php_register_shutdown_function", min_args = 1, max_args = 255 }
+register_shutdown_function = { emit = "intrinsic:register_shutdown_callback", min_args = 1, max_args = 255 }
 spl_autoload_register = { emit = "common:php.spl_autoload_register", min_args = 1, max_args = 3 }
 spl_autoload_unregister = { emit = "common:php.spl_autoload_unregister", min_args = 1, max_args = 1 }
 spl_autoload_functions = { emit = "common:php.spl_autoload_functions", min_args = 0, max_args = 0 }
@@ -1103,7 +1123,7 @@ __refl_class                   = { emit = "common:php.refl_class",              
 __refl_method                  = { emit = "common:php.refl_method",              min_args = 2, max_args = 8 }
 __php_method_reflection_params = { emit = "host:php:dynamic:methodReflectionParams", min_args = 2, max_args = 2 }
 __php_method_is_static = { emit = "host:php:dynamic:methodIsStatic", min_args = 2, max_args = 2 }
-__refl_property                = { emit = "common:php.refl_property",            min_args = 2, max_args = 3 }
+__refl_property                = { emit = "common:php.refl_property",            min_args = 2, max_args = 4 }
 __refl_function                = { emit = "common:php.refl_function",            min_args = 1, max_args = 4 }
 __refl_constant                = { emit = "common:php.refl_constant",            min_args = 3, max_args = 3 }
 __weak_ref_create              = { emit = "common:php.weak_ref_create",          min_args = 1, max_args = 1 }
@@ -1356,6 +1376,8 @@ len = "host:php:string:byteLength"
 #
 # This used to be a walker rewrite to a helper identifier. It now stays on the
 # shared operator path and resolves through this builtin slot to the PHP adapter.
+# These directives also select the adapter's proven RHS string-literal fast
+# path. Literal facts do not select PHP semantics in the shared compiler.
 eq = "common:php.loose_eq"
 # `!=` / `<>` is its own target, not `eq` negated: the emitter materializes a
 # real Bool and `emit_dyn_not` would discard that, printing `0` for
@@ -1368,7 +1390,7 @@ to_string = "common:php.concat_stringify"
 # `$s++` on a string is Perl-style character carry ("az"++ is "ba") plus the
 # date-suffix form — the step SLOTS bind it, the AST keeps `++`, and the
 # shared emitter calls this only when the runtime value IS a string.
-inc = "common:php.inc"
+inc = "common:php.string_inc_proven"
 dec = "common:php.dec"
 
 # `+` on two arrays is UNION, not concatenation: keys present on the left win,

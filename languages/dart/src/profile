@@ -42,12 +42,10 @@ class_method_dispatch = "prototype"
 uses_common_resolver = true
 entry_point = "main"
 # Dart `+` on strings concatenates (per dart:core String.+).
-dynamic_add = true
 # Dart operator overloads are method dispatch (`operator +`, `operator ==`,
 # etc.), not ECMA ToPrimitive coercion. This puts Dart on the same shared rich
 # operator machinery as Python/C# while preserving `dynamic_add` as the
 # primitive/string fallback.
-ecma_operator_coercion = false
 # Dart `bool` is a real boolean (like C#), not a C-style int: comparison and
 # equality results print as `true`/`false`. Materialize them so `print(a == b)`
 # / `print(x < y)` render correctly instead of `1`/`0`.

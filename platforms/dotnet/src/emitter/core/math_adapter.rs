@@ -7,10 +7,9 @@
 //! operations ECMA never exposed.
 
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
-use std::sync::Arc;
-use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::class_slots::{self, ObjSource, ValueSource};
 
 use super::object_fields::field_slot;
 
@@ -38,7 +37,6 @@ fn emit_throw_argument_out_of_range(
     message: &str,
     line: u32,
 ) {
-    let chunk = &mut chunks[current];
     crate::emitter::core::exceptions::emit_new_typed(
         chunks,
         current,

@@ -26,7 +26,10 @@ fn indexed_value(object: &Object, key: &Value) -> Value {
                 _ => None,
             })
             .unwrap_or(Value::Null),
-        _ => object.get(&format!("{key}")),
+        _ => match key {
+            Value::String(key) => object.get(key.as_ref()),
+            _ => object.get(&format!("{key}")),
+        },
     }
 }
 
@@ -202,6 +205,21 @@ fn array_entry_count(object: &Object) -> Option<usize> {
             let ObjectKind::Array(holes) = &holes.kind else {
                 return Some(items.len());
             };
+            if items.len() <= i32::MAX as usize {
+                // The hole table may contain duplicates or non-index values.
+                // Count valid indices once instead of probing the whole table
+                // for every array element. Dense arrays return above.
+                let mut missing = std::collections::HashSet::new();
+                for hole in holes {
+                    if let Value::I32(index) = hole {
+                        if *index >= 0 && (*index as usize) < items.len() {
+                            missing.insert(*index);
+                        }
+                    }
+                }
+                return Some(items.len() - missing.len());
+            }
+            // Preserve the original narrowing behavior for oversized arrays.
             Some(
                 (0..items.len())
                     .filter(|index| {
@@ -236,18 +254,34 @@ fn copy_array(value: &Value, active: &mut Vec<(usize, Value)>) -> Value {
         }
         source.clone()
     };
+    // The snapshot already owns copies of scalar entries. Flat PHP arrays need
+    // neither recursive copying nor a placeholder for cycle reconstruction.
+    // In particular, do not clone every string a second time just to replace
+    // the identical Arc retained by Object::clone above.
+    let has_object_entries = match &snapshot.kind {
+        ObjectKind::Array(items) => items.iter().any(|item| matches!(item, Value::Object(_))),
+        ObjectKind::Map(items) => items.values().any(|item| matches!(item, Value::Object(_))),
+        _ => unreachable!(),
+    };
+    if !has_object_entries {
+        return Value::Object(heap::alloc(snapshot));
+    }
     let target = heap::alloc(Object::new());
     let result = Value::Object(target.clone());
     active.push((identity, result.clone()));
     match &mut snapshot.kind {
         ObjectKind::Array(items) => {
             for item in items {
-                *item = copy_array(item, active);
+                if matches!(item, Value::Object(_)) {
+                    *item = copy_array(item, active);
+                }
             }
         }
         ObjectKind::Map(items) => {
             for item in items.values_mut() {
-                *item = copy_array(item, active);
+                if matches!(item, Value::Object(_)) {
+                    *item = copy_array(item, active);
+                }
             }
         }
         _ => unreachable!(),
@@ -282,6 +316,46 @@ fn array_map_snapshot(value: &Value) -> Option<Object> {
         }
         _ => None,
     }
+}
+
+fn union_key(key: &Value) -> Value {
+    match key {
+        Value::I32(value) => Value::I64(i64::from(*value)),
+        Value::I64(_) => key.clone(),
+        Value::F32(value) => Value::I64(*value as i64),
+        Value::F64(value) => Value::I64(*value as i64),
+        Value::Bool(value) => Value::I64(i64::from(*value)),
+        Value::Null => Value::String("".into()),
+        Value::String(value) => value.parse::<i64>().ok()
+            .filter(|number| number.to_string() == value.as_ref())
+            .map(Value::I64).unwrap_or_else(|| key.clone()),
+        _ => key.clone(),
+    }
+}
+
+fn union_arrays(left: &Value, right: &Value) -> Option<Value> {
+    let left = array_map_snapshot(left)?;
+    let right = array_map_snapshot(right)?;
+    let (ObjectKind::Map(left), ObjectKind::Map(right)) = (left.kind, right.kind) else {
+        unreachable!()
+    };
+    let mut entries = left.clone();
+    entries.clear();
+    // Reuse the map's ordered storage and PHP's array-copy rules. Presence,
+    // including a null value, wins on the left; numeric keys are not renumbered.
+    for (key, value) in left.iter().chain(right.iter()) {
+        entries.entry(union_key(key)).or_insert_with(|| copy_array(value, &mut Vec::new()));
+    }
+    let packed = entries.keys().enumerate().all(|(index, key)| {
+        matches!(key, Value::I64(number) if *number == index as i64)
+    });
+    let mut result = Object::new();
+    result.kind = if packed {
+        ObjectKind::Array(entries.into_values().collect())
+    } else {
+        ObjectKind::Map(entries)
+    };
+    Some(Value::Object(heap::alloc(result)))
 }
 
 // Replacement descends only when both values are PHP arrays. Objects and
@@ -453,34 +527,7 @@ pub fn register(fw: &mut Framework<'_>) {
                 Some(Value::String(value)) => value.is_empty() || value.as_ref() == "0",
                 Some(Value::Object(object)) => {
                     let object = object.lock().unwrap();
-                    if is_array_object(&object) {
-                        false
-                    } else {
-                        match &object.kind {
-                            ObjectKind::Map(entries) => entries.is_empty(),
-                            ObjectKind::Array(items) => {
-                                if items.is_empty() {
-                                    true
-                                } else if let Some(Value::Object(holes)) =
-                                    object.properties.get("__holes")
-                                {
-                                    let holes = holes.lock().unwrap();
-                                    if let ObjectKind::Array(holes) = &holes.kind {
-                                        (0..items.len()).all(|index| {
-                                            holes.iter().any(|hole| {
-                                        matches!(hole, Value::I32(value) if *value == index as i32)
-                                    })
-                                        })
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                            _ => false,
-                        }
-                    }
+                    array_entry_count(&object) == Some(0)
                 }
                 _ => false,
             };
@@ -497,6 +544,10 @@ pub fn register(fw: &mut Framework<'_>) {
             replace_arrays_recursive(base, overlay).unwrap_or(Value::Null)
         }),
     );
+    fw.register_host_fn("php:array", "union", Box::new(|_, args| {
+        let [left, right, ..] = args else { return Value::Null; };
+        union_arrays(left, right).unwrap_or(Value::Null)
+    }));
     fw.register_host_fn("php:array", "isArray", Box::new(|_, args| {
         let is_array = if let Some(Value::Object(object)) = args.first() {
             let object = object.lock().unwrap();
@@ -1127,4 +1178,42 @@ pub fn register(fw: &mut Framework<'_>) {
             }
         }),
     );
+}
+
+#[cfg(test)]
+mod sparse_count_tests {
+    use super::*;
+
+    fn count_with_holes(length: usize, values: Vec<Value>) -> usize {
+        let mut holes = Object::new();
+        holes.kind = ObjectKind::Array(values);
+        let mut array = Object::new();
+        array.kind = ObjectKind::Array(vec![Value::Null; length]);
+        array.properties.insert("__holes".into(), Value::Object(heap::alloc(holes)));
+        array_entry_count(&array).unwrap()
+    }
+
+    #[test]
+    fn duplicate_and_invalid_holes_do_not_change_entry_count() {
+        assert_eq!(count_with_holes(5, vec![
+            Value::I32(1), Value::I32(1), Value::I32(4),
+            Value::I32(-1), Value::I32(5), Value::I64(2),
+            Value::F64(3.0), Value::String(Arc::from("0")), Value::Null,
+        ]), 3);
+        assert_eq!(count_with_holes(0, vec![Value::I32(0)]), 0);
+        assert_eq!(count_with_holes(5, vec![]), 5);
+    }
+
+    #[test]
+    fn sparse_count_matches_original_membership_rule() {
+        for length in 0..64usize {
+            let holes: Vec<_> = (-3..70i32).filter(|index| index % 3 == 0)
+                .flat_map(|index| [Value::I32(index), Value::I32(index)])
+                .collect();
+            let expected = (0..length).filter(|index| {
+                !holes.iter().any(|hole| matches!(hole, Value::I32(value) if *value == *index as i32))
+            }).count();
+            assert_eq!(count_with_holes(length, holes), expected);
+        }
+    }
 }

@@ -19,11 +19,10 @@
 //! an interface (0.3 defines `wasi:http/types`, `client` and `handler`), so
 //! every `System.Net` call used to emit an unresolvable import.
 
-use std::sync::Arc;
-use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::class_slots::{self, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::{Chunk};
 
 use super::object_fields::field_slot;
 

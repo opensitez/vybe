@@ -59,9 +59,6 @@ const LITERAL: i32 = 16;
 const DOTALL: i32 = 32;
 const COMMENTS: i32 = 4;
 
-fn key(chunk: &mut Chunk, name: &str) -> u32 {
-    chunk.add_constant(Value::String(Arc::from(name)))
-}
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);

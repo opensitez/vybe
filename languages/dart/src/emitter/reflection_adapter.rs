@@ -1,13 +1,12 @@
 //! Dart reflection/runtimeType adapters backed by the shared reflection shape.
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{loops, reflection};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 const SET_MARKER_KEY: &str = "__dart_set_marker";
 const MAP_ORDER_KEY: &str = "__dart_map_order";

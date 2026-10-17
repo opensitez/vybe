@@ -38,7 +38,6 @@ string_indexing = "one_based"
 # instead of here. `dynamic_add` is read at exactly two sites and both carried
 # that guard, so moving it is equivalent, not a behaviour change.
 # builtinslotplan.md §3c / compilerhardcodedprofile.md.
-dynamic_add = false
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — COBOL intrinsic functions (FUNCTION xxx)

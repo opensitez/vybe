@@ -27,7 +27,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -113,7 +113,7 @@ fn emit_pack_integer(
     chunks[current].emit_end(line);
     lset(&mut chunks[current], number, line);
     match width {
-        1 => vybe_compiler::primitives::packing::emit_pack_byte_from_f64_slot(
+        1 => vybe_compiler::primitives::packing::emit_pack_byte_from_bounded_f64_slot(
             chunks, current, number, line,
         ),
         2 => vybe_compiler::primitives::packing::emit_pack_u16_from_f64_slot(
@@ -139,9 +139,9 @@ fn emit_pack_hex_string(chunks: &mut [Chunk], current: usize, hex_slot: u16, lin
     let idx_slot = alloc_local(&mut chunks[current]);
     let len_slot = alloc_local(&mut chunks[current]);
     let out_slot = alloc_local(&mut chunks[current]);
-    let piece_slot = alloc_local(&mut chunks[current]);
-
-    chunks[current].emit_string_const("", line);
+    // Collect private string pieces and join once. Rebuilding the entire
+    // prefix for every byte makes large hexadecimal inputs quadratic.
+    call_import(chunks, current, "ecma:array", "new", 0, line);
     lset(&mut chunks[current], out_slot, line);
     chunks[current].emit_i32_const(0, line);
     lset(&mut chunks[current], idx_slot, line);
@@ -153,23 +153,31 @@ fn emit_pack_hex_string(chunks: &mut [Chunk], current: usize, hex_slot: u16, lin
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], len_slot, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
+    lget(&mut chunks[current], out_slot, line);
+    // The loop's indices are proven nonnegative i32 values. Use the Wasm
+    // string builtin's cached UTF-16 view instead of decoding the complete
+    // input again through ECMAScript slice on every byte. Preserve slice's
+    // empty result when the final end index wraps at the signed-i32 limit.
+    lget(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_i32_const(i32::MAX - 2, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_else(line);
     lget(&mut chunks[current], hex_slot, line);
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], idx_slot, line);
     chunks[current].emit_i32_const(2, line);
     chunks[current].emit_op(Op::I32_ADD, line);
-    call_import(chunks, current, "ecma:string", "slice", 3, line);
+    call_import(chunks, current, "wasm:js-string", "substring", 3, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_i32_const(16, line);
     call_import(chunks, current, "ecma:number", "parseInt", 2, line);
     call_import(chunks, current, "ecma:string", "fromCharCode", 1, line);
-    lset(&mut chunks[current], piece_slot, line);
-
-    lget(&mut chunks[current], out_slot, line);
-    lget(&mut chunks[current], piece_slot, line);
-    emit_concat_top(chunks, current, line);
-    lset(&mut chunks[current], out_slot, line);
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     lget(&mut chunks[current], idx_slot, line);
     chunks[current].emit_i32_const(2, line);
@@ -178,6 +186,8 @@ fn emit_pack_hex_string(chunks: &mut [Chunk], current: usize, hex_slot: u16, lin
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
 
     lget(&mut chunks[current], out_slot, line);
+    chunks[current].emit_string_const("", line);
+    call_import(chunks, current, "ecma:array", "join", 2, line);
 }
 
 fn emit_map_new(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -295,6 +305,11 @@ fn emit_shared_call(
         chunks[index].emit_op(Op::RETURN, line);
         index
     };
+    if vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+        chunks, current, helper, argc, line,
+    ) {
+        return;
+    }
     let base = chunks[current].alloc_scratch(argc as u16);
     for i in (0..argc).rev() {
         lset(&mut chunks[current], base + i as u16, line);

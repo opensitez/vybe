@@ -923,11 +923,6 @@ fn ps_catch_error_record_rebind(__w: &PsWalker) -> Statement {
             )),
         })),
     });
-    let has_exception = ps_binary(
-        BinOp::IsNot,
-        existing_exception.clone(),
-        Expression::null()
-    );
     let has_meaningful_error_id = ps_binary(
         BinOp::And,
         ps_binary(
@@ -6017,11 +6012,6 @@ fn parse_command_type_operator(__w: &mut PsWalker, tokens: &[String]) -> Option<
     }
 }
 
-/// Build the call for a command invocation, giving `normalize_cmdlet` first
-/// refusal so .NET-shaped cmdlets never need a builtin of their own.
-fn build_command_call(callee: Expression, args: Vec<Argument>) -> Expression {
-    build_command_call_inner(None, callee, args, false)
-}
 
 fn wrap_stream_context_from_args(call: Expression, args: &[Argument]) -> Expression {
     let mut args = args.to_vec();
@@ -6052,7 +6042,7 @@ fn wrap_stream_context_from_args(call: Expression, args: &[Argument]) -> Express
 fn build_command_call_in(
     __w: &mut PsWalker,
     callee: Expression,
-    mut args: Vec<Argument>,
+    args: Vec<Argument>,
     in_value_position: bool,
 ) -> Expression {
     if let ExprKind::Ident(name) = &callee.kind
@@ -6068,32 +6058,6 @@ fn build_command_call_in(
     build_command_call_inner(Some(__w), callee, args, in_value_position)
 }
 
-/// Take `-ErrorAction SilentlyContinue` / `Ignore` out of a command's arguments,
-/// answering whether errors from it are suppressed.
-///
-/// ⛔`Stop` and `Continue` are NOT suppression — `Stop` makes a non-terminating
-/// error terminating, which is the opposite — so only the two silencing values
-/// are honoured and anything else keeps its normal behaviour.
-fn take_silent_error_action(args: &mut Vec<Argument>) -> bool {
-    let Some(idx) = args.iter().position(|a| {
-        a.name
-            .as_deref()
-            .is_some_and(|n| n.eq_ignore_ascii_case("ErrorAction") || n.eq_ignore_ascii_case("ea"))
-    }) else {
-        return false;
-    };
-    let value = match &args[idx].value.kind {
-        ExprKind::Ident(name) => name.clone(),
-        ExprKind::Lit(Literal::Str(text)) => text.clone(),
-        _ => return false,
-    };
-    if value.eq_ignore_ascii_case("SilentlyContinue") || value.eq_ignore_ascii_case("Ignore") {
-        args.remove(idx);
-        true
-    } else {
-        false
-    }
-}
 
 fn build_command_call_inner(
     __w: Option<&PsWalker>,
@@ -11168,7 +11132,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     })
                     && args.len() >= 2
                 {
-                    let mut call_args = args.into_iter().take(3).collect::<Vec<_>>();
+                    let call_args = args.into_iter().take(3).collect::<Vec<_>>();
                     expr = if name.eq_ignore_ascii_case("Compare") {
                         ps_builtin("__ps_str_compare", call_args)
                     } else {
@@ -12943,7 +12907,7 @@ fn pipeline_scriptblock_lambda(expr: Expression) -> Expression {
         params,
         body: LambdaBody::Block(mut body),
         is_async,
-        mut captures,
+        captures,
     } = expr.kind
     else {
         return expr;
@@ -14933,22 +14897,6 @@ fn measure_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Expre
     }))
 }
 
-/// `System.Char`'s classification statics, mapped to the shared primitives that
-/// already implement them. Returns `None` for the ones with no primitive, so
-/// the call falls through to normal resolution and fails loudly rather than
-/// silently answering the wrong thing.
-/// Does this .NET type name denote a string, whose zero value is `""`?
-fn is_string_type_name(name: &str) -> bool {
-    matches!(
-        name.trim()
-            .rsplit('.')
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str(),
-        "string" | "char"
-    )
-}
 
 fn char_static_builtin(name: &str) -> Option<&'static str> {
     Some(match name.to_ascii_lowercase().as_str() {
@@ -17725,45 +17673,6 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                 ],
             ))
         }
-        "new-object" => {
-            let type_expr =
-                named("TypeName").or_else(|| positional.first().map(|a| a.value.clone()))?;
-            let type_name = literal_text(&type_expr).or_else(|| type_name_of(&type_expr))?;
-            if type_name.eq_ignore_ascii_case("PSObject")
-                || type_name.eq_ignore_ascii_case("PSCustomObject")
-            {
-                if let Some(properties) = named("Property") {
-                    return Some(Expression::new(ExprKind::Cast {
-                        type_name: "pscustomobject".to_string(),
-                        expr: Box::new(properties),
-                    }));
-                }
-            }
-            let mut ctor_args = Vec::new();
-            if let Some(arg_list) = named("ArgumentList") {
-                match arg_list.kind {
-                    ExprKind::Array(items) => {
-                        ctor_args.extend(
-                            items
-                                .into_iter()
-                                .map(|item| Argument::positional(item.value)),
-                        );
-                    }
-                    _ => ctor_args.push(Argument::positional(arg_list)),
-                }
-            } else {
-                ctor_args.extend(
-                    positional
-                        .iter()
-                        .skip(1)
-                        .map(|arg| Argument::positional(arg.value.clone())),
-                );
-            }
-            Some(Expression::new(ExprKind::New {
-                class: Box::new(Expression::ident(&type_name)),
-                args: ctor_args,
-            }))
-        }
         "get-date" => {
             // `-Format` and `-UFormat` name two different formatters, and pwsh
             // refuses the pair with a parameter-binding error rather than
@@ -18610,25 +18519,6 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
 
         // Sleep takes seconds by default; the shared threading primitive is in
         // milliseconds, which is also what `-Milliseconds` already supplies.
-        "start-sleep" => {
-            let ms = match named("Milliseconds") {
-                Some(v) => v,
-                None => {
-                    let secs =
-                        named("Seconds").or_else(|| positional.first().map(|a| a.value.clone()))?;
-                    Expression::new(ExprKind::Binary {
-                        op: BinOp::Mul,
-                        left: Box::new(secs),
-                        right: Box::new(Expression::int(1000)),
-                    })
-                }
-            };
-            Some(dotnet_static_call(
-                "System.Threading.Thread",
-                "Sleep",
-                vec![ms],
-            ))
-        }
 
         _ => None,
     }
@@ -19430,12 +19320,6 @@ fn automation_attribute_type_name(raw: &str) -> Option<String> {
     Some(full.to_string())
 }
 
-fn dynamic_parameter_names(source: &str) -> Vec<String> {
-    dynamic_parameter_infos(source)
-        .into_iter()
-        .map(|info| info.name)
-        .collect()
-}
 
 fn dynamic_parameter_infos(source: &str) -> Vec<PsDynamicParameterInfo> {
     let mut out = Vec::new();
@@ -19754,58 +19638,7 @@ fn dynamic_parameter_aliases(source: &str) -> Vec<String> {
     out
 }
 
-fn dynamic_parameter_validators(source: &str) -> Vec<(String, String)> {
-    let params = dynamic_parameter_names(source);
-    if params.is_empty() {
-        return Vec::new();
-    }
-    let attrs = dynamic_validator_attrs(source);
-    let mut out = Vec::new();
-    for param in params {
-        for attr in &attrs {
-            out.push((param.clone(), attr.clone()));
-        }
-    }
-    out
-}
 
-fn dynamic_validator_attrs(source: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let lower = source.to_ascii_lowercase();
-    for (needle, attr_name) in [
-        ("validatesetattribute]::new", "ValidateSet"),
-        ("validaterangeattribute]::new", "ValidateRange"),
-        ("validatecountattribute]::new", "ValidateCount"),
-        (
-            "validatenotnulloremptyattribute]::new",
-            "ValidateNotNullOrEmpty",
-        ),
-    ] {
-        let mut at = 0usize;
-        while let Some(hit) = lower[at..].find(needle) {
-            let start = at + hit + needle.len();
-            let rest = source[start..].trim_start();
-            let Some(args) = rest.strip_prefix('(') else {
-                at = start;
-                continue;
-            };
-            let parts = split_top_level_args(args);
-            let attr = if parts.is_empty() {
-                format!("{attr_name}()")
-            } else {
-                format!("{attr_name}({})", parts.join(", "))
-            };
-            if !out
-                .iter()
-                .any(|seen: &String| seen.eq_ignore_ascii_case(&attr))
-            {
-                out.push(attr);
-            }
-            at = start;
-        }
-    }
-    out
-}
 
 fn output_type_infos(source: &str) -> Vec<PsOutputTypeInfo> {
     let lower = source.to_ascii_lowercase();
@@ -19925,34 +19758,7 @@ fn new_dotnet_expr(type_name: &str, args: Vec<Expression>) -> Expression {
     })
 }
 
-fn assign_member(target: &str, member: &str, value: Expression) -> Statement {
-    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
-        target: Box::new(ps_member(Expression::ident(target), member)),
-        value: Box::new(value),
-    })))
-}
 
-fn configured_object(
-    type_name: &str,
-    temp: &str,
-    assignments: Vec<(&str, Expression)>,
-) -> Expression {
-    let mut body = vec![
-        local_decl(temp),
-        Statement::new(StmtKind::Assign {
-            targets: vec![Expression::ident(temp)],
-            value: new_dotnet_expr(type_name, Vec::new()),
-            by_ref: false,
-        }),
-    ];
-    for (member, value) in assignments {
-        body.push(assign_member(temp, member, value));
-    }
-    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(
-        temp,
-    )))));
-    block_value_expr(body)
-}
 
 fn automation_attribute_ancestor_leaves(leaf: &str) -> Vec<&'static str> {
     match leaf.to_ascii_lowercase().as_str() {
@@ -21505,14 +21311,6 @@ fn powershell_attribute_property_expr(name: &str) -> Option<Expression> {
     ])))
 }
 
-fn is_powershell_generated_dictionary(expr: &Expression) -> bool {
-    match &expr.kind {
-        ExprKind::Ident(name) if name.eq_ignore_ascii_case("PSBoundParameters") => true,
-        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Matches") => true,
-        ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Parameters") => true,
-        _ => false,
-    }
-}
 
 fn advanced_function_context(
     name: &str,
@@ -21852,17 +21650,6 @@ fn command_parameter_metadata(
     object_entries_to_dictionary(entries)
 }
 
-fn switch_parameter_object(is_present: Expression) -> Expression {
-    reflected_automation_object(
-        "System.Management.Automation.SwitchParameter",
-        vec![
-            ("IsPresent", is_present.clone()),
-            ("ispresent", is_present.clone()),
-            ("Value", is_present.clone()),
-            ("value", is_present),
-        ],
-    )
-}
 
 fn paging_parameters_object(info: &PsCmdletBindingInfo) -> Expression {
     if !info.supports_paging {
@@ -22553,30 +22340,6 @@ fn ps_member(recv: Expression, member: &str) -> Expression {
     })
 }
 
-fn ps_project_member_or_scalar(recv: Expression, member: &str) -> Expression {
-    const RECV: &str = "__ps_member_recv";
-    bind_and_call(
-        &[RECV],
-        vec![recv],
-        ps_ternary(
-            ps_builtin("__ps_is_array", vec![Expression::ident(RECV)]),
-            ps_member_call(
-                Expression::ident(RECV),
-                "ForEach",
-                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
-                    ps_builtin(
-                        "__ps_index_get",
-                        vec![Expression::ident("_"), Expression::string(member)],
-                    ),
-                )))])],
-            ),
-            ps_builtin(
-                "__ps_index_get",
-                vec![Expression::ident(RECV), Expression::string(member)],
-            ),
-        ),
-    )
-}
 
 fn ps_leaf_type_name(expr: Expression) -> Expression {
     let full = vybe_platform_dotnet::emitter::core::lowering::runtime_type_name_expr(expr);
@@ -26433,9 +26196,6 @@ fn completion_result_type_value(receiver: &Expression, member: &str) -> Option<i
     .map(|(_, value)| *value)
 }
 
-fn wildcard_regex_expr(pattern: Expression) -> Expression {
-    ps_builtin("__ps_wildcard_regex", vec![pattern])
-}
 
 fn wildcard_escape_expr(pattern: Expression) -> Expression {
     ps_builtin("__ps_wildcard_escape", vec![pattern])
@@ -27314,7 +27074,6 @@ fn split_command_tokens(input: &str) -> Vec<String> {
     tokens
 }
 
-#[allow(dead_code)]
 trait IdentEmpty {
     fn as_ident_empty(&self) -> bool;
 }

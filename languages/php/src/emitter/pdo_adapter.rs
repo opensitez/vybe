@@ -40,7 +40,9 @@ fn emit_mode_has_bit(chunk: &mut Chunk, mode_slot: u16, bit: f64, line: u32) {
 
     chunk.emit_op(Op::F64_SUB, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    // Both operands are native f64 arithmetic results/constants, not PHP
+    // values requiring dynamic equality or coercion dispatch.
+    chunk.emit_op(Op::F64_EQ, line);
 }
 
 /// The base fetch style — the mode with every modifier bit cleared, i.e. the
@@ -60,7 +62,7 @@ fn emit_mode_base(chunk: &mut Chunk, mode_slot: u16, line: u32) {
 fn emit_base_mode_is(chunk: &mut Chunk, mode_slot: u16, want: f64, line: u32) {
     emit_mode_base(chunk, mode_slot, line);
     push_const(chunk, Value::F64(want), line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::F64_EQ, line);
 }
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
@@ -102,7 +104,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[current].add_import(module.to_string(), name.to_string());
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -119,13 +121,15 @@ fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
 #[derive(Clone, Copy)]
 enum PdoMethodEmitter {
     Slice(fn(&mut [Chunk], usize, u8, u32)),
+    // This emitter resolves omitted arguments in its single runtime body.
+    CanonicalSlice(fn(&mut [Chunk], usize, u8, u32), u8),
     Vector(fn(&mut Vec<Chunk>, usize, u8, u32)),
 }
 
 impl PdoMethodEmitter {
     fn emit(self, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
         match self {
-            Self::Slice(emit) => emit(chunks, current, argc, line),
+            Self::Slice(emit) | Self::CanonicalSlice(emit, _) => emit(chunks, current, argc, line),
             Self::Vector(emit) => emit(chunks, current, argc, line),
         }
     }
@@ -217,7 +221,7 @@ const PDO_STATEMENT_METHODS: &[PdoMethod] = &[
         "execute",
         0,
         1,
-        PdoMethodEmitter::Slice(emit_php_pdo_statement_execute),
+        PdoMethodEmitter::CanonicalSlice(emit_php_pdo_statement_execute_canonical, 2),
     ),
     (
         "setFetchMode",
@@ -229,7 +233,7 @@ const PDO_STATEMENT_METHODS: &[PdoMethod] = &[
         "fetch",
         0,
         3,
-        PdoMethodEmitter::Slice(emit_php_pdo_statement_fetch),
+        PdoMethodEmitter::CanonicalSlice(emit_php_pdo_statement_fetch_canonical, 2),
     ),
     (
         "fetchAll",
@@ -289,7 +293,12 @@ fn bind_pdo_methods(
             chunk.alloc_scratch(arity as u16);
             chunks.push(chunk);
 
-            for count in min_args..max_args {
+            let dispatch_end = if matches!(emitter, PdoMethodEmitter::CanonicalSlice(_, _)) {
+                min_args
+            } else {
+                max_args
+            };
+            for count in min_args..dispatch_end {
                 lget(&mut chunks[index], count as u16 + 1, line);
                 let test = chunks[index].add_import("wasm:js-undefined", "test");
                 chunks[index].emit_call(test, 1, line);
@@ -301,10 +310,18 @@ fn bind_pdo_methods(
                 chunks[index].emit_op(Op::RETURN, line);
                 chunks[index].emit_end(line);
             }
-            for slot in 0..=max_args {
+            // Public arity still owns every evaluated argument. Only load the
+            // prefix this audited emitter consumes; cursor arguments stay in
+            // their existing incoming frame slots until the same return.
+            let consumed_arity = match emitter {
+                PdoMethodEmitter::CanonicalSlice(_, consumed) => consumed,
+                _ => arity,
+            };
+            debug_assert!(consumed_arity > 0 && consumed_arity <= arity);
+            for slot in 0..consumed_arity {
                 lget(&mut chunks[index], slot as u16, line);
             }
-            emitter.emit(chunks, index, arity, line);
+            emitter.emit(chunks, index, consumed_arity, line);
             chunks[index].emit_op(Op::RETURN, line);
             index
         };
@@ -322,15 +339,7 @@ fn bind_pdo_methods(
     }
 }
 
-#[allow(dead_code)]
-fn global_set_key(chunk: &mut Chunk, key: &str, line: u32) {
-    vybe_compiler::primitives::globals::emit_write(chunk, key, line);
-}
 
-#[allow(dead_code)]
-fn global_get_key(chunk: &mut Chunk, key: &str, line: u32) {
-    vybe_compiler::primitives::globals::emit_read(chunk, key, line);
-}
 fn emit_string_slot_nonempty(chunk: &mut Chunk, slot: u16, line: u32) {
     lget(chunk, slot, line);
     push_str(chunk, "", line);
@@ -728,7 +737,7 @@ fn emit_apply_named_bound_pairs(
         lget(chunk, len_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     }
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     {
         let chunk = &mut chunks[current];
@@ -809,7 +818,7 @@ fn emit_apply_named_params_from_entries(
     lget(chunk, len_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, entries_slot, line);
@@ -951,6 +960,9 @@ fn emit_mark_queryish_prefix(
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
+    // The ECMA import returns a boxed boolean; Wasm IF requires raw i32.
+    let cast = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast, 1, line);
     chunk.emit_if(line);
     core_wasm::i32_const(chunk, line, 1);
     lset(chunk, is_query_slot, line);
@@ -1096,7 +1108,7 @@ fn emit_record_failure(chunks: &mut [Chunk], current: usize, conn_slot: u16, lin
     );
     push_const(&mut chunks[current], Value::F64(2.0), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+
     chunks[current].emit_if(line);
     // PHP's message shape, so `$e->getMessage()` reads the way a PDO user
     // expects rather than exposing the bare driver text.
@@ -1334,7 +1346,9 @@ pub fn emit_php_pdo_statement_bind_column(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    for _ in 0..(argc as u16 + 1) {
+    // Method emitter arity already includes the receiver supplied by the
+    // generated wrapper. Dropping it twice underflows the Wasm operand stack.
+    for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
     }
     push_const(chunk, Value::Bool(true), line);
@@ -1394,7 +1408,7 @@ fn emit_resolve_bound_references(
     lget(chunk, n_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, params_slot, line);
@@ -1488,7 +1502,7 @@ fn emit_php_stringify_params(
     lget(chunk, n_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, params_slot, line);
@@ -1600,7 +1614,7 @@ fn emit_inline_null_positional_params(
     lget(chunk, n_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, sql_slot, line);
@@ -1693,6 +1707,14 @@ fn emit_inline_null_positional_params(
 }
 
 pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_php_pdo_statement_execute_impl(chunks, current, argc, line, false);
+}
+
+fn emit_php_pdo_statement_execute_canonical(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_php_pdo_statement_execute_impl(chunks, current, argc, line, true);
+}
+
+fn emit_php_pdo_statement_execute_impl(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, canonical: bool) {
     let explicit_params_slot = {
         let chunk = &mut chunks[current];
         if argc >= 2 {
@@ -1728,33 +1750,42 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     }
 
     let effective_params_slot = alloc_local(&mut chunks[current]);
-    if let Some(slot) = explicit_params_slot {
-        let chunk = &mut chunks[current];
-        lget(chunk, slot, line);
-        lset(chunk, effective_params_slot, line);
+    let emit_explicit = |chunks: &mut [Chunk], slot: u16| {
+        lget(&mut chunks[current], slot, line);
+        lset(&mut chunks[current], effective_params_slot, line);
         emit_apply_named_params_from_entries(
-            chunks,
-            current,
-            sql_text_slot,
-            effective_params_slot,
-            line,
+            chunks, current, sql_text_slot, effective_params_slot, line,
         );
-    } else {
-        {
-            let chunk = &mut chunks[current];
-            lget(chunk, stmt_slot, line);
-            struct_get_key(chunk, &ClassSlot::internal("__bound_params"), line);
-            lset(chunk, effective_params_slot, line);
-
-            lget(chunk, stmt_slot, line);
-            struct_get_key(chunk, &ClassSlot::internal("__bound_named_pairs"), line);
-        }
+    };
+    let emit_bound = |chunks: &mut [Chunk]| {
+        lget(&mut chunks[current], stmt_slot, line);
+        struct_get_key(&mut chunks[current], &ClassSlot::internal("__bound_params"), line);
+        lset(&mut chunks[current], effective_params_slot, line);
+        lget(&mut chunks[current], stmt_slot, line);
+        struct_get_key(&mut chunks[current], &ClassSlot::internal("__bound_named_pairs"), line);
         let named_pairs_slot = alloc_local(&mut chunks[current]);
-        {
-            let chunk = &mut chunks[current];
-            lset(chunk, named_pairs_slot, line);
-        }
+        lset(&mut chunks[current], named_pairs_slot, line);
         emit_apply_named_bound_pairs(chunks, current, sql_text_slot, named_pairs_slot, line);
+    };
+    if let Some(slot) = explicit_params_slot {
+        if canonical {
+            // Only the public single-body wrapper treats a missing formal as
+            // its omitted-argument branch. Explicit null remains explicit.
+            // Resolve this at the original parameter-selection point, after
+            // command text and field-count work, before either binding path.
+            lget(&mut chunks[current], slot, line);
+            let test = chunks[current].add_import("wasm:js-undefined", "test");
+            chunks[current].emit_call(test, 1, line);
+            chunks[current].emit_if(line);
+            emit_bound(chunks);
+            chunks[current].emit_else(line);
+            emit_explicit(chunks, slot);
+            chunks[current].emit_end(line);
+        } else {
+            emit_explicit(chunks, slot);
+        }
+    } else {
+        emit_bound(chunks);
     }
 
     // A bound variable arrives as a reference; php reads it HERE, at execute.
@@ -1940,7 +1971,7 @@ fn emit_copy_named_columns_into(
     lget(chunk, n_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, keys_slot, line);
@@ -1982,6 +2013,14 @@ fn emit_copy_named_columns_into(
 }
 
 pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_php_pdo_statement_fetch_impl(chunks, current, argc, line, false);
+}
+
+fn emit_php_pdo_statement_fetch_canonical(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_php_pdo_statement_fetch_impl(chunks, current, argc, line, true);
+}
+
+fn emit_php_pdo_statement_fetch_impl(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, canonical: bool) {
     let chunk = &mut chunks[current];
     for _ in 2..argc {
         chunk.emit_op(Op::DROP, line);
@@ -2028,7 +2067,22 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
     let eff_slot = alloc_local(chunk);
     match mode_slot {
         Some(slot) => {
-            lget(chunk, slot, line);
+            // Omission is a wrapper ABI rule, not a new direct-call coercion.
+            if canonical {
+                // A canonical method wrapper passes Undefined for an omitted mode.
+                // Resolve it here, after the same row/cursor operations as before.
+                lget(chunk, slot, line);
+                let omitted = chunk.add_import("wasm:js-undefined", "test");
+                chunk.emit_call(omitted, 1, line);
+                chunk.emit_if_value(line);
+                lget(chunk, stmt_slot, line);
+                struct_get_key(chunk, &ClassSlot::internal("__fetch_mode"), line);
+                chunk.emit_else(line);
+                lget(chunk, slot, line);
+                chunk.emit_end(line);
+            } else {
+                lget(chunk, slot, line);
+            }
             lset(chunk, eff_slot, line);
         }
         None => {
@@ -2164,7 +2218,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         lget(chunk, len_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         let _ = chunk;
-        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
         let chunk = &mut chunks[current];
 
         lget(chunk, rows_slot, line);
@@ -2274,7 +2328,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         lget(chunk, len_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         let _ = chunk;
-        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
         let chunk = &mut chunks[current];
 
         lget(chunk, rows_slot, line);
@@ -2366,7 +2420,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         lget(chunk, len_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         let _ = chunk;
-        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
         let chunk = &mut chunks[current];
 
         lget(chunk, rows_slot, line);
@@ -2443,7 +2497,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         lget(chunk, len_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         let _ = chunk;
-        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
         let chunk = &mut chunks[current];
 
         lget(chunk, rows_slot, line);
@@ -2478,7 +2532,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         let _ = chunk;
-        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
         let chunk = &mut chunks[current];
 
         lget(chunk, args_slot, line);
@@ -2673,7 +2727,7 @@ pub fn emit_php_pdo_statement_column_count(
     vybe_compiler::primitives::collections::emit_array_length(chunk, line);
     push_const(chunk, Value::F64(0.0), line);
     vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
     chunk.emit_if_value(line);
     lget(chunk, rows_slot, line);
     push_const(chunk, Value::F64(0.0), line);
@@ -2747,9 +2801,10 @@ pub fn emit_php_pdo_quote(chunks: &mut [Chunk], current: usize, _argc: u8, line:
         let idx = chunk.add_import("ecma:string", "replaceAll");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(concat, 2, line);
     push_str(chunk, "'", line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_call(concat, 2, line);
 }
 
 /// `$stmt->errorCode()` → SQLSTATE "00000" on success. Stack: `[stmt]` → `[str]`.

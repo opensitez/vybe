@@ -1,6 +1,21 @@
+// @grameo shared_inner_prefix list_inner prefix=expression kind=list
+// @grameo shared_inner_prefix subscript_item prefix=expression kind=index
+// @grameo shared_group_prefix primary branch=comp_for_arg fallback=expression_list prefix=expression
+// @grameo shared_prefix call_arg branch=comp_for_arg prefix=expression
 // Python 3.x Grammar for pest parser
 // Covers every construct from vybe_parser_python.
+// @grameo optimize native_choices native_rule_heads
+// @grameo pratt additive atom=pratt_scalar_atom trailing=consume
+// @grameo operator additive additive_op precedence=10 fixity=infix_left
+// @grameo operator additive multiplicative_op precedence=20 fixity=infix_left
 //
+// @grameo pratt bitor_expr atom=unary trailing=consume
+// @grameo operator bitor_expr bitwise_or_op precedence=10 fixity=infix_left
+// @grameo operator bitor_expr bitwise_xor_op precedence=20 fixity=infix_left
+// @grameo operator bitor_expr bitwise_and_op precedence=30 fixity=infix_left
+// @grameo operator bitor_expr shift_op precedence=40 fixity=infix_left
+// @grameo operator bitor_expr additive_op precedence=50 fixity=infix_left
+// @grameo operator bitor_expr multiplicative_op precedence=60 fixity=infix_left
 // Indentation: Python uses INDENT/DEDENT for blocks. pest cannot track
 // indentation state, so we use a pre-processing step in the walker that
 // inserts explicit INDENT/DEDENT markers (⇥ and ⇤) before parsing.
@@ -206,8 +221,8 @@ dotted_as_name = { dotted_name ~ (as_kw ~ identifier)? }
 dotted_name = @{ identifier_raw ~ ("." ~ identifier_raw)* }
 
 // ── Global / Nonlocal ──────────────────────────────────────────────────────────
-global_stmt = { "global" ~ identifier ~ ("," ~ identifier)* ~ terminator }
-nonlocal_stmt = { "nonlocal" ~ identifier ~ ("," ~ identifier)* ~ terminator }
+global_stmt = { global_kw ~ identifier ~ ("," ~ identifier)* ~ terminator }
+nonlocal_stmt = { nonlocal_kw ~ identifier ~ ("," ~ identifier)* ~ terminator }
 
 // ── Del ────────────────────────────────────────────────────────────────────────
 del_stmt = { del_kw ~ expression ~ ("," ~ expression)* ~ terminator }
@@ -338,6 +353,10 @@ bitand_expr = { shift_expr ~ ("&" ~ !"=" ~ shift_expr)* }
 shift_expr = { additive ~ (shift_op ~ additive)* }
 shift_op = { "<<" ~ !"=" | ">>" ~ !"=" }
 
+// The grammar directives bind this existing rule to the unary operand and the
+// two operator families below. Owned builders select certified arithmetic
+// regions; ordinary captures and contextual operands use this PEG production.
+// Keep powers inside unary and keep operator rules separate for exact fallback.
 additive = { multiplicative ~ (additive_op ~ multiplicative)* }
 additive_op = { "+" ~ !"=" | "-" ~ !"=" }
 
@@ -512,13 +531,13 @@ numeric_literal = @{
 string_concat = { (fstring | string_literal) ~ (fstring | string_literal)+ }
 
 string_literal = @{
-    // Triple-quoted strings (must be before single-quoted)
-    string_prefix? ~ "\"\"\"" ~ (!"\"\"\"" ~ ANY)* ~ "\"\"\""
-    | string_prefix? ~ "'''" ~ (!("'''") ~ ANY)* ~ "'''"
-    // Single-quoted strings
-    | string_prefix? ~ "'" ~ ("\\'" | "\\\\" | (!("'") ~ !NEWLINE ~ ANY))* ~ "'"
-    | string_prefix? ~ "\"" ~ ("\\\"" | "\\\\" | (!("\"" ) ~ !NEWLINE ~ ANY))* ~ "\""
+    string_prefix? ~ (triple_double_string | triple_single_string
+        | single_quoted_string | double_quoted_string)
 }
+triple_double_string = _{ "\"\"\"" ~ (!"\"\"\"" ~ ANY)* ~ "\"\"\"" }
+triple_single_string = _{ "'''" ~ (!"'''" ~ ANY)* ~ "'''" }
+single_quoted_string = _{ "'" ~ ("\\'" | "\\\\" | (!"'" ~ !NEWLINE ~ ANY))* ~ "'" }
+double_quoted_string = _{ "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ !NEWLINE ~ ANY))* ~ "\"" }
 
 string_prefix = _{ "rb" | "Rb" | "rB" | "RB" | "br" | "bR" | "Br" | "BR" | "r" | "R" | "b" | "B" | "u" | "U" }
 
@@ -537,3 +556,22 @@ keyword = _{
     | "or" | "pass" | "raise" | "return" | "try" | "while" | "with" | "yield")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
+
+// Context-neutral owned operands; ordinary PEG productions do not call this island atom.
+pratt_scalar_atom = { true_kw | false_kw | none_kw | numeric_literal | identifier }
+
+bitwise_or_op = { "|" ~ !("=" | "|") }
+bitwise_xor_op = { "^" ~ !"=" }
+bitwise_and_op = { "&" ~ !("=" | "&") }
+
+// Whole member chains normalize at the original postfix boundary.
+//@grameo pratt postfix atom=pratt_scalar_atom trailing=preserve
+//@grameo operator postfix owned_member_op precedence=10 fixity=postfix
+owned_member_op = { "." ~ identifier }
+
+// Registered recipe ownership; the original PEG postfix productions stay intact.
+//@grameo operator postfix owned_empty_call_op precedence=10 fixity=postfix
+owned_empty_call_op = { "(" ~ ")" }
+//@grameo operator postfix owned_scalar_call_op precedence=10 fixity=postfix
+owned_scalar_call_op = { "(" ~ owned_scalar_arg ~ ("," ~ owned_scalar_arg)* ~ ","? ~ ")" }
+owned_scalar_arg = { (string_literal | pratt_scalar_atom) ~ WHITESPACE* }

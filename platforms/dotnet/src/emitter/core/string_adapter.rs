@@ -1,4 +1,3 @@
-use vybe_compiler::primitives::class_slots;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;

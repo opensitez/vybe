@@ -100,7 +100,7 @@ fn emit_apply_header(
     lget(chunk, at, line);
     chunk.emit_i32_const(0, line);
     chunk.emit_op(Op::I32_GT_S, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     lget(chunk, rest, line);
     chunk.emit_i32_const(0, line);
     lget(chunk, at, line);
@@ -145,7 +145,7 @@ fn emit_apply_header(
         Some(slot) => {
             lget(chunk, slot, line);
             vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-            chunk.emit_if(line);
+            chunk.emit_if_params(line, 2, 1);
             chunk.emit_call(set_header, 2, line);
             chunk.emit_else(line);
             chunk.emit_call(add_header, 2, line);

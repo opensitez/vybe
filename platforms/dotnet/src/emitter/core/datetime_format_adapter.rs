@@ -9,8 +9,7 @@
 //! … fields plus `__offset_ms`, so `zzz` answers from the value rather than
 //! from a second implementation.
 
-use std::sync::Arc;
-use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -116,7 +115,6 @@ fn field(chunk: &mut Chunk, name: &str, line: u32) {
 /// `[a, b] → [i32 0/1]`
 fn str_eq(chunk: &mut Chunk, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
 }
 
 /// Slot layout of the helper chunk. Named so the emit below reads like the
@@ -182,7 +180,7 @@ fn arm<F: FnOnce(&mut Chunk)>(chunk: &mut Chunk, s: &Slots, c: &str, line: u32, 
     chunk.emit_if(line);
     get(chunk, s.ch, line);
     push_str(chunk, c, line);
-    str_eq(chunk, line);
+    call(chunk, "wasm:js-string", "equals", 2, line);
     chunk.emit_if(line);
     body(chunk);
     set(chunk, s.piece, line);
@@ -215,7 +213,6 @@ fn emit_offset_text(chunk: &mut Chunk, s: &Slots, line: u32) {
     get(chunk, s.offset_ms, line);
     chunk.emit_f64_const(0.0, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "-", line);
     chunk.emit_else(line);
@@ -247,9 +244,8 @@ fn run_ge<A: FnOnce(&mut Chunk), B: FnOnce(&mut Chunk)>(
 ) {
     get(chunk, s.run, line);
     chunk.emit_f64_const(f64::from(n), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
     a(chunk);
     chunk.emit_else(line);
@@ -361,8 +357,8 @@ fn build_chunk(line: u32) -> Chunk {
 
     get(c, s.i, line);
     get(c, s.len, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
-    vybe_compiler::primitives::ops::emit_dyn_not(c, line);
+    c.emit_op(Op::F64_LT, line);
+    c.emit_op(Op::I32_EQZ, line);
     c.emit_br_if(1, line);
 
     // ch = fmt[i]
@@ -380,8 +376,8 @@ fn build_chunk(line: u32) -> Chunk {
     get(c, s.run, line);
     c.emit_op(Op::F64_ADD, line);
     get(c, s.len, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
-    vybe_compiler::primitives::ops::emit_dyn_not(c, line);
+    c.emit_op(Op::F64_LT, line);
+    c.emit_op(Op::I32_EQZ, line);
     c.emit_br_if(1, line);
     get(c, s.fmt, line);
     get(c, s.i, line);
@@ -389,7 +385,7 @@ fn build_chunk(line: u32) -> Chunk {
     c.emit_op(Op::F64_ADD, line);
     char_at(c, line);
     get(c, s.ch, line);
-    str_eq(c, line);
+    call(c, "wasm:js-string", "equals", 2, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_br_if(1, line);
     get(c, s.run, line);
@@ -557,7 +553,6 @@ fn build_chunk(line: u32) -> Chunk {
         get(c, s.hour, line);
         c.emit_f64_const(12.0, line);
         vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
         c.emit_if_value(line);
         push_str(c, "AM", line);
         c.emit_else(line);
@@ -584,7 +579,6 @@ fn build_chunk(line: u32) -> Chunk {
         get(c, s.offset_ms, line);
         c.emit_f64_const(0.0, line);
         vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
         c.emit_if_value(line);
         push_str(c, "-", line);
         c.emit_else(line);
@@ -680,7 +674,6 @@ fn build_chunk(line: u32) -> Chunk {
             get(c, s.tmp, line);
             c.emit_f64_const(0.0, line);
             vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
-            vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
             c.emit_if(line);
             // Unterminated: the rest of the pattern is the literal.
             get(c, s.len, line);
@@ -705,7 +698,14 @@ fn build_chunk(line: u32) -> Chunk {
     get(c, s.matched, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line);
-    get(c, s.ch, line);
+    // Preserve the original UTF-16 span, including surrogate pairs and
+    // repeated literal separators, rather than one lossy charAt result.
+    get(c, s.fmt, line);
+    get(c, s.i, line);
+    get(c, s.i, line);
+    get(c, s.run, line);
+    c.emit_op(Op::F64_ADD, line);
+    substring(c, line);
     set(c, s.piece, line);
     c.emit_end(line);
 

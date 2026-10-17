@@ -84,6 +84,7 @@ pub fn register_namespace_tree() {
             "global_set",
             "strict_eq",
             "dynamic_method_call",
+            "bind_named_args",
             "method_exists",
             "superglobal_server",
             "superglobal_files",

@@ -252,17 +252,32 @@ pub fn emit_get_annotations(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunks[current].emit_end(line);
 }
 
-/// A class object carries a `prototype` (`primitives/classes.rs` sets it on
-/// every class it emits); a plain function does not. That is the one runtime
-/// difference between the two, both being `typeof "function"`.
-/// Stack: `[]` → `[i32]`, reading the value in `slot`.
-fn emit_has_prototype(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+/// The shared class compiler stamps its declared kind on constructor objects.
+/// A prototype is insufficient: ordinary functions may have one, and class
+/// declarations may use a callable object rather than a native function.
+fn emit_is_declared_class(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    super::runtime_adapter::emit_slot_is_null_or_undefined(&mut chunks[current], slot, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_i32(line);
     lget(&mut chunks[current], slot, line);
-    chunks[current].emit_string_const("prototype", line);
+    chunks[current].emit_string_const(reflection::FIELD_KIND, line);
     let get = chunks[current].add_import("ecma:object", "get");
     chunks[current].emit_call(get, 2, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
+    let kind = chunks[current].alloc_scratch(1);
+    lset(&mut chunks[current], kind, line);
+    ops::emit_string_slot_eq_literal(&mut chunks[current], kind, "class", line);
+    // The shared class compiler stores the constructor name as `name`;
+    // Python's `__name__` getter is an alias and is not an own property.
+    lget(&mut chunks[current], slot, line);
+    chunks[current].emit_string_const("name", line);
+    let has_own = chunks[current].add_import("ecma:object", "hasOwn");
+    chunks[current].emit_call(has_own, 2, line);
+    let cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast, 1, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
 }
 
 /// Stack: `[]` → `[i32]` — is the value in `slot` callable at all?
@@ -274,12 +289,10 @@ fn emit_is_function_value(chunks: &mut [Chunk], current: usize, slot: u16, line:
     ops::emit_dyn_to_bool(&mut chunks[current], line);
 }
 
-/// `inspect.isclass(x)` — callable AND carrying a prototype.
+/// `inspect.isclass(x)` — a declared class constructor.
 pub fn emit_isclass(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_exact(chunks, current, argc, 1, line);
-    emit_is_function_value(chunks, current, base, line);
-    emit_has_prototype(chunks, current, base, line);
-    chunks[current].emit_op(Op::I32_AND, line);
+    emit_is_declared_class(chunks, current, base, line);
     let from_i32 = chunks[current].add_import("wasm:js-boolean", "fromI32");
     chunks[current].emit_call(from_i32, 1, line);
 }
@@ -288,7 +301,7 @@ pub fn emit_isclass(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_isfunction(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_exact(chunks, current, argc, 1, line);
     emit_is_function_value(chunks, current, base, line);
-    emit_has_prototype(chunks, current, base, line);
+    emit_is_declared_class(chunks, current, base, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_op(Op::I32_AND, line);
     let from_i32 = chunks[current].add_import("wasm:js-boolean", "fromI32");
