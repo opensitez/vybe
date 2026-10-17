@@ -379,7 +379,9 @@ fn serialize_object(
             | ObjectKind::Continuation(_)
             | ObjectKind::Future { .. }
             | ObjectKind::Stream { .. } => None,
-            ObjectKind::Ordinary | ObjectKind::ModuleNamespace => {
+            ObjectKind::Ordinary
+            | ObjectKind::ModuleNamespace
+            | ObjectKind::StringViewIter { .. } => {
                 let keys = object_serialization_keys(&guard, state.property_list.as_ref());
                 drop(guard);
                 Some(serialize_ordinary(ctx, obj, &keys, state))

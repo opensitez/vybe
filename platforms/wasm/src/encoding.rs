@@ -538,7 +538,8 @@ fn is_serializable_data_object(
                 | ObjectKind::ModuleNamespace
                 | ObjectKind::Continuation(_)
                 | ObjectKind::Future { .. }
-                | ObjectKind::Stream { .. } => false,
+                | ObjectKind::Stream { .. }
+                | ObjectKind::StringViewIter { .. } => false,
             }
     };
 

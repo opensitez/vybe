@@ -158,7 +158,7 @@ enum KindTag {
 
 fn kind_discriminant(k: &ObjectKind) -> KindTag {
     match k {
-        ObjectKind::Ordinary => KindTag::Ordinary,
+        ObjectKind::Ordinary | ObjectKind::StringViewIter { .. } => KindTag::Ordinary,
         ObjectKind::Array(_) => KindTag::Array,
         ObjectKind::Map(_) => KindTag::Map,
         ObjectKind::Set(_) => KindTag::Set,
