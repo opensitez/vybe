@@ -25,9 +25,6 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
-fn key(chunk: &mut Chunk, name: &str) -> u32 {
-    chunk.add_constant(vybe_runtime::Value::String(name.into()))
-}
 
 fn field_get(chunk: &mut Chunk, obj: u16, name: &str, line: u32) {
     vybe_compiler::primitives::class_slots::emit_class_get(

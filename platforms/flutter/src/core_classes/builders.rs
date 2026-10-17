@@ -98,20 +98,7 @@ pub(super) fn call_value(callee: Expression, args: Vec<Expression>) -> Expressio
     })
 }
 
-pub(super) fn binary(op: vybe_ast::BinOp, left: Expression, right: Expression) -> Expression {
-    Expression::new(ExprKind::Binary {
-        op,
-        left: Box::new(left),
-        right: Box::new(right),
-    })
-}
 
-pub(super) fn not(value: Expression) -> Expression {
-    Expression::new(ExprKind::Unary {
-        op: vybe_ast::UnaryOp::Not,
-        expr: Box::new(value),
-    })
-}
 
 /// `<target> = <value>;`
 ///
@@ -227,68 +214,12 @@ pub(super) fn field(name: &str, type_hint: &str, init: Expression) -> ClassMembe
     }
 }
 
-/// A NAMED constructor — Dart `EdgeInsets.all(v)`.
-pub(super) fn named_constructor(
-    name: &str,
-    params: Vec<Param>,
-    body: Vec<Statement>,
-) -> ClassMember {
-    ClassMember::Constructor {
-        name: Some(name.to_string()),
-        params,
-        body,
-        base_args: None,
-        initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-        visibility: Visibility::Public,
-    }
-}
 
-/// `static T get name { … }` — Dart's named constants (`Alignment.center`).
-pub(super) fn static_getter(name: &str, type_hint: &str, body: Vec<Statement>) -> ClassMember {
-    ClassMember::Property {
-        name: name.to_string(),
-        type_hint: Some(type_hint.to_string()),
-        getter: Some(body),
-        setter: None,
-        is_auto: false,
-        modifiers: Modifiers {
-            is_static: true,
-            ..Modifiers::default()
-        },
-    }
-}
 
-/// `this.<method>(<args>)`
-pub(super) fn this_call(method: &str) -> Expression {
-    call_member(this_ref(), method, vec![])
-}
 
-/// `<a> && <b>`
-pub(super) fn and(a: Expression, b: Expression) -> Expression {
-    binary(vybe_ast::BinOp::And, a, b)
-}
 
-/// A double literal. Dart distinguishes `0` from `0.0`, and these value types
-/// are declared `double` in Flutter.
-pub(super) fn float_lit(value: f64) -> Expression {
-    Expression::new(ExprKind::Lit(Literal::Float(value)))
-}
 
-/// `__dart_to_string(<expr>)` — the FINAL spelling of Dart's `"$x"`.
-///
-/// A spliced body never sees walker normalisation, so an `Interpolation` node
-/// would not be lowered here; this is the emitted form directly.
-pub(super) fn stringify(expr: Expression) -> Expression {
-    call_value(ident("__dart_to_string"), vec![expr])
-}
 
-/// A construction of a synthesized class — `Alignment(-1.0, 0.0)`.
-pub(super) fn construct(class: &str, args: Vec<Expression>) -> Expression {
-    Expression::new(ExprKind::New {
-        class: Box::new(ident(class)),
-        args: args.into_iter().map(Argument::positional).collect(),
-    })
-}
 
 pub(super) fn constructor(params: Vec<Param>, body: Vec<Statement>) -> ClassMember {
     ClassMember::Constructor {

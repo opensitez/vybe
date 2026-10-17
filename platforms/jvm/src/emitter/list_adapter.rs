@@ -20,7 +20,6 @@
 use vybe_compiler::primitives::{
     callable, collections,
     functions::create_function_chunk,
-    heap,
     instructions::{core_wasm, host},
     ops, sets, sorted_collection,
 };
@@ -310,7 +309,6 @@ fn emit_sublist_increment_to(
     set_object_prop_from_local(chunks, current, list, SUBLIST_TO_KEY, next, line);
 }
 
-const COMPARATOR_KEY: &str = sorted_collection::COMPARATOR_KEY;
 const IMMUTABLE_MAP_KEY: &str = "__java_immutable_map";
 const IMMUTABLE_LIST_KEY: &str = "__java_immutable_list";
 const SET_COLLECTION_KEY: &str = sorted_collection::SET_COLLECTION_KEY;
@@ -319,7 +317,6 @@ const SUBLIST_PARENT_KEY: &str = "__java_sublist_parent";
 const SUBLIST_FROM_KEY: &str = "__java_sublist_from";
 const SUBLIST_TO_KEY: &str = "__java_sublist_to";
 const DESCENDING_MAP_KEY: &str = sorted_collection::DESCENDING_MAP_KEY;
-const DESCENDING_SET_KEY: &str = sorted_collection::DESCENDING_SET_KEY;
 const ACCESS_ORDER_MAP_KEY: &str = "__java_access_order_map";
 const IDENTITY_MAP_KEY: &str = "__java_identity_map";
 const CONCURRENT_MAP_KEY: &str = "__java_concurrent_map";
@@ -364,16 +361,6 @@ fn emit_throw_if_null(chunks: &mut [Chunk], current: usize, value: u16, line: u3
     chunks[current].emit_end(line);
 }
 
-fn emit_mark_immutable_map(chunks: &mut [Chunk], current: usize, line: u32) {
-    let map = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], map, line);
-    get(&mut chunks[current], map, line);
-    chunks[current].emit_string_const(IMMUTABLE_MAP_KEY, line);
-    chunks[current].emit_bool_const(true, line);
-    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
-    chunks[current].emit_op(Op::DROP, line);
-    get(&mut chunks[current], map, line);
-}
 
 pub fn emit_mark_immutable_list(chunks: &mut [Chunk], current: usize, line: u32) {
     let list = chunks[current].alloc_scratch(1);
@@ -2744,22 +2731,6 @@ pub fn emit_hashtable_elements(chunks: &mut [Chunk], current: usize, line: u32) 
     emit_enumeration_from_array(chunks, current, line);
 }
 
-fn emit_set_blocking_queue_capacity(
-    chunks: &mut [Chunk],
-    current: usize,
-    queue: u16,
-    capacity: u16,
-    line: u32,
-) {
-    set_object_prop_from_local(
-        chunks,
-        current,
-        queue,
-        BLOCKING_QUEUE_CAPACITY_KEY,
-        capacity,
-        line,
-    );
-}
 
 fn emit_get_blocking_queue_capacity(chunks: &mut [Chunk], current: usize, queue: u16, line: u32) {
     get_object_prop(chunks, current, queue, BLOCKING_QUEUE_CAPACITY_KEY, line);

@@ -4,12 +4,11 @@
 //! Pattern carries the compiled regexp and source, Matcher carries input plus
 //! the last match state.
 
-use std::sync::Arc;
 
 use vybe_compiler::primitives::{collections, instructions::host, ops};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::opcode::heaptype;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 const RE_KEY: &str = "__jvm_regex_re";
 const SOURCE_KEY: &str = "__jvm_regex_source";
@@ -24,9 +23,6 @@ const RANGE_KEY: &str = "range";
 const GROUP_VALUES_KEY: &str = "groupValues";
 const DESTRUCTURED_KEY: &str = "destructured";
 
-fn key(chunk: &mut Chunk, name: &str) -> u32 {
-    chunk.add_constant(Value::String(Arc::from(name)))
-}
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
