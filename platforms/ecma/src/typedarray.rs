@@ -411,6 +411,21 @@ pub(crate) fn read_element_from_locked_buffer(
 /// Coerce a caller-supplied value to the variant's element type per
 /// ECMA-262 §23.2.3 and write it at index `i`. Out-of-bounds writes
 /// are no-ops per spec (silent, not a trap).
+#[inline]
+fn integer32_element_bits(value: &Value) -> u32 {
+    if let Value::I32(value) = value {
+        return *value as u32;
+    }
+    // Other representations retain Number conversion/rounding, including
+    // I64 values outside the exactly representable f64 integer range.
+    let number = value.as_f64();
+    if number.is_finite() {
+        number.trunc().rem_euclid(4294967296.0) as u32
+    } else {
+        0
+    }
+}
+
 pub fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
     let bpe = ta.elem.bytes_per_element();
     let mut buf = ta.buffer.lock().unwrap();
@@ -458,27 +473,8 @@ pub fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
             let bytes = val.to_le_bytes();
             buf[abs..abs + 2].copy_from_slice(&bytes);
         }
-        TypedElemKind::I32 => {
-            let n = v.as_f64();
-            let val = if n.is_finite() {
-                n.trunc().rem_euclid(4294967296.0) as u32 as i32
-            } else {
-                0
-            };
-            let bytes = val.to_le_bytes();
-            buf[abs..abs + 4].copy_from_slice(&bytes);
-        }
-        TypedElemKind::U32 => {
-            // §7.1.7 ToUint32: truncate toward zero, mod 2^32. `as_i32()`
-            // saturated large numbers (4294967295 → i32::MAX); wrap instead.
-            let n = v.as_f64();
-            let val = if n.is_finite() {
-                n.trunc().rem_euclid(4294967296.0) as u32
-            } else {
-                0
-            };
-            let bytes = val.to_le_bytes();
-            buf[abs..abs + 4].copy_from_slice(&bytes);
+        TypedElemKind::I32 | TypedElemKind::U32 => {
+            buf[abs..abs + 4].copy_from_slice(&integer32_element_bits(v).to_le_bytes());
         }
         TypedElemKind::F32 => {
             let val = v.as_f64() as f32;
@@ -555,24 +551,8 @@ fn coerced_element_bytes(elem: TypedElemKind, v: &Value) -> ([u8; 8], usize) {
             out[..2].copy_from_slice(&((v.as_i32() & 0xFFFF) as u16).to_le_bytes());
             (out, 2)
         }
-        TypedElemKind::I32 => {
-            let n = v.as_f64();
-            let val = if n.is_finite() {
-                n.trunc().rem_euclid(4294967296.0) as u32 as i32
-            } else {
-                0
-            };
-            out[..4].copy_from_slice(&val.to_le_bytes());
-            (out, 4)
-        }
-        TypedElemKind::U32 => {
-            let n = v.as_f64();
-            let val = if n.is_finite() {
-                n.trunc().rem_euclid(4294967296.0) as u32
-            } else {
-                0
-            };
-            out[..4].copy_from_slice(&val.to_le_bytes());
+        TypedElemKind::I32 | TypedElemKind::U32 => {
+            out[..4].copy_from_slice(&integer32_element_bits(v).to_le_bytes());
             (out, 4)
         }
         TypedElemKind::F32 => {
@@ -1245,20 +1225,10 @@ pub(crate) fn typed_array_values_snapshot(src: &TypedArrayState, len: usize) -> 
         let end = start.saturating_add(len).min(buf.len());
         let bytes = &buf[start..end];
         return match src.elem {
-            TypedElemKind::I8 => {
-                let mut values = Vec::with_capacity(bytes.len());
-                for byte in bytes {
-                    values.push(Value::I32(*byte as i8 as i32));
-                }
-                values
-            }
-            TypedElemKind::U8 | TypedElemKind::U8Clamped => {
-                let mut values = Vec::with_capacity(bytes.len());
-                for byte in bytes {
-                    values.push(Value::I32(*byte as i32));
-                }
-                values
-            }
+            TypedElemKind::I8 => bytes.iter()
+                .map(|byte| Value::I32(*byte as i8 as i32)).collect(),
+            TypedElemKind::U8 | TypedElemKind::U8Clamped => bytes.iter()
+                .map(|byte| Value::I32(*byte as i32)).collect(),
             _ => Vec::new(),
         };
     }
@@ -2716,6 +2686,25 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     return new_typed_array(elem, 0);
                 };
                 let live = ta_live_length(&ta);
+                if matches!(elem, TypedElemKind::BigI64 | TypedElemKind::BigU64) {
+                    // Encode accepted immutable BigInts while their input is
+                    // live, rather than retaining every boxed integer until
+                    // the final copy. Capacity tracks accepted bytes only.
+                    let mut filtered = Vec::new();
+                    let bpe = elem.bytes_per_element();
+                    let mut invoke_args = [Value::Undefined];
+                    for i in 0..live {
+                        let value = read_element(&ta, i);
+                        invoke_args[0] = value.clone();
+                        if ta_invoke_prepared(ctx, &pred, &prepared_pred, &invoke_args).as_bool() {
+                            let (bytes, byte_count) = coerced_element_bytes(elem, &value);
+                            filtered.extend_from_slice(&bytes[..byte_count]);
+                        }
+                    }
+                    return new_typed_array_from_bytes(elem, filtered.len() / bpe, filtered);
+                }
+                // The broad byte builder regressed ordinary numeric arrays.
+                // Keep their previous batch conversion and allocation path.
                 let mut filtered: Vec<Value> = Vec::with_capacity(live);
                 let mut invoke_args = [Value::Undefined];
                 for i in 0..live {
@@ -3265,6 +3254,76 @@ mod with_byte_copy_performance_tests {
 mod numeric_view_copy_performance_tests {
     use super::*;
 
+    #[test]
+    #[ignore = "local paired byte snapshot allocation benchmark"]
+    fn bench_byte_value_snapshot_against_push_loop() {
+        let input = new_typed_array(TypedElemKind::U8, 262_143);
+        let Value::Object(object) = input else { panic!("typed array expected"); };
+        let object = object.lock().unwrap();
+        let ObjectKind::TypedArray(state) = &object.kind else { panic!("typed storage expected"); };
+        for (index, byte) in state.buffer.lock().unwrap().iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        let mut pushed = Vec::new();
+        let mut collected = Vec::new();
+        for round in 0..40 {
+            for mode in [round % 2, 1 - round % 2] {
+                let start = std::time::Instant::now();
+                let values = if mode == 0 {
+                    let buffer = state.buffer.lock().unwrap();
+                    let start = state.byte_offset.min(buffer.len());
+                    let end = start.saturating_add(state.length).min(buffer.len());
+                    let bytes = &buffer[start..end];
+                    let mut values = Vec::with_capacity(bytes.len());
+                    for byte in bytes { values.push(Value::I32(*byte as i32)); }
+                    values
+                } else {
+                    typed_array_values_snapshot(std::hint::black_box(state), state.length)
+                };
+                std::hint::black_box(&values);
+                let elapsed = start.elapsed();
+                assert_eq!(values.len(), state.length);
+                for (index, value) in values.iter().enumerate() {
+                    assert!(matches!(value, Value::I32(n) if *n == index as u8 as i32));
+                }
+                if mode == 0 { pushed.push(elapsed); } else { collected.push(elapsed); }
+            }
+        }
+        pushed.sort();
+        collected.sort();
+        eprintln!("byte value snapshot: push median {:?}, collect median {:?}",
+            pushed[20], collected[20]);
+    }
+
+    #[test]
+    fn byte_value_snapshots_preserve_signedness_offsets_and_independence() {
+        for elem in [TypedElemKind::I8, TypedElemKind::U8, TypedElemKind::U8Clamped] {
+            let input = new_typed_array(elem, 258);
+            let Value::Object(object) = input else { panic!("typed array expected"); };
+            let mut object = object.lock().unwrap();
+            let ObjectKind::TypedArray(state) = &mut object.kind else { panic!("typed storage expected"); };
+            for (index, byte) in state.buffer.lock().unwrap()[1..257].iter_mut().enumerate() {
+                *byte = index as u8;
+            }
+            state.byte_offset = 1;
+            state.length = 256;
+            let values = typed_array_values_snapshot(state, 256);
+            assert_eq!(values.len(), 256);
+            for (index, value) in values.iter().enumerate() {
+                let expected = if matches!(elem, TypedElemKind::I8) {
+                    index as u8 as i8 as i32
+                } else { index as i32 };
+                assert!(matches!(value, Value::I32(n) if *n == expected));
+            }
+            assert!(typed_array_values_snapshot(state, 0).is_empty());
+            state.buffer.lock().unwrap()[1] = 42;
+            assert!(matches!(values[0], Value::I32(0)));
+            assert!(matches!(typed_array_values_snapshot(state, 1)[0], Value::I32(42)));
+            state.byte_offset = 258;
+            assert!(typed_array_values_snapshot(state, 1).is_empty());
+        }
+    }
+
     fn legacy(value: &Value) -> Vec<f64> {
         let Value::Object(object) = value else { return Vec::new(); };
         let guard = object.lock().unwrap();
@@ -3336,6 +3395,546 @@ mod numeric_view_copy_performance_tests {
                     if new { new_time = start.elapsed(); } else { old_time = start.elapsed(); }
                 }
                 eprintln!("numeric-view elem={elem:?} sample={sample} operations=200 length=16384 old={old_time:?} new={new_time:?}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod filter_byte_builder_gates {
+    use super::*;
+
+    fn callable(vm: &VM, module: &str, name: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn register_previous(vm: &mut VM, elem: TypedElemKind) -> Value {
+        vm.register_host_fn("ecma:filter-builder-gate", "previous", Box::new(move |ctx, args| {
+            let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared = crate::function::prepare_bound_callback(&pred);
+            if let Some(object) = is_typed_of(args, 0, elem) {
+                let Some(state) = typed_array_state_from_value(Some(&Value::Object(object))) else {
+                    return new_typed_array(elem, 0);
+                };
+                let live = ta_live_length(&state);
+                let mut filtered = Vec::with_capacity(live);
+                let mut callback_args = [Value::Undefined];
+                for index in 0..live {
+                    let value = read_element(&state, index);
+                    callback_args[0] = value.clone();
+                    if ta_invoke_prepared(ctx, &pred, &prepared, &callback_args).as_bool() {
+                        filtered.push(value);
+                    }
+                }
+                let out = new_typed_array(elem, filtered.len());
+                if let Value::Object(object) = &out {
+                    let object = object.lock().unwrap();
+                    if let ObjectKind::TypedArray(state) = &object.kind {
+                        let _ = write_array_values_to_typed_array_bytes(state, 0, &filtered);
+                    }
+                }
+                return out;
+            }
+            new_typed_array(elem, 0)
+        }));
+        callable(vm, "ecma:filter-builder-gate", "previous")
+    }
+
+    fn fixture(elem: TypedElemKind, length: usize) -> Value {
+        let bpe = elem.bytes_per_element();
+        let bytes: Vec<u8> = (0..(length + 4) * bpe)
+            .map(|index| (index as u8).wrapping_mul(47) ^ (index >> 8) as u8).collect();
+        let backing = new_typed_array_from_bytes(elem, length + 4, bytes);
+        let state = typed_array_state_from_value(Some(&backing)).unwrap();
+        new_view_over_buffer(elem, state.buffer_obj, bpe * 2, length)
+    }
+
+    fn output(value: &Value) -> (usize, Vec<u8>) {
+        let state = typed_array_state_from_value(Some(value)).unwrap();
+        let bytes = state.buffer.lock().unwrap().clone();
+        (state.length, bytes)
+    }
+
+    #[test]
+    fn filter_builder_matches_previous_all_variants_and_selectivities() {
+        for &(elem, module) in VARIANTS {
+            let mut vm = VM::new();
+            register_variant(&mut vm, elem, module);
+            let previous = register_previous(&mut vm, elem);
+            let current = callable(&vm, module, "filter");
+            for length in [0, 1, 64] {
+                for stride in [0usize, 1, 2, 127] {
+                    let calls = Arc::new(Mutex::new(0usize));
+                    let captured = calls.clone();
+                    vm.register_host_fn("ecma:filter-builder-gate", "predicate", Box::new(move |_, _| {
+                        let mut calls = captured.lock().unwrap();
+                        let index = *calls;
+                        *calls += 1;
+                        Value::Bool(stride != 0 && index % stride == 0)
+                    }));
+                    let predicate = callable(&vm, "ecma:filter-builder-gate", "predicate");
+                    let source = fixture(elem, length);
+                    let before = output(&source);
+                    let args = [source.clone(), predicate];
+                    let expected = vm.invoke(&previous, &args).unwrap();
+                    assert_eq!(*calls.lock().unwrap(), length);
+                    *calls.lock().unwrap() = 0;
+                    let actual = vm.invoke(&current, &args).unwrap();
+                    assert_eq!(*calls.lock().unwrap(), length);
+                    assert_eq!(output(&actual), output(&expected));
+                    assert_eq!(output(&source), before);
+                    let src = typed_array_state_from_value(Some(&source)).unwrap();
+                    let dst = typed_array_state_from_value(Some(&actual)).unwrap();
+                    assert!(!Arc::ptr_eq(&src.buffer, &dst.buffer));
+                    if stride == 0 { assert_eq!(dst.buffer.lock().unwrap().capacity(), 0); }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn filter_builder_keeps_live_reads_and_unlocked_predicates() {
+        let mut vm = VM::new();
+        register_variant(&mut vm, TypedElemKind::U8, "ecma:uint8array");
+        let source = new_typed_array_from_bytes(TypedElemKind::U8, 3, vec![1, 2, 3]);
+        let state = typed_array_state_from_value(Some(&source)).unwrap();
+        let buffer = state.buffer.clone();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        vm.register_host_fn("ecma:filter-builder-gate", "mutate", Box::new(move |_, args| {
+            let mut bytes = buffer.try_lock().expect("source lock released before predicate");
+            captured.lock().unwrap().push(args[0].as_i32());
+            bytes[0] = 99;
+            bytes[1] = 42;
+            Value::Bool(true)
+        }));
+        let predicate = callable(&vm, "ecma:filter-builder-gate", "mutate");
+        let filter = callable(&vm, "ecma:uint8array", "filter");
+        let result = vm.invoke(&filter, &[source, predicate]).unwrap();
+        assert_eq!(*events.lock().unwrap(), vec![1, 42, 3]);
+        assert_eq!(output(&result), (3, vec![1, 42, 3]));
+    }
+
+    #[test]
+    #[ignore = "paired registered TypedArray filter byte-builder benchmark"]
+    fn registered_filter_builder_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        for (elem, module) in [
+            (TypedElemKind::U8, "ecma:uint8array"),
+            (TypedElemKind::F64, "ecma:float64array"),
+            (TypedElemKind::BigI64, "ecma:bigint64array"),
+            (TypedElemKind::BigU64, "ecma:biguint64array"),
+        ] {
+            let mut vm = VM::new();
+            register_variant(&mut vm, elem, module);
+            let previous = register_previous(&mut vm, elem);
+            let current = callable(&vm, module, "filter");
+            for stride in [0usize, 1, 16] {
+                let calls = Arc::new(Mutex::new(0usize));
+                let captured = calls.clone();
+                vm.register_host_fn("ecma:filter-builder-gate", "predicate", Box::new(move |_, _| {
+                    let mut calls = captured.lock().unwrap();
+                    let index = *calls;
+                    *calls += 1;
+                    Value::Bool(stride != 0 && index % stride == 0)
+                }));
+                let predicate = callable(&vm, "ecma:filter-builder-gate", "predicate");
+                let args = [fixture(elem, 1024), predicate];
+                let expected = vm.invoke(&previous, &args).unwrap();
+                *calls.lock().unwrap() = 0;
+                assert_eq!(output(&vm.invoke(&current, &args).unwrap()), output(&expected));
+                for sample in 0..5 {
+                    let mut elapsed = [std::time::Duration::ZERO; 2];
+                    for candidate in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                        let target = if candidate { &current } else { &previous };
+                        let began = Instant::now();
+                        for _ in 0..128 {
+                            *calls.lock().unwrap() = 0;
+                            black_box(vm.invoke(target, black_box(&args)).unwrap());
+                        }
+                        elapsed[candidate as usize] = began.elapsed();
+                    }
+                    println!("typed-filter elem={elem:?} stride={stride} sample={sample} previous={:?} current={:?} ratio={:.3}",
+                        elapsed[0], elapsed[1], elapsed[0].as_secs_f64() / elapsed[1].as_secs_f64());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod integer32_encoding_gates {
+    use super::*;
+
+    fn previous_bits(value: &Value) -> u32 {
+        let number = value.as_f64();
+        if number.is_finite() { number.trunc().rem_euclid(4294967296.0) as u32 }
+        else { 0 }
+    }
+
+    #[test]
+    fn integer32_bits_preserve_boundaries_and_representation_fallbacks() {
+        for value in [
+            Value::I32(i32::MIN), Value::I32(-1), Value::I32(0), Value::I32(i32::MAX),
+            Value::F64(-0.0), Value::F64(-2.75), Value::F64(2.75),
+            Value::F64(4294967295.0), Value::F64(4294967296.0),
+            Value::F64(-4294967297.0), Value::F64(f64::NAN),
+            Value::F64(f64::INFINITY), Value::F64(f64::NEG_INFINITY),
+            Value::I64(9_007_199_254_740_995), Value::I64(i64::MIN), Value::I64(i64::MAX),
+            Value::Bool(true), Value::Null, Value::Undefined,
+        ] {
+            assert_eq!(integer32_element_bits(&value), previous_bits(&value));
+        }
+        let mut seed = 0x12345678u32;
+        for _ in 0..16384 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let value = Value::I32(seed as i32);
+            assert_eq!(integer32_element_bits(&value), previous_bits(&value));
+            for elem in [TypedElemKind::I32, TypedElemKind::U32] {
+                let (bytes, size) = coerced_element_bytes(elem, &value);
+                assert_eq!(size, 4);
+                assert_eq!(&bytes[..4], &previous_bits(&value).to_le_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_and_bulk_integer32_stores_preserve_exact_ranges() {
+        let values = [Value::I32(-1), Value::F64(4294967295.0), Value::F64(-2.75),
+            Value::I64(9_007_199_254_740_995), Value::F64(f64::NAN)];
+        for elem in [TypedElemKind::I32, TypedElemKind::U32] {
+            let scalar = new_typed_array(elem, values.len() + 4);
+            let scalar = typed_array_state_from_value(Some(&scalar)).unwrap();
+            let bulk = new_typed_array(elem, values.len() + 4);
+            let bulk = typed_array_state_from_value(Some(&bulk)).unwrap();
+            let mut expected = vec![0; (values.len() + 4) * 4];
+            for (index, value) in values.iter().enumerate() {
+                write_element(&scalar, index + 2, value);
+                expected[(index + 2) * 4..(index + 3) * 4]
+                    .copy_from_slice(&previous_bits(value).to_le_bytes());
+            }
+            assert!(write_array_values_to_typed_array_bytes(&bulk, 2, &values));
+            assert_eq!(*scalar.buffer.lock().unwrap(), expected);
+            assert_eq!(*bulk.buffer.lock().unwrap(), expected);
+            write_element(&scalar, values.len() + 4, &Value::I32(7));
+            assert!(!write_array_values_to_typed_array_bytes(&bulk, values.len() + 3, &values));
+            assert_eq!(*scalar.buffer.lock().unwrap(), expected);
+            assert_eq!(*bulk.buffer.lock().unwrap(), expected);
+        }
+    }
+
+    fn previous_scalar(state: &TypedArrayState, index: usize, value: &Value) {
+        previous_write_element(state, index, value);
+    }
+
+    fn previous_bulk(state: &TypedArrayState, values: &[Value]) {
+        let _ = previous_write_array_values_to_typed_array_bytes(state, 0, values);
+    }
+
+    fn previous_write_element(ta: &TypedArrayState, i: usize, v: &Value) {
+        let bpe = ta.elem.bytes_per_element();
+        let mut buf = ta.buffer.lock().unwrap();
+        let abs = ta.byte_offset + i * bpe;
+        if abs + bpe > buf.len() {
+            return;
+        }
+        match ta.elem {
+            TypedElemKind::I8 => {
+                buf[abs] = (v.as_i32() as i8) as u8;
+            }
+            TypedElemKind::U8 => {
+                buf[abs] = (v.as_i32() & 0xFF) as u8;
+            }
+            TypedElemKind::U8Clamped => {
+                let n = v.as_f64();
+                let clamped = if n.is_nan() {
+                    0
+                } else {
+                    let n = n.clamp(0.0, 255.0);
+                    let floor = n.floor();
+                    let frac = n - floor;
+                    if frac < 0.5 {
+                        floor as i32
+                    } else if frac > 0.5 {
+                        floor as i32 + 1
+                    } else {
+                        let floor_i = floor as i32;
+                        if floor_i % 2 == 0 {
+                            floor_i
+                        } else {
+                            floor_i + 1
+                        }
+                    }
+                };
+                buf[abs] = clamped as u8;
+            }
+            TypedElemKind::I16 => {
+                let val = v.as_i32() as i16;
+                let bytes = val.to_le_bytes();
+                buf[abs..abs + 2].copy_from_slice(&bytes);
+            }
+            TypedElemKind::U16 => {
+                let val = (v.as_i32() & 0xFFFF) as u16;
+                let bytes = val.to_le_bytes();
+                buf[abs..abs + 2].copy_from_slice(&bytes);
+            }
+            TypedElemKind::I32 => {
+                let n = v.as_f64();
+                let val = if n.is_finite() {
+                    n.trunc().rem_euclid(4294967296.0) as u32 as i32
+                } else {
+                    0
+                };
+                let bytes = val.to_le_bytes();
+                buf[abs..abs + 4].copy_from_slice(&bytes);
+            }
+            TypedElemKind::U32 => {
+                // §7.1.7 ToUint32: truncate toward zero, mod 2^32. `as_i32()`
+                // saturated large numbers (4294967295 → i32::MAX); wrap instead.
+                let n = v.as_f64();
+                let val = if n.is_finite() {
+                    n.trunc().rem_euclid(4294967296.0) as u32
+                } else {
+                    0
+                };
+                let bytes = val.to_le_bytes();
+                buf[abs..abs + 4].copy_from_slice(&bytes);
+            }
+            TypedElemKind::F32 => {
+                let val = v.as_f64() as f32;
+                let bytes = val.to_le_bytes();
+                buf[abs..abs + 4].copy_from_slice(&bytes);
+            }
+            TypedElemKind::F64 => {
+                let bytes = v.as_f64().to_le_bytes();
+                buf[abs..abs + 8].copy_from_slice(&bytes);
+            }
+            TypedElemKind::BigI64 => {
+                // §10.4.5 SetValueInBuffer: ToBigInt64 wrap of the value.
+                let val = match v {
+                    Value::BigInt(n) => n.to_i64_wrapping(),
+                    Value::I64(n) => *n,
+                    other => other.as_i32() as i64,
+                };
+                let bytes = val.to_le_bytes();
+                buf[abs..abs + 8].copy_from_slice(&bytes);
+            }
+            TypedElemKind::BigU64 => {
+                // ToBigUint64 wrap.
+                let val = match v {
+                    Value::BigInt(n) => n.to_u64_wrapping(),
+                    Value::I64(n) => *n as u64,
+                    other => other.as_i32() as u64,
+                };
+                let bytes = val.to_le_bytes();
+                buf[abs..abs + 8].copy_from_slice(&bytes);
+            }
+        }
+    }
+
+    fn previous_coerced_element_bytes(elem: TypedElemKind, v: &Value) -> ([u8; 8], usize) {
+        let mut out = [0u8; 8];
+        match elem {
+            TypedElemKind::I8 => {
+                out[0] = (v.as_i32() as i8) as u8;
+                (out, 1)
+            }
+            TypedElemKind::U8 => {
+                out[0] = (v.as_i32() & 0xFF) as u8;
+                (out, 1)
+            }
+            TypedElemKind::U8Clamped => {
+                let n = v.as_f64();
+                let clamped = if n.is_nan() {
+                    0
+                } else {
+                    let n = n.clamp(0.0, 255.0);
+                    let floor = n.floor();
+                    let frac = n - floor;
+                    if frac < 0.5 {
+                        floor as i32
+                    } else if frac > 0.5 {
+                        floor as i32 + 1
+                    } else {
+                        let floor_i = floor as i32;
+                        if floor_i % 2 == 0 {
+                            floor_i
+                        } else {
+                            floor_i + 1
+                        }
+                    }
+                };
+                out[0] = clamped as u8;
+                (out, 1)
+            }
+            TypedElemKind::I16 => {
+                out[..2].copy_from_slice(&(v.as_i32() as i16).to_le_bytes());
+                (out, 2)
+            }
+            TypedElemKind::U16 => {
+                out[..2].copy_from_slice(&((v.as_i32() & 0xFFFF) as u16).to_le_bytes());
+                (out, 2)
+            }
+            TypedElemKind::I32 => {
+                let n = v.as_f64();
+                let val = if n.is_finite() {
+                    n.trunc().rem_euclid(4294967296.0) as u32 as i32
+                } else {
+                    0
+                };
+                out[..4].copy_from_slice(&val.to_le_bytes());
+                (out, 4)
+            }
+            TypedElemKind::U32 => {
+                let n = v.as_f64();
+                let val = if n.is_finite() {
+                    n.trunc().rem_euclid(4294967296.0) as u32
+                } else {
+                    0
+                };
+                out[..4].copy_from_slice(&val.to_le_bytes());
+                (out, 4)
+            }
+            TypedElemKind::F32 => {
+                out[..4].copy_from_slice(&(v.as_f64() as f32).to_le_bytes());
+                (out, 4)
+            }
+            TypedElemKind::F64 => {
+                out.copy_from_slice(&v.as_f64().to_le_bytes());
+                (out, 8)
+            }
+            TypedElemKind::BigI64 => {
+                let val = match v {
+                    Value::BigInt(n) => n.to_i64_wrapping(),
+                    Value::I64(n) => *n,
+                    other => other.as_i32() as i64,
+                };
+                out.copy_from_slice(&val.to_le_bytes());
+                (out, 8)
+            }
+            TypedElemKind::BigU64 => {
+                let val = match v {
+                    Value::BigInt(n) => n.to_u64_wrapping(),
+                    Value::I64(n) => *n as u64,
+                    other => other.as_i32() as u64,
+                };
+                out.copy_from_slice(&val.to_le_bytes());
+                (out, 8)
+            }
+        }
+    }
+
+    fn previous_write_array_values_to_typed_array_bytes(
+        ta: &TypedArrayState,
+        offset: usize,
+        values: &[Value],
+    ) -> bool {
+        if values.is_empty() {
+            return true;
+        }
+        let bpe = ta.elem.bytes_per_element();
+        let mut buf = ta.buffer.lock().unwrap();
+        let first = ta.byte_offset.saturating_add(offset.saturating_mul(bpe));
+        let last = first.saturating_add(values.len().saturating_mul(bpe));
+        if last > buf.len() {
+            return false;
+        }
+        match ta.elem {
+            TypedElemKind::I8 => {
+                for (index, value) in values.iter().enumerate() {
+                    buf[first + index] = (value.as_i32() as i8) as u8;
+                }
+                return true;
+            }
+            TypedElemKind::U8 => {
+                for (index, value) in values.iter().enumerate() {
+                    buf[first + index] = (value.as_i32() & 0xFF) as u8;
+                }
+                return true;
+            }
+            TypedElemKind::U8Clamped => {
+                for (index, value) in values.iter().enumerate() {
+                    let n = value.as_f64();
+                    let clamped = if n.is_nan() {
+                        0
+                    } else {
+                        let n = n.clamp(0.0, 255.0);
+                        let floor = n.floor();
+                        let frac = n - floor;
+                        if frac < 0.5 {
+                            floor as i32
+                        } else if frac > 0.5 {
+                            floor as i32 + 1
+                        } else {
+                            let floor_i = floor as i32;
+                            if floor_i % 2 == 0 {
+                                floor_i
+                            } else {
+                                floor_i + 1
+                            }
+                        }
+                    };
+                    buf[first + index] = clamped as u8;
+                }
+                return true;
+            }
+            _ => {}
+        }
+        for (index, value) in values.iter().enumerate() {
+            let (bytes, byte_count) = previous_coerced_element_bytes(ta.elem, value);
+            let pos = first + index * bpe;
+            buf[pos..pos + byte_count].copy_from_slice(&bytes[..byte_count]);
+        }
+        true
+    }
+
+    #[test]
+    #[ignore = "paired integer32 store kernels, not full registered-call timing"]
+    fn integer32_store_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        for elem in [TypedElemKind::I32, TypedElemKind::U32] {
+            for floating in [false, true] {
+                let values: Vec<Value> = (0..1024).map(|index| {
+                    if floating { Value::F64(index as f64 * 1.75 - 2048.25) }
+                    else { Value::I32(index * 7919 - 2048) }
+                }).collect();
+                let array = new_typed_array(elem, values.len());
+                let state = typed_array_state_from_value(Some(&array)).unwrap();
+                for bulk in [false, true] {
+                    for sample in 0..5 {
+                        let mut elapsed = [std::time::Duration::ZERO; 2];
+                        for candidate in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                            let began = Instant::now();
+                            if bulk {
+                                for _ in 0..1024 {
+                                    if candidate { black_box(write_array_values_to_typed_array_bytes(black_box(&state), 0, black_box(&values))); }
+                                    else { previous_bulk(black_box(&state), black_box(&values)); }
+                                }
+                            } else {
+                                for index in 0..131072 {
+                                    let value = black_box(&values[index % values.len()]);
+                                    if candidate { write_element(black_box(&state), 0, value); }
+                                    else { previous_scalar(black_box(&state), 0, value); }
+                                }
+                            }
+                            elapsed[candidate as usize] = began.elapsed();
+                        }
+                        let buffer = state.buffer.lock().unwrap();
+                        if bulk {
+                            for (index, value) in values.iter().enumerate() {
+                                assert_eq!(&buffer[index * 4..index * 4 + 4], &previous_bits(value).to_le_bytes());
+                            }
+                        } else {
+                            assert_eq!(&buffer[..4], &previous_bits(values.last().unwrap()).to_le_bytes());
+                        }
+                        println!("int32-store elem={elem:?} floating={floating} bulk={bulk} sample={sample} previous={:?} current={:?} ratio={:.3}",
+                            elapsed[0], elapsed[1], elapsed[0].as_secs_f64() / elapsed[1].as_secs_f64());
+                    }
+                }
             }
         }
     }

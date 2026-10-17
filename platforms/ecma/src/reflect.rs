@@ -506,8 +506,8 @@ mod get_lock_speedup_tests {
         register(&mut vm);
         let target = Arc::new(Mutex::new(Object::new()));
         let callback_target = target.clone();
-        vm.register_free_fn("ecma:test-reflect", "unlockedSetter", Box::new(move |_ctx, args| {
-            let args = _ctx.user_args(args, 0);
+        vm.register_host_fn("ecma:test-reflect", "unlockedSetter", Box::new(move |_ctx, args| {
+            let args = _ctx.user_args(args, 1);
             let mut target = callback_target.try_lock().expect("setter must run outside target guard");
             assert!(matches!(args.first(), Some(Value::I32(17))));
             target.properties.insert("observed".into(), Value::I32(17));

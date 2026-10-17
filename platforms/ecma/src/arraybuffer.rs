@@ -1645,6 +1645,26 @@ pub fn dispatch_dataview_method(
     method: &str,
     args: &[Value],
 ) -> Option<Value> {
+    // Integer offsets require no user coercion. Successful byte reads already
+    // validate both the view and backing range in dv_read_array, so avoid a
+    // separate resolve/lock preflight. Failed reads retain the existing error
+    // path below; no view or backing metadata is cached across operations.
+    if matches!(method, "getInt8" | "getUint8") {
+        let offset = match args.first() {
+            None => Some(0),
+            Some(Value::I32(offset)) => Some(*offset),
+            _ => None,
+        };
+        if let Some(offset) = offset {
+            if let Some(bytes) = dv_read_array::<1>(&obj, offset) {
+                return Some(Value::I32(if method == "getInt8" {
+                    bytes[0] as i8 as i32
+                } else {
+                    bytes[0] as i32
+                }));
+            }
+        }
+    }
     // §25.3.1.1 GetViewValue / §25.3.1.2 SetViewValue: bounds-check the
     // access up front — `getIndex + elementSize > viewSize`, or a negative
     // offset (via ToIndex §7.1.22), is a RangeError. Done once here so the
@@ -1895,5 +1915,101 @@ pub fn dispatch_dataview_method(
             Some(Value::Undefined)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod byte_read_speedup_gates {
+    use super::*;
+
+    fn callable(vm: &VM, name: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(
+            vm.resolve_host_function_index("ecma:byte-read-gate", name).unwrap(),
+        );
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn register_pair(vm: &mut VM, signed: bool) -> (Value, Value) {
+        let previous_name = if signed { "previousSigned" } else { "previousUnsigned" };
+        let current_name = if signed { "currentSigned" } else { "currentUnsigned" };
+        vm.register_host_fn("ecma:byte-read-gate", previous_name, Box::new(move |ctx, args| {
+            let Value::Object(object) = &args[0] else { panic!("view receiver") };
+            let offset = args.get(1).map(Value::as_i32).unwrap_or(0);
+            if !dv_in_bounds(object, offset, 1) {
+                let error = crate::error::new_error(ctx, "RangeError", "Offset is outside the bounds of the DataView");
+                ctx.throw_value(error);
+                return Value::Undefined;
+            }
+            let bytes = dv_read_array::<1>(object, offset).unwrap();
+            Value::I32(if signed { bytes[0] as i8 as i32 } else { bytes[0] as i32 })
+        }));
+        vm.register_host_fn("ecma:byte-read-gate", current_name, Box::new(move |ctx, args| {
+            let Value::Object(object) = &args[0] else { panic!("view receiver") };
+            dispatch_dataview_method(ctx, object.clone(),
+                if signed { "getInt8" } else { "getUint8" }, &args[1..]).unwrap()
+        }));
+        (callable(vm, previous_name), callable(vm, current_name))
+    }
+
+    fn fixture() -> (Value, Arc<Mutex<Vec<u8>>>) {
+        let buffer = new_arraybuffer(16, 16, false, false);
+        let Value::Object(object) = &buffer else { panic!("buffer") };
+        let bytes = {
+            let object = object.lock().unwrap();
+            let ObjectKind::ArrayBuffer(state) = &object.kind else { panic!("buffer kind") };
+            state.bytes.clone()
+        };
+        for (index, byte) in bytes.lock().unwrap().iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_mul(31);
+        }
+        (new_dataview(buffer, 3, 8), bytes)
+    }
+
+    #[test]
+    fn byte_member_reads_preserve_offsets_sign_and_live_backing() {
+        let mut vm = VM::new();
+        let (view, bytes) = fixture();
+        for signed in [false, true] {
+            let (previous, current) = register_pair(&mut vm, signed);
+            for offset in 0..8 {
+                let args = [view.clone(), Value::I32(offset)];
+                assert_eq!(vm.invoke(&current, &args).unwrap(), vm.invoke(&previous, &args).unwrap());
+            }
+            assert_eq!(vm.invoke(&current, std::slice::from_ref(&view)).unwrap(),
+                vm.invoke(&previous, std::slice::from_ref(&view)).unwrap());
+            // Re-read the backing after writes through another view/owner.
+            bytes.lock().unwrap()[3] = 0xff;
+            assert_eq!(vm.invoke(&current, &[view.clone(), Value::I32(0)]).unwrap(),
+                Value::I32(if signed { -1 } else { 255 }));
+            // Non-integer offset representation retains the previous path.
+            let args = [view.clone(), Value::F64(1.0)];
+            assert_eq!(vm.invoke(&current, &args).unwrap(), vm.invoke(&previous, &args).unwrap());
+        }
+    }
+
+    #[test]
+    #[ignore = "paired registered DataView byte-read member-dispatch benchmark"]
+    fn registered_byte_read_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let mut vm = VM::new();
+        let (view, _) = fixture();
+        for signed in [false, true] {
+            let (previous, current) = register_pair(&mut vm, signed);
+            let args = [view.clone(), Value::I32(4)];
+            assert_eq!(vm.invoke(&previous, &args).unwrap(), vm.invoke(&current, &args).unwrap());
+            for sample in 0..5 {
+                let mut elapsed = [std::time::Duration::ZERO; 2];
+                for candidate in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                    let target = if candidate { &current } else { &previous };
+                    let began = Instant::now();
+                    for _ in 0..100_000 { black_box(vm.invoke(target, black_box(&args)).unwrap()); }
+                    elapsed[candidate as usize] = began.elapsed();
+                }
+                println!("dataview byte signed={signed} sample={sample} previous={:?} current={:?} ratio={:.3}",
+                    elapsed[0], elapsed[1], elapsed[0].as_secs_f64() / elapsed[1].as_secs_f64());
+            }
+        }
     }
 }

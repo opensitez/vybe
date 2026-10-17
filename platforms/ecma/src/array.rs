@@ -250,7 +250,8 @@ pub(crate) fn make_array(elements: Vec<Value>) -> Value {
     properties.insert("length".into(), Value::F64(len as f64));
     properties.insert("__proto__".into(), shared_array_prototype());
     let obj = Object {
-        properties,
+        descriptor: None,
+            properties,
         kind: ObjectKind::Array(elements),
         type_id: 0,
         fields: Vec::new(),
@@ -272,7 +273,8 @@ pub fn make_pair_array(first: Value, second: Value) -> Value {
     let mut properties = vybe_runtime::value::Properties::with_capacity(1);
     properties.insert("length".into(), Value::F64(2.0));
     Value::Object(vybe_runtime::heap::alloc(Object {
-        properties,
+        descriptor: None,
+            properties,
         kind: ObjectKind::Array(vec![first, second]),
         type_id: 0,
         fields: Vec::new(),
@@ -2092,10 +2094,11 @@ fn register_property_access(vm: &mut VM) {
                                 v.push(Value::Undefined);
                             }
                             v[idx] = val;
-                            if idx >= old_len {
-                                mark_hole_range(&mut o, old_len..(idx + 1));
+                            if idx > old_len {
+                                mark_hole_range(&mut o, old_len..idx);
+                            } else if idx < old_len {
+                                clear_array_hole(&mut o, idx);
                             }
-                            clear_array_hole(&mut o, idx);
                             sync_length(&mut o);
                         } else {
                             crate::keys::with_property_key(key, |key_str| {
@@ -2149,10 +2152,11 @@ fn register_property_access(vm: &mut VM) {
                                 v.push(Value::Undefined);
                             }
                             v[idx] = val;
-                            if idx >= old_len {
-                                mark_hole_range(&mut o, old_len..(idx + 1));
+                            if idx > old_len {
+                                mark_hole_range(&mut o, old_len..idx);
+                            } else if idx < old_len {
+                                clear_array_hole(&mut o, idx);
                             }
-                            clear_array_hole(&mut o, idx);
                             sync_length(&mut o);
                         } else {
                             crate::keys::with_property_key(key, |key_str| {
@@ -2253,6 +2257,151 @@ fn register_property_access(vm: &mut VM) {
 }
 
 // ── Mutators ──────────────────────────────────────────────────────────
+
+// Only an already-backed Array can provide this optional allocation hint.
+// No element, getter, iterator or conversion callback is evaluated here.
+fn concat_array_capacity_hint(object: &Object) -> usize {
+    let ObjectKind::Array(values) = &object.kind else { return 0 };
+    match object.properties.get("isconcatspreadable") {
+        Some(Value::Undefined) | None => values.len(),
+        Some(value) if crate::boolean::to_boolean(value) => values.len(),
+        _ => 0,
+    }
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_array_fill_holes(vm: &mut VM, fast: bool) {
+    register_fill(vm, fast);
+}
+
+fn register_fill(vm: &mut VM, #[cfg(feature = "primitive-benchmarks")] fast: bool) {
+    vm.register_host_fn(
+        "ecma:array",
+        "fill",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            #[cfg(feature = "primitive-benchmarks")]
+            if !fast { return legacy_fill(_ctx, args); }
+            let val = args.get(1).cloned().unwrap_or(Value::Null);
+            let start = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
+            // §23.1.3.7 step 7: "If end is undefined, let relativeEnd be
+            // len" — the same rule `slice` below already follows.
+            let end = match args.get(3) {
+                None | Some(Value::Undefined) => i32::MAX,
+                Some(v) => v.as_i32(),
+            };
+            // §23.1.3.7 relative indexing: negative counts from the end;
+            // i64 math so a saturated -Infinity cast can't overflow.
+            let norm = |x: i32, len: i32| -> usize {
+                if x < 0 {
+                    ((len as i64) + (x as i64)).max(0) as usize
+                } else {
+                    x.min(len) as usize
+                }
+            };
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Array(_) => {
+                        drop(o);
+                        let mut o = obj.lock().unwrap();
+                        if let ObjectKind::Array(ref mut v) = o.kind {
+                            let len = v.len() as i32;
+                            let s = norm(start, len);
+                            let e = norm(end, len);
+                            for i in s..e {
+                                v[i] = val.clone();
+                            }
+                            // Clear hole markers for the filled range
+                            let mut holes = hole_indices(&o);
+                            if s < e && !holes.is_empty() {
+                                if e - s < holes.len() {
+                                    // A narrow fill should not scan a large hole set.
+                                    for i in s..e { holes.remove(&i); }
+                                } else {
+                                    holes.retain(|i| *i < s || *i >= e);
+                                }
+                            }
+                            store_hole_indices(&mut o, &holes);
+                        }
+                        sync_length(&mut o);
+                    }
+                    ObjectKind::TypedArray(ta) => {
+                        let live = ta_live_length(ta) as i32;
+                        let s = norm(start, live);
+                        let e = norm(end, live);
+                        if fill_typed_array_bytes(ta, s, e, &val) {
+                            return args.first().cloned().unwrap_or(Value::Null);
+                        }
+                        for i in s..e {
+                            write_element(ta, i, &val);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            args.first().cloned().unwrap_or(Value::Null)
+        }),
+    );
+
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_fill(_ctx: &mut HostContext, args: &[Value]) -> Value {
+            let val = args.get(1).cloned().unwrap_or(Value::Null);
+            let start = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
+            // §23.1.3.7 step 7: "If end is undefined, let relativeEnd be
+            // len" — the same rule `slice` below already follows.
+            let end = match args.get(3) {
+                None | Some(Value::Undefined) => i32::MAX,
+                Some(v) => v.as_i32(),
+            };
+            // §23.1.3.7 relative indexing: negative counts from the end;
+            // i64 math so a saturated -Infinity cast can't overflow.
+            let norm = |x: i32, len: i32| -> usize {
+                if x < 0 {
+                    ((len as i64) + (x as i64)).max(0) as usize
+                } else {
+                    x.min(len) as usize
+                }
+            };
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Array(_) => {
+                        drop(o);
+                        let mut o = obj.lock().unwrap();
+                        if let ObjectKind::Array(ref mut v) = o.kind {
+                            let len = v.len() as i32;
+                            let s = norm(start, len);
+                            let e = norm(end, len);
+                            for i in s..e {
+                                v[i] = val.clone();
+                            }
+                            // Clear hole markers for the filled range
+                            let mut holes = hole_indices(&o);
+                            for i in s..e {
+                                holes.remove(&i);
+                            }
+                            store_hole_indices(&mut o, &holes);
+                        }
+                        sync_length(&mut o);
+                    }
+                    ObjectKind::TypedArray(ta) => {
+                        let live = ta_live_length(ta) as i32;
+                        let s = norm(start, live);
+                        let e = norm(end, live);
+                        if fill_typed_array_bytes(ta, s, e, &val) {
+                            return args.first().cloned().unwrap_or(Value::Null);
+                        }
+                        for i in s..e {
+                            write_element(ta, i, &val);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            args.first().cloned().unwrap_or(Value::Null)
+        }
 
 fn register_mutators(vm: &mut VM) {
     // push(arr, v) -> i32 new_length
@@ -2410,8 +2559,14 @@ fn register_mutators(vm: &mut VM) {
                 }
                 let offset = args.len().saturating_sub(1);
                 let len = if let ObjectKind::Array(ref mut v) = o.kind {
-                    for (i, val) in args.iter().skip(1).enumerate() {
-                        v.insert(i, val.clone());
+                    if offset > 1 {
+                        // Prepend the entire cloned input once; dropping Splice
+                        // completes insertion before observing the new length.
+                        drop(v.splice(0..0, args.iter().skip(1).cloned()));
+                    } else {
+                        for (i, val) in args.iter().skip(1).enumerate() {
+                            v.insert(i, val.clone());
+                        }
                     }
                     v.len() as i32
                 } else {
@@ -2432,75 +2587,7 @@ fn register_mutators(vm: &mut VM) {
     // Spec: items come through as variadic individual args, not a wrapped
     // array. `arr.splice(1, 0, 2, 3)` inserts 2 and 3 at index 1 and
     // deletes 0; args[3..] hold the items.
-    vm.register_host_fn(
-        "ecma:array",
-        "splice",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            // §23.1.3.31: when deleteCount is OMITTED, everything from
-            // start to the end is removed (explicit undefined means 0).
-            let del = match args.get(2) {
-                None => usize::MAX,
-                Some(v) => v.as_i32().max(0) as usize,
-            };
-            let items = args.get(3..).unwrap_or(&[]);
-            let mut deleted = Vec::new();
-            let mut deleted_holes = BTreeSet::new();
-            if let Some(arr) = array_of(args, 0) {
-                if is_frozen(&arr) {
-                    return throw_type_error(ctx, "Cannot modify frozen array");
-                }
-                let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    let len = v.len();
-                    let idx = if start < 0 {
-                        ((len as i32) + start).max(0) as usize
-                    } else {
-                        (start as usize).min(len)
-                    };
-                    let end = idx.saturating_add(del).min(len);
-                    let delete_count = end.saturating_sub(idx);
-                    let insert_count = items.len();
-                    deleted.reserve(delete_count);
-                    let old_holes = hole_indices(&o);
-                    for offset in 0..delete_count {
-                        if old_holes.contains(&(idx + offset)) {
-                            deleted_holes.insert(offset);
-                        }
-                    }
-                    if let ObjectKind::Array(ref mut v) = o.kind {
-                        for _ in idx..end {
-                            deleted.push(v.remove(idx));
-                        }
-                        for (i, val) in items.iter().cloned().enumerate() {
-                            v.insert(idx + i, val);
-                        }
-                    }
-                    let shift = insert_count as isize - delete_count as isize;
-                    let remapped: BTreeSet<usize> = old_holes
-                        .into_iter()
-                        .filter_map(|hole| {
-                            if hole < idx {
-                                Some(hole)
-                            } else if hole < end {
-                                None
-                            } else {
-                                Some((hole as isize + shift) as usize)
-                            }
-                        })
-                        .collect();
-                    store_hole_indices(&mut o, &remapped);
-                }
-                sync_length(&mut o);
-            }
-            let removed = make_array(deleted);
-            if let Value::Object(obj) = &removed {
-                let mut guard = obj.lock().unwrap();
-                store_hole_indices(&mut guard, &deleted_holes);
-            }
-            removed
-        }),
-    );
+    vm.register_host_fn("ecma:array","splice",Box::new(array_splice));
 
     // reverse(arr) -> self (in-place)
     array_fn(
@@ -2599,66 +2686,7 @@ fn register_mutators(vm: &mut VM) {
     );
 
     // fill(arr, value, start, end) -> self
-    vm.register_host_fn(
-        "ecma:array",
-        "fill",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let val = args.get(1).cloned().unwrap_or(Value::Null);
-            let start = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
-            // §23.1.3.7 step 7: "If end is undefined, let relativeEnd be
-            // len" — the same rule `slice` below already follows.
-            let end = match args.get(3) {
-                None | Some(Value::Undefined) => i32::MAX,
-                Some(v) => v.as_i32(),
-            };
-            // §23.1.3.7 relative indexing: negative counts from the end;
-            // i64 math so a saturated -Infinity cast can't overflow.
-            let norm = |x: i32, len: i32| -> usize {
-                if x < 0 {
-                    ((len as i64) + (x as i64)).max(0) as usize
-                } else {
-                    x.min(len) as usize
-                }
-            };
-            if let Some(Value::Object(obj)) = args.first() {
-                let o = obj.lock().unwrap();
-                match &o.kind {
-                    ObjectKind::Array(_) => {
-                        drop(o);
-                        let mut o = obj.lock().unwrap();
-                        if let ObjectKind::Array(ref mut v) = o.kind {
-                            let len = v.len() as i32;
-                            let s = norm(start, len);
-                            let e = norm(end, len);
-                            for i in s..e {
-                                v[i] = val.clone();
-                            }
-                            // Clear hole markers for the filled range
-                            let mut holes = hole_indices(&o);
-                            for i in s..e {
-                                holes.remove(&i);
-                            }
-                            store_hole_indices(&mut o, &holes);
-                        }
-                        sync_length(&mut o);
-                    }
-                    ObjectKind::TypedArray(ta) => {
-                        let live = ta_live_length(ta) as i32;
-                        let s = norm(start, live);
-                        let e = norm(end, live);
-                        if fill_typed_array_bytes(ta, s, e, &val) {
-                            return args.first().cloned().unwrap_or(Value::Null);
-                        }
-                        for i in s..e {
-                            write_element(ta, i, &val);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            args.first().cloned().unwrap_or(Value::Null)
-        }),
-    );
+    register_fill(vm, #[cfg(feature = "primitive-benchmarks")] true);
 
     // copyWithin(arr, target, start, end) -> self
     vm.register_host_fn(
@@ -2834,7 +2862,20 @@ fn register_non_mutators(vm: &mut VM) {
             if let Some(arr) = object_arg(args, 0) {
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
-                    out.reserve(v.len());
+                    // A nonblocking capacity hint avoids copying a large left
+                    // prefix again when the second array is appended. It must
+                    // never introduce lock-order blocking or change the actual
+                    // spread/read path below. Small inputs keep the old path.
+                    let extra = if v.len() >= 256 {
+                        match args.get(1) {
+                            Some(Value::Object(right)) if Arc::ptr_eq(&arr, right) =>
+                                concat_array_capacity_hint(&o),
+                            Some(Value::Object(right)) => right.try_lock().ok()
+                                .map(|right| concat_array_capacity_hint(&right)).unwrap_or(0),
+                            _ => 0,
+                        }
+                    } else { 0 };
+                    out.reserve(v.len().checked_add(extra).unwrap_or(v.len()));
                     out.extend(v.iter().cloned());
                 }
             }
@@ -3049,6 +3090,14 @@ fn register_non_mutators(vm: &mut VM) {
                 match &inner.kind {
                     ObjectKind::Array(v) => {
                         let holes = hole_indices_opt(&inner);
+                        if holes.is_none() {
+                            if v.is_empty() {
+                                return crate::keys::string_value("");
+                            }
+                            if let [Value::String(text)] = v.as_slice() {
+                                return Value::String(text.clone());
+                            }
+                        }
                         for (index, value) in v.iter().enumerate() {
                             if cached_hole_contains(&holes, index) {
                                 push_join_part(&mut joined, &sep, &mut first, "");
@@ -3058,6 +3107,14 @@ fn register_non_mutators(vm: &mut VM) {
                         }
                     }
                     ObjectKind::Map(m) => {
+                        if m.is_empty() {
+                            return crate::keys::string_value("");
+                        }
+                        if m.len() == 1 {
+                            if let Some(Value::String(text)) = m.values().next() {
+                                return Value::String(text.clone());
+                            }
+                        }
                         for value in m.values() {
                             push_join_value(&mut joined, &sep, &mut first, value);
                         }
@@ -3144,6 +3201,14 @@ fn register_non_mutators(vm: &mut VM) {
                     let mut joined = String::new();
                     let mut first = true;
                     let holes = hole_indices_opt(&o);
+                    if holes.is_none() {
+                        if v.is_empty() {
+                            return crate::keys::string_value("");
+                        }
+                        if let [Value::String(text)] = v.as_slice() {
+                            return Value::String(text.clone());
+                        }
+                    }
                     for (index, value) in v.iter().enumerate() {
                         if cached_hole_contains(&holes, index) {
                             push_join_part(&mut joined, ",", &mut first, "");
@@ -3173,6 +3238,14 @@ fn register_non_mutators(vm: &mut VM) {
                     let mut joined = String::new();
                     let mut first = true;
                     let holes = hole_indices_opt(&o);
+                    if holes.is_none() {
+                        if v.is_empty() {
+                            return crate::keys::string_value("");
+                        }
+                        if let [Value::String(text)] = v.as_slice() {
+                            return Value::String(text.clone());
+                        }
+                    }
                     for (index, value) in v.iter().enumerate() {
                         if cached_hole_contains(&holes, index) {
                             push_join_part(&mut joined, ",", &mut first, "");
@@ -3331,6 +3404,7 @@ fn push_typed_array_join_element(out: &mut String, value: Value) {
         }
     }
 }
+
 
 fn push_join_sep(out: &mut String, sep: &str, first: &mut bool) {
     if *first {
@@ -4303,4 +4377,365 @@ fn obj_map_len(obj: &Object) -> usize {
     } else {
         0
     }
+}
+
+#[cfg(test)]
+mod single_string_join_tests {
+    use super::*;
+
+    fn register_previous(vm: &mut VM) {
+    vm.register_host_fn(
+        "ecma:join-builder-check",
+        "previous",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let sep = args
+                .get(1)
+                .map(|v| match v {
+                    Value::String(text) => Cow::Borrowed(text.as_ref()),
+                    other => crate::keys::value_display_cow(other),
+                })
+                .unwrap_or(Cow::Borrowed(","));
+            let mut joined = String::new();
+            let mut first = true;
+            if let Some(Value::Object(o)) = args.first() {
+                let inner = o.lock().unwrap();
+                match &inner.kind {
+                    ObjectKind::Array(v) => {
+                        let holes = hole_indices_opt(&inner);
+                        for (index, value) in v.iter().enumerate() {
+                            if cached_hole_contains(&holes, index) {
+                                push_join_part(&mut joined, &sep, &mut first, "");
+                            } else {
+                                push_join_value(&mut joined, &sep, &mut first, value);
+                            }
+                        }
+                    }
+                    ObjectKind::Map(m) => {
+                        for value in m.values() {
+                            push_join_value(&mut joined, &sep, &mut first, value);
+                        }
+                    }
+                    ObjectKind::Ordinary => {
+                        if let Some(len) = property_length_as_usize(&inner) {
+                            for index in 0..len {
+                                if let Some(value) = crate::keys::with_index_key(index, |key| {
+                                    inner.properties.get(key)
+                                }) {
+                                    push_join_value(&mut joined, &sep, &mut first, value);
+                                } else {
+                                    push_join_part(&mut joined, &sep, &mut first, "");
+                                }
+                            }
+                        } else {
+                            // Plain JS object — iterate values in insertion
+                            // order. The compiler tracks insertion order in a
+                            // side `__keys` array when index-assigning string
+                            // keys; without it, `properties` is a HashMap and
+                            // iteration order is randomized per process.
+                            let mut used_ordered_keys = false;
+                            if let Some(Value::Object(arr)) = inner.properties.get("__keys") {
+                                let a = arr.lock().unwrap();
+                                if let ObjectKind::Array(items) = &a.kind {
+                                    used_ordered_keys = true;
+                                    for key_value in items {
+                                        crate::keys::with_property_key(key_value, |key| {
+                                            if !key.starts_with("__") {
+                                                if let Some(value) = inner.properties.get(key) {
+                                                    push_join_value(
+                                                        &mut joined,
+                                                        &sep,
+                                                        &mut first,
+                                                        value,
+                                                    );
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                            if !used_ordered_keys {
+                                for (_, value) in inner
+                                    .properties
+                                    .iter()
+                                    .filter(|(k, _)| !k.starts_with("__"))
+                                {
+                                    push_join_value(&mut joined, &sep, &mut first, value);
+                                }
+                            }
+                        }
+                    }
+                    ObjectKind::TypedArray(ta) => {
+                        let live = ta_live_length(ta);
+                        let bpe = ta.elem.bytes_per_element();
+                        let buf = ta.buffer.lock().unwrap();
+                        for i in 0..live {
+                            let abs = ta.byte_offset + i * bpe;
+                            push_join_sep(&mut joined, &sep, &mut first);
+                            push_typed_array_join_element(
+                                &mut joined,
+                                read_element_from_locked_buffer(ta.elem, &buf, abs, bpe),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            owned_string_value(joined)
+        }),
+    );
+
+
+    }
+
+    fn host_function(vm: &VM, module: &str, name: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn assert_string_equal(old: Value, new: Value) {
+        let (Value::String(old), Value::String(new)) = (old, new) else { unreachable!() };
+        assert_eq!(old, new);
+    }
+
+    #[test]
+    fn single_string_results_reuse_immutable_storage_without_bypassing_holes() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let text = Arc::<str>::from("immutable string with Unicode: é水");
+        let array = make_array(vec![Value::String(text.clone())]);
+        let mut map = Object::new();
+        map.kind = ObjectKind::Map([(Value::I32(0), Value::String(text.clone()))].into_iter().collect());
+        let map = Value::Object(vybe_runtime::heap::alloc(map));
+        let join = host_function(&vm, "ecma:array", "join");
+        for receiver in [array.clone(), map] {
+            let result = vm.invoke(&join, &[receiver, crate::keys::string_value("unused separator")]).unwrap();
+            let Value::String(result) = result else { unreachable!() };
+            assert!(Arc::ptr_eq(&result, &text));
+        }
+        for name in ["toString", "toLocaleString"] {
+            let callable = host_function(&vm, "ecma:array", name);
+            let result = vm.invoke(&callable, &[array.clone()]).unwrap();
+            let Value::String(result) = result else { unreachable!() };
+            assert!(Arc::ptr_eq(&result, &text));
+        }
+        let mut sparse = Object::new_array(vec![Value::String(text)]);
+        mark_array_hole(&mut sparse, 0);
+        let result = vm.invoke(&join, &[Value::Object(vybe_runtime::heap::alloc(sparse))]).unwrap();
+        assert!(matches!(result, Value::String(text) if text.is_empty()));
+    }
+
+    #[test]
+    fn registered_join_matches_previous_for_dense_sparse_and_polymorphic_inputs() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        register_previous(&mut vm);
+        let current = host_function(&vm, "ecma:array", "join");
+        let previous = host_function(&vm, "ecma:join-builder-check", "previous");
+        let values = vec![crate::keys::string_value("é水"), Value::Null, Value::Undefined,
+            crate::keys::string_value("tail")];
+        let dense = make_array(values.clone());
+        let mut sparse = Object::new_array(values.clone());
+        mark_array_hole(&mut sparse, 0);
+        let sparse = Value::Object(vybe_runtime::heap::alloc(sparse));
+        let mut map = Object::new();
+        map.kind = ObjectKind::Map(values.into_iter().enumerate()
+            .map(|(index, value)| (Value::I32(index as i32), value)).collect());
+        let map = Value::Object(vybe_runtime::heap::alloc(map));
+        let mut ordinary = Object::new();
+        ordinary.properties.insert("length".into(), Value::I32(2));
+        ordinary.properties.insert("0".into(), crate::keys::string_value("left"));
+        ordinary.properties.insert("1".into(), crate::keys::string_value("right"));
+        let ordinary = Value::Object(vybe_runtime::heap::alloc(ordinary));
+        for input in [dense, sparse, map, ordinary, make_array(Vec::new()),
+            make_array(vec![Value::I32(7), Value::Bool(true)])] {
+            for separator in ["", ",", "::", "水"] {
+                let args = [input.clone(), crate::keys::string_value(separator)];
+                assert_string_equal(vm.invoke(&previous, &args).unwrap(), vm.invoke(&current, &args).unwrap());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "paired registered joins against the previous allocating single-string path"]
+    fn registered_single_string_join_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        register_previous(&mut vm);
+        let functions = [host_function(&vm, "ecma:join-builder-check", "previous"),
+            host_function(&vm, "ecma:array", "join")];
+        for count in [0, 1, 8, 256] {
+            for map_input in [false, true] {
+                let values = vec![crate::keys::string_value("abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz"); count];
+                let input = if map_input {
+                    let mut map = Object::new();
+                    map.kind = ObjectKind::Map(values.into_iter().enumerate()
+                        .map(|(index, value)| (Value::I32(index as i32), value)).collect());
+                    Value::Object(vybe_runtime::heap::alloc(map))
+                } else {
+                    make_array(values)
+                };
+                let args = [input, crate::keys::string_value("::")];
+                assert_string_equal(vm.invoke(&functions[0], &args).unwrap(), vm.invoke(&functions[1], &args).unwrap());
+                let mut times = [std::time::Duration::ZERO; 2];
+                for round in 0..8 {
+                    for variant in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                        let start = std::time::Instant::now();
+                        for _ in 0..500 {
+                            std::hint::black_box(vm.invoke(&functions[variant], &args).unwrap());
+                        }
+                        times[variant] += start.elapsed();
+                    }
+                }
+                eprintln!("join count={count} map={map_input} calls=4000 previous={:?} borrowed={:?} ratio={:.3}",
+                    times[0], times[1], times[0].as_secs_f64() / times[1].as_secs_f64());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod array_set_hole_tests {
+    use super::*;
+
+    #[test]
+    fn sequential_and_sparse_sets_preserve_holes() {
+        let mut vm = VM::new();
+        register(&mut vm);
+
+        for name in ["set", "setValue"] {
+            let index = vm
+                .resolve_host_function_index("ecma:array", name)
+                .expect("array setter registered");
+            let mut function = Object::new();
+            function.kind = ObjectKind::HostFunction(index);
+            let function = Value::Object(vybe_runtime::heap::alloc(function));
+            let array = make_array(Vec::new());
+
+            for index in 0..3 {
+                vm.invoke(
+                    &function,
+                    &[array.clone(), Value::I32(index), Value::I32(index + 10)],
+                )
+                .expect("dense append");
+            }
+            let Value::Object(object) = &array else {
+                unreachable!()
+            };
+            {
+                let object = object.lock().unwrap();
+                assert_eq!(object.properties.get("length").unwrap().as_i32(), 3);
+                assert!(!object.properties.contains_key("__holes"));
+            }
+
+            vm.invoke(&function, &[array.clone(), Value::I32(5), Value::I32(50)])
+                .expect("sparse write");
+            {
+                let object = object.lock().unwrap();
+                assert!(is_array_hole(&object, 3));
+                assert!(is_array_hole(&object, 4));
+                assert!(!is_array_hole(&object, 5));
+                assert_eq!(object.properties.get("length").unwrap().as_i32(), 6);
+            }
+
+            vm.invoke(&function, &[array.clone(), Value::I32(4), Value::I32(40)])
+                .expect("fill existing hole");
+            let object = object.lock().unwrap();
+            assert!(is_array_hole(&object, 3));
+            assert!(!is_array_hole(&object, 4));
+        }
+    }
+}
+
+#[cfg(test)]
+#[path="concat_capacity_tests.rs"]
+mod concat_capacity_tests;
+
+#[cfg(feature="primitive-benchmarks")]
+#[path="array_splice_before.rs"]
+mod splice_before;
+#[cfg(feature="primitive-benchmarks")]
+pub fn benchmark_array_splice_holes(vm:&mut VM,fast:bool){
+ let implementation:fn(&mut HostContext,&[Value])->Value=if fast{array_splice}else{splice_before::splice};
+ vm.register_host_fn("ecma:array","splice",Box::new(implementation));
+}
+fn array_splice(ctx:&mut HostContext,args:&[Value])->Value {
+            let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            // §23.1.3.31: when deleteCount is OMITTED, everything from
+            // start to the end is removed (explicit undefined means 0).
+            let del = match args.get(2) {
+                None => usize::MAX,
+                Some(v) => v.as_i32().max(0) as usize,
+            };
+            let items = args.get(3..).unwrap_or(&[]);
+            let mut deleted = Vec::new();
+            let mut deleted_holes = BTreeSet::new();
+            if let Some(arr) = array_of(args, 0) {
+                if is_frozen(&arr) {
+                    return throw_type_error(ctx, "Cannot modify frozen array");
+                }
+                let mut o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref v) = o.kind {
+                    let len = v.len();
+                    let idx = if start < 0 {
+                        ((len as i32) + start).max(0) as usize
+                    } else {
+                        (start as usize).min(len)
+                    };
+                    let end = idx.saturating_add(del).min(len);
+                    let delete_count = end.saturating_sub(idx);
+                    let insert_count = items.len();
+                    deleted.reserve(delete_count);
+                    let mut old_holes = hole_indices(&o);
+                    // Only existing holes in the deleted range need mapping.
+                    // Dense deletion is O(1) metadata work, not O(delete_count).
+                    if delete_count == 1 {
+                        if old_holes.contains(&idx) { deleted_holes.insert(0); }
+                    } else if delete_count > 1 {
+                        deleted_holes.extend(old_holes.range(idx..end).map(|hole| *hole-idx));
+                    }
+                    if let ObjectKind::Array(ref mut v) = o.kind {
+                        if delete_count <= 1 && insert_count <= 1 {
+                            // Keep the small queue operation on its original path.
+                            for _ in idx..end {
+                                deleted.push(v.remove(idx));
+                            }
+                            for (i, val) in items.iter().cloned().enumerate() {
+                                v.insert(idx + i, val);
+                            }
+                        } else {
+                            // Bulk replacement moves the tail once. Value cloning
+                            // invokes no guest callbacks; metadata stays below.
+                            deleted.extend(v.splice(idx..end, items.iter().cloned()));
+                        }
+                    }
+                    let shift = insert_count as isize - delete_count as isize;
+                    if shift == 0 {
+                        // Remaining positions do not move; keep the owned tree.
+                        old_holes.retain(|hole| *hole<idx || *hole>=end);
+                        store_hole_indices(&mut o,&old_holes);
+                    } else {
+                        let remapped: BTreeSet<usize> = old_holes
+                        .into_iter()
+                        .filter_map(|hole| {
+                            if hole < idx {
+                                Some(hole)
+                            } else if hole < end {
+                                None
+                            } else {
+                                Some((hole as isize + shift) as usize)
+                            }
+                        })
+                        .collect();
+                        store_hole_indices(&mut o, &remapped);
+                    }
+                }
+                sync_length(&mut o);
+            }
+            let removed = make_array(deleted);
+            if let Value::Object(obj) = &removed {
+                let mut guard = obj.lock().unwrap();
+                store_hole_indices(&mut guard, &deleted_holes);
+            }
+            removed
 }

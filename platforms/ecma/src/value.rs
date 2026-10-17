@@ -834,6 +834,45 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
 
 // ── String methods (`String.prototype.*`) ─────────────────────────────
 
+#[cfg(test)]
+mod string_search_member_tests {
+    use super::{dispatch_string, HostContext, Value};
+
+    #[test]
+    fn member_index_of_uses_utf16_offsets() {
+        let receiver = crate::keys::string_value("A\u{1f600}B\u{e9}C");
+        for (needle, position, expected) in [
+            ("B", None, 3), ("\u{e9}", None, 4),
+            ("\u{1f600}", Some(1), 1), ("\u{1f600}", Some(2), -1),
+            ("", Some(2), 2), ("", Some(99), 6), ("B", Some(2), 3),
+        ] {
+            let mut args = vec![crate::keys::string_value(needle)];
+            if let Some(position) = position { args.push(Value::I32(position)); }
+            let actual = dispatch_string(&mut HostContext::empty(), &receiver, "indexOf", &args);
+            match actual {
+                Value::I32(index) => assert_eq!(index, expected),
+                other => panic!("expected numeric index, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn member_includes_preserves_surrogate_start_rules() {
+        let receiver = crate::keys::string_value("A\u{1f600}B");
+        for (needle, position, expected) in [
+            ("\u{1f600}", 1, true), ("\u{1f600}", 2, false),
+            ("B", 2, true), ("", 99, true), ("missing", 0, false),
+        ] {
+            let args = [crate::keys::string_value(needle), Value::I32(position)];
+            let actual = dispatch_string(&mut HostContext::empty(), &receiver, "includes", &args);
+            match actual {
+                Value::Bool(found) => assert_eq!(found, expected),
+                other => panic!("expected boolean result, got {other:?}"),
+            }
+        }
+    }
+}
+
 fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value]) -> Value {
     let s = match receiver {
         Value::String(s) => s.clone(),
@@ -917,46 +956,21 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 return Value::Null;
             }
             let needle = args.first().map(to_str).unwrap_or_default();
-            let hay_units = utf16_units(s.as_ref());
-            let needle_units = utf16_units(needle.as_str());
             let from = args
                 .get(1)
                 .map(|v| v.as_i32().max(0) as usize)
-                .unwrap_or(0)
-                .min(hay_units.len());
-            if needle_units.is_empty() {
-                return Value::Bool(true);
-            }
-            Value::Bool(
-                hay_units[from..]
-                    .windows(needle_units.len())
-                    .any(|window| window == needle_units.as_slice()),
-            )
+                .unwrap_or(0);
+            Value::Bool(if from == 0 {
+                s.contains(needle.as_str())
+            } else {
+                crate::string::utf8_index_of_units(s.as_ref(), needle.as_str(), from).is_some()
+            })
         }
         "indexOf" => {
             let needle = args.first().map(to_str).unwrap_or_default();
             let from = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
-            if s.is_ascii() && needle.is_ascii() {
-                if from > s.len() {
-                    return Value::I32(if needle.is_empty() {
-                        s.len() as i32
-                    } else {
-                        -1
-                    });
-                }
-                return match s[from..].find(needle.as_str()) {
-                    Some(byte_idx) => Value::I32((from + byte_idx) as i32),
-                    None => Value::I32(-1),
-                };
-            }
-            let hay: String = s.chars().skip(from).collect();
-            match hay.find(needle.as_str()) {
-                Some(byte_idx) => {
-                    let cp = hay[..byte_idx].chars().count();
-                    Value::I32((from + cp) as i32)
-                }
-                None => Value::I32(-1),
-            }
+            Value::I32(crate::string::utf8_index_of_units(s.as_ref(), needle.as_str(), from)
+                .map_or(-1, |offset| offset as i32))
         }
         "lastIndexOf" => {
             let needle = args.first().map(to_str).unwrap_or_default();
@@ -1091,9 +1105,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                     .map(|byte| Value::I32(*byte as i32))
                     .unwrap_or(Value::F64(f64::NAN))
             } else {
-                utf16_units(s.as_ref())
-                    .get(i as usize)
-                    .map(|unit| Value::I32(*unit as i32))
+                crate::string::dynamic_char_code_unit(&s, i as usize)
+                    .map(|unit| Value::I32(unit as i32))
                     .unwrap_or(Value::F64(f64::NAN))
             }
         }
@@ -3658,7 +3671,7 @@ fn lookup_method_for_call(
         };
     }
     let receiver_obj = match receiver {
-        Value::Object(obj) => obj.clone(),
+        Value::Object(obj) => obj,
         // Primitive: start at the intrinsic prototype. The method is returned
         // UNBOUND — §7.3.2 passes the original primitive V as the receiver, not
         // the wrapper, and the call site binds it as `this`. `null`/`undefined`
@@ -3673,10 +3686,7 @@ fn lookup_method_for_call(
     while let Some(obj) = current {
         let (found, next_proto) = {
             let o = obj.lock().unwrap();
-            (
-                o.properties.get(method).cloned(),
-                o.properties.get("__proto__").cloned(),
-            )
+            own_method_and_next_proto(&o, method)
         };
 
         if let Some(value) = found {
@@ -3695,6 +3705,57 @@ fn lookup_method_for_call(
     }
 
     Value::Null
+}
+
+/// Only retain the next prototype when lookup actually needs to traverse it.
+/// A successful own-member lookup must not hash/clone the prototype reference.
+#[inline]
+fn own_method_and_next_proto(object: &Object, method: &str) -> (Option<Value>, Option<Value>) {
+    match object.properties.get(method) {
+        Some(value) if !matches!(value, Value::Null | Value::Undefined) => {
+            (Some(value.clone()), None)
+        }
+        _ => (None, object.properties.get("__proto__").cloned()),
+    }
+}
+
+#[cfg(test)]
+mod own_method_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn own_member_does_not_retain_the_unused_prototype() {
+        let proto = vybe_runtime::heap::alloc(Object::new());
+        let method = vybe_runtime::heap::alloc(Object::new());
+        let mut object = Object::new();
+        object.properties.insert("__proto__".into(), Value::Object(proto.clone()));
+        object.properties.insert("Method".into(), Value::Object(method.clone()));
+        let count = Arc::strong_count(&proto);
+        let (found, next) = own_method_and_next_proto(&object, "Method");
+        assert!(next.is_none());
+        assert_eq!(Arc::strong_count(&proto), count);
+        let Some(Value::Object(found)) = found else { panic!("missing own member"); };
+        assert!(Arc::ptr_eq(&found, &method));
+    }
+
+    #[test]
+    fn absent_and_nullish_members_keep_live_prototype_traversal() {
+        let proto = vybe_runtime::heap::alloc(Object::new());
+        let mut object = Object::new();
+        object.properties.insert("__proto__".into(), Value::Object(proto.clone()));
+        object.properties.insert("null".into(), Value::Null);
+        object.properties.insert("undefined".into(), Value::Undefined);
+        for key in ["missing", "null", "undefined"] {
+            let (found, next) = own_method_and_next_proto(&object, key);
+            assert!(found.is_none());
+            let Some(Value::Object(next)) = next else { panic!("missing prototype"); };
+            assert!(Arc::ptr_eq(&next, &proto));
+        }
+        object.properties.insert("missing".into(), Value::Bool(false));
+        let (found, next) = own_method_and_next_proto(&object, "missing");
+        assert!(matches!(found, Some(Value::Bool(false))));
+        assert!(next.is_none());
+    }
 }
 
 /// Walk a prototype chain for a USER-installed `method`, returning it UNBOUND —
@@ -3718,10 +3779,7 @@ fn lookup_user_member_on_chain(start: Arc<Mutex<Object>>, method: &str) -> Value
     while let Some(obj) = current {
         let (found, next_proto) = {
             let o = obj.lock().unwrap();
-            (
-                o.properties.get(method).cloned(),
-                o.properties.get("__proto__").cloned(),
-            )
+            own_method_and_next_proto(&o, method)
         };
         if let Some(value) = found {
             if !matches!(value, Value::Null | Value::Undefined) {

@@ -39,7 +39,7 @@ fn map_unary(
     );
 }
 
-static MAP_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
+
 static MAP_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
 fn invoke_prepared_or_direct(
@@ -121,14 +121,14 @@ fn bound_iterator_method(
     Value::Object(vybe_runtime::heap::alloc(fn_obj))
 }
 
-fn new_map_with_capacity(capacity: usize) -> Value {
+fn new_map_with_entries(entries: IndexMap<Value, Value>, iterator_idx: Option<usize>) -> Value {
     let mut obj = Object::new();
-    obj.properties.reserve(if MAP_ITERATOR_IDX.get().is_some() {
+    obj.properties.reserve(if iterator_idx.is_some() {
         4
     } else {
         2
     });
-    obj.kind = ObjectKind::Map(IndexMap::with_capacity(capacity));
+    obj.kind = ObjectKind::Map(entries);
     // §24.1.3.10: `size` is an accessor on the PROTOTYPE. An instance has no
     // own `size`, so there is nothing to keep in sync either.
     obj.properties
@@ -139,11 +139,11 @@ fn new_map_with_capacity(capacity: usize) -> Value {
     obj.properties
         .insert("__type".into(), crate::keys::string_value("Map"));
     let map = vybe_runtime::heap::alloc(obj);
-    if let Some(idx) = MAP_ITERATOR_IDX.get() {
+    if let Some(idx) = iterator_idx {
         let mut guard = map.lock().unwrap();
         guard.properties.insert(
             "iterator".into(),
-            bound_iterator_method(&map, "ecma:map", "entries", *idx),
+            bound_iterator_method(&map, "ecma:map", "entries", idx),
         );
         // This is `@@iterator` under a string spelling. §EnumerateObjectProperties
         // — "Returned property keys do not include keys that are Symbols" — so a
@@ -160,31 +160,16 @@ fn new_map_with_capacity(capacity: usize) -> Value {
     Value::Object(map)
 }
 
-#[inline]
-fn map_entries_host_key() -> &'static (String, String) {
-    static KEY: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| ("ecma:map".to_string(), "entries".to_string()))
-}
-
-fn pair_array_capacity(value: Option<&Value>) -> usize {
+// Build before allocating the wrapper: one source guard, no fresh-target guard.
+fn map_entries_from_pair_array(value: Option<&Value>) -> IndexMap<Value, Value> {
     let Some(Value::Object(src)) = value else {
-        return 0;
-    };
-    let source = src.lock().unwrap();
-    match &source.kind {
-        ObjectKind::Array(pairs) => pairs.len(),
-        _ => 0,
-    }
-}
-
-fn insert_entries_from_pair_array(target: &mut IndexMap<Value, Value>, value: Option<&Value>) {
-    let Some(Value::Object(src)) = value else {
-        return;
+        return IndexMap::new();
     };
     let source = src.lock().unwrap();
     let ObjectKind::Array(pairs) = &source.kind else {
-        return;
+        return IndexMap::new();
     };
+    let mut target = IndexMap::with_capacity(pairs.len());
     for pair in pairs {
         if let Value::Object(pair_obj) = pair {
             if Arc::ptr_eq(src, pair_obj) {
@@ -201,6 +186,7 @@ fn insert_entries_from_pair_array(target: &mut IndexMap<Value, Value>, value: Op
             }
         }
     }
+    target
 }
 
 /// Refresh the cached `size` property so user code reading
@@ -293,15 +279,10 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:map",
         "new",
-        Box::new(|_ctx, args| {
-            let m = new_map_with_capacity(pair_array_capacity(args.first()));
-            if let Value::Object(mapobj) = &m {
-                let mut mo = mapobj.lock().unwrap();
-                if let ObjectKind::Map(ref mut im) = mo.kind {
-                    insert_entries_from_pair_array(im, args.first());
-                }
-            }
-            m
+        Box::new(|ctx, args| {
+            let entries = map_entries_from_pair_array(args.first());
+            let iterator_idx = ctx.resolve_host_function_index("ecma:map", "entries");
+            new_map_with_entries(entries, iterator_idx)
         }),
     );
 
@@ -310,15 +291,10 @@ pub fn register(vm: &mut VM) {
         vm,
         "fromEntries",
         vec![ValType::Any],
-        Box::new(|_ctx, args| {
-            let m = new_map_with_capacity(pair_array_capacity(args.first()));
-            if let Value::Object(mapobj) = &m {
-                let mut mo = mapobj.lock().unwrap();
-                if let ObjectKind::Map(ref mut im) = mo.kind {
-                    insert_entries_from_pair_array(im, args.first());
-                }
-            }
-            m
+        Box::new(|ctx, args| {
+            let entries = map_entries_from_pair_array(args.first());
+            let iterator_idx = ctx.resolve_host_function_index("ecma:map", "entries");
+            new_map_with_entries(entries, iterator_idx)
         }),
     );
 
@@ -467,11 +443,12 @@ pub fn register(vm: &mut VM) {
         "ecma:map",
         "containsValue",
         Box::new(|_ctx, args| {
-            let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let undefined = Value::Undefined;
+            let needle = args.get(1).unwrap_or(&undefined);
             if let Some(Value::Object(mapobj)) = args.first() {
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
-                    return Value::Bool(im.values().any(|v| v == &needle));
+                    return Value::Bool(im.values().any(|v| v == needle));
                 }
             }
             Value::Bool(false)
@@ -496,9 +473,7 @@ pub fn register(vm: &mut VM) {
             crate::array::make_array_iterator(Vec::new())
         }),
     );
-    if let Some(idx) = vm.host_registry.get(map_entries_host_key()).copied() {
-        let _ = MAP_ITERATOR_IDX.set(idx);
-    }
+
 
     // forEach(map, callback) — invokes callback(value, key, map) per
     // entry in insertion order. ECMA-262 §24.1.3.5.
@@ -576,19 +551,15 @@ pub fn register(vm: &mut VM) {
                     .or_insert_with(|| Vec::with_capacity(4))
                     .push(item);
             }
-            let out = new_map_with_capacity(groups.len());
-            if let Value::Object(outobj) = &out {
-                let mut mo = outobj.lock().unwrap();
-                if let ObjectKind::Map(ref mut im) = mo.kind {
-                    for (key, values) in groups {
-                        im.insert(
-                            key,
-                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(values))),
-                        );
-                    }
-                }
+            let mut entries = IndexMap::with_capacity(groups.len());
+            for (key, values) in groups {
+                entries.insert(
+                    key,
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(values))),
+                );
             }
-            out
+            let iterator_idx = ctx.resolve_host_function_index("ecma:map", "entries");
+            new_map_with_entries(entries, iterator_idx)
         }),
     );
 
@@ -634,8 +605,7 @@ pub fn register(vm: &mut VM) {
                     let value = if let Some(v) = map_factory_magic(factory_ref) {
                         v
                     } else {
-                        let factory = factory_ref.clone();
-                        ctx.invoke(&factory, &[key.clone()])
+                        ctx.invoke(factory_ref, std::slice::from_ref(&key))
                     };
                     let mut mo2 = mapobj.lock().unwrap();
                     if let ObjectKind::Map(ref mut im) = mo2.kind {
@@ -647,6 +617,184 @@ pub fn register(vm: &mut VM) {
             Value::Undefined
         }),
     );
+}
+
+#[cfg(test)]
+mod direct_map_builder_tests {
+    use super::*;
+
+fn previous_pair_array_capacity(value: Option<&Value>) -> usize {
+    let Some(Value::Object(src)) = value else {
+        return 0;
+    };
+    let source = src.lock().unwrap();
+    match &source.kind {
+        ObjectKind::Array(pairs) => pairs.len(),
+        _ => 0,
+    }
+}
+
+fn previous_insert_entries_from_pair_array(target: &mut IndexMap<Value, Value>, value: Option<&Value>) {
+    let Some(Value::Object(src)) = value else {
+        return;
+    };
+    let source = src.lock().unwrap();
+    let ObjectKind::Array(pairs) = &source.kind else {
+        return;
+    };
+    for pair in pairs {
+        if let Value::Object(pair_obj) = pair {
+            if Arc::ptr_eq(src, pair_obj) {
+                if pairs.len() >= 2 {
+                    target.insert(pairs[0].clone(), pairs[1].clone());
+                }
+                continue;
+            }
+            let pair = pair_obj.lock().unwrap();
+            if let ObjectKind::Array(kv) = &pair.kind {
+                if kv.len() >= 2 {
+                    target.insert(kv[0].clone(), kv[1].clone());
+                }
+            }
+        }
+    }
+}
+
+
+    fn function(vm: &VM, name: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index("ecma:map", name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn pair(key: Value, value: Value) -> Value {
+        crate::array::make_pair_array(key, value)
+    }
+
+    #[test]
+    fn direct_builder_preserves_duplicate_keys_order_and_value_identity() {
+        let shared = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+            pair(Value::F64(f64::NAN), Value::I32(1)),
+            pair(Value::F64(-0.0), Value::I32(2)),
+            pair(crate::keys::string_value("field"), Value::I32(3)),
+            pair(Value::F64(f64::NAN), shared.clone()),
+            pair(Value::I32(0), shared.clone()),
+            Value::Null,
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![Value::I32(4)]))),
+        ])));
+        let mut previous = IndexMap::with_capacity(previous_pair_array_capacity(Some(&input)));
+        previous_insert_entries_from_pair_array(&mut previous, Some(&input));
+        let direct = map_entries_from_pair_array(Some(&input));
+        assert_eq!(previous.len(), direct.len());
+        for ((old_key, old_value), (key, value)) in previous.iter().zip(direct.iter()) {
+            assert_eq!(old_key, key);
+            assert_eq!(old_value, value);
+            if let (Value::Object(old), Value::Object(new)) = (old_value, value) {
+                assert!(Arc::ptr_eq(old, new));
+            }
+        }
+        assert_eq!(direct.len(), 3);
+        assert!(matches!(direct.get_index(2), Some((Value::String(key), Value::I32(3))) if key.as_ref() == "field"));
+        assert!(map_entries_from_pair_array(None).is_empty());
+        assert!(map_entries_from_pair_array(Some(&Value::Null)).is_empty());
+    }
+
+    #[test]
+    fn self_referencing_pair_array_does_not_relock_the_source() {
+        let source = vybe_runtime::heap::alloc(Object::new_array(Vec::new()));
+        {
+            let mut guard = source.lock().unwrap();
+            guard.kind = ObjectKind::Array(vec![Value::Object(source.clone()), Value::I32(7)]);
+        }
+        let value = Value::Object(source.clone());
+        let entries = map_entries_from_pair_array(Some(&value));
+        assert!(matches!(entries.get(&value), Some(Value::I32(7))));
+        source.lock().unwrap().kind = ObjectKind::Array(Vec::new());
+    }
+
+    #[test]
+    fn registered_constructors_bind_iterator_to_each_current_vm() {
+        let mut first = VM::new();
+        register(&mut first);
+        let mut second = VM::new();
+        for i in 0..16 {
+            second.register_free_fn("ecma:map-builder-check", &format!("padding{i}"),
+                Box::new(|_, _| Value::Undefined));
+        }
+        register(&mut second);
+        for vm in [&mut first, &mut second] {
+            let expected_idx = vm.resolve_host_function_index("ecma:map", "entries").unwrap();
+            for constructor in ["new", "fromEntries"] {
+                let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                    pair(Value::I32(1), Value::I32(2)),
+                ])));
+                let output = vm.invoke(&function(vm, constructor), &[input]).unwrap();
+                let Value::Object(map) = output else { unreachable!() };
+                let iterator = {
+                    let guard = map.lock().unwrap();
+                    let ObjectKind::Map(entries) = &guard.kind else { unreachable!() };
+                    assert!(matches!(entries.get(&Value::I32(1)), Some(Value::I32(2))));
+                    assert!(!guard.properties.contains_key("size"));
+                    guard.properties.get("iterator").cloned().unwrap()
+                };
+                let Value::Object(iterator) = iterator else { unreachable!() };
+                assert!(matches!(iterator.lock().unwrap().kind, ObjectKind::HostFunction(idx) if idx == expected_idx));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "paired registered Map construction, previous double-classification versus direct builder"]
+    fn registered_map_construction_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:map-builder-check", "previousNew", Box::new(|ctx, args| {
+            let capacity = previous_pair_array_capacity(args.first());
+            let iterator_idx = ctx.resolve_host_function_index("ecma:map", "entries");
+            let out = new_map_with_entries(IndexMap::with_capacity(capacity), iterator_idx);
+            if let Value::Object(map) = &out {
+                let mut guard = map.lock().unwrap();
+                if let ObjectKind::Map(entries) = &mut guard.kind {
+                    previous_insert_entries_from_pair_array(entries, args.first());
+                }
+            }
+            out
+        }));
+        let previous = {
+            let mut object = Object::new();
+            object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index("ecma:map-builder-check", "previousNew").unwrap());
+            Value::Object(vybe_runtime::heap::alloc(object))
+        };
+        let current = function(&vm, "new");
+        for count in [0, 8, 128] {
+            let input = [Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                (0..count).map(|i| pair(Value::I32(i), Value::I32(i + 1))).collect(),
+            )))];
+            for callable in [&previous, &current] {
+                let result = vm.invoke(callable, &input).unwrap();
+                let Value::Object(result) = result else { unreachable!() };
+                let guard = result.lock().unwrap();
+                let ObjectKind::Map(entries) = &guard.kind else { unreachable!() };
+                assert_eq!(entries.len(), count as usize);
+                for i in 0..count {
+                    assert!(matches!(entries.get(&Value::I32(i)), Some(Value::I32(value)) if *value == i + 1));
+                }
+            }
+            let mut times = [std::time::Duration::ZERO; 2];
+            for round in 0..6 {
+                for variant in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let start = std::time::Instant::now();
+                    for _ in 0..100 {
+                        std::hint::black_box(vm.invoke(if variant == 0 { &previous } else { &current }, &input).unwrap());
+                    }
+                    times[variant] += start.elapsed();
+                }
+            }
+            eprintln!("Map-new entries={count} calls=600 previous={:?} direct={:?} ratio={:.3}",
+                times[0], times[1], times[0].as_secs_f64() / times[1].as_secs_f64());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -760,5 +908,48 @@ mod borrowed_update_candidate_tests {
                 eprintln!("map borrowed update keys={key_kind} existing={initial}/256: previous={previous:?}, candidate={candidate:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod native_map_temporary_clone_tests {
+    use super::*;
+
+    fn callable(vm: &VM, module: &str, name: &str) -> Value {
+        let mut function = Object::new();
+        function.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(function))
+    }
+
+    #[test]
+    fn borrowed_factory_key_preserves_identity_and_only_runs_on_miss() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let result = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let returned = result.clone();
+        let counted = calls.clone();
+        vm.register_host_fn("test:map", "factory", Box::new(move |_, args| {
+            assert!(matches!(args.first(), Some(Value::String(key)) if key.as_ref() == "key"));
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            returned.clone()
+        }));
+        let map = Value::Object(vybe_runtime::heap::alloc({
+            let mut object = Object::new();
+            object.kind = ObjectKind::Map(IndexMap::new());
+            object
+        }));
+        let key = crate::keys::string_value("key");
+        let factory = callable(&vm, "test:map", "factory");
+        let operation = callable(&vm, "ecma:map", "getOrInsertComputed");
+        for _ in 0..2 {
+            let output = vm.invoke(&operation, &[map.clone(), key.clone(), factory.clone()]).unwrap();
+            let (Value::Object(actual), Value::Object(expected)) = (&output, &result) else { panic!("object result expected") };
+            assert!(Arc::ptr_eq(actual, expected));
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let operation = callable(&vm, "ecma:map", "containsValue");
+        assert!(matches!(vm.invoke(&operation, &[map.clone(), result]).unwrap(), Value::Bool(true)));
+        assert!(matches!(vm.invoke(&operation, &[map, Value::I32(99)]).unwrap(), Value::Bool(false)));
     }
 }

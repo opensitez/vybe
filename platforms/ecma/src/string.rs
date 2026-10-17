@@ -340,8 +340,327 @@ fn utf16_units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
+
+// Two immutable primitive Strings cover the alternating receiver pattern in
+// similarity loops. Weak keys keep their allocation identities stable without
+// retaining the original Strings. At most 2x65536 UTF16 units are cached.
+const CHAR_AT_CACHE_MAX_BYTES: usize = 65536;
+#[derive(Default)]
+struct CharAtView {
+    source: Option<std::sync::Weak<str>>,
+    ascii: bool,
+    units: Vec<u16>,
+}
+#[derive(Default)]
+struct CharAtViews {
+    entries: [CharAtView; 2],
+    recent: usize,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CharAtUnit { Ascii(u8), Utf16(u16) }
+impl CharAtViews {
+    fn get(&mut self, source: &Arc<str>, index: usize) -> Option<CharAtUnit> {
+        let found = self.entries.iter().position(|entry| {
+            entry.source.as_ref().is_some_and(|old|
+                std::ptr::eq(old.as_ptr(), Arc::as_ptr(source)))
+        });
+        let slot = found.unwrap_or_else(|| {
+            let slot = self.entries.iter().position(|e| e.source.is_none())
+                .unwrap_or(1-self.recent);
+            let entry = &mut self.entries[slot];
+            entry.ascii = source.is_ascii();
+            entry.units.clear();
+            if !entry.ascii {
+                // UTF16 length never exceeds valid UTF8 byte length. Reserve
+                // the full bounded upper limit exactly before iterator extend,
+                // preventing Vec's geometric growth from crossing the budget.
+                entry.units.reserve_exact(source.len());
+                entry.units.extend(source.encode_utf16());
+            }
+            entry.source = Some(Arc::downgrade(source));
+            slot
+        });
+        self.recent = slot;
+        let entry=&self.entries[slot];
+        if entry.ascii {
+            source.as_bytes().get(index).copied().map(CharAtUnit::Ascii)
+        } else {
+            entry.units.get(index).copied().map(CharAtUnit::Utf16)
+        }
+    }
+}
+
+// Dynamic String.prototype dispatch reaches value.rs rather than these host
+// exports. Keep its Unicode views bounded and independent of charAt's views.
+// No user code runs while this thread-local buffer is borrowed.
+thread_local! {
+    static DYNAMIC_CHAR_CODE_VIEWS: std::cell::RefCell<CharAtViews> =
+        std::cell::RefCell::new(CharAtViews::default());
+}
+
+pub(crate) fn dynamic_char_code_unit(source: &Arc<str>, index: usize) -> Option<u16> {
+    if source.len() > CHAR_AT_CACHE_MAX_BYTES {
+        // Preserve the existing uncached path for oversized inputs.
+        return utf16_units(source).get(index).copied();
+    }
+    DYNAMIC_CHAR_CODE_VIEWS.with(|views| match views.borrow_mut().get(source, index) {
+        Some(CharAtUnit::Ascii(unit)) => Some(u16::from(unit)),
+        Some(CharAtUnit::Utf16(unit)) => Some(unit),
+        None => None,
+    })
+}
+
+// Search valid scalar strings without temporary UTF-16 buffers.
+// Rust strings contain complete Unicode scalars. A valid scalar needle cannot
+// match a low surrogate on its own, so a mid-pair start rounds to the next
+// scalar boundary for nonempty needles. Empty needles retain the exact unit index.
+pub(crate) fn utf8_index_of_units(source: &str, needle: &str, position: usize) -> Option<usize> {
+    if position == 0 {
+        // Search before classifying the whole source. An absent needle needs
+        // no UTF-16 offset conversion; an early match only needs its prefix.
+        let byte = source.find(needle)?;
+        let prefix = &source[..byte];
+        return Some(if prefix.is_ascii() {
+            byte
+        } else {
+            prefix.encode_utf16().count()
+        });
+    }
+    if source.is_ascii() && needle.is_ascii() {
+        let start = position.min(source.len());
+        return source[start..].find(needle).map(|offset| start + offset);
+    }
+    if needle.is_empty() {
+        return Some(position.min(source.encode_utf16().count()));
+    }
+    let mut units = 0;
+    let mut start_byte = source.len();
+    for (byte, character) in source.char_indices() {
+        if units >= position {
+            start_byte = byte;
+            break;
+        }
+        units += character.len_utf16();
+    }
+    let offset = source[start_byte..].find(needle)?;
+    let match_byte = start_byte + offset;
+    Some(units + source[start_byte..match_byte].encode_utf16().count())
+}
+
+/// Reverse search without materializing UTF-16 copies. A valid UTF-8 needle
+/// starts and ends at scalar boundaries; its UTF-16 width is fixed. Thus a
+/// match starts at/before `position` iff it ends at/before position+width.
+pub(crate) fn utf8_last_index_of_units(source: &str, needle: &str, position: f64) -> Option<usize> {
+    // A valid UTF-8 needle starts with an ASCII byte or a leading byte,
+    // never a continuation byte. Byte matches therefore stay on scalar
+    // boundaries, including when the library uses native SIMD search.
+    if (position.is_infinite() && position.is_sign_positive())
+        || position >= source.len() as f64 {
+        let byte = memchr::memmem::rfind(source.as_bytes(), needle.as_bytes())?;
+        return Some(vybe_runtime::utf16_units(&source[..byte]));
+    }
+    let position = if position <= 0.0 { 0 } else { position as usize };
+    if needle.is_empty() {
+        return Some(position.min(vybe_runtime::utf16_units(source)));
+    }
+    if needle.len() > source.len() { return None; }
+    let limit = position.saturating_add(vybe_runtime::utf16_units(needle));
+    let mut units = 0;
+    let mut end_byte = 0;
+    for (byte, ch) in source.char_indices() {
+        let next = units + ch.len_utf16();
+        if next > limit { break; }
+        units = next;
+        end_byte = byte + ch.len_utf8();
+    }
+    let byte = memchr::memmem::rfind(&source.as_bytes()[..end_byte], needle.as_bytes())?;
+    // The boundary walk already counted this prefix. Subtract only the
+    // matched suffix, instead of counting the whole prefix a second time.
+    Some(units - vybe_runtime::utf16_units(&source[byte..end_byte]))
+}
+
+#[cfg(test)]
+mod zero_position_search_tests {
+    use super::utf8_index_of_units;
+
+    #[test]
+    fn search_offsets_match_utf16_oracle() {
+        for source in ["", "plain ASCII", "aaaaab", "A\u{1f600}B\u{e9}C",
+            "\u{1f600}\u{1f600}", "\0a\0"] {
+            for needle in ["", "a", "plain", "\u{1f600}", "\u{e9}", "B",
+                "\0", "missing", "\u{e9}C", "\u{1f600}B"] {
+                let units: Vec<_> = source.encode_utf16().collect();
+                let sought: Vec<_> = needle.encode_utf16().collect();
+                for position in 0..=units.len() + 2 {
+                    let expected = if sought.is_empty() {
+                        Some(position.min(units.len()))
+                    } else {
+                        units.windows(sought.len()).enumerate()
+                            .find(|(offset, window)| *offset >= position
+                                && *window == sought.as_slice())
+                            .map(|(offset, _)| offset)
+                    };
+                    assert_eq!(utf8_index_of_units(source, needle, position), expected,
+                        "source={source:?}, needle={needle:?}, position={position}");
+                }
+            }
+        }
+    }
+}
+
+
 fn utf16_to_string(units: &[u16]) -> String {
     String::from_utf16_lossy(units)
+}
+
+#[cfg(test)]
+pub(crate) mod char_code_at_cache_tests {
+    use super::*;
+    use vybe_runtime::{Chunk, Op};
+
+    // Exact pre-cache charCodeAt body, retained solely as a test reference.
+    pub(crate) fn before(args: &[Value]) -> Value {
+        with_s_arg(args, 0, |s| {
+            let pos = i32_arg(args, 1, 0);
+            if pos < 0 { return Value::F64(f64::NAN); }
+            if s.is_ascii() {
+                return s.as_bytes().get(pos as usize)
+                    .map(|byte| Value::F64(*byte as f64))
+                    .unwrap_or(Value::F64(f64::NAN));
+            }
+            match utf16_units(s).get(pos as usize) {
+                Some(unit) => Value::F64(*unit as f64),
+                None => Value::F64(f64::NAN),
+            }
+        })
+    }
+
+    fn worker(old: bool) -> (VM, Value) {
+        let mut owner = Chunk::new("char-code-owner");
+        vybe_compiler::primitives::functions::emit_ref_func(&mut owner, 1, 0, 0);
+        owner.emit_op(Op::RETURN, 0);
+        let mut body = Chunk::new("char-code");
+        body.arity = 2; body.param_count = 2; body.local_count = 2;
+        body.emit_op_u16(Op::LOCAL_GET, 0, 0); body.emit_op_u16(Op::LOCAL_GET, 1, 0);
+        let import = body.add_import("ecma:string", "charCodeAt");
+        body.emit_call(import, 2, 0); body.emit_op(Op::RETURN, 0);
+        let mut chunks = vec![owner, body];
+        vybe_compiler::primitives::bundle::finalize_with_runtime_helpers(&mut chunks);
+        let mut vm = VM::new();
+        vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+        if old { vm.register_host_fn("ecma:string", "charCodeAt", Box::new(|_, args| before(args))); }
+        let function = vm.run(chunks).unwrap();
+        (vm, function)
+    }
+
+    fn same_number(a: Value, b: Value) {
+        let (Value::F64(a), Value::F64(b)) = (a, b) else { panic!("expected numeric charCodeAt results") };
+        assert!(a == b || (a.is_nan() && b.is_nan()), "{a} != {b}");
+    }
+
+    #[test]
+    fn cached_char_code_at_preserves_utf16_nan_and_coercion_paths() {
+        let (mut vm, f) = worker(false);
+        let sources: Vec<Value> = ["", "A\0Ω中", "😀𐐀A", "é\u{301}"]
+            .into_iter().map(|s| Value::String(Arc::from(s))).collect();
+        for _ in 0..3 {
+            for source in &sources {
+                for pos in [-1, 0, 1, 2, 3, 4, 5, i32::MIN, i32::MAX] {
+                    let args = [source.clone(), Value::I32(pos)];
+                    same_number(vm.invoke(&f, &args).unwrap(), before(&args));
+                    assert!(vm.last_exception.is_none());
+                }
+            }
+        }
+        // Independent UTF-16 oracle across every BMP scalar, in bounded blocks.
+        for block in 0..256 {
+            let text: String = (block * 256..(block + 1) * 256)
+                .filter_map(char::from_u32).collect();
+            let units: Vec<_> = text.encode_utf16().collect();
+            let source = Value::String(Arc::from(text));
+            for (index, unit) in units.iter().enumerate() {
+                assert_eq!(vm.invoke(&f, &[source.clone(), Value::I32(index as i32)]).unwrap(),
+                    Value::F64(*unit as f64));
+            }
+        }
+        for length in [CHAR_AT_CACHE_MAX_BYTES - 1, CHAR_AT_CACHE_MAX_BYTES, CHAR_AT_CACHE_MAX_BYTES + 1] {
+            let source = Value::String(Arc::from("A".repeat(length)));
+            for pos in [0, length as i32 - 1, length as i32] {
+                let args = [source.clone(), Value::I32(pos)];
+                same_number(vm.invoke(&f, &args).unwrap(), before(&args));
+            }
+        }
+        for receiver in [Value::String(Arc::from("ABC😀")), Value::Null, Value::Undefined, Value::I32(123), Value::Bool(true)] {
+            for index in [Value::Undefined, Value::Null, Value::F64(f64::NAN), Value::F64(-0.0), Value::F64(1.8), Value::F64(f64::INFINITY), Value::F64(f64::NEG_INFINITY)] {
+                let args = [receiver.clone(), index];
+                same_number(vm.invoke(&f, &args).unwrap(), before(&args));
+            }
+        }
+        let large = Value::String(Arc::from("Ω".repeat(CHAR_AT_CACHE_MAX_BYTES)));
+        let args = [large, Value::I32(100)];
+        same_number(vm.invoke(&f, &args).unwrap(), before(&args));
+    }
+
+    #[test]
+    fn dynamic_charcode_view_bounds_roots_and_threads() {
+        let check = || {
+            DYNAMIC_CHAR_CODE_VIEWS.with(|views| *views.borrow_mut() = CharAtViews::default());
+            let first: Arc<str> = Arc::from("Ω".repeat(32768));
+            let second: Arc<str> = Arc::from("😀".repeat(16384));
+            assert_eq!(dynamic_char_code_unit(&first, 32767), Some(937));
+            assert_eq!(dynamic_char_code_unit(&second, 32767), Some(0xde00));
+            let weak = Arc::downgrade(&first);
+            assert_eq!(Arc::strong_count(&first), 1);
+            drop(first);
+            assert!(weak.upgrade().is_none());
+            DYNAMIC_CHAR_CODE_VIEWS.with(|views| {
+                let views = views.borrow();
+                assert!(views.entries.iter().all(|e| e.units.capacity() <= CHAR_AT_CACHE_MAX_BYTES));
+                assert_eq!(views.entries.iter().filter(|e| e.source.is_some()).count(), 2);
+            });
+            let oversized: Arc<str> = Arc::from("Ω".repeat(32769));
+            assert_eq!(dynamic_char_code_unit(&oversized, 32768), Some(937));
+            DYNAMIC_CHAR_CODE_VIEWS.with(|views| {
+                let views = views.borrow();
+                assert!(!views.entries.iter().any(|e| e.source.as_ref().is_some_and(|root|
+                    std::ptr::eq(root.as_ptr(), Arc::as_ptr(&oversized)))));
+            });
+        };
+        std::thread::spawn(check).join().unwrap();
+        std::thread::spawn(check).join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit opt0 adapter benchmark"]
+    fn cached_char_code_at_debug_pairs() {
+        assert!(cfg!(debug_assertions));
+        let mut workers = [worker(true), worker(false)];
+        let mut rows = Vec::new();
+        for (kind, text, expected) in [("ascii", "A".repeat(8192), 65.0), ("unicode", "Ω".repeat(8192), 937.0)] {
+            let args = [Value::String(Arc::from(text)), Value::I32(4096)];
+            let batch = |worker: &mut (VM, Value), count: usize| {
+                let start = std::time::Instant::now();
+                for _ in 0..count { assert_eq!(worker.0.invoke(&worker.1, &args).unwrap(), Value::F64(expected)); }
+                start.elapsed().as_nanos()
+            };
+            let mut counts = [1usize; 2];
+            for side in 0..2 { while batch(&mut workers[side], counts[side]) < 500_000_000 { counts[side] *= 2; } }
+            let mut samples = Vec::new(); let mut ratios = Vec::new();
+            for pair in 0..7 {
+                let mut ns = [0u128; 2];
+                for side in if pair % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    ns[side] = batch(&mut workers[side], counts[side]);
+                    samples.push((pair, side, counts[side], ns[side]));
+                }
+                ratios.push((ns[0] as f64 / counts[0] as f64) / (ns[1] as f64 / counts[1] as f64));
+            }
+            let mut sorted = ratios.clone(); sorted.sort_by(f64::total_cmp);
+            rows.push((kind, sorted[3], ratios, samples));
+            eprintln!("charCodeAt {kind}: {:.4}x; raw={:?}", sorted[3], rows.last().unwrap());
+        }
+    }
+
+
 }
 
 fn is_regexp_value(value: Option<&Value>) -> bool {
@@ -690,11 +1009,29 @@ fn register_query_ops(vm: &mut VM) {
         }),
     );
 
-    // String.prototype.charAt(pos)
+    // String.prototype.charAt(pos). Keep the non-String coercion path exact;
+    // only the immutable primitive String producer gets an indexed view.
+    let char_at_views = Arc::new(Mutex::new(CharAtViews::default()));
+    // Separate bounded views prevent charCodeAt on a third receiver from
+    // evicting the two strings used by an interleaved charAt loop.
+    let char_code_at_views = Arc::new(Mutex::new(CharAtViews::default()));
     vm.register_host_fn(
         "ecma:string",
         "charAt",
-        Box::new(|_ctx, args| {
+        Box::new(move |_ctx, args| {
+            if let Some(Value::String(source)) = args.first() {
+                let pos = i32_arg(args, 1, 0);
+                if pos < 0 { return s_val(""); }
+                if source.len() <= CHAR_AT_CACHE_MAX_BYTES {
+                    let unit = char_at_views.lock().unwrap().get(source, pos as usize);
+                    // Release private cache lock before entering the key pool.
+                    return match unit {
+                        Some(CharAtUnit::Ascii(byte)) => crate::keys::char_value(byte as char),
+                        Some(CharAtUnit::Utf16(unit)) => s_val(&String::from_utf16_lossy(&[unit])),
+                        None => s_val(""),
+                    };
+                }
+            }
             with_s_arg(args, 0, |s| {
                 let pos = i32_arg(args, 1, 0);
                 if pos < 0 {
@@ -721,7 +1058,18 @@ fn register_query_ops(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:string",
         "charCodeAt",
-        Box::new(|_ctx, args| {
+        Box::new(move |_ctx, args| {
+            if let Some(Value::String(source)) = args.first() {
+                if source.len() <= CHAR_AT_CACHE_MAX_BYTES {
+                    let pos = i32_arg(args, 1, 0);
+                    if pos < 0 { return Value::F64(f64::NAN); }
+                    return match char_code_at_views.lock().unwrap().get(source, pos as usize) {
+                        Some(CharAtUnit::Ascii(byte)) => Value::F64(byte as f64),
+                        Some(CharAtUnit::Utf16(unit)) => Value::F64(unit as f64),
+                        None => Value::F64(f64::NAN),
+                    };
+                }
+            }
             with_s_arg(args, 0, |s| {
                 let pos = i32_arg(args, 1, 0);
                 if pos < 0 {
@@ -1118,89 +1466,46 @@ fn register_pad_ops(vm: &mut VM) {
 
 // ── Search ops ────────────────────────────────────────────────────
 
-fn register_search_ops(vm: &mut VM) {
-    vm.register_host_fn(
-        "ecma:string",
-        "includes",
-        Box::new(|ctx, args| {
-            if is_regexp_value(args.get(1)) {
-                ctx.throw_value(crate::error::new_error(
-                    ctx,
-                    "TypeError",
-                    "First argument to String.prototype.includes must not be a RegExp",
-                ));
-                return Value::Null;
-            }
-            with_two_s_args(args, 0, 1, |s, needle| {
-                if s.is_ascii() && needle.is_ascii() {
-                    let pos = i32_arg(args, 2, 0).max(0) as usize;
-                    let start = pos.min(s.len());
-                    return Value::Bool(s[start..].contains(needle));
-                }
-                let pos = i32_arg(args, 2, 0).max(0) as usize;
-                if pos == 0 {
-                    return Value::Bool(s.contains(needle));
-                }
-                if needle.is_empty() {
-                    return Value::Bool(true);
-                }
-                let hay_units = utf16_units(s);
-                let needle_units = utf16_units(needle);
-                let start = pos.min(hay_units.len());
-                Value::Bool(
-                    hay_units[start..]
-                        .windows(needle_units.len())
-                        .any(|window| window == needle_units.as_slice()),
-                )
-            })
-        }),
-    );
-
-    vm.register_host_fn(
-        "ecma:string",
-        "indexOf",
-        Box::new(|_ctx, args| {
-            // ECMA-262 §22.1.3.9: positions are UTF-16 code-unit indices,
-            // consistent with `length` and `includes`. (Previously used
-            // Rust `str::find`, which returns UTF-8 *byte* offsets — this
-            // mis-indexed any non-ASCII string and could panic when `pos`
-            // landed inside a multi-byte sequence.)
-            with_two_s_args(args, 0, 1, |s, needle| {
-                if s.is_ascii() && needle.is_ascii() {
-                    let pos = i32_arg(args, 2, 0).max(0) as usize;
-                    let start = pos.min(s.len());
-                    if needle.is_empty() {
-                        return Value::F64(start as f64);
-                    }
-                    return match s[start..].find(needle) {
-                        Some(byte_idx) => Value::F64((start + byte_idx) as f64),
-                        None => Value::F64(-1.0),
-                    };
-                }
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_last_index_of_units(s: &str, needle: &str, position: f64) -> Value {
                 let hay = utf16_units(s);
                 let ndl = utf16_units(needle);
-                let pos = i32_arg(args, 2, 0).max(0) as usize;
-                let start = pos.min(hay.len());
+                let pos = position;
+                let end = if pos.is_infinite() && pos.is_sign_positive() {
+                    hay.len()
+                } else if pos <= 0.0 {
+                    0
+                } else if pos >= hay.len() as f64 {
+                    hay.len()
+                } else {
+                    pos as usize
+                };
                 if ndl.is_empty() {
-                    return Value::F64(start as f64);
+                    return Value::F64(end as f64);
                 }
                 if ndl.len() > hay.len() {
                     return Value::F64(-1.0);
                 }
-                for i in start..=(hay.len() - ndl.len()) {
+                let start = end.min(hay.len() - ndl.len());
+                for i in (0..=start).rev() {
                     if hay[i..i + ndl.len()] == ndl[..] {
                         return Value::F64(i as f64);
                     }
                 }
                 Value::F64(-1.0)
-            })
-        }),
-    );
+}
 
+/// Host-side A/B registration. The guest import and signature stay identical.
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_last_index_of(vm: &mut VM, fast: bool) {
+    register_last_index_of(vm, fast);
+}
+
+fn register_last_index_of(vm: &mut VM, #[cfg(feature = "primitive-benchmarks")] fast: bool) {
     vm.register_host_fn(
         "ecma:string",
         "lastIndexOf",
-        Box::new(|_ctx, args| {
+        Box::new(move |_ctx, args| {
             // ECMA-262 §22.1.3.10: UTF-16 code-unit index of the last match.
             with_two_s_args(args, 0, 1, |s, needle| {
                 if s.is_ascii() && needle.is_ascii() {
@@ -1226,84 +1531,203 @@ fn register_search_ops(vm: &mut VM) {
                         None => Value::F64(-1.0),
                     };
                 }
-                let hay = utf16_units(s);
-                let ndl = utf16_units(needle);
-                let pos = to_integer_or_infinity(args.get(2), f64::INFINITY);
-                let end = if pos.is_infinite() && pos.is_sign_positive() {
-                    hay.len()
-                } else if pos <= 0.0 {
-                    0
-                } else if pos >= hay.len() as f64 {
-                    hay.len()
-                } else {
-                    pos as usize
-                };
-                if ndl.is_empty() {
-                    return Value::F64(end as f64);
-                }
-                if ndl.len() > hay.len() {
-                    return Value::F64(-1.0);
-                }
-                let start = end.min(hay.len() - ndl.len());
-                for i in (0..=start).rev() {
-                    if hay[i..i + ndl.len()] == ndl[..] {
-                        return Value::F64(i as f64);
-                    }
-                }
-                Value::F64(-1.0)
+                let position = to_integer_or_infinity(args.get(2), f64::INFINITY);
+                #[cfg(feature = "primitive-benchmarks")]
+                if !fast { return legacy_last_index_of_units(s, needle, position); }
+                Value::F64(utf8_last_index_of_units(s, needle, position)
+                    .map(|index| index as f64).unwrap_or(-1.0))
             })
         }),
     );
 
+}
+
+/// First complete scalar boundary at/after a UTF16 position, clamped at EOF.
+/// `exact` is false only when the position splits a surrogate pair. Search
+/// can skip to that boundary; a nonempty prefix/suffix cannot match across it.
+fn utf8_clamped_boundary(source: &str, position: usize) -> (usize, bool) {
+    let mut units = 0;
+    for (byte, ch) in source.char_indices() {
+        if units >= position { return (byte, units == position); }
+        units += ch.len_utf16();
+    }
+    (source.len(), units <= position)
+}
+
+/// Host-only controls with identical import names and conversion paths.
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_utf8_boundaries(vm: &mut VM, fast: bool) {
+    register_includes(vm, fast);
+    register_starts_with(vm, fast);
+    register_ends_with(vm, fast);
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_includes(s: &str, needle: &str, args: &[Value]) -> Value {
+    let pos = i32_arg(args, 2, 0).max(0) as usize;
+    if pos == 0 {
+        return Value::Bool(s.contains(needle));
+    }
+    if s.is_ascii() && needle.is_ascii() {
+        let start = pos.min(s.len());
+        return Value::Bool(s[start..].contains(needle));
+    }
+    if needle.is_empty() {
+        return Value::Bool(true);
+    }
+    let hay_units = utf16_units(s);
+    let needle_units = utf16_units(needle);
+    let start = pos.min(hay_units.len());
+    Value::Bool(
+        hay_units[start..]
+            .windows(needle_units.len())
+            .any(|window| window == needle_units.as_slice()),
+    )
+}
+
+fn register_includes(vm: &mut VM, #[cfg(feature = "primitive-benchmarks")] fast: bool) {
+    vm.register_host_fn(
+        "ecma:string",
+        "includes",
+        Box::new(move |ctx, args| {
+            if is_regexp_value(args.get(1)) {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "First argument to String.prototype.includes must not be a RegExp",
+                ));
+                return Value::Null;
+            }
+            with_two_s_args(args, 0, 1, |s, needle| {
+                #[cfg(feature = "primitive-benchmarks")]
+                if !fast { return legacy_includes(s, needle, args); }
+                let pos = i32_arg(args, 2, 0).max(0) as usize;
+                if pos == 0 { return Value::Bool(s.contains(needle)); }
+                if needle.is_empty() { return Value::Bool(true); }
+                if s.is_ascii() && needle.is_ascii() {
+                    let start = pos.min(s.len());
+                    return Value::Bool(s[start..].contains(needle));
+                }
+                let (start, _) = utf8_clamped_boundary(s, pos);
+                Value::Bool(memchr::memmem::find(&s.as_bytes()[start..], needle.as_bytes()).is_some())
+            })
+        }),
+    );
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_starts_with(s: &str, needle: &str, args: &[Value]) -> Value {
+    if s.is_ascii() && needle.is_ascii() {
+        let start = (i32_arg(args, 2, 0).max(0) as usize).min(s.len());
+        return Value::Bool(s[start..].starts_with(needle));
+    }
+    let hay = utf16_units(s);
+    let ndl = utf16_units(needle);
+    let start = (i32_arg(args, 2, 0).max(0) as usize).min(hay.len());
+    if start + ndl.len() > hay.len() {
+        return Value::Bool(false);
+    }
+    Value::Bool(hay[start..start + ndl.len()] == ndl[..])
+}
+
+fn register_starts_with(vm: &mut VM, #[cfg(feature = "primitive-benchmarks")] fast: bool) {
     vm.register_host_fn(
         "ecma:string",
         "startsWith",
-        Box::new(|_ctx, args| {
+        Box::new(move |_ctx, args| {
             // ECMA-262 §22.1.3.23: `position` is a UTF-16 code-unit index.
             with_two_s_args(args, 0, 1, |s, needle| {
+                #[cfg(feature = "primitive-benchmarks")]
+                if !fast { return legacy_starts_with(s, needle, args); }
+                let pos = i32_arg(args, 2, 0).max(0) as usize;
+                if pos == 0 { return Value::Bool(s.starts_with(needle)); }
+                if needle.is_empty() { return Value::Bool(true); }
                 if s.is_ascii() && needle.is_ascii() {
-                    let start = (i32_arg(args, 2, 0).max(0) as usize).min(s.len());
-                    return Value::Bool(s[start..].starts_with(needle));
+                    return Value::Bool(s[pos.min(s.len())..].starts_with(needle));
                 }
-                let hay = utf16_units(s);
-                let ndl = utf16_units(needle);
-                let start = (i32_arg(args, 2, 0).max(0) as usize).min(hay.len());
-                if start + ndl.len() > hay.len() {
-                    return Value::Bool(false);
+                let (start, exact) = utf8_clamped_boundary(s, pos);
+                Value::Bool(exact && s[start..].starts_with(needle))
+            })
+        }),
+    );
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_ends_with(s: &str, needle: &str, args: &[Value]) -> Value {
+    if s.is_ascii() && needle.is_ascii() {
+        let end = if args.len() >= 3 {
+            (i32_arg(args, 2, s.len() as i32).max(0) as usize).min(s.len())
+        } else {
+            s.len()
+        };
+        return Value::Bool(s[..end].ends_with(needle));
+    }
+    let hay = utf16_units(s);
+    let ndl = utf16_units(needle);
+    let end = if args.len() >= 3 {
+        (i32_arg(args, 2, hay.len() as i32).max(0) as usize).min(hay.len())
+    } else {
+        hay.len()
+    };
+    if ndl.len() > end {
+        return Value::Bool(false);
+    }
+    Value::Bool(hay[end - ndl.len()..end] == ndl[..])
+}
+
+fn register_ends_with(vm: &mut VM, #[cfg(feature = "primitive-benchmarks")] fast: bool) {
+    vm.register_host_fn(
+        "ecma:string",
+        "endsWith",
+        Box::new(move |_ctx, args| {
+            // ECMA-262 §22.1.3.6: `endPosition` is a UTF-16 code-unit index.
+            with_two_s_args(args, 0, 1, |s, needle| {
+                #[cfg(feature = "primitive-benchmarks")]
+                if !fast { return legacy_ends_with(s, needle, args); }
+                if needle.is_empty() { return Value::Bool(true); }
+                let position = match args.get(2) {
+                    None => return Value::Bool(s.ends_with(needle)),
+                    Some(Value::I32(n)) => *n,
+                    Some(Value::F64(n)) => *n as i32,
+                    // i32_arg historically uses the source length as the
+                    // default for every other provided value. Its signed cast
+                    // only differs from the full end on exceptionally large
+                    // strings, so retain that conversion when necessary.
+                    Some(_) if s.len() <= i32::MAX as usize => return Value::Bool(s.ends_with(needle)),
+                    Some(_) => vybe_runtime::utf16_units(s) as i32,
+                }.max(0) as usize;
+                if s.is_ascii() && needle.is_ascii() {
+                    return Value::Bool(s[..position.min(s.len())].ends_with(needle));
                 }
-                Value::Bool(hay[start..start + ndl.len()] == ndl[..])
+                let (end, exact) = utf8_clamped_boundary(s, position);
+                Value::Bool(exact && s[..end].ends_with(needle))
+            })
+        }),
+    );
+}
+
+fn register_search_ops(vm: &mut VM) {
+    register_includes(vm, #[cfg(feature = "primitive-benchmarks")] true);
+
+    vm.register_host_fn(
+        "ecma:string",
+        "indexOf",
+        Box::new(|_ctx, args| {
+            // Preserve receiver/needle coercion order and existing position
+            // conversion. The search reports UTF-16 units, not UTF-8 bytes.
+            with_two_s_args(args, 0, 1, |s, needle| {
+                let pos = i32_arg(args, 2, 0).max(0) as usize;
+                Value::F64(utf8_index_of_units(s, needle, pos)
+                    .map(|index| index as f64).unwrap_or(-1.0))
             })
         }),
     );
 
-    vm.register_host_fn(
-        "ecma:string",
-        "endsWith",
-        Box::new(|_ctx, args| {
-            // ECMA-262 §22.1.3.6: `endPosition` is a UTF-16 code-unit index.
-            with_two_s_args(args, 0, 1, |s, needle| {
-                if s.is_ascii() && needle.is_ascii() {
-                    let end = if args.len() >= 3 {
-                        (i32_arg(args, 2, s.len() as i32).max(0) as usize).min(s.len())
-                    } else {
-                        s.len()
-                    };
-                    return Value::Bool(s[..end].ends_with(needle));
-                }
-                let hay = utf16_units(s);
-                let ndl = utf16_units(needle);
-                let end = if args.len() >= 3 {
-                    (i32_arg(args, 2, hay.len() as i32).max(0) as usize).min(hay.len())
-                } else {
-                    hay.len()
-                };
-                if ndl.len() > end {
-                    return Value::Bool(false);
-                }
-                Value::Bool(hay[end - ndl.len()..end] == ndl[..])
-            })
-        }),
-    );
+    register_last_index_of(vm, #[cfg(feature = "primitive-benchmarks")] true);
+
+    register_starts_with(vm, #[cfg(feature = "primitive-benchmarks")] true);
+
+    register_ends_with(vm, #[cfg(feature = "primitive-benchmarks")] true);
 }
 
 // ── Modify ops (repeat, replace, replaceAll) ──────────────────────
@@ -2242,6 +2666,135 @@ mod match_capture_performance_tests {
                 }
                 eprintln!("captures matched={matched} sample={sample} operations=1000 old={old_time:?} new={new_time:?}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod index_of_utf8_tests {
+    use super::*;
+    use vybe_runtime::{Chunk, Op};
+    fn worker(old: bool) -> (VM, Value) {
+        let mut owner = Chunk::new("index-owner");
+        vybe_compiler::primitives::functions::emit_ref_func(&mut owner, 1, 0, 0);
+        owner.emit_op(Op::RETURN, 0);
+        let mut body = Chunk::new("index-search");
+        body.arity = 3; body.param_count = 3; body.local_count = 3;
+        for slot in 0..3 { body.emit_op_u16(Op::LOCAL_GET, slot, 0); }
+        let import = body.add_import("ecma:string", "indexOf");
+        body.emit_call(import, 3, 0); body.emit_op(Op::RETURN, 0);
+        let mut chunks = vec![owner, body];
+        vybe_compiler::primitives::bundle::finalize_with_runtime_helpers(&mut chunks);
+        let mut vm = VM::new();
+        vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+        if old {
+    vm.register_host_fn(
+        "ecma:string",
+        "indexOf",
+        Box::new(|_ctx, args| {
+            // ECMA-262 §22.1.3.9: positions are UTF-16 code-unit indices,
+            // consistent with `length` and `includes`. (Previously used
+            // Rust `str::find`, which returns UTF-8 *byte* offsets — this
+            // mis-indexed any non-ASCII string and could panic when `pos`
+            // landed inside a multi-byte sequence.)
+            with_two_s_args(args, 0, 1, |s, needle| {
+                if s.is_ascii() && needle.is_ascii() {
+                    let pos = i32_arg(args, 2, 0).max(0) as usize;
+                    let start = pos.min(s.len());
+                    if needle.is_empty() {
+                        return Value::F64(start as f64);
+                    }
+                    return match s[start..].find(needle) {
+                        Some(byte_idx) => Value::F64((start + byte_idx) as f64),
+                        None => Value::F64(-1.0),
+                    };
+                }
+                let hay = utf16_units(s);
+                let ndl = utf16_units(needle);
+                let pos = i32_arg(args, 2, 0).max(0) as usize;
+                let start = pos.min(hay.len());
+                if ndl.is_empty() {
+                    return Value::F64(start as f64);
+                }
+                if ndl.len() > hay.len() {
+                    return Value::F64(-1.0);
+                }
+                for i in start..=(hay.len() - ndl.len()) {
+                    if hay[i..i + ndl.len()] == ndl[..] {
+                        return Value::F64(i as f64);
+                    }
+                }
+                Value::F64(-1.0)
+            })
+        }),
+    );
+
+
+        }
+        let function = vm.run(chunks).unwrap(); (vm, function)
+    }
+    fn oracle(source: &str, needle: &str, position: usize) -> f64 {
+        let hay: Vec<_> = source.encode_utf16().collect();
+        let needle: Vec<_> = needle.encode_utf16().collect();
+        let start = position.min(hay.len());
+        if needle.is_empty() { return start as f64; }
+        if needle.len() > hay.len() { return -1.0; }
+        (start..=hay.len()-needle.len()).find(|&i| hay[i..i+needle.len()]==needle)
+            .map(|i| i as f64).unwrap_or(-1.0)
+    }
+    #[test]
+    fn allocation_free_index_of_preserves_actual_adapter_results() {
+        let mut workers = [worker(true), worker(false)];
+        for source in ["", "ABC", "Ωé中", "😀A😀", "𐐀Ω😀A", "A\0ΩA"] {
+            for needle in ["", "A", "Ω", "😀", "𐐀", "\0", "Ω😀", "😀A", "missing"] {
+                for position in [-1, 0, 1, 2, 3, 4, 5, 6, 20, i32::MAX] {
+                    let args = [Value::String(Arc::from(source)), Value::String(Arc::from(needle)), Value::I32(position)];
+                    let expected = Value::F64(oracle(source, needle, position.max(0) as usize));
+                    for (vm, f) in &mut workers { assert_eq!(vm.invoke(f, &args).unwrap(), expected); assert!(vm.last_exception.is_none()); }
+                }
+            }
+        }
+        for receiver in [Value::Null, Value::Undefined, Value::I32(123), Value::Bool(true)] {
+            for needle in [Value::Undefined, Value::Null, Value::I32(2), Value::Bool(false)] {
+                for position in [Value::Undefined, Value::F64(f64::NAN), Value::F64(1.8), Value::F64(f64::INFINITY)] {
+                    let args = [receiver.clone(), needle.clone(), position];
+                    let before_fn = workers[0].1.clone();
+                    let after_fn = workers[1].1.clone();
+                    let before = workers[0].0.invoke(&before_fn, &args).unwrap();
+                    let after = workers[1].0.invoke(&after_fn, &args).unwrap();
+                    assert_eq!(before, after);
+                }
+            }
+        }
+    }
+    #[test]
+    #[ignore = "explicit opt0 adapter benchmark"]
+    fn allocation_free_index_of_debug_pairs() {
+        assert!(cfg!(debug_assertions));
+        let mut workers = [worker(true), worker(false)];
+        for (kind, source, needle, position, expected) in [
+            ("ascii", "A".repeat(8192)+"!", "!", 0, 8192.0),
+            ("unicode-scan", "Ω".repeat(8192)+"!", "!", 0, 8192.0),
+            ("unicode-near", "Ω".repeat(8192), "Ω", 4096, 4096.0),
+            ("astral-mid", "😀".repeat(4096), "😀", 4097, 4098.0)] {
+            let args = [Value::String(Arc::from(source)), Value::String(Arc::from(needle)), Value::I32(position)];
+            let batch = |worker: &mut (VM, Value), count: usize| {
+                let start = std::time::Instant::now();
+                for _ in 0..count { assert_eq!(worker.0.invoke(&worker.1, &args).unwrap(), Value::F64(expected)); }
+                start.elapsed().as_nanos()
+            };
+            let mut counts = [1usize; 2];
+            for side in 0..2 { while batch(&mut workers[side], counts[side]) < 500_000_000 { counts[side] *= 2; } }
+            let mut samples = Vec::new(); let mut ratios = Vec::new();
+            for pair in 0..7 {
+                let mut ns = [0u128; 2];
+                for side in if pair%2==0 {[0,1]} else {[1,0]} {
+                    ns[side] = batch(&mut workers[side], counts[side]); samples.push((pair,side,counts[side],ns[side]));
+                }
+                ratios.push((ns[0] as f64/counts[0] as f64)/(ns[1] as f64/counts[1] as f64));
+            }
+            let mut sorted = ratios.clone(); sorted.sort_by(f64::total_cmp);
+            eprintln!("indexOf {kind}: {:.4}x; ratios={ratios:?}; raw={samples:?}",sorted[3]);
         }
     }
 }

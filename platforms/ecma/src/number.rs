@@ -506,6 +506,17 @@ fn register_parsers(vm: &mut VM) {
 /// ECMA-262 §19.2.5 ParseInt: skip leading whitespace, optional
 /// sign, consume the longest radix-valid prefix, return its parsed
 /// value (or NaN if the prefix is empty).
+fn trim_ecma_number_start(input: &str) -> &str {
+    input.trim_start_matches(|ch| {
+        matches!(ch,
+            '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' '
+            | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}'
+            | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}'
+            | '\u{3000}' | '\u{feff}'
+        )
+    })
+}
+
 fn parse_int_ecma(input: &str, radix: u32) -> f64 {
     // §19.2.5 step 8: a radix outside 2..=36 (0 = auto-detect handled
     // below) returns NaN — and must never reach char::to_digit, which
@@ -513,7 +524,7 @@ fn parse_int_ecma(input: &str, radix: u32) -> f64 {
     if radix != 0 && !(2..=36).contains(&radix) {
         return f64::NAN;
     }
-    let trimmed = input.trim_start();
+    let trimmed = trim_ecma_number_start(input);
     if trimmed.is_empty() {
         return f64::NAN;
     }
@@ -539,19 +550,35 @@ fn parse_int_ecma(input: &str, radix: u32) -> f64 {
         (radix, rest)
     };
 
+    if effective_radix == 10 {
+        let end = body.bytes().take_while(u8::is_ascii_digit).count();
+        if end == 0 {
+            return f64::NAN;
+        }
+        // Every consumed byte is ASCII, so this is a UTF-8 boundary.
+        // The standard parser rounds the integer prefix to f64 without a
+        // bounded integer accumulator or an intermediate allocated string.
+        return sign * body[..end].parse::<f64>().unwrap_or(f64::NAN);
+    }
+
     let mut acc: u128 = 0;
-    let mut consumed = 0usize;
-    for (i, ch) in body.chars().enumerate() {
-        let digit = match ch.to_digit(effective_radix) {
-            Some(d) => d,
-            None => break,
+    let mut consumed = false;
+    for byte in body.bytes() {
+        let digit = match byte {
+            b'0'..=b'9' => u32::from(byte - b'0'),
+            b'a'..=b'z' => u32::from(byte - b'a') + 10,
+            b'A'..=b'Z' => u32::from(byte - b'A') + 10,
+            _ => break,
         };
+        if digit >= effective_radix {
+            break;
+        }
         acc = acc
             .saturating_mul(effective_radix as u128)
             .saturating_add(digit as u128);
-        consumed = i + 1;
+        consumed = true;
     }
-    if consumed == 0 {
+    if !consumed {
         return f64::NAN;
     }
     sign * (acc as f64)
@@ -561,14 +588,7 @@ fn parse_int_ecma(input: &str, radix: u32) -> f64 {
 /// longest substring that looks like a float; return NaN if the
 /// prefix isn't a valid number start.
 fn parse_float_ecma(input: &str) -> f64 {
-    let trimmed = input.trim_start_matches(|ch| {
-        matches!(ch,
-            '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' '
-            | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}'
-            | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}'
-            | '\u{3000}' | '\u{feff}'
-        )
-    });
+    let trimmed = trim_ecma_number_start(input);
     let bytes = trimmed.as_bytes();
     let mut end = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
     if trimmed[end..].starts_with("Infinity") {
@@ -988,6 +1008,138 @@ mod integer_radix_performance_tests {
                 }
                 eprintln!("radix={radix} sample={sample} operations=20000 old={old_time:?} new={new_time:?}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ascii_parse_int_tests {
+    use super::*;
+
+fn previous_parse_int(input: &str, radix: u32) -> f64 {
+    // §19.2.5 step 8: a radix outside 2..=36 (0 = auto-detect handled
+    // below) returns NaN — and must never reach char::to_digit, which
+    // PANICS on out-of-range radices.
+    if radix != 0 && !(2..=36).contains(&radix) {
+        return f64::NAN;
+    }
+    let trimmed = input.trim_start();
+    if trimmed.is_empty() {
+        return f64::NAN;
+    }
+    let (sign, rest) = match trimmed.as_bytes()[0] {
+        b'+' => (1.0_f64, &trimmed[1..]),
+        b'-' => (-1.0_f64, &trimmed[1..]),
+        _ => (1.0_f64, trimmed),
+    };
+    if rest.is_empty() {
+        return f64::NAN;
+    }
+
+    // 0x / 0X auto-detects hex when radix is unspecified or 16.
+    let (effective_radix, body) = if (radix == 0 || radix == 16)
+        && rest.len() >= 2
+        && rest.as_bytes()[0] == b'0'
+        && (rest.as_bytes()[1] == b'x' || rest.as_bytes()[1] == b'X')
+    {
+        (16u32, &rest[2..])
+    } else if radix == 0 {
+        (10u32, rest)
+    } else {
+        (radix, rest)
+    };
+
+    let mut acc: u128 = 0;
+    let mut consumed = 0usize;
+    for (i, ch) in body.chars().enumerate() {
+        let digit = match ch.to_digit(effective_radix) {
+            Some(d) => d,
+            None => break,
+        };
+        acc = acc
+            .saturating_mul(effective_radix as u128)
+            .saturating_add(digit as u128);
+        consumed = i + 1;
+    }
+    if consumed == 0 {
+        return f64::NAN;
+    }
+    sign * (acc as f64)
+}
+
+    #[test]
+    fn decimal_prefixes_preserve_sign_and_ecma_whitespace_without_u128_saturation() {
+        for (input, radix, expected) in [
+            ("12345tail", 10, 12345.0), ("-123tail", 0, -123.0),
+            ("+0Xff!", 0, 255.0), ("ff!", 16, 255.0),
+            ("10102", 2, 10.0), ("ZZ!", 36, 1295.0),
+            ("\u{feff}\u{2028}42rest", 10, 42.0),
+            ("99999999999999999999999999999999999999999999999999tail", 10, 1e50),
+        ] {
+            assert_eq!(parse_int_ecma(input, radix), expected, "{input:?} radix={radix}");
+        }
+        assert!(parse_int_ecma(&"9".repeat(400), 10).is_infinite());
+        assert_eq!(parse_int_ecma("-0tail", 10).to_bits(), (-0.0f64).to_bits());
+        for input in ["", "-", "x", "\u{85}1", "\u{1f600}1", "１２"] {
+            assert!(parse_int_ecma(input, 10).is_nan(), "{input:?}");
+        }
+        assert!(parse_int_ecma("10", 1).is_nan());
+        assert!(parse_int_ecma("10", 37).is_nan());
+    }
+
+    #[test]
+    fn ascii_radix_scanner_matches_previous_for_bounded_prefixes() {
+        for radix in (2..=36).chain([0]) {
+            for input in ["0", "-0", "+42tail", "123456789", "0123", "0xFf!", "aBcDz",
+                "1水", "١٢", "ffé", "  -101010", "zZ", "0X", "+"] {
+                let previous = previous_parse_int(input, radix);
+                let current = parse_int_ecma(input, radix);
+                if previous.is_nan() {
+                    assert!(current.is_nan(), "{input:?} radix={radix}");
+                } else {
+                    assert_eq!(current.to_bits(), previous.to_bits(), "{input:?} radix={radix}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "paired registered parseInt against previous character/u128 scanner"]
+    fn registered_parse_int_benchmark() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_free_fn("ecma:parse-int-check", "previous", Box::new(|_, args| {
+            let input = s_arg(args, 0);
+            let radix = match args.get(1) {
+                Some(Value::F64(n)) if *n != 0.0 => *n as u32,
+                Some(Value::I32(n)) if *n != 0 => *n as u32,
+                _ => 0,
+            };
+            Value::F64(previous_parse_int(&input, radix))
+        }));
+        let functions = [("ecma:parse-int-check", "previous"), ("ecma:number", "parseInt")].map(|(module, name)| {
+            let mut object = Object::new();
+            object.kind = vybe_runtime::value::ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+            Value::Object(vybe_runtime::heap::alloc(object))
+        });
+        for (input, radix) in [("12345", 10), ("123456789012345678901234567890tail", 10),
+            ("7fffffffffffffff!", 16), ("10101010101010101010101010101010suffix", 2)] {
+            let args = [s_val(input), Value::I32(radix)];
+            let old = vm.invoke(&functions[0], &args).unwrap();
+            let new = vm.invoke(&functions[1], &args).unwrap();
+            assert_eq!(old.as_f64().to_bits(), new.as_f64().to_bits());
+            let mut times = [std::time::Duration::ZERO; 2];
+            for round in 0..8 {
+                for variant in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let started = std::time::Instant::now();
+                    for _ in 0..10000 {
+                        std::hint::black_box(vm.invoke(&functions[variant], &args).unwrap());
+                    }
+                    times[variant] += started.elapsed();
+                }
+            }
+            eprintln!("parseInt radix={radix} bytes={} calls=80000 previous={:?} ascii={:?} ratio={:.3}",
+                input.len(), times[0], times[1], times[0].as_secs_f64() / times[1].as_secs_f64());
         }
     }
 }

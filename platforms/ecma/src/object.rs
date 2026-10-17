@@ -75,10 +75,6 @@ const FROZEN_MARK: &str = "__vybe_frozen";
 const SEALED_MARK: &str = "__vybe_sealed";
 const EXTENSIBLE_MARK: &str = "__vybe_extensible"; // absence means extensible
 const PROTO_KEY: &str = "__proto__";
-/// The custom-descriptor slot a GC struct carries (set by the VM in
-/// `dispatch.rs`). Named here rather than imported because the runtime keeps
-/// it private.
-const DESCRIPTOR_SLOT: &str = "__descriptor";
 const NULL_PROTO_MARK: &str = "__vybe_null_proto";
 const ACCESSOR_SETTER_ACTIVE_MARK: &str = "__vybe_accessor_setter_active";
 const PROXY_TARGET_KEY: &str = "__vybe_proxy_target";
@@ -141,7 +137,7 @@ pub(crate) fn implicit_object_prototype(obj: &Arc<Mutex<Object>>, o: &Object) ->
     if o.properties.contains_key(NULL_PROTO_MARK) {
         return Value::Null;
     }
-    if let Some(Value::Object(desc)) = o.properties.get(DESCRIPTOR_SLOT) {
+    if let Some(desc) = &o.descriptor {
         if !Arc::ptr_eq(obj, desc) {
             if let Ok(d) = desc.try_lock() {
                 if let Some(p @ Value::Object(_)) = d.fields.first() {
@@ -1666,6 +1662,11 @@ fn assign_strict_set(
 fn has_own_property_key(value: &Value, key_raw: &Value) -> Option<bool> {
     match value {
         Value::Object(obj) => {
+            // Key conversion can lock an object, including this receiver.
+            // Keep the original key for visibility and index fast paths.
+            let resolved_key = matches!(key_raw, Value::Object(_))
+                .then(|| Value::String(key_string(key_raw).into()));
+            let lookup_key = resolved_key.as_ref().unwrap_or(key_raw);
             let o = obj.lock().unwrap();
             match &o.kind {
                 ObjectKind::Array(values) => {
@@ -1690,7 +1691,7 @@ fn has_own_property_key(value: &Value, key_raw: &Value) -> Option<bool> {
                 }
                 _ => {}
             }
-            with_property_key(key_raw, |key| {
+            with_property_key(lookup_key, |key| {
                 let visible = !key.starts_with("__")
                     || matches!(key_raw, Value::String(text) if text.as_ref() == "__proto__");
                 let present = o.properties.contains_key(key)
@@ -2058,7 +2059,7 @@ pub fn collect_protocol_iterable_result(
             Object::new_array(out),
         ))));
     };
-    for _ in 0..1024 {
+    loop {
         let step = if let Some(result) =
             crate::function::try_invoke_bound_callback_if_needed(ctx, &next_fn, &[])
         {
@@ -3172,15 +3173,6 @@ pub fn install_noop_setter(o: &mut Object, key: &str) {
     }
 }
 
-fn proto_walk_invoke_getter(
-    ctx: &mut HostContext,
-    obj: &Arc<Mutex<Object>>,
-    key: &str,
-) -> Option<Value> {
-    let getter =
-        crate::keys::with_getter_property_key(key, |getter_key| proto_walk_get(obj, getter_key))?;
-    Some(invoke_getter_value(ctx, obj, getter))
-}
 
 fn invoke_getter_value(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>, getter: Value) -> Value {
     match try_invoke_getter_value(ctx, obj, getter) {
@@ -4043,13 +4035,15 @@ fn register_access(vm: &mut VM) {
                                     o.properties.get(EXTENSIBLE_MARK),
                                     Some(Value::I32(0))
                                 );
-                                let exists = if o.properties.contains_key(key) {
-                                    true
-                                } else {
-                                    o.properties.contains_key(getter_key)
-                                        || o.properties.contains_key(setter_key)
-                                };
-                                if not_extensible && !exists {
+                                // Existence only matters for non-extensible objects.
+                                // Ordinary extensible writes need no descriptor-key
+                                // lookups at this gate; later accessor handling remains
+                                // responsible for resolving the assignment target.
+                                let cannot_add = not_extensible
+                                    && !(o.properties.contains_key(key)
+                                        || o.properties.contains_key(getter_key)
+                                        || o.properties.contains_key(setter_key));
+                                if cannot_add {
                                     drop(o);
                                     if strict {
                                         ctx.throw_value(crate::error::new_error(
@@ -4775,8 +4769,31 @@ fn register_enumeration(vm: &mut VM) {
     /// non-enumerable via `defineProperty({enumerable: false})`. Used
     /// by `Object.keys` / `Object.values` / `Object.entries` per
     /// ECMA-262 §7.3.22 (only enumerable own properties).
-    fn ordinary_enumerable_keys(o: &Object) -> Vec<String> {
+    fn ordinary_enumerable_keys(o: &mut Object) -> Vec<String> {
         let mut keys = descriptor_own_keys(o);
+        if keys.len() > 16 {
+            if let Some(Value::Object(marker)) = o.properties.get_mut("__nonenum") {
+                // Unlike separate strong/weak count reads, get_mut proves
+                // uniqueness atomically against racing Weak upgrades. The
+                // parent Object lock prevents a new alias through its field.
+                // Shared/weak markers keep the original live per-key reads.
+                if let Some(marker) = Arc::get_mut(marker) {
+                    let marker = marker.get_mut().unwrap();
+                    if let ObjectKind::Array(values) = &marker.kind {
+                        if values.len() > 16 {
+                            let mut hidden = std::collections::HashSet::with_capacity(values.len());
+                            for value in values {
+                                if let Value::String(text) = value {
+                                    hidden.insert(text.as_ref());
+                                }
+                            }
+                            keys.retain(|key| !hidden.contains(key.as_str()));
+                            return keys;
+                        }
+                    }
+                }
+            }
+        }
         keys.retain(|k| !is_nonenum(o, k));
         keys
     }
@@ -4819,7 +4836,7 @@ fn register_enumeration(vm: &mut VM) {
                 return Value::Object(vybe_runtime::heap::alloc(Object::new_array(filtered)));
             }
             if let Value::Object(obj) = value {
-                let o = obj.lock().unwrap();
+                let mut o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
                         let mut keys = Vec::with_capacity(v.len());
@@ -4857,7 +4874,7 @@ fn register_enumeration(vm: &mut VM) {
                         .collect();
                     return Value::Object(vybe_runtime::heap::alloc(Object::new_array(keys)));
                 }
-                let enumerable = ordinary_enumerable_keys(&o);
+                let enumerable = ordinary_enumerable_keys(&mut o);
                 let mut keys = Vec::with_capacity(enumerable.len());
                 for key in enumerable {
                     keys.push(crate::keys::string_value(&key));
@@ -4907,7 +4924,7 @@ fn register_enumeration(vm: &mut VM) {
                 let mut current = obj;
                 for _ in 0..100 {
                     let next_proto = {
-                        let o = current.lock().unwrap();
+                        let mut o = current.lock().unwrap();
                         match &o.kind {
                             ObjectKind::Array(v) => {
                                 seen.reserve(v.len());
@@ -4948,7 +4965,7 @@ fn register_enumeration(vm: &mut VM) {
                                 }
                             }
                             _ => {
-                                let keys = ordinary_enumerable_keys(&o);
+                                let keys = ordinary_enumerable_keys(&mut o);
                                 seen.reserve(keys.len());
                                 out.reserve(keys.len());
                                 for k in keys {
@@ -5072,7 +5089,7 @@ fn register_enumeration(vm: &mut VM) {
         vec![obj_t()],
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
-                let o = obj.lock().unwrap();
+                let mut o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
                         let mut values = Vec::with_capacity(v.len());
@@ -5103,7 +5120,7 @@ fn register_enumeration(vm: &mut VM) {
                     let values = o.properties.values().cloned().collect();
                     return Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)));
                 }
-                let keys = ordinary_enumerable_keys(&o);
+                let keys = ordinary_enumerable_keys(&mut o);
                 let mut values = Vec::with_capacity(keys.len());
                 if !has_any_getter(&o) {
                     let mut direct_data = true;
@@ -5144,7 +5161,7 @@ fn register_enumeration(vm: &mut VM) {
         vec![obj_t()],
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
-                let o = obj.lock().unwrap();
+                let mut o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
                         let mut entries = Vec::with_capacity(v.len());
@@ -5185,7 +5202,7 @@ fn register_enumeration(vm: &mut VM) {
                 if let Some(entries) = plain_ordered_data_entries(&o) {
                     return Value::Object(vybe_runtime::heap::alloc(Object::new_array(entries)));
                 }
-                let keys = ordinary_enumerable_keys(&o);
+                let keys = ordinary_enumerable_keys(&mut o);
                 let mut entries = Vec::with_capacity(keys.len());
                 if !has_any_getter(&o) {
                     let mut direct_data = true;

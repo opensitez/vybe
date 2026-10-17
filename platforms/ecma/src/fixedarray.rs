@@ -20,7 +20,6 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md`.
 
-use std::sync::{Arc, Mutex};
 use vybe_runtime::VM;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 
@@ -171,6 +170,7 @@ pub fn register(vm: &mut VM) {
 #[cfg(test)]
 mod array_lock_speedup_tests {
     use super::*;
+    use std::sync::Arc;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 

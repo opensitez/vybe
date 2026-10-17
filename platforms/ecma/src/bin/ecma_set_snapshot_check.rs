@@ -14,8 +14,8 @@ fn main() {
     vybe_platform_ecma::reflect::register(&mut vm);
     let target = Arc::new(Mutex::new(Object::new()));
     let captured = target.clone();
-    vm.register_free_fn("ecma:set-check", "setter", Box::new(move |ctx, args| {
-        let user_args = ctx.user_args(args, 0);
+    vm.register_host_fn("ecma:set-check", "setter", Box::new(move |ctx, args| {
+        let user_args = ctx.user_args(args, 1);
         let mut target = captured.try_lock().expect("target lock held during setter");
         assert!(matches!(user_args.first(), Some(Value::I32(17))),
             "setter value displaced: raw={args:?}, normalized={user_args:?}");

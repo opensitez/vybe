@@ -20,8 +20,7 @@ use vybe_runtime::{VM, Value};
 
 /// Ensure a namespace object exists at the given dotted path on the VM globals.
 /// Creates intermediate objects as needed. Returns the leaf object. Stores the
-/// root global under BOTH the original case and lowercase (case-sensitive
-/// languages hit the original key, case-insensitive ones the lowercase).
+/// root global under its declared spelling only.
 fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
     if path.is_empty() {
         return Value::Null;
@@ -32,20 +31,19 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
     // in a language where it must not, and made the entry that a
     // case-insensitive caller folds to ambiguous once the tree stopped
     // pre-lowercasing its lookups.
-    let root_orig = path[0].to_string();
-    let root = if let Some(existing) = vm.global(&root_orig) {
+    let root_orig = path[0];
+    let root = if let Some(existing) = vm.global(root_orig) {
         existing.clone()
     } else {
         let obj = Value::Object(vybe_runtime::heap::alloc(Object::new()));
-        vm.set_global_owned(root_orig.clone(), obj.clone());
+        vm.set_global_owned(root_orig.to_string(), obj.clone());
         obj
     };
     let mut current = root;
     for &segment in &path[1..] {
-        let orig = segment.to_string();
         let next = if let Value::Object(ref obj) = current {
             let lock = obj.lock().unwrap();
-            lock.properties.get(&orig).cloned()
+            lock.properties.get(segment).cloned()
         } else {
             None
         };
@@ -55,7 +53,7 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
             let new_obj = Value::Object(vybe_runtime::heap::alloc(Object::new()));
             if let Value::Object(ref obj) = current {
                 let mut o = obj.lock().unwrap();
-                o.properties.insert(orig.clone(), new_obj.clone());
+                o.properties.insert(segment.to_string(), new_obj.clone());
             }
             current = new_obj;
         }
@@ -63,8 +61,7 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
     current
 }
 
-/// Set a property on a namespace object, under BOTH original-case and
-/// lowercase keys (same underlying Value).
+/// Set a property on a namespace object under its declared spelling.
 ///
 /// NON-ENUMERABLE, because §17 makes that the DEFAULT for everything this
 /// function installs: "Every other data property described in clauses
@@ -124,18 +121,18 @@ fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
     if let Some(idx) = vm.resolve_host_function_index(module, name) {
         let mut obj = Object::new();
         obj.properties.reserve(5);
+        let name_value = crate::keys::string_value(name);
         obj.properties
             .insert("__host_module".into(), crate::keys::string_value(module));
         obj.properties
-            .insert("__host_name".into(), crate::keys::string_value(name));
+            .insert("__host_name".into(), name_value.clone());
         obj.properties
             .insert("__host_idx".into(), Value::F64(idx as f64));
         obj.properties.insert(
             "__proto__".into(),
             crate::function::shared_function_prototype(),
         );
-        obj.properties
-            .insert("name".into(), crate::keys::string_value(name));
+        obj.properties.insert("name".into(), name_value);
         obj.kind = ObjectKind::HostFunction(idx);
         Value::Object(vybe_runtime::heap::alloc(obj))
     } else {
@@ -184,9 +181,8 @@ pub fn register(vm: &mut VM) {
         ("propertyIsEnumerable", "propertyIsEnumerable"),
         ("isPrototypeOf", "isPrototypeOf"),
     ] {
-        let idx = *vm
-            .host_registry
-            .get(&("ecma:object".to_string(), (*registry_name).to_string()))
+        let idx = vm
+            .resolve_host_function_index("ecma:object", registry_name)
             .expect("ecma:object prototype method must be registered");
         set_prop(
             &object_proto,
@@ -237,9 +233,8 @@ pub fn register(vm: &mut VM) {
         "toPrecision",
         "toLocaleString",
     ] {
-        let idx = *vm
-            .host_registry
-            .get(&("ecma:number".to_string(), (*name).to_string()))
+        let idx = vm
+            .resolve_host_function_index("ecma:number", name)
             .expect("ecma:number prototype method must be registered");
         set_prop(
             &number_proto,
@@ -306,9 +301,8 @@ pub fn register(vm: &mut VM) {
         "localeCompare",
         "normalize",
     ] {
-        let idx = *vm
-            .host_registry
-            .get(&("ecma:string".to_string(), (*name).to_string()))
+        let idx = vm
+            .resolve_host_function_index("ecma:string", name)
             .expect("ecma:string prototype method must be registered");
         set_prop(
             &string_proto,
@@ -328,13 +322,11 @@ pub fn register(vm: &mut VM) {
     let boolean_proto = crate::boolean::shared_boolean_prototype();
     set_constructor_once(&boolean_proto, boolean.clone());
     set_prop(&boolean_proto, "__proto__", object_proto.clone());
-    let boolean_to_string = *vm
-        .host_registry
-        .get(&("ecma:boolean".to_string(), "toString".to_string()))
+    let boolean_to_string = vm
+        .resolve_host_function_index("ecma:boolean", "toString")
         .expect("ecma:boolean.toString must be registered");
-    let boolean_value_of = *vm
-        .host_registry
-        .get(&("ecma:boolean".to_string(), "valueOf".to_string()))
+    let boolean_value_of = vm
+        .resolve_host_function_index("ecma:boolean", "valueOf")
         .expect("ecma:boolean.valueOf must be registered");
     set_prop(
         &boolean_proto,
@@ -356,9 +348,8 @@ pub fn register(vm: &mut VM) {
     set_constructor_once(&function_proto, function.clone());
     set_prop(&function_proto, "__proto__", object_proto.clone());
     for name in &["bind", "call", "apply"] {
-        let idx = *vm
-            .host_registry
-            .get(&("ecma:function".to_string(), (*name).to_string()))
+        let idx = vm
+            .resolve_host_function_index("ecma:function", name)
             .expect("ecma:function prototype method must be registered");
         set_prop(
             &function_proto,
@@ -419,9 +410,8 @@ pub fn register(vm: &mut VM) {
         "unshift",
         "values",
     ] {
-        let idx = *vm
-            .host_registry
-            .get(&("ecma:array".to_string(), (*name).to_string()))
+        let idx = vm
+            .resolve_host_function_index("ecma:array", name)
             .expect("ecma:array prototype method must be registered");
         set_prop(
             &array_proto,
@@ -429,11 +419,7 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:array", name, idx),
         );
     }
-    if let Some(idx) = vm
-        .host_registry
-        .get(&("ecma:array".to_string(), "values".to_string()))
-        .copied()
-    {
+    if let Some(idx) = vm.resolve_host_function_index("ecma:array", "values") {
         set_prop(
             &array_proto,
             "iterator",
@@ -509,10 +495,7 @@ pub fn register(vm: &mut VM) {
             set_prop(&proto, "__proto__", object_proto.clone());
             set_constructor_once(&proto, ctor.clone());
             for method in methods {
-                if let Some(&idx) = vm
-                    .host_registry
-                    .get(&(module.to_string(), (*method).to_string()))
-                {
+                if let Some(idx) = vm.resolve_host_function_index(module, method) {
                     // §24.1.3.10 / §24.2.3.9 — `size` is an ACCESSOR whose set
                     // accessor is undefined, not a method. `__get_<name>` is
                     // how the VM spells a getter (`dispatch.rs`), so the same
@@ -591,10 +574,7 @@ pub fn register(vm: &mut VM) {
             set_prop(&proto, "__proto__", object_proto.clone());
             set_constructor_once(&proto, ctor.clone());
             for method in methods {
-                if let Some(&idx) = vm
-                    .host_registry
-                    .get(&(module.to_string(), (*method).to_string()))
-                {
+                if let Some(idx) = vm.resolve_host_function_index(module, method) {
                     set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
                 }
             }
@@ -611,12 +591,9 @@ pub fn register(vm: &mut VM) {
                     "try",
                     "withResolvers",
                 ] {
-                    if let Some(&idx) = vm
-                        .host_registry
-                        .get(&(module.to_string(), stat.to_string()))
-                    {
-                        let _ = idx;
-                        set_prop(&ctor, stat, host_fn_ref(vm, module, stat));
+                    let method = host_fn_ref(vm, module, stat);
+                    if !matches!(method, Value::Null) {
+                        set_prop(&ctor, stat, method);
                     }
                 }
             }
@@ -679,11 +656,7 @@ pub fn register(vm: &mut VM) {
             "toTimeString",
             "toJSON",
         ] {
-            if let Some(idx) = vm
-                .host_registry
-                .get(&("ecma:date".to_string(), (*name).to_string()))
-                .copied()
-            {
+            if let Some(idx) = vm.resolve_host_function_index("ecma:date", name) {
                 set_prop(
                     &date_proto,
                     name,
@@ -858,16 +831,10 @@ pub fn register(vm: &mut VM) {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
             set_prop(&ctor, "name", crate::keys::string_value(global_name));
-            if let Some(&idx) = vm
-                .host_registry
-                .get(&(module.to_string(), "from".to_string()))
-            {
+            if let Some(idx) = vm.resolve_host_function_index(module, "from") {
                 set_prop(&ctor, "from", receiver_host_fn_ref(module, "from", idx));
             }
-            if let Some(&idx) = vm
-                .host_registry
-                .get(&(module.to_string(), "of".to_string()))
-            {
+            if let Some(idx) = vm.resolve_host_function_index(module, "of") {
                 set_prop(&ctor, "of", receiver_host_fn_ref(module, "of", idx));
             }
             set_prop(&ctor, "BYTES_PER_ELEMENT", Value::I32(*bpe));
@@ -910,10 +877,7 @@ pub fn register(vm: &mut VM) {
                 "values",
                 "with",
             ] {
-                if let Some(&idx) = vm
-                    .host_registry
-                    .get(&(module.to_string(), method.to_string()))
-                {
+                if let Some(idx) = vm.resolve_host_function_index(module, method) {
                     set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
                 }
             }
@@ -951,10 +915,7 @@ pub fn register(vm: &mut VM) {
             };
             set_prop(&proto, "__proto__", object_proto.clone());
             for method in ["slice", "resize", "transfer", "transferToFixedLength"] {
-                if let Some(&idx) = vm
-                    .host_registry
-                    .get(&(module.to_string(), method.to_string()))
-                {
+                if let Some(idx) = vm.resolve_host_function_index(module, method) {
                     set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
                 }
             }
@@ -980,9 +941,8 @@ pub fn register(vm: &mut VM) {
         let regexp_proto = crate::regexp::shared_regexp_prototype();
         set_constructor_once(&regexp_proto, regexp.clone());
         for name in &["exec", "test", "toString"] {
-            let idx = *vm
-                .host_registry
-                .get(&("ecma:regexp".to_string(), (*name).to_string()))
+            let idx = vm
+                .resolve_host_function_index("ecma:regexp", name)
                 .expect("ecma:regexp prototype method must be registered");
             set_prop(
                 &regexp_proto,
@@ -1146,9 +1106,8 @@ fn register_intl(vm: &mut VM) {
     set_prop(&collator_proto, "constructor", collator.clone());
     set_prop(&collator_proto, "__proto__", object_proto.clone());
     for name in &["compare", "resolvedOptions"] {
-        let idx = *vm
-            .host_registry
-            .get(&("ecma:intl/collator".to_string(), (*name).to_string()))
+        let idx = vm
+            .resolve_host_function_index("ecma:intl/collator", name)
             .expect("ecma:intl/collator method must be registered");
         set_prop(
             &collator_proto,
@@ -1162,9 +1121,8 @@ fn register_intl(vm: &mut VM) {
     set_prop(&number_format_proto, "constructor", number_format.clone());
     set_prop(&number_format_proto, "__proto__", object_proto.clone());
     for name in &["format", "formatToParts", "resolvedOptions"] {
-        let idx = *vm
-            .host_registry
-            .get(&("ecma:intl/numberformat".to_string(), (*name).to_string()))
+        let idx = vm
+            .resolve_host_function_index("ecma:intl/numberformat", name)
             .expect("ecma:intl/numberformat method must be registered");
         set_prop(
             &number_format_proto,
@@ -1188,9 +1146,8 @@ fn register_intl(vm: &mut VM) {
         "formatRangeToParts",
         "resolvedOptions",
     ] {
-        let idx = *vm
-            .host_registry
-            .get(&("ecma:intl/datetimeformat".to_string(), (*name).to_string()))
+        let idx = vm
+            .resolve_host_function_index("ecma:intl/datetimeformat", name)
             .expect("ecma:intl/datetimeformat method must be registered");
         set_prop(
             &date_time_format_proto,
@@ -1217,12 +1174,8 @@ fn register_intl(vm: &mut VM) {
         object_proto.clone(),
     );
     for name in &["format", "formatToParts", "resolvedOptions"] {
-        let idx = *vm
-            .host_registry
-            .get(&(
-                "ecma:intl/relativetimeformat".to_string(),
-                (*name).to_string(),
-            ))
+        let idx = vm
+            .resolve_host_function_index("ecma:intl/relativetimeformat", name)
             .expect("ecma:intl/relativetimeformat method must be registered");
         set_prop(
             &relative_time_format_proto,
@@ -1240,9 +1193,8 @@ fn register_intl(vm: &mut VM) {
     set_prop(&segmenter_proto, "constructor", segmenter.clone());
     set_prop(&segmenter_proto, "__proto__", object_proto);
     for name in &["segment", "resolvedOptions"] {
-        let idx = *vm
-            .host_registry
-            .get(&("ecma:intl/segmenter".to_string(), (*name).to_string()))
+        let idx = vm
+            .resolve_host_function_index("ecma:intl/segmenter", name)
             .expect("ecma:intl/segmenter method must be registered");
         set_prop(
             &segmenter_proto,
@@ -1275,6 +1227,26 @@ fn host_fn_with_props(vm: &VM, module: &str, name: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn namespace_lookup_reuses_existing_objects_without_case_folding() {
+        let mut vm = VM::new();
+        let first = ensure_namespace(&mut vm, &["Intl", "Segmenter"]);
+        let second = ensure_namespace(&mut vm, &["Intl", "Segmenter"]);
+        let Value::Object(first) = first else {
+            panic!("nested namespace")
+        };
+        let Value::Object(second) = second else {
+            panic!("nested namespace")
+        };
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert!(vm.global("intl").is_none());
+        let lower = ensure_namespace(&mut vm, &["intl", "Segmenter"]);
+        let Value::Object(lower) = lower else {
+            panic!("lowercase namespace")
+        };
+        assert!(!std::sync::Arc::ptr_eq(&first, &lower));
+    }
 
     #[test]
     fn globals_reference_registered_host_functions() {
@@ -1320,5 +1292,54 @@ mod tests {
             max_of.lock().unwrap().kind,
             ObjectKind::HostFunction(index) if index == expected
         ));
+        {
+            let max_of = max_of.lock().unwrap();
+            let (Some(Value::String(name)), Some(Value::String(host_name))) = (
+                max_of.properties.get("name"),
+                max_of.properties.get("__host_name"),
+            ) else {
+                panic!("host function name metadata");
+            };
+            assert_eq!(name.as_ref(), "maxOf");
+            assert!(std::sync::Arc::ptr_eq(name, host_name));
+        }
+
+        for (global, method, module) in [
+            ("Array", "push", "ecma:array"),
+            ("String", "includes", "ecma:string"),
+            ("Map", "get", "ecma:map"),
+            ("Uint8Array", "set", "ecma:uint8array"),
+        ] {
+            let Value::Object(ctor) = vm.global(global).expect("registered constructor") else {
+                panic!("{global} is not an object");
+            };
+            let prototype = ctor
+                .lock()
+                .unwrap()
+                .properties
+                .get("prototype")
+                .cloned()
+                .expect("constructor prototype");
+            let Value::Object(prototype) = prototype else {
+                panic!("{global}.prototype is not an object");
+            };
+            let method_value = prototype
+                .lock()
+                .unwrap()
+                .properties
+                .get(method)
+                .cloned()
+                .expect("registered prototype method");
+            let Value::Object(method_value) = method_value else {
+                panic!("{global}.prototype.{method} is not a host function");
+            };
+            let expected = vm
+                .resolve_host_function_index(module, method)
+                .expect("registered host method");
+            assert!(matches!(
+                method_value.lock().unwrap().kind,
+                ObjectKind::HostFunction(index) if index == expected
+            ));
+        }
     }
 }

@@ -13,6 +13,7 @@ vybe_ast = { workspace = true }
 # ECMA-262 / Intl support crates (moved from vybe_host).
 regex = { workspace = true }
 regress = { workspace = true }
+memchr = "2"
 chrono = { workspace = true }
 indexmap = { workspace = true }
 intl_pluralrules = "7"
@@ -27,4 +28,9 @@ fixed_decimal = "0.5"
 chrono-tz = "0.10.4"
 
 [dev-dependencies]
+serde_json = "1"
 vybe_compiler = { workspace = true }
+
+[features]
+# Host-side algorithm controls only; no guest-visible operations.
+primitive-benchmarks = []

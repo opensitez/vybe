@@ -161,6 +161,20 @@ fn set_values_from_iterable_arg(arg: Option<&Value>) -> indexmap::IndexSet<Value
             }
         }
         Some(Value::String(text)) => {
+            if text.len() >= 16 && text.is_ascii() {
+                // The complete ASCII domain bounds both capacity and work.
+                let mut set = indexmap::IndexSet::with_capacity(text.len().min(128));
+                let mut seen = [0u64; 2];
+                for byte in text.bytes() {
+                    let word = &mut seen[(byte >> 6) as usize];
+                    let mask = 1u64 << (byte & 63);
+                    if *word & mask != 0 { continue; }
+                    *word |= mask;
+                    set.insert(char_value(byte as char));
+                    if set.len() == 128 { break; }
+                }
+                return set;
+            }
             let mut set = indexmap::IndexSet::with_capacity(text.len());
             for ch in text.chars() {
                 set.insert(char_value(ch));
@@ -171,9 +185,6 @@ fn set_values_from_iterable_arg(arg: Option<&Value>) -> indexmap::IndexSet<Value
     }
 }
 
-fn new_set_from_iterable(args: &[Value]) -> Value {
-    make_set(set_values_from_iterable_arg(args.first()))
-}
 
 #[inline]
 fn object_arg(args: &[Value], idx: usize) -> Option<&Arc<Mutex<Object>>> {
@@ -239,22 +250,251 @@ fn set_pair(
     set_fn(vm, name, vec![set_t(), set_t()], results, call);
 }
 
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_set_algebra_clone(vm: &mut VM, fast: bool) {
+    register_algebra(vm, fast);
+}
+
+fn register_algebra(vm: &mut VM, #[cfg(feature = "primitive-benchmarks")] fast: bool) {
+    set_pair(
+        vm,
+        "union",
+        vec![set_t()],
+        Box::new(move |_ctx, args| {
+            #[cfg(feature = "primitive-benchmarks")]
+            if !fast { return legacy_union(args); }
+            // Clone the first valid table, retaining cached hashes and order.
+            let mut out: Option<indexmap::IndexSet<Value>> = None;
+            for arg_idx in 0..2 {
+                if let Some(setobj) = object_arg(args, arg_idx) {
+                    let so = setobj.lock().unwrap();
+                    if let ObjectKind::Set(ref s) = so.kind {
+                        if let Some(out) = &mut out {
+                            out.reserve(s.len());
+                            for v in s.iter() { out.insert(v.clone()); }
+                        } else {
+                            out = Some(s.clone());
+                        }
+                    }
+                }
+            }
+            make_set(out.unwrap_or_default())
+        }),
+    );
+
+    set_pair(
+        vm,
+        "intersection",
+        vec![set_t()],
+        Box::new(move |_ctx, args| {
+            #[cfg(feature = "primitive-benchmarks")]
+            if !fast { return legacy_intersection(args); }
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
+                    if std::ptr::eq(avs, bvs) { return avs.clone(); }
+
+                    let mut out = indexmap::IndexSet::with_capacity(avs.len().min(bvs.len()));
+                    for v in avs.iter() {
+                        if bvs.contains(v) {
+                            out.insert(v.clone());
+                        }
+                    }
+                    out
+                }) {
+                    return make_set(out);
+                }
+            }
+            new_set()
+        }),
+    );
+
+    set_pair(
+        vm,
+        "difference",
+        vec![set_t()],
+        Box::new(move |_ctx, args| {
+            #[cfg(feature = "primitive-benchmarks")]
+            if !fast { return legacy_difference(args); }
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
+                    if std::ptr::eq(avs, bvs) { return indexmap::IndexSet::new(); }
+                    if bvs.is_empty() { return avs.clone(); }
+
+                    let mut out = indexmap::IndexSet::with_capacity(avs.len());
+                    for v in avs.iter() {
+                        if !bvs.contains(v) {
+                            out.insert(v.clone());
+                        }
+                    }
+                    out
+                }) {
+                    return make_set(out);
+                }
+            }
+            new_set()
+        }),
+    );
+
+    set_pair(
+        vm,
+        "symmetricDifference",
+        vec![set_t()],
+        Box::new(move |_ctx, args| {
+            #[cfg(feature = "primitive-benchmarks")]
+            if !fast { return legacy_symmetric_difference(args); }
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
+                    if std::ptr::eq(avs, bvs) { return indexmap::IndexSet::new(); }
+                    if avs.is_empty() { return bvs.clone(); }
+                    if bvs.is_empty() { return avs.clone(); }
+
+                    let mut out = indexmap::IndexSet::with_capacity(avs.len() + bvs.len());
+                    for v in avs.iter() {
+                        if !bvs.contains(v) {
+                            out.insert(v.clone());
+                        }
+                    }
+                    for v in bvs.iter() {
+                        if !avs.contains(v) {
+                            out.insert(v.clone());
+                        }
+                    }
+                    out
+                }) {
+                    return make_set(out);
+                }
+            }
+            new_set()
+        }),
+    );
+
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_union(args: &[Value]) -> Value {
+            let mut out = indexmap::IndexSet::new();
+            for arg_idx in 0..2 {
+                if let Some(setobj) = object_arg(args, arg_idx) {
+                    let so = setobj.lock().unwrap();
+                    if let ObjectKind::Set(ref s) = so.kind {
+                        out.reserve(s.len());
+                        for v in s.iter() {
+                            out.insert(v.clone());
+                        }
+                    }
+                }
+            }
+            make_set(out)
+        }
+
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_intersection(args: &[Value]) -> Value {
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
+                    let mut out = indexmap::IndexSet::with_capacity(avs.len().min(bvs.len()));
+                    for v in avs.iter() {
+                        if bvs.contains(v) {
+                            out.insert(v.clone());
+                        }
+                    }
+                    out
+                }) {
+                    return make_set(out);
+                }
+            }
+            new_set()
+        }
+
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_difference(args: &[Value]) -> Value {
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
+                    let mut out = indexmap::IndexSet::with_capacity(avs.len());
+                    for v in avs.iter() {
+                        if !bvs.contains(v) {
+                            out.insert(v.clone());
+                        }
+                    }
+                    out
+                }) {
+                    return make_set(out);
+                }
+            }
+            new_set()
+        }
+
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_symmetric_difference(args: &[Value]) -> Value {
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
+                    let mut out = indexmap::IndexSet::with_capacity(avs.len() + bvs.len());
+                    for v in avs.iter() {
+                        if !bvs.contains(v) {
+                            out.insert(v.clone());
+                        }
+                    }
+                    for v in bvs.iter() {
+                        if !avs.contains(v) {
+                            out.insert(v.clone());
+                        }
+                    }
+                    out
+                }) {
+                    return make_set(out);
+                }
+            }
+            new_set()
+        }
+
+#[cfg(feature = "primitive-benchmarks")]
+pub fn benchmark_set_ascii_constructor(vm: &mut VM, fast: bool) {
+    register_constructors(vm, fast);
+}
+
+fn register_constructors(vm: &mut VM, #[cfg(feature = "primitive-benchmarks")] fast: bool) {
+    vm.register_host_fn("ecma:set", "new", Box::new(move |_, args| {
+        #[cfg(feature = "primitive-benchmarks")]
+        if !fast { return make_set(legacy_set_values_from_iterable_arg(args.first())); }
+        make_set(set_values_from_iterable_arg(args.first()))
+    }));
+    set_fn(vm, "fromIterable", vec![ValType::Any], vec![set_t()], Box::new(move |_, args| {
+        #[cfg(feature = "primitive-benchmarks")]
+        if !fast { return make_set(legacy_set_values_from_iterable_arg(args.first())); }
+        make_set(set_values_from_iterable_arg(args.first()))
+    }));
+}
+
+#[cfg(feature = "primitive-benchmarks")]
+fn legacy_set_values_from_iterable_arg(arg: Option<&Value>) -> indexmap::IndexSet<Value> {
+    match arg {
+        Some(Value::Object(src)) => {
+            let source = src.lock().unwrap();
+            if let ObjectKind::Array(items) = &source.kind {
+                let mut set = indexmap::IndexSet::with_capacity(items.len());
+                for item in items {
+                    set.insert(item.clone());
+                }
+                set
+            } else {
+                indexmap::IndexSet::new()
+            }
+        }
+        Some(Value::String(text)) => {
+            let mut set = indexmap::IndexSet::with_capacity(text.len());
+            for ch in text.chars() {
+                set.insert(char_value(ch));
+            }
+            set
+        }
+        _ => indexmap::IndexSet::new(),
+    }
+}
+
+
 pub fn register(vm: &mut VM) {
     // `new Set(iterable?)` — per ECMA-262 §24.2.1.1 the constructor optionally
     // takes an iterable whose elements become Set members.
-    vm.register_host_fn(
-        "ecma:set",
-        "new",
-        Box::new(|_ctx, args| new_set_from_iterable(args)),
-    );
-
-    set_fn(
-        vm,
-        "fromIterable",
-        vec![ValType::Any],
-        vec![set_t()],
-        Box::new(|_ctx, args| make_set(set_values_from_iterable_arg(args.first()))),
-    );
+    register_constructors(vm, #[cfg(feature = "primitive-benchmarks")] true);
 
     vm.register_host_fn(
         "ecma:set",
@@ -432,97 +672,7 @@ pub fn register(vm: &mut VM) {
     // members that aren't in a" for `union`; "iterate a, keep those
     // also in b" for `intersection`; etc.
 
-    set_pair(
-        vm,
-        "union",
-        vec![set_t()],
-        Box::new(|_ctx, args| {
-            let mut out = indexmap::IndexSet::new();
-            for arg_idx in 0..2 {
-                if let Some(setobj) = object_arg(args, arg_idx) {
-                    let so = setobj.lock().unwrap();
-                    if let ObjectKind::Set(ref s) = so.kind {
-                        out.reserve(s.len());
-                        for v in s.iter() {
-                            out.insert(v.clone());
-                        }
-                    }
-                }
-            }
-            make_set(out)
-        }),
-    );
-
-    set_pair(
-        vm,
-        "intersection",
-        vec![set_t()],
-        Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
-                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
-                    let mut out = indexmap::IndexSet::with_capacity(avs.len().min(bvs.len()));
-                    for v in avs.iter() {
-                        if bvs.contains(v) {
-                            out.insert(v.clone());
-                        }
-                    }
-                    out
-                }) {
-                    return make_set(out);
-                }
-            }
-            new_set()
-        }),
-    );
-
-    set_pair(
-        vm,
-        "difference",
-        vec![set_t()],
-        Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
-                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
-                    let mut out = indexmap::IndexSet::with_capacity(avs.len());
-                    for v in avs.iter() {
-                        if !bvs.contains(v) {
-                            out.insert(v.clone());
-                        }
-                    }
-                    out
-                }) {
-                    return make_set(out);
-                }
-            }
-            new_set()
-        }),
-    );
-
-    set_pair(
-        vm,
-        "symmetricDifference",
-        vec![set_t()],
-        Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
-                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
-                    let mut out = indexmap::IndexSet::with_capacity(avs.len() + bvs.len());
-                    for v in avs.iter() {
-                        if !bvs.contains(v) {
-                            out.insert(v.clone());
-                        }
-                    }
-                    for v in bvs.iter() {
-                        if !avs.contains(v) {
-                            out.insert(v.clone());
-                        }
-                    }
-                    out
-                }) {
-                    return make_set(out);
-                }
-            }
-            new_set()
-        }),
-    );
+    register_algebra(vm, #[cfg(feature = "primitive-benchmarks")] true);
 
     set_pair(
         vm,

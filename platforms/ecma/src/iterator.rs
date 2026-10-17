@@ -258,14 +258,37 @@ pub fn try_materialize_iterable_values(
                 (lazy_map, array_values)
             };
             if let Some((source, mapper, start)) = lazy_map {
-                let values = try_materialize_iterable_values(ctx, &source, false)?;
-                let mut mapped = Vec::with_capacity(values.len().saturating_sub(start));
+                // Snapshot only unconsumed native-array elements. Keep the generic
+                // protocol path's collection order and callback behavior unchanged.
+                let (mut values, skip) = if let Some(values) = bounded_array_values(&source, start, usize::MAX) {
+                    (values, 0)
+                } else {
+                    (try_materialize_iterable_values(ctx, &source, false)?, start)
+                };
                 let prepared_mapper = crate::function::prepare_bound_callback(&mapper);
-                for x in values.into_iter().skip(start) {
-                    let mapped_value =
-                        try_invoke_unary_callback_prepared(ctx, &mapper, &prepared_mapper, x)?;
-                    mapped.push(mapped_value);
-                }
+                let mapped = if skip == 0 {
+                    // The complete input snapshot already owns an exact-sized
+                    // buffer. Replace its elements without holding a source
+                    // guard or allocating another result vector. On failure,
+                    // the partial result is dropped and the cursor is unchanged.
+                    for value in &mut values {
+                        let input = std::mem::replace(value, Value::Undefined);
+                        *value = try_invoke_unary_callback_prepared(
+                            ctx, &mapper, &prepared_mapper, input,
+                        )?;
+                    }
+                    values
+                } else {
+                    // Keep protocol fallback prefix consumption and callback
+                    // order unchanged; do not materialize an extra suffix.
+                    let mut mapped = Vec::with_capacity(values.len().saturating_sub(skip));
+                    for input in values.into_iter().skip(skip) {
+                        mapped.push(try_invoke_unary_callback_prepared(
+                            ctx, &mapper, &prepared_mapper, input,
+                        )?);
+                    }
+                    mapped
+                };
                 if let Ok(mut o) = obj.lock() {
                     let next = start.saturating_add(mapped.len()).min(i32::MAX as usize);
                     set_iterator_index(&mut o, next as i32);
@@ -999,6 +1022,57 @@ mod registered_iterator_speedup_gates {
     }
 
     #[test]
+    fn lazy_map_materialization_preserves_source_and_map_cursors() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:iterator-gate", "identity", Box::new(|_, args| {
+            args.last().cloned().unwrap_or(Value::Undefined)
+        }));
+        let mapper = host_function(&vm, "ecma:iterator-gate", "identity");
+        let map = host_function(&vm, "ecma:iterator", "map");
+        let to_array = host_function(&vm, "ecma:iterator", "toArray");
+        for source_cursor in [0, 3, 20] {
+            for map_cursor in [0, 2, 20] {
+                let mut source = Object::new_array((0..10).map(Value::I32).collect());
+                source.properties.insert("__index".into(), Value::I32(source_cursor));
+                let source = Arc::new(Mutex::new(source));
+                let mapped = vm.invoke(&map, &[Value::Object(source.clone()), mapper.clone()]).unwrap();
+                let Value::Object(mapped_object) = &mapped else { panic!("map result") };
+                mapped_object.lock().unwrap().properties.insert("__index".into(), Value::I32(map_cursor));
+                let expected: Vec<_> = values_from_array_like(&source.lock().unwrap()).unwrap()
+                    .into_iter().skip(map_cursor as usize).collect();
+                let result = vm.invoke(&to_array, std::slice::from_ref(&mapped)).unwrap();
+                assert_eq!(array_values(&result), expected);
+                assert_eq!(source.lock().unwrap().properties.get("__index"), Some(&Value::I32(source_cursor)));
+                assert_eq!(mapped_object.lock().unwrap().properties.get("__index"),
+                    Some(&Value::I32(map_cursor + expected.len() as i32)));
+                assert!(array_values(&vm.invoke(&to_array, &[mapped.clone()]).unwrap()).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn lazy_map_snapshots_suffix_before_mapper_mutation() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let source = Arc::new(Mutex::new(Object::new_array(vec![Value::I32(1), Value::I32(2), Value::I32(3)])));
+        let captured = source.clone();
+        vm.register_host_fn("ecma:iterator-gate", "mutate", Box::new(move |_, args| {
+            let mut source = captured.try_lock().expect("source guard released before callback");
+            let ObjectKind::Array(values) = &mut source.kind else { panic!("source array") };
+            values.clear();
+            args.last().cloned().unwrap_or(Value::Undefined)
+        }));
+        let mapper = host_function(&vm, "ecma:iterator-gate", "mutate");
+        let map = host_function(&vm, "ecma:iterator", "map");
+        let to_array = host_function(&vm, "ecma:iterator", "toArray");
+        let mapped = vm.invoke(&map, &[Value::Object(source), mapper]).unwrap();
+        let Value::Object(object) = &mapped else { panic!("map result") };
+        object.lock().unwrap().properties.insert("__index".into(), Value::I32(1));
+        assert_eq!(array_values(&vm.invoke(&to_array, &[mapped]).unwrap()), vec![Value::I32(2), Value::I32(3)]);
+    }
+
+    #[test]
     fn registered_take_drop_preserve_cursor_and_source() {
         let mut vm = VM::new();
         register(&mut vm);
@@ -1066,6 +1140,88 @@ mod registered_iterator_speedup_gates {
         assert_eq!(array_values(&result), vec![Value::I32(10), Value::I32(11), Value::I32(12)]);
         assert_eq!(*events.lock().unwrap(), vec!["iterator", "next", "next", "next", "next"]);
         assert_eq!(*index.lock().unwrap(), 4);
+    }
+
+    #[test]
+    fn registered_protocol_collection_does_not_truncate_long_iterables() {
+        let mut vm = VM::new();
+        let index = Arc::new(Mutex::new(0usize));
+        let captured = index.clone();
+        vm.register_host_fn("ecma:iterator-gate", "long_next", Box::new(move |_, _| {
+            let mut index = captured.lock().unwrap();
+            let current = *index;
+            *index += 1;
+            let mut result = Object::new();
+            result.properties.insert("done".into(), Value::Bool(current >= 2048));
+            result.properties.insert("value".into(), if current < 2048 {
+                Value::I32(current as i32)
+            } else { Value::Undefined });
+            Value::Object(vybe_runtime::heap::alloc(result))
+        }));
+        let mut iterator = Object::new();
+        iterator.properties.insert("next".into(), host_function(&vm, "ecma:iterator-gate", "long_next"));
+        let iterator = Value::Object(Arc::new(Mutex::new(iterator)));
+        vm.register_host_fn("ecma:iterator-gate", "long_iterator", Box::new(move |_, _| iterator.clone()));
+        let mut source = Object::new();
+        source.properties.insert("iterator".into(), host_function(&vm, "ecma:iterator-gate", "long_iterator"));
+        register(&mut vm);
+        let from = host_function(&vm, "ecma:iterator", "from");
+        let to_array = host_function(&vm, "ecma:iterator", "toArray");
+        let collected = vm.invoke(&from, &[Value::Object(Arc::new(Mutex::new(source)))]).unwrap();
+        let result = vm.invoke(&to_array, &[collected]).unwrap();
+        assert_eq!(array_values(&result), (0..2048).map(Value::I32).collect::<Vec<_>>());
+        assert_eq!(*index.lock().unwrap(), 2049);
+    }
+
+    #[test]
+    #[ignore = "paired registered lazy-map materialization benchmark"]
+    fn registered_lazy_map_suffix_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:iterator-gate", "identity", Box::new(|_, args| {
+            args.last().cloned().unwrap_or(Value::Undefined)
+        }));
+        vm.register_host_fn("ecma:iterator-gate", "previous_toArray", Box::new(|ctx, args| {
+            let Value::Object(object) = &args[0] else { panic!("map object") };
+            let (source, mapper, start) = lazy_map_parts(&object.lock().unwrap()).unwrap();
+            let values = try_materialize_iterable_values(ctx, &source, false).unwrap();
+            let mut mapped = Vec::with_capacity(values.len().saturating_sub(start));
+            let prepared = crate::function::prepare_bound_callback(&mapper);
+            for value in values.into_iter().skip(start) {
+                mapped.push(try_invoke_unary_callback_prepared(ctx, &mapper, &prepared, value).unwrap());
+            }
+            set_iterator_index(&mut object.lock().unwrap(), (start + mapped.len()).min(i32::MAX as usize) as i32);
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(mapped)))
+        }));
+        let mapper = host_function(&vm, "ecma:iterator-gate", "identity");
+        let map = host_function(&vm, "ecma:iterator", "map");
+        let current = host_function(&vm, "ecma:iterator", "toArray");
+        let previous = host_function(&vm, "ecma:iterator-gate", "previous_toArray");
+        let source = Value::Object(Arc::new(Mutex::new(Object::new_array((0..4096).map(Value::I32).collect()))));
+        let mapped = vm.invoke(&map, &[source, mapper]).unwrap();
+        let Value::Object(object) = &mapped else { panic!("map object") };
+        for start in [0usize, 4080] {
+            set_iterator_index(&mut object.lock().unwrap(), start as i32);
+            let expected = array_values(&vm.invoke(&previous, std::slice::from_ref(&mapped)).unwrap());
+            set_iterator_index(&mut object.lock().unwrap(), start as i32);
+            assert_eq!(array_values(&vm.invoke(&current, std::slice::from_ref(&mapped)).unwrap()), expected);
+            for sample in 0..3 {
+                let mut elapsed = [std::time::Duration::ZERO; 2];
+                for candidate in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                    let target = if candidate { &current } else { &previous };
+                    let began = Instant::now();
+                    for _ in 0..64 {
+                        set_iterator_index(&mut object.lock().unwrap(), start as i32);
+                        black_box(vm.invoke(target, std::slice::from_ref(&mapped)).unwrap());
+                    }
+                    elapsed[candidate as usize] = began.elapsed();
+                }
+                println!("lazy-map suffix start={start} sample={sample} previous={:?} current={:?} ratio={:.3}",
+                    elapsed[0], elapsed[1], elapsed[0].as_secs_f64() / elapsed[1].as_secs_f64());
+            }
+        }
     }
 
     #[test]

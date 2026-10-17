@@ -273,6 +273,14 @@ fn serialize_property_into(
             prefix(out);
             let _ = write!(out, "{value}");
         }
+        Value::F64(value) => {
+            prefix(out);
+            write_json_number(*value, out);
+        }
+        Value::F32(value) => {
+            prefix(out);
+            write_json_number(*value as f64, out);
+        }
         Value::String(value) => {
             prefix(out);
             out.reserve(value.len().saturating_add(2));
@@ -354,9 +362,13 @@ fn serialize_object(
         }
         match &guard.kind {
             ObjectKind::Array(elems) => {
-                let elems = elems.clone();
-                drop(guard);
-                serialize_array(ctx, obj, elems, state)
+                if let Some(serialized) = serialize_compact_primitive_array(&guard, elems, state) {
+                    Some(serialized)
+                } else {
+                    let elems = elems.clone();
+                    drop(guard);
+                    serialize_array(ctx, obj, elems, state)
+                }
             }
             ObjectKind::TypedArray(ta) => Some(stringify_typed_array(ta)),
             ObjectKind::Map(_) | ObjectKind::Set(_) | ObjectKind::ArrayBuffer(_) => {
@@ -377,6 +389,50 @@ fn serialize_object(
 
     state.visited.remove(&id);
     result
+}
+
+// No guest callbacks or property reads are possible in this guarded case.
+// Keep the backing vector borrowed; all observable/exotic cases use the
+// existing serializer after releasing the object guard.
+fn serialize_compact_primitive_array(
+    object: &Object,
+    elems: &[Value],
+    state: &StringifyState,
+) -> Option<String> {
+    if state.replacer_fn.is_some()
+        || !state.gap.is_empty()
+        || object.type_id != 0
+        || !object.fields.is_empty()
+        || !(object.properties.is_empty()
+            || (object.properties.len() == 1
+                && matches!(object.properties.get("length"), Some(Value::F64(length))
+                    if *length == elems.len() as f64)))
+        || !elems.iter().all(|value| matches!(value,
+            Value::Null | Value::TypedNull(_) | Value::Undefined | Value::Symbol(_)
+            | Value::Bool(_) | Value::I32(_) | Value::I64(_)
+            | Value::F32(_) | Value::F64(_) | Value::String(_)))
+    {
+        return None;
+    }
+    let mut out = String::with_capacity(elems.len().saturating_mul(5).saturating_add(2));
+    out.push('[');
+    for (index, value) in elems.iter().enumerate() {
+        if index != 0 {
+            out.push(',');
+        }
+        match value {
+            Value::Null | Value::TypedNull(_) | Value::Undefined | Value::Symbol(_) => out.push_str("null"),
+            Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
+            Value::I32(value) => { let _ = write!(out, "{value}"); }
+            Value::I64(value) => { let _ = write!(out, "{value}"); }
+            Value::F32(value) => write_json_number(*value as f64, &mut out),
+            Value::F64(value) => write_json_number(*value, &mut out),
+            Value::String(value) => write_quoted_string(value, &mut out),
+            _ => unreachable!("primitive-array eligibility checked above"),
+        }
+    }
+    out.push(']');
+    Some(out)
 }
 
 fn serialize_array(
@@ -960,16 +1016,23 @@ fn replacer_property_key(value: &Value) -> Option<String> {
 }
 
 fn json_number_string(n: f64) -> String {
-    if n.is_nan() || n.is_infinite() {
-        return "null".to_string();
+    let mut out = String::with_capacity(24);
+    write_json_number(n, &mut out);
+    out
+}
+
+// Stream the existing representation into its final buffer. Keeping this
+// shared with json_number_string avoids two numeric conversion paths.
+fn write_json_number(n: f64, out: &mut String) {
+    if !n.is_finite() {
+        out.push_str("null");
+    } else if n == 0.0 {
+        out.push('0');
+    } else if n.fract() == 0.0 && n.abs() < 1e16 {
+        let _ = write!(out, "{}", n as i64);
+    } else {
+        let _ = write!(out, "{n}");
     }
-    if n == 0.0 {
-        return "0".to_string();
-    }
-    if n.fract() == 0.0 && n.abs() < 1e16 {
-        return (n as i64).to_string();
-    }
-    n.to_string()
 }
 
 fn is_callable(value: &Value) -> bool {
@@ -2028,3 +2091,183 @@ mod full_operation_performance_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod borrowed_primitive_array_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "paired primitive-array serialization kernels through registered callbacks"]
+    fn borrowed_array_serialization_benchmark() {
+        let mut vm = VM::new();
+        for borrowed in [false, true] {
+            vm.register_free_fn("ecma:array-serialization-check", if borrowed { "borrowed" } else { "previous" },
+                Box::new(move |ctx, args| {
+                    let args = ctx.user_args(args, 0);
+                    let Value::Object(object) = &args[0] else { unreachable!() };
+                    let object_guard = object.lock().unwrap();
+                    let ObjectKind::Array(elems) = &object_guard.kind else { unreachable!() };
+                    let mut state = StringifyState::new(None, None);
+                    let output = if borrowed {
+                        serialize_compact_primitive_array(&object_guard, elems, &state).unwrap()
+                    } else {
+                        let elems = elems.clone();
+                        drop(object_guard);
+                        serialize_array(ctx, object, elems, &mut state).unwrap()
+                    };
+                    crate::keys::string_value(&output)
+                }));
+        }
+        let functions = ["previous", "borrowed"].map(|name| {
+            let mut object = Object::new();
+            object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index("ecma:array-serialization-check", name).unwrap());
+            Value::Object(vybe_runtime::heap::alloc(object))
+        });
+        for strings in [false, true] {
+            let elems = (0..1024).map(|index| if strings {
+                crate::keys::string_value("value\"escaped")
+            } else { Value::I32(index) }).collect();
+            let input = [Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))];
+            let old = vm.invoke(&functions[0], &input).unwrap();
+            let new = vm.invoke(&functions[1], &input).unwrap();
+            let (Value::String(old), Value::String(new)) = (old, new) else { unreachable!() };
+            assert_eq!(old, new);
+            let mut times = [std::time::Duration::ZERO; 2];
+            for round in 0..6 {
+                for variant in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let start = std::time::Instant::now();
+                    for _ in 0..200 {
+                        std::hint::black_box(vm.invoke(&functions[variant], &input).unwrap());
+                    }
+                    times[variant] += start.elapsed();
+                }
+            }
+            eprintln!("primitive-array strings={strings} elements=1024 calls=1200 previous={:?} borrowed={:?} ratio={:.3}",
+                times[0], times[1], times[0].as_secs_f64() / times[1].as_secs_f64());
+        }
+    }
+
+    #[test]
+    fn compact_primitives_preserve_nulls_numbers_and_escaping() {
+        let object = Object::new_array(vec![Value::Undefined, Value::Null,
+            Value::Bool(true), Value::I32(-7), Value::I64(42),
+            Value::F64(-0.0), Value::F64(f64::NAN), Value::F32(f32::INFINITY),
+            crate::keys::string_value("quote\"\n")]);
+        let ObjectKind::Array(elems) = &object.kind else { unreachable!() };
+        assert_eq!(serialize_compact_primitive_array(&object, elems, &StringifyState::new(None, None)),
+            Some("[null,null,true,-7,42,0,null,null,\"quote\\\"\\n\"]".into()));
+    }
+
+    #[test]
+    fn observable_or_native_cases_keep_the_existing_path() {
+        let mut object = Object::new_array(vec![Value::I32(1)]);
+        let state = StringifyState::new(None, None);
+        object.properties.insert("__holes".into(), Value::Bool(true));
+        let ObjectKind::Array(elems) = &object.kind else { unreachable!() };
+        assert!(serialize_compact_primitive_array(&object, elems, &state).is_none());
+        object.properties.clear();
+        object.type_id = 1;
+        let ObjectKind::Array(elems) = &object.kind else { unreachable!() };
+        assert!(serialize_compact_primitive_array(&object, elems, &state).is_none());
+        object.type_id = 0;
+        let mut state = state;
+        state.gap = " ".into();
+        let ObjectKind::Array(elems) = &object.kind else { unreachable!() };
+        assert!(serialize_compact_primitive_array(&object, elems, &state).is_none());
+        state.gap.clear();
+        state.replacer_fn = Some(Value::Undefined);
+        assert!(serialize_compact_primitive_array(&object, elems, &state).is_none());
+        state.replacer_fn = None;
+        let nested = [Value::Object(vybe_runtime::heap::alloc(Object::new()))];
+        assert!(serialize_compact_primitive_array(&object, &nested, &state).is_none());
+    }
+}
+
+#[cfg(test)]
+mod streamed_number_tests {
+    use super::*;
+
+fn previous_json_number_string(n: f64) -> String {
+    if n.is_nan() || n.is_infinite() {
+        return "null".to_string();
+    }
+    if n == 0.0 {
+        return "0".to_string();
+    }
+    if n.fract() == 0.0 && n.abs() < 1e16 {
+        return (n as i64).to_string();
+    }
+    n.to_string()
+}
+
+    #[test]
+    fn streaming_preserves_existing_number_bytes_at_boundaries_and_across_bits() {
+        let fixed = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -0.0,
+            0.125, -0.125, 1e-7, 1e-6, 1e15, 1e16, 1e20, 1e21,
+            f64::MAX, f64::MIN_POSITIVE, f64::from_bits(1)];
+        let mut state = 0x9e3779b97f4a7c15u64;
+        for value in fixed.into_iter().chain((0..8192).map(|_| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            f64::from_bits(state)
+        })) {
+            let expected = previous_json_number_string(value);
+            let mut output = String::from("prefix:");
+            write_json_number(value, &mut output);
+            assert_eq!(&output[7..], expected, "bits={:016x}", value.to_bits());
+            assert_eq!(json_number_string(value), expected);
+        }
+    }
+
+    #[test]
+    #[ignore = "paired registered numeric-array serialization kernels; excludes generic JSON callback plumbing"]
+    fn registered_numeric_array_stream_benchmark() {
+        let mut vm = VM::new();
+        for stream in [false, true] {
+            vm.register_free_fn("ecma:number-stream-check", if stream { "stream" } else { "previous" },
+                Box::new(move |_, args| {
+                    let Value::Object(input) = &args[0] else { unreachable!() };
+                    let guard = input.lock().unwrap();
+                    let ObjectKind::Array(values) = &guard.kind else { unreachable!() };
+                    let mut output = String::with_capacity(values.len().saturating_mul(12));
+                    output.push('[');
+                    for (index, value) in values.iter().enumerate() {
+                        if index != 0 { output.push(','); }
+                        let Value::F64(number) = value else { unreachable!() };
+                        if stream {
+                            write_json_number(*number, &mut output);
+                        } else {
+                            output.push_str(&previous_json_number_string(*number));
+                        }
+                    }
+                    output.push(']');
+                    crate::keys::owned_string_value(output)
+                }));
+        }
+        let functions = ["previous", "stream"].map(|name| {
+            let mut object = Object::new();
+            object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index("ecma:number-stream-check", name).unwrap());
+            Value::Object(vybe_runtime::heap::alloc(object))
+        });
+        for fractional in [false, true] {
+            let values = (0..1024).map(|i| Value::F64(i as f64 + if fractional { 0.125 } else { 0.0 })).collect();
+            let args = [Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)))];
+            let old = vm.invoke(&functions[0], &args).unwrap();
+            let new = vm.invoke(&functions[1], &args).unwrap();
+            let (Value::String(old), Value::String(new)) = (old, new) else { unreachable!() };
+            assert_eq!(old, new);
+            let mut times = [std::time::Duration::ZERO; 2];
+            for round in 0..8 {
+                for variant in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let started = std::time::Instant::now();
+                    for _ in 0..200 {
+                        std::hint::black_box(vm.invoke(&functions[variant], &args).unwrap());
+                    }
+                    times[variant] += started.elapsed();
+                }
+            }
+            eprintln!("json-number-stream fractional={fractional} elements=1024 calls=1600 previous={:?} stream={:?} ratio={:.3}",
+                times[0], times[1], times[0].as_secs_f64() / times[1].as_secs_f64());
+        }
+    }
+}
+

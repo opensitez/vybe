@@ -1228,6 +1228,7 @@ fn apply_target_kind(target: &Value) -> (bool, bool) {
     (callable, plain_host)
 }
 
+#[cfg(test)]
 fn is_host_callee(target: &Value) -> bool {
     matches!(
         target,

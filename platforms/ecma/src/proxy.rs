@@ -195,72 +195,7 @@ fn target_get(target: &Value, key: &str) -> Value {
     }
 }
 
-fn target_set(ctx: &mut HostContext, target: &Value, key_value: Value, key: &str, val: Value) {
-    target_set_with_receiver(ctx, target, key_value, key, val, target.clone());
-}
 
-fn target_set_with_receiver(
-    ctx: &mut HostContext,
-    target: &Value,
-    key_value: Value,
-    key: &str,
-    val: Value,
-    receiver: Value,
-) {
-    if let Value::Object(obj) = target {
-        let forwards_to_proto = {
-            let o = obj.lock().unwrap();
-            let ordinary = !matches!(o.kind, ObjectKind::Array(_) | ObjectKind::TypedArray(_));
-            drop(o);
-            ordinary
-                && !in_proxy_set_trap(ctx)
-                && !target_own_property_exists(target, key)
-                && !matches!(crate::object::js_prototype_of(target), Value::Null)
-        };
-        if forwards_to_proto {
-            let proto = crate::object::js_prototype_of(target);
-            if let Some(proto_proxy) = is_proxy(&proto) {
-                if proxy_is_revoked(&proto_proxy) {
-                    throw_revoked(ctx);
-                    return;
-                }
-                let (proto_target, handler) = get_target_and_handler(&proto_proxy);
-                if let Some(trap) = get_trap(&handler, "set") {
-                    if is_callable(&trap) {
-                        let _ = call_set_trap(
-                            ctx,
-                            &handler,
-                            &trap,
-                            &[proto_target, key_value, val, receiver],
-                        );
-                        return;
-                    }
-                }
-            }
-        }
-        {
-            let mut o = obj.lock().unwrap();
-            if let ObjectKind::Array(v) = &mut o.kind {
-                if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
-                    if i >= v.len() {
-                        v.resize(i + 1, Value::Undefined);
-                    }
-                    v[i] = val;
-                    return;
-                }
-                if key == "length" {
-                    let new_len = val.as_f64() as usize;
-                    v.resize(new_len, Value::Undefined);
-                    return;
-                }
-            }
-        }
-        obj.lock().unwrap().properties.insert(key.to_string(), val);
-        if !key.starts_with("__") {
-            crate::object::track_key(obj, key);
-        }
-    }
-}
 
 fn key_string(value: &Value) -> String {
     crate::keys::property_key_string(value)
@@ -530,12 +465,6 @@ fn try_call_trap(
     crate::function::try_invoke_with_explicit_this(ctx, trap, handler.clone(), args)
 }
 
-fn call_set_trap(ctx: &mut HostContext, handler: &Value, trap: &Value, args: &[Value]) -> Value {
-    match try_call_set_trap(ctx, handler, trap, args) {
-        Ok(value) => value,
-        Err(thrown) => { ctx.throw_value(thrown); Value::Undefined }
-    }
-}
 
 fn try_call_set_trap(ctx: &mut HostContext, handler: &Value, trap: &Value, args: &[Value]) -> Result<Value, Value> {
     let previous = ctx.get_global(PROXY_SET_TRAP_DEPTH);
@@ -613,9 +542,6 @@ pub(crate) fn set_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
     crate::reflect::reflect_set(ctx, &target, &key, val, follow_receiver)
 }
 
-fn in_proxy_set_trap(ctx: &HostContext) -> bool {
-    ctx.get_global(PROXY_SET_TRAP_DEPTH).as_f64() > 0.0
-}
 
 fn target_has(target: &Value, key: &str) -> bool {
     match target {

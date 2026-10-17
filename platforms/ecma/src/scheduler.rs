@@ -43,10 +43,18 @@ impl Scheduler for EcmaScheduler {
             }
         }
 
+        let cm_ran = vm.tick_component_threads()?;
+        ran |= cm_ran;
+        if !vm.event_loop.borrow().immediate.is_empty() {
+            return Ok(ran);
+        }
+
         // 2. Wait for, then run, at most ONE deferred task (HTML: one task
         // per turn; the next job checkpoint follows on the next turn).
         if vm.deferred_pending() {
-            self.wait(vm);
+            if !cm_ran {
+                self.wait(vm);
+            }
             if let Some(callback) = vm.next_due_deferred() {
                 vm.run_scheduled_callback(&callback, &[])?;
                 ran = true;
