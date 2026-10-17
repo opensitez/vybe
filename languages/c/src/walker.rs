@@ -45,6 +45,15 @@ const C_STRUCT_BACKING_POINTER_KEY: &str = "__c_pointer";
 const C_STRUCT_TYPE_KEY: &str = "__c_type";
 const C_STRUCT_PTR_KIND: &str = "cstruct";
 
+pub(crate) fn construct_function_declaration(name: String, params: Vec<Param>,
+    return_type: Option<String>, body: Vec<Statement>) -> Statement
+{
+    stmt(StmtKind::FunctionDecl {
+        name, params, return_type, body, modifiers: Modifiers::default(),
+        handles: Vec::new(), is_async: false, is_generator: false, is_sub: false,
+    })
+}
+
 /// `[&g1, &g2, …]` — the address of every shared file-scope scalar.
 ///
 /// `Unary{AddrOf, Ident}` is the spelling both the compiler's address-taken
@@ -83,6 +92,14 @@ fn c_identifier_fragment(name: &str) -> String {
 }
 
 pub fn parse(source: &str) -> Result<Module, String> {
+    parse_with_function_goto_policy(source, false)
+}
+
+pub(crate) fn parse_with_function_goto_policy(source: &str, prefix_only: bool) -> Result<Module, String> {
+    with_deferred_function_gotos(prefix_only, || parse_in_goto_scope(source, prefix_only))
+}
+
+fn parse_in_goto_scope(source: &str, prefix_only: bool) -> Result<Module, String> {
     let debug_timings = c_debug_timings_path();
     let started = Instant::now();
     let (preprocessed, pp_macros) = preprocess_c_source(source);
@@ -103,27 +120,43 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
     let parse_started = Instant::now();
     let _line_index = vybe_ast::line_index::LineIndex::install(&preprocessed);
-    let mut pairs =
-        CParser::parse(Rule::program, &preprocessed).map_err(|e| format!("C parse error: {e}"))?;
-    let program = pairs.next().ok_or("empty parse")?;
+    let items = CParser::parse_top_level(&preprocessed)
+        .map_err(|e| format!("C parse error: {e}"))?;
     if let Some(path) = debug_timings.as_deref() {
         write_c_debug_timing(path, format!("pest_parse {:?}", parse_started.elapsed()));
     }
-    let mut w = Walker::default();
+    let mut w = Walker {
+        debug_timings: debug_timings.clone().map(std::sync::Arc::from),
+        prefix_only_gotos: prefix_only,
+        ..Walker::default()
+    };
+    // This spelling cannot be a C identifier, including in another translation
+    // unit. Also reserve against source text for deterministic diagnostics.
+    for suffix in 0usize.. {
+        let name = format!("<vybe:c.charptr-visible:{suffix}>");
+        if !preprocessed.contains(&name) {
+            w.char_pointer_visible_helper = name;
+            break;
+        }
+    }
+    let profile = vybe_runtime::profile::parse_profile_shared(crate::profile_source())?;
+    w.builtin_return_types = profile.builtin_return_types.clone();
     w.thread_shared_globals = c_uses_thread_spawn_surface(&preprocessed);
     // Object-like macros consumed by the preprocessor (e.g. `#define NDEBUG`)
     // are no longer in the source the walker re-parses; seed them so `#ifdef`-
     // style checks (assert/NDEBUG) still see them.
     w.object_macros = pp_macros;
     let predeclare_started = Instant::now();
-    for item in program.clone().into_inner() {
+    for item in items.iter().cloned() {
         w.predeclare_top_item(item);
     }
     w.resolve_linear_pointer_return_functions();
-    w.predeclare_linear_pointer_storage_vars(program.clone());
-    for item in program.clone().into_inner() {
+    w.predeclare_linear_pointer_storage_vars(items.iter().cloned());
+    for item in items.iter().cloned() {
         w.predeclare_metadata_top_item(item);
     }
+    w.predeclare_mixed_global_pointer_storage(items.iter().cloned());
+    w.predeclare_constant_scalar_arrays(items.iter().cloned());
     if let Some(path) = debug_timings.as_deref() {
         write_c_debug_timing(
             path,
@@ -133,7 +166,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let walk_started = Instant::now();
     let mut body = Vec::new();
     let mut walked_items = 0usize;
-    for item in program.into_inner() {
+    for item in items {
         match item.as_rule() {
             Rule::EOI => {}
             _ => {
@@ -175,14 +208,84 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if let Some(path) = debug_timings.as_deref() {
         write_c_debug_timing(path, format!("walk {:?}", walk_started.elapsed()));
     }
+    if let Some(error) = w.goto_preparation_errors.first() {
+        return Err(error.clone());
+    }
     // Prepend only the legacy AST helpers still needed by this module. Libc
     // surfaces that have adapter emitters resolve through the namespace/profile
     // path instead of dragging in the whole runtime prelude.
     // Static locals need nothing here: `VarDeclKind::Static` keeps them in
     // place and the shared compiler owns their storage.
+    let support_started = debug_timings.as_ref().map(|_| Instant::now());
+    if w.uses_char_pointer_visible_helper.get() {
+        let implementation = c_char_pointer_visible_lambda();
+        let mut shadows_dependency = false;
+        implementation.walk_exprs(&mut |value| {
+            if let ExprKind::Ident(name) = &value.kind {
+                // The old IIFE resolves free names through its enclosing
+                // scope. Keep that route if source bindings could shadow an
+                // implementation dependency (also conservative for comments).
+                shadows_dependency |= preprocessed.contains(name);
+            }
+        });
+        if shadows_dependency {
+            for statement in &mut body {
+                statement.walk_exprs_mut(&mut |value| {
+                    if let ExprKind::Call { callee, .. } = &mut value.kind
+                        && matches!(&callee.kind, ExprKind::Ident(name)
+                            if name == &w.char_pointer_visible_helper)
+                    {
+                        **callee = implementation.clone();
+                    }
+                });
+            }
+        } else {
+            let ExprKind::Lambda { params, body: LambdaBody::Expr(result), .. } =
+                implementation.kind else { unreachable!() };
+            let mut helper = function_stmt(
+                &w.char_pointer_visible_helper,
+                Vec::new(),
+                vec![stmt(StmtKind::Return(Some(*result)))],
+            );
+            let StmtKind::FunctionDecl { params: helper_params, .. } = &mut helper.kind
+                else { unreachable!() };
+            *helper_params = params;
+            // Put the provider before dependency discovery so the existing runtime
+            // support collector sees every helper used by this one implementation.
+            body.insert(0, helper);
+        }
+    }
+    crate::normalize_shutdown::support(&mut body);
     let mut full_body = vybe_platform_libc::emitter::c_runtime::runtime_support_for(&body);
+    let fread_return = w
+        .function_return_types
+        .get("fread")
+        .or_else(|| w.builtin_return_types.get("fread"))
+        .map(String::as_str)
+        .unwrap_or("size_t");
+    let fread_return = w.resolve_typedef_scalar_aliases(fread_return);
+    let count_type = if w.sizeof_type_text(&fread_return) <= 4 {
+        "uint32"
+    } else {
+        "uint64"
+    };
+    // Read adapters retain the source declaration's size_t width across backing
+    // rewrites. Keep their hybrid buffer/handle parameters untyped.
+    for statement in &mut full_body {
+        if let StmtKind::FunctionDecl { name, return_type, .. } = &mut statement.kind {
+            let scalar = match name.as_str() {
+                "__c_fread_into_h" | "__c_fread_into_linear_h"
+                | "__c_fread_into_array_h" | "__c_fread_into_struct_array_h" => Some(count_type),
+                _ => None,
+            };
+            if let Some(scalar) = scalar {
+                *return_type = Some(scalar.to_string());
+            }
+        }
+    }
     if w.uses_linear_memory_heap {
-        let mut linear_support = c_linear_heap_support();
+        let mut linear_support = c_linear_heap_support(w.linear_static_data_end);
+        linear_support.append(&mut w.linear_static_initializers);
         linear_support.append(&mut full_body);
         full_body = linear_support;
     }
@@ -232,6 +335,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
             )],
         ));
     }
+    let mut static_helpers: HashSet<String> = full_body
+        .iter()
+        .filter_map(|statement| match &statement.kind {
+            StmtKind::FunctionDecl { name, .. } if name.starts_with("__c_") => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    static_helpers.extend(
+        profile.builtins.keys().filter(|name| name.starts_with("__c_")).cloned(),
+    );
     full_body.extend(body);
     if !w.shared_globals.is_empty() {
         full_body.push(var_decl_stmt(
@@ -242,6 +355,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
             ident("__c_data_init"),
             Vec::new(),
         ))));
+    }
+    if let (Some(path), Some(started)) = (debug_timings.as_deref(), support_started) {
+        write_c_debug_timing(path, format!("support_generation {:?}", started.elapsed()));
     }
     if let Some((name, ns)) = w.header_violations.first() {
         return Err(format!(
@@ -310,8 +426,42 @@ pub fn parse(source: &str) -> Result<Module, String> {
         matches!(&statement.kind, StmtKind::FunctionDecl { name, .. } if name == "main")
     });
     let app_shell = (has_sdl_window && has_main).then_some(vybe_ast::AppShell::Windowed);
-    crate::normalize_entry::normalize(&mut full_body, has_sdl_surface, has_sdl_window);
-    crate::normalize_type_guards::normalize(&mut full_body);
+    c_debug_timed(debug_timings.as_deref(), "normalize_entry", || {
+        crate::normalize_entry::normalize(&mut full_body, has_sdl_surface, has_sdl_window);
+    });
+    c_debug_timed(debug_timings.as_deref(), "normalize_type_guards", || {
+        crate::normalize_type_guards::normalize(&mut full_body);
+    });
+    c_debug_timed(
+        debug_timings.as_deref(),
+        "normalize_linear_bytes_initial",
+        || crate::normalize_linear_bytes::normalize(&mut full_body),
+    );
+    c_debug_timed(debug_timings.as_deref(), "normalize_affine_bytes", || {
+        crate::normalize_affine_bytes::normalize(&mut full_body);
+    });
+    c_debug_timed(debug_timings.as_deref(), "normalize_loop_backing", || {
+        crate::normalize_loop_backing::normalize(&mut full_body);
+    });
+    c_debug_timed(debug_timings.as_deref(), "normalize_word_provenance", || {
+        crate::normalize_word_provenance::normalize(&mut full_body);
+    });
+    // Backing specialization exposes byte loads hidden by compatibility branches.
+    c_debug_timed(
+        debug_timings.as_deref(),
+        "normalize_linear_bytes_after_backing",
+        || crate::normalize_linear_bytes::normalize(&mut full_body),
+    );
+    c_debug_timed(debug_timings.as_deref(), "normalize_storage_access", || {
+        crate::normalize_storage_access::finish(&mut full_body);
+    });
+    c_debug_timed(debug_timings.as_deref(), "normalize_static_helpers", || {
+        crate::normalize_static_helpers::normalize_with_imports(
+            &mut full_body,
+            static_helpers,
+            &imports,
+        );
+    });
 
     let mut canon = vybe_ast::canon::ComponentSection::default();
     canon.defs.push(vybe_ast::canon::CanonDecl {
@@ -326,7 +476,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         write_c_debug_timing(path, format!("total {:?}", started.elapsed()));
     }
 
-    Ok(Module {
+    let mut module = Module {
         canon,
         name: "main".to_string(),
         language: Lang::Unknown,
@@ -334,16 +484,27 @@ pub fn parse(source: &str) -> Result<Module, String> {
         imports,
         directives: vybe_ast::Directives {
             app_shell,
+            integer_division_on_slash: Some(true),
             // Every callable declares a leading receiver parameter, not only
             // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
             // argumentsList)`. C has no methods, so every call passes the
             // undefined receiver (§10.2.1.1); the uniform arity is the point.
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+            // C function pointers contain one callable, never a multicast list.
+            callable_invocation: Some(vybe_ast::CallableInvocation::Single),
+            // Function designators cannot be rebound; function-pointer variables can.
+            declared_function_bindings_live: Some(false),
             type_resolution: Some(vybe_ast::TypeResolution::Static),
             operator_dispatch: Some(vybe_ast::OperatorDispatch::StaticBuiltin),
+            // Reuse normalized word operands only after the shared whole-binding
+            // proof succeeds. This retains the boxed ABI; it does not authorize
+            // native local storage or infer integer facts from C type names.
+            word_local_transport: Some(vybe_ast::WordLocalTransport::ProvenW32),
             ..Default::default()
         },
-    })
+    };
+    crate::normalize_linear_bytes::normalize_words(&mut module.body, &module.directives);
+    Ok(module)
 }
 
 fn c_debug_timings_path() -> Option<String> {
@@ -369,6 +530,15 @@ fn write_c_debug_timing(path: &str, line: String) {
     }
 }
 
+fn c_debug_timed<T>(path: Option<&str>, phase: &str, action: impl FnOnce() -> T) -> T {
+    let started = path.map(|_| Instant::now());
+    let result = action();
+    if let (Some(path), Some(started)) = (path, started) {
+        write_c_debug_timing(path, format!("{phase} {:?}", started.elapsed()));
+    }
+    result
+}
+
 fn c_debug_item_preview(src: &str) -> String {
     let mut out = src
         .lines()
@@ -380,6 +550,27 @@ fn c_debug_item_preview(src: &str) -> String {
         .collect::<String>();
     out.retain(|ch| ch != '\n' && ch != '\r');
     out
+}
+
+// Reuse the grammar's token boundary, without scanning past punctuation, casts,
+// qualifiers or trivia whose declaration interpretation still needs parsing.
+fn leading_captured_identifier<'a>(mut pair: Pair<'a, Rule>) -> Option<&'a str> {
+    #[cfg(test)]
+    if field_type_tests::USE_REFERENCE_DECLARATION_REPLAY.with(std::cell::Cell::get) {
+        return None;
+    }
+    let start = pair.as_span().start();
+    loop {
+        if pair.as_span().start() != start {
+            return None;
+        }
+        if pair.as_rule() == Rule::ident_name {
+            // These declaration prefixes also match ident_name in this grammar.
+            return (!matches!(pair.as_str(), "_Atomic" | "__attribute__"))
+                .then(|| pair.as_str());
+        }
+        pair = pair.into_inner().next()?;
+    }
 }
 
 fn c_debug_expr_kind(expr: &Expression) -> &'static str {
@@ -553,17 +744,20 @@ fn c_parsed_linear_pointer_value(mut pair: Pair<Rule>, providers: &[String]) -> 
         if matches!(pair.as_str().trim(), "0" | "NULL") {
             return true;
         }
-        let parts = pair.clone().into_inner().collect::<Vec<_>>();
-        if pair.as_rule() == Rule::postfix_expression && parts.len() == 2 {
-            return parts[1].as_rule() == Rule::call_suffix
-                && providers.iter().any(|provider| parts[0].as_str().trim() == provider);
-        }
-        if pair.as_rule() == Rule::cast_expression && parts.len() == 2 {
-            pair = parts[1].clone();
-        } else if parts.len() == 1 {
-            pair = parts[0].clone();
-        } else {
+        let mut parts = pair.clone().into_inner();
+        let first = parts.next();
+        let second = parts.next();
+        if parts.next().is_some() {
             return false;
+        }
+        match (pair.as_rule(), first, second) {
+            (Rule::postfix_expression, Some(callee), Some(suffix)) => {
+                return suffix.as_rule() == Rule::call_suffix
+                    && providers.iter().any(|provider| callee.as_str().trim() == provider);
+            }
+            (Rule::cast_expression, Some(_), Some(value)) => pair = value,
+            (_, Some(value), None) => pair = value,
+            _ => return false,
         }
     }
 }
@@ -603,8 +797,41 @@ fn c_pointer_param_prefers_scalar_ref(source: &str, name: &str) -> bool {
     true
 }
 
+struct PointerBindingFacts {
+    flags: [bool; 13],
+    type_text: Option<String>,
+    size: Option<i64>,
+    byte_struct: Option<String>,
+    indexed_struct: Option<String>,
+    byte_cast: Option<i64>,
+    step: Option<Expression>,
+    address_alias: Option<String>,
+    member_alias: Option<Expression>,
+}
+
+const TYPEDEF_SCALAR_MEMO_ENTRIES: usize = 256;
+const TYPEDEF_SCALAR_MEMO_BYTES: usize = 64 * 1024;
+
+#[derive(Default)]
+struct TypedefScalarMemo {
+    values: HashMap<String, String>,
+    bytes: usize,
+    #[cfg(test)]
+    hits: usize,
+    #[cfg(test)]
+    misses: usize,
+    #[cfg(test)]
+    replacement_passes: usize,
+}
+
 #[derive(Default)]
 struct Walker {
+    debug_timings: Option<std::sync::Arc<str>>,
+    prefix_only_gotos: bool,
+    goto_preparation_errors: Vec<String>,
+    /// Private producer-owned helper: one body per translation unit, never a guest name.
+    char_pointer_visible_helper: String,
+    uses_char_pointer_visible_helper: std::cell::Cell<bool>,
     /// struct/union name → ordered field names (for zero-init at decl site)
     structs: HashMap<String, Vec<String>>,
     /// struct name → field → (bitfield width, is_signed) for `int x : N` members.
@@ -662,6 +889,8 @@ struct Walker {
     /// Incomplete struct typedef aliases (`typedef struct Node Node;`).
     /// The fields arrive later when `struct Node { ... }` is completed.
     struct_typedef_aliases: HashMap<String, String>,
+    /// Source record tags and names to their emitted concrete class spelling.
+    struct_class_names: HashMap<String, String>,
     /// typedef names whose declarator is pointer-shaped.
     typedef_pointer_aliases: HashSet<String>,
     /// typedef names whose declarator is array-shaped.
@@ -686,6 +915,10 @@ struct Walker {
     /// Same aliases sorted longest-name first. Kept incrementally so hot type
     /// inference does not sort the whole map for every member access.
     typedef_scalar_alias_order: Vec<(String, String)>,
+    /// Invalidated with every scalar-alias mutation, including redefinitions.
+    typedef_scalar_memo: std::cell::RefCell<TypedefScalarMemo>,
+    /// Access qualifiers are declaration facts, not canonical numeric spelling.
+    typedef_access: HashMap<String, vybe_ast::StorageAccess>,
     /// identifiers declared as `char*`; used for pointer-like string traversal.
     char_pointers: HashSet<String>,
     /// char arrays initialized from C string literals, not explicit char-code buffers.
@@ -761,6 +994,14 @@ struct Walker {
     /// This TU emitted at least one linear-memory heap allocation and therefore
     /// needs a memory declaration plus the C bump allocator scaffold.
     uses_linear_memory_heap: bool,
+    /// End of constant array data in memory 0; the heap starts after it.
+    linear_static_data_end: u32,
+    linear_static_arrays: HashMap<String, u32>,
+    linear_static_array_types: HashMap<String, String>,
+    linear_static_initializers: Vec<Statement>,
+    /// Identity tokens for walker-owned ordinary W64 record-read lambdas.
+    /// Only these producers may acquire an exact switch-return contract.
+    wide_record_read_helpers: HashSet<String>,
     /// This TU stores a C function pointer inside native linear-memory struct
     /// storage. Data pointers stay in wasm memory; callable values need their
     /// own address-keyed table because a wasm i32 slot cannot preserve a
@@ -840,6 +1081,9 @@ struct Walker {
     function_param_types: HashMap<String, Vec<Option<String>>>,
     /// function name → explicit return type, used to infer callable variable types.
     function_return_types: HashMap<String, String>,
+    builtin_return_types: HashMap<String, String>,
+    /// Declared by-value record result of the function currently being walked.
+    current_record_return_type: Option<String>,
     /// Pointer-returning functions whose body produces heap-backed storage.
     /// A cast from such a call to `struct T *` is raw memory, so C can use the
     /// common linear pointer path instead of carray/object compatibility.
@@ -847,10 +1091,10 @@ struct Walker {
     /// Pointer-returning function candidates collected before the main walk.
     /// Resolved as a fixed point so `A()->malloc`, `B()->A`, `C()->B` are all
     /// recognized regardless of declaration order.
-    linear_pointer_return_candidates: HashMap<String, String>,
+    linear_pointer_return_candidates: HashMap<String, std::rc::Rc<str>>,
     /// Function body source text collected during the predeclare pass. Used
     /// only for C pointer-provenance preanalysis before AST lowering.
-    function_source_texts: HashMap<String, String>,
+    function_source_texts: HashMap<String, std::rc::Rc<str>>,
     /// Parameters and local declarations shadow file-scope pointer facts.
     function_local_var_names: HashMap<String, HashSet<String>>,
     file_scope_var_names: HashSet<String>,
@@ -858,9 +1102,12 @@ struct Walker {
     /// memory. Keys are either `name` for file-scope storage or
     /// `function::name` for function-local storage.
     predeclared_linear_pointer_vars: HashSet<String>,
+    predeclared_mixed_global_pointer_vars: HashSet<String>,
     /// Function names declared anywhere in this translation unit. Populated by
     /// a top-level prepass so `&later_function` can lower to `FuncRef`.
     function_names: HashSet<String>,
+    /// Actual definitions, distinct from library prototypes, for builtin shadowing.
+    defined_function_names: HashSet<String>,
     /// Variables initialized from `fork()`/`vfork()`. The libc adapter models
     /// fork by running the child branch inline, so the walker needs to know
     /// which `pid_t` variables carry the fork split when lowering `if (p == 0)
@@ -877,12 +1124,6 @@ struct Walker {
     current_param_names: Vec<String>,
     /// function-pointer bindings that should be removed when the current function exits.
     current_function_pointer_names: Vec<String>,
-    /// `atexit` handlers registered while walking the current `main` body.
-    current_atexit_finalizers: Vec<Statement>,
-    /// `at_quick_exit` handlers registered while walking the current `main` body.
-    current_quick_exit_finalizers: Vec<Statement>,
-    /// `on_exit` handlers registered while walking the current `main` body.
-    current_on_exit_finalizers: Vec<Statement>,
     /// Compile-time token cursors for literal-backed `strtok_r` save variables.
     strtok_r_remaining: HashMap<String, String>,
     /// monotonically-increasing counter for synthetic temporaries (e.g. hoisting
@@ -892,6 +1133,9 @@ struct Walker {
     block_depth: usize,
     /// Nested block-scope identifier rewrites for C shadowing.
     block_renames: Vec<HashMap<String, String>>,
+    block_shadowed_facts: Vec<HashMap<String, PointerBindingFacts>>,
+    block_call_bindings: Vec<HashSet<String>>,
+    global_call_bindings: HashSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1350,6 +1594,8 @@ fn c_int_family_type(type_text: &str) -> bool {
             | "signed int"
             | "short"
             | "short int"
+            | "signed short"
+            | "signed short int"
             | "unsigned short"
             | "unsigned short int"
             | "long"
@@ -1754,6 +2000,7 @@ fn seed_preprocessor_header_macros(
 ) {
     let string_defs: &[(&str, &str)] = match header {
         "uchar.h" => &[("__STDC_UTF_16__", "1"), ("__STDC_UTF_32__", "1")],
+        "stdio.h" => &[("EOF", "(-1)")],
         // Autotools/CMake projects often check in only config.h.in/config.h.cin;
         // the generated header is created by configure. When it is absent in
         // examples, keep common package macros available so preprocessing still
@@ -1906,6 +2153,19 @@ fn seed_preprocessor_header_macros(
         object_macros
             .entry((*name).to_string())
             .or_insert_with(|| (*value).to_string());
+    }
+    if matches!(header, "stdint.h" | "inttypes.h") {
+        // The least-width 8/16-bit types promote to int in this C data model.
+        for (name, body) in [
+            ("INT8_C", "(value)"), ("UINT8_C", "(value)"),
+            ("INT16_C", "(value)"), ("UINT16_C", "(value)"),
+            ("INT32_C", "(value)"), ("UINT32_C", "(value ## U)"),
+            ("INT64_C", "(value ## LL)"), ("UINT64_C", "(value ## ULL)"),
+            ("INTMAX_C", "(value ## L)"), ("UINTMAX_C", "(value ## UL)"),
+        ] {
+            function_macros.entry(name.into())
+                .or_insert_with(|| (vec!["value".into()], body.into()));
+        }
     }
     if matches!(
         header,
@@ -2303,16 +2563,16 @@ fn int_var_decl_stmt(name: &str, init: Expression) -> Statement {
     })
 }
 
-fn c_linear_heap_support() -> Vec<Statement> {
-    const HEAP_START: i64 = 1024;
-    const INITIAL_PAGES: u64 = 256;
+fn c_linear_heap_support(data_end: u32) -> Vec<Statement> {
+    let heap_start = (u64::from(data_end).max(1024) + 15) & !15;
+    let initial_pages = 256u64.max((heap_start + 65535) / 65536);
     vec![
         stmt(StmtKind::MemoryDecl {
-            min_pages: INITIAL_PAGES,
+            min_pages: initial_pages,
             max_pages: None,
             is_64: false,
         }),
-        int_var_decl_stmt("__c_heap_ptr", int_lit(HEAP_START)),
+        int_var_decl_stmt("__c_heap_ptr", int_lit(heap_start as i64)),
     ]
 }
 
@@ -2339,6 +2599,12 @@ fn c_guest_argv_literal(values: &[String]) -> Expression {
                 spread: false,
                 by_ref: false,
             })
+            .chain(std::iter::once(ArrayElement {
+                key: None,
+                value: int_lit(0),
+                spread: false,
+                by_ref: false,
+            }))
             .collect(),
     ))
 }
@@ -2670,6 +2936,22 @@ fn fork_child_assigned_vars(body: &[Statement]) -> Vec<String> {
 
 fn concat_expr(left: Expression, right: Expression) -> Expression {
     binary_expr(BinOp::Concat, left, right)
+}
+
+fn c_static_json_initializer(json: &str) -> Expression {
+    // Keep imported string constants bounded without changing the parsed value.
+    let mut parts = Vec::new();
+    let mut start = 0;
+    while start < json.len() {
+        let mut end = (start + 32_768).min(json.len());
+        while !json.is_char_boundary(end) {
+            end -= 1;
+        }
+        parts.push(str_lit(&json[start..end]));
+        start = end;
+    }
+    let text = parts.into_iter().reduce(concat_expr).unwrap_or_else(|| str_lit(""));
+    call_expr(ident("__c_static_json_value"), vec![text])
 }
 
 fn c_json_string(value: &str) -> String {
@@ -3274,6 +3556,29 @@ fn same_c_expr_shape(left: &Expression, right: &Expression) -> bool {
     }
 }
 
+fn declarator_declares_function(pair: &Pair<Rule>) -> bool {
+    // The first derived operator outward from the identifier determines whether
+    // this declares a function. Parameter declarators belong to another binding.
+    fn first_operator(pair: &Pair<Rule>) -> Option<bool> {
+        let mut pointer = false;
+        for child in pair.clone().into_inner() {
+            match child.as_rule() {
+                Rule::pointer => pointer = true,
+                Rule::declarator | Rule::direct_declarator => {
+                    if let Some(operator) = first_operator(&child) {
+                        return Some(operator);
+                    }
+                }
+                Rule::param_suffix => return Some(true),
+                Rule::array_suffix => return Some(false),
+                _ => {}
+            }
+        }
+        pointer.then_some(false)
+    }
+    first_operator(pair) == Some(true)
+}
+
 fn declarator_has_pointer(pair: &Pair<Rule>) -> bool {
     for child in pair.clone().into_inner() {
         match child.as_rule() {
@@ -3298,6 +3603,23 @@ fn declarator_pointer_depth(pair: &Pair<Rule>) -> usize {
             _ => 0,
         })
         .sum()
+}
+
+fn declarator_binds_pointer_before_array(pair: &Pair<Rule>) -> bool {
+    fn contains_suffix(pair: &Pair<Rule>) -> bool {
+        matches!(pair.as_rule(), Rule::array_suffix | Rule::param_suffix)
+            || pair.clone().into_inner().any(|child| contains_suffix(&child))
+    }
+
+    let Some(direct) = pair.clone().into_inner()
+        .find(|child| child.as_rule() == Rule::direct_declarator) else { return false; };
+    let mut children = direct.into_inner();
+    let Some(binding) = children.next() else { return false; };
+    binding.as_rule() == Rule::declarator
+        && declarator_has_pointer(&binding)
+        && !contains_suffix(&binding)
+        && children.next().is_some_and(|child| child.as_rule() == Rule::array_suffix)
+        && children.all(|child| child.as_rule() == Rule::array_suffix)
 }
 
 fn declarator_pointer_depth_from_decl_text(decl_text: &str, name: &str) -> usize {
@@ -3466,7 +3788,10 @@ impl Walker {
                 self.predeclare_linear_pointer_return_function(pair.clone());
                 for child in pair.into_inner() {
                     if child.as_rule() == Rule::declarator {
-                        self.predeclare_function_declarator(child);
+                        let is_function = declarator_declares_function(&child);
+                        let (name, params) = self.declarator_name_and_params(child.clone());
+                        self.defined_function_names.insert(name.clone());
+                        self.predeclare_decoded_function(child, is_function, name, params);
                         break;
                     }
                 }
@@ -3501,9 +3826,10 @@ impl Walker {
                     if decl.as_rule() == Rule::declarator {
                         let (name, params) = self.declarator_name_and_params(decl.clone());
                         if params.is_none() && !name.is_empty() {
-                            self.file_scope_var_names.insert(name);
+                            self.file_scope_var_names.insert(name.clone());
                         }
-                        self.predeclare_function_declarator(decl);
+                        let is_function = declarator_declares_function(&decl);
+                        self.predeclare_decoded_function(decl, is_function, name, params);
                         break;
                     }
                 }
@@ -3511,10 +3837,22 @@ impl Walker {
         }
     }
 
-    fn predeclare_function_declarator(&mut self, declarator: Pair<Rule>) {
-        let is_function_pointer = declarator.as_str().contains("(*");
-        let (name, params) = self.declarator_name_and_params(declarator);
-        if name.is_empty() || is_function_pointer {
+    fn predeclare_decoded_function(
+        &mut self,
+        declarator: Pair<Rule>,
+        is_function: bool,
+        name: String,
+        params: Option<Vec<Param>>,
+    ) {
+        #[cfg(test)]
+        let (name, params) = if field_type_tests::USE_REFERENCE_PREDECLARATION.with(|flag| flag.get()) {
+            self.declarator_name_and_params(declarator)
+        } else {
+            (name, params)
+        };
+        #[cfg(not(test))]
+        let _ = declarator;
+        if name.is_empty() || !is_function {
             return;
         }
         if let Some(params) = &params {
@@ -3532,7 +3870,7 @@ impl Walker {
     }
 
     fn predeclare_linear_pointer_return_function(&mut self, pair: Pair<Rule>) {
-        let source_text = pair.as_str().to_string();
+        let source_text = std::rc::Rc::<str>::from(pair.as_str());
         let mut return_type = None;
         let mut return_pointer_count = 0usize;
         let mut name = String::new();
@@ -3556,9 +3894,12 @@ impl Walker {
                     let mut pending = vec![child];
                     while let Some(node) = pending.pop() {
                         if node.as_rule() == Rule::expression_statement
-                            && CParser::parse(Rule::ident_name, node.as_str()).ok()
-                                .and_then(|mut names| names.next())
-                                .is_some_and(|name| self.typedef_names.contains(name.as_str()))
+                            && leading_captured_identifier(node.clone()).map_or_else(
+                                || CParser::parse(Rule::ident_name, node.as_str()).ok()
+                                    .and_then(|mut names| names.next())
+                                    .is_some_and(|name| self.typedef_names.contains(name.as_str())),
+                                |name| self.typedef_names.contains(name),
+                            )
                         {
                             if let Ok(parsed) = CParser::parse(Rule::declaration, node.as_str()) {
                                 for declaration in parsed {
@@ -3629,7 +3970,10 @@ impl Walker {
         }
     }
 
-    fn predeclare_linear_pointer_storage_vars(&mut self, program: Pair<Rule>) {
+    fn predeclare_linear_pointer_storage_vars<'i>(
+        &mut self,
+        items: impl IntoIterator<Item = Pair<'i, Rule>>,
+    ) {
         let mut providers = self
             .linear_pointer_return_functions
             .iter()
@@ -3643,20 +3987,20 @@ impl Walker {
         providers.sort();
         providers.dedup();
 
-        for (function, source_text) in self.function_source_texts.clone() {
+        for (function, source_text) in &self.function_source_texts {
             for statement in source_text.split([';', '\n']) {
                 for provider in &providers {
                     let Some(name) = c_assignment_lhs_before_call(statement, provider) else {
                         continue;
                     };
                     self.predeclared_linear_pointer_vars
-                        .insert(c_pointer_scope_key(&function, &name));
+                        .insert(c_pointer_scope_key(function, &name));
                     // A function may initialize file-scope pointer storage, as
                     // Doom does with `mainzone = I_ZoneBase(&size)`. Mark the
                     // bare name too so the earlier file-scope declaration can
                     // use raw i32 storage from the start.
                     if self.file_scope_var_names.contains(&name)
-                        && !self.function_local_var_names.get(&function)
+                        && !self.function_local_var_names.get(function)
                             .is_some_and(|locals| locals.contains(&name))
                     {
                         self.predeclared_linear_pointer_vars
@@ -3668,31 +4012,34 @@ impl Walker {
 
         // An allocation proves one value's backing, not every value subsequently
         // stored in that binding. Reject whole-binding facts on unproven writes.
-        let mut pending = vec![(String::new(), program)];
+        let mut pending: Vec<_> = items.into_iter()
+            .map(|item| (std::rc::Rc::<str>::from(""), item)).collect();
         while let Some((mut function, pair)) = pending.pop() {
             if pair.as_rule() == Rule::function_definition {
                 if let Some(declarator) = pair.clone().into_inner()
                     .find(|child| child.as_rule() == Rule::declarator)
                 {
-                    function = self.declarator_name_and_params(declarator).0;
+                    function = self.declarator_name_and_params(declarator).0.into();
                 }
             }
             let write = if pair.as_rule() == Rule::assignment_expression {
-                let parts = pair.clone().into_inner().collect::<Vec<_>>();
-                if parts.len() == 3 && parts[1].as_str() == "=" {
-                    let name = parts[0].as_str().trim();
-                    (!name.is_empty() && name.chars()
-                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
-                        .then(|| (name.to_string(), parts[2].clone()))
-                } else {
-                    None
+                let mut parts = pair.clone().into_inner();
+                match (parts.next(), parts.next(), parts.next(), parts.next()) {
+                    (Some(left), Some(op), Some(value), None) if op.as_str() == "=" => {
+                        let name = left.as_str().trim();
+                        (!name.is_empty() && name.chars()
+                            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+                            .then(|| (name.to_string(), value))
+                    }
+                    _ => None,
                 }
             } else if pair.as_rule() == Rule::init_declarator {
-                let parts = pair.clone().into_inner().collect::<Vec<_>>();
-                if parts.len() == 2 {
-                    Some((self.declarator_name_and_params(parts[0].clone()).0, parts[1].clone()))
-                } else {
-                    None
+                let mut parts = pair.clone().into_inner();
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(declarator), Some(value), None) => {
+                        Some((self.declarator_name_and_params(declarator).0, value))
+                    }
+                    _ => None,
                 }
             } else {
                 None
@@ -3703,7 +4050,7 @@ impl Walker {
                 self.predeclared_linear_pointer_vars
                     .remove(&c_pointer_scope_key(&function, &name));
                 if self.file_scope_var_names.contains(&name)
-                    && !self.function_local_var_names.get(&function)
+                    && !self.function_local_var_names.get(function.as_ref())
                         .is_some_and(|locals| locals.contains(&name))
                 {
                     self.predeclared_linear_pointer_vars.remove(&name);
@@ -3734,6 +4081,77 @@ impl Walker {
                     .is_some_and(|locals| locals.contains(name))
     }
 
+    fn predeclare_mixed_global_pointer_storage<'i>(
+        &mut self,
+        items: impl IntoIterator<Item = Pair<'i, Rule>>,
+    ) {
+        let items: Vec<_> = items.into_iter().collect();
+        let mut pointers = HashSet::new();
+        for item in items.iter().cloned() {
+            if item.as_rule() != Rule::declaration { continue; }
+            let Some(declaration) = item.into_inner().next() else { continue; };
+            if declaration.as_rule() != Rule::normal_declaration { continue; }
+            let mut pointer_alias = false;
+            let mut integer_pointee = false;
+            for part in declaration.into_inner() {
+                if part.as_rule() == Rule::declaration_specifiers {
+                    pointer_alias = self.typedef_pointer_aliases.contains(part.as_str().trim());
+                    let base = self.resolve_typedef_scalar_aliases(&c_type_without_storage(part.as_str()));
+                    integer_pointee = c_int_family_type(&base)
+                        && matches!(self.sizeof_type_text(&base), 2 | 4);
+                } else if part.as_rule() == Rule::init_declarator_list {
+                    for init in part.into_inner() {
+                        let Some(declarator) = init.into_inner()
+                            .find(|part| part.as_rule() == Rule::declarator) else { continue; };
+                        if integer_pointee && (pointer_alias || declarator_has_pointer(&declarator))
+                            && !declarator.as_str().contains("(*")
+                            && !declarator.as_str().contains('[')
+                            && declarator.as_str().matches('*').count() <= 1
+                        {
+                            let (name, params) = self.declarator_name_and_params(declarator);
+                            if params.is_none() { pointers.insert(name); }
+                        }
+                    }
+                }
+            }
+        }
+        let mut pending: Vec<_> = items.into_iter()
+            .map(|item| (String::new(), item)).collect();
+        while let Some((mut function, pair)) = pending.pop() {
+            if pair.as_rule() == Rule::function_definition {
+                if let Some(declarator) = pair.clone().into_inner()
+                    .find(|part| part.as_rule() == Rule::declarator)
+                {
+                    function = self.declarator_name_and_params(declarator).0;
+                }
+            }
+            if !function.is_empty() && pair.as_rule() == Rule::assignment_expression {
+                let mut parts = pair.clone().into_inner();
+                if let (Some(left), Some(op), Some(_)) = (parts.next(), parts.next(), parts.next()) {
+                    let name = left.as_str().trim();
+                    if op.as_str() == "=" && pointers.contains(name)
+                        && !self.function_local_var_names.get(&function)
+                            .is_some_and(|locals| locals.contains(name))
+                        && !self.predeclared_linear_pointer_vars.contains(&c_pointer_scope_key("", name))
+                    {
+                        // A later writer cannot justify numeric-only lowering in
+                        // an earlier reader. Retain C pointee types separately.
+                        self.hybrid_carray_ptr_vars.insert(name.to_string());
+                        self.predeclared_mixed_global_pointer_vars.insert(name.to_string());
+                    }
+                }
+            }
+            pending.extend(pair.into_inner().map(|part| (function.clone(), part)));
+        }
+    }
+
+    fn is_mixed_global_pointer_var(&self, name: &str) -> bool {
+        self.predeclared_mixed_global_pointer_vars.contains(name)
+            && !self.function_local_var_names.get(&self.current_function)
+                .is_some_and(|locals| locals.contains(name))
+            && !self.current_param_names.iter().any(|param| param == name)
+    }
+
     fn clear_pointer_binding_facts(&mut self, name: &str) {
         self.linear_pointer_vars.remove(name);
         self.linear_struct_pointer_vars.remove(name);
@@ -3760,9 +4178,79 @@ impl Walker {
         }
         self.function_local_var_names.entry(self.current_function.clone())
             .or_default().insert(name.to_string());
-        if self.file_scope_var_names.contains(name) {
-            self.clear_pointer_binding_facts(name);
+        if self.var_types.contains_key(name)
+            && self.block_shadowed_facts.last().is_some_and(|scope| !scope.contains_key(name))
+        {
+            let facts = self.pointer_binding_facts(name);
+            self.block_shadowed_facts.last_mut().unwrap().insert(name.to_string(), facts);
         }
+        self.clear_pointer_binding_facts(name);
+        self.pointer_address_aliases.remove(name);
+        self.pointer_member_aliases.remove(name);
+    }
+
+    fn pointer_binding_facts(&self, name: &str) -> PointerBindingFacts {
+        PointerBindingFacts {
+            flags: [
+                self.linear_pointer_vars.contains(name),
+                self.linear_struct_pointer_vars.contains(name),
+                self.hybrid_linear_struct_pointer_vars.contains(name),
+                self.direct_byte_struct_pointer_vars.contains(name),
+                self.direct_object_pointer_vars.contains(name),
+                self.carray_ptr_vars.contains(name),
+                self.hybrid_carray_ptr_vars.contains(name),
+                self.array_ptr_vars.contains(name),
+                self.byte_array_ptr_vars.contains(name),
+                self.scalar_ref_pointer_vars.contains(name),
+                self.char_pointers.contains(name),
+                self.char_array_vars.contains(name),
+                self.char_string_arrays.contains(name),
+            ],
+            type_text: self.var_types.get(name).cloned(),
+            size: self.var_sizes.get(name).copied(),
+            byte_struct: self.byte_struct_pointer_vars.get(name).cloned(),
+            indexed_struct: self.indexed_struct_pointer_tables.get(name).cloned(),
+            byte_cast: self.byte_cast_pointer_vars.get(name).copied(),
+            step: self.carray_pointer_steps.get(name).cloned(),
+            address_alias: self.pointer_address_aliases.get(name).cloned(),
+            member_alias: self.pointer_member_aliases.get(name).cloned(),
+        }
+    }
+
+    fn restore_pointer_binding_facts(&mut self, name: String, facts: PointerBindingFacts) {
+        self.clear_pointer_binding_facts(&name);
+        macro_rules! restore_flag {
+            ($field:ident, $index:expr) => {
+                if facts.flags[$index] { self.$field.insert(name.clone()); }
+            };
+        }
+        restore_flag!(linear_pointer_vars, 0);
+        restore_flag!(linear_struct_pointer_vars, 1);
+        restore_flag!(hybrid_linear_struct_pointer_vars, 2);
+        restore_flag!(direct_byte_struct_pointer_vars, 3);
+        restore_flag!(direct_object_pointer_vars, 4);
+        restore_flag!(carray_ptr_vars, 5);
+        restore_flag!(hybrid_carray_ptr_vars, 6);
+        restore_flag!(array_ptr_vars, 7);
+        restore_flag!(byte_array_ptr_vars, 8);
+        restore_flag!(scalar_ref_pointer_vars, 9);
+        restore_flag!(char_pointers, 10);
+        restore_flag!(char_array_vars, 11);
+        restore_flag!(char_string_arrays, 12);
+        macro_rules! restore_value {
+            ($field:ident, $value:expr) => {
+                if let Some(value) = $value { self.$field.insert(name.clone(), value); }
+                else { self.$field.remove(&name); }
+            };
+        }
+        restore_value!(var_types, facts.type_text);
+        restore_value!(var_sizes, facts.size);
+        restore_value!(byte_struct_pointer_vars, facts.byte_struct);
+        restore_value!(indexed_struct_pointer_tables, facts.indexed_struct);
+        restore_value!(byte_cast_pointer_vars, facts.byte_cast);
+        restore_value!(carray_pointer_steps, facts.step);
+        restore_value!(pointer_address_aliases, facts.address_alias);
+        restore_value!(pointer_member_aliases, facts.member_alias);
     }
 
     fn register_generated_local(&mut self, name: &str, type_text: &str) {
@@ -3789,8 +4277,8 @@ impl Walker {
     fn resolve_linear_pointer_return_functions(&mut self) {
         loop {
             let mut changed = false;
-            for (name, source_text) in self.linear_pointer_return_candidates.clone() {
-                if self.linear_pointer_return_functions.contains(&name) {
+            for (name, source_text) in &self.linear_pointer_return_candidates {
+                if self.linear_pointer_return_functions.contains(name) {
                     continue;
                 }
                 if c_source_calls_heap_allocator(&source_text)
@@ -3800,13 +4288,186 @@ impl Walker {
                         .iter()
                         .any(|known| c_source_calls_function(&source_text, known))
                 {
-                    changed |= self.linear_pointer_return_functions.insert(name);
+                    changed |= self.linear_pointer_return_functions.insert(name.clone());
                 }
             }
             if !changed {
                 break;
             }
         }
+    }
+
+    fn predeclare_constant_scalar_arrays<'i>(
+        &mut self,
+        items: impl IntoIterator<Item = Pair<'i, Rule>>,
+    ) {
+        enum PreparedInitializer {
+            Owned(Expression),
+            Borrowed(crate::frontend::InitializerLease),
+        }
+        impl AsRef<Expression> for PreparedInitializer {
+            fn as_ref(&self) -> &Expression {
+                match self {
+                    Self::Owned(value) => value,
+                    Self::Borrowed(value) => value.as_ref(),
+                }
+            }
+        }
+        // Resolve the storage definition before reserving bytes: tentative
+        // definitions must not hide a later explicit initializer.
+        let mut definitions = Vec::new();
+        let saved_enum_constants = self.enum_constants.clone();
+        for pair in items {
+            if pair.as_rule() != Rule::declaration {
+                continue;
+            }
+            let Some(declaration) = pair.into_inner().next() else {
+                continue;
+            };
+            let is_definition = declaration.as_rule() == Rule::normal_declaration;
+            if !is_definition && declaration.as_rule() != Rule::typedef_declaration {
+                continue;
+            }
+            let mut specs = None;
+            let mut init_list = None;
+            for child in declaration.into_inner() {
+                match child.as_rule() {
+                    Rule::declaration_specifiers => specs = Some(child),
+                    Rule::init_declarator_list => init_list = Some(child),
+                    _ => {}
+                }
+            }
+            let Some(specs) = specs else {
+                continue;
+            };
+            // Only preceding, successfully folded enumerators can prove an
+            // extent. In particular an unknown explicit value must not become
+            // the implicit next value used by the permissive emission path.
+            if let Some((_, members)) = self.enum_def_from_specifiers(&specs) {
+                let mut next = Some(0i64);
+                for member in members {
+                    let value = match member.value.as_ref() {
+                        Some(value) => self.eval_int_expr(value),
+                        None => next,
+                    };
+                    if let Some(value) = value {
+                        self.enum_constants.insert(member.name, value);
+                    } else {
+                        self.enum_constants.remove(&member.name);
+                    }
+                    next = value.and_then(|value| value.checked_add(1));
+                }
+            }
+            let Some(init_list) = init_list.filter(|_| is_definition) else {
+                continue;
+            };
+            let alignment = alignas_value_from_text(specs.as_str()).unwrap_or(1);
+            let is_extern = specs.clone().into_inner().any(|specifier| {
+                specifier.as_rule() == Rule::type_qualifier && specifier.as_str() == "extern"
+            });
+            let type_text = self.type_text(specs);
+            if type_text
+                .split_whitespace()
+                .any(|word| matches!(word, "volatile" | "_Atomic" | "typedef"
+                    | "_Thread_local" | "thread_local" | "__thread"))
+                || (!type_text.split_whitespace().any(|word| word == "const")
+                    && !matches!(
+                        self.sizeof_type_text(&self.resolve_typedef_scalar_aliases(&type_text)),
+                        2 | 4
+                    ))
+            {
+                continue;
+            }
+            for declaration in init_list.into_inner() {
+                let mut declarator = None;
+                let mut initializer = None;
+                for child in declaration.into_inner() {
+                    match child.as_rule() {
+                        Rule::declarator => declarator = Some(child),
+                        Rule::initializer => initializer = Some(child),
+                        _ => {}
+                    }
+                }
+                let Some(declarator) = declarator else {
+                    continue;
+                };
+                if initializer.is_none() && is_extern {
+                    continue;
+                }
+                if declarator_has_pointer(&declarator) || !declarator.as_str().contains('[') {
+                    continue;
+                }
+                let (name, bounds) = self.declarator_name_and_bounds(declarator);
+                if name.is_empty()
+                    || !bounds.as_ref().is_some_and(|values| {
+                        values.len() == 1
+                            && self
+                                .eval_int_expr(&values[0])
+                                .is_some_and(|count| count > 0)
+                    })
+                {
+                    continue;
+                }
+                // Freeze the source-order proof before later enum definitions
+                // are visited (and before normal declaration emission begins).
+                let bounds = bounds.and_then(|bounds| self.evaluable_bounds(&bounds));
+                let initializer = initializer.map(|value| {
+                    let borrow = true;
+                    #[cfg(test)]
+                    let borrow = borrow && !field_type_tests::USE_REFERENCE_INITIALIZER_PREDECLARATION
+                        .with(|flag| flag.get());
+                    if borrow
+                        && let Some(list) = value.clone().into_inner().next()
+                        && list.as_rule() == Rule::initializer_list
+                        && let Some(lease) = crate::frontend::lease_initializer_list(&list)
+                    {
+                        return PreparedInitializer::Borrowed(lease);
+                    }
+                    PreparedInitializer::Owned(self.walk_initializer(value))
+                });
+                definitions.push((name, type_text.clone(), bounds, initializer, alignment));
+            }
+        }
+        let mut selected = HashMap::new();
+        for (index, (name, _, _, initializer, _)) in definitions.iter().enumerate() {
+            if initializer.is_some() || !selected.contains_key(name) {
+                selected.insert(name.clone(), index);
+            }
+        }
+        for (index, (name, type_text, bounds, initializer, alignment)) in
+            definitions.into_iter().enumerate()
+        {
+            if selected.get(&name) != Some(&index) {
+                continue;
+            }
+            let Some((offset, bytes)) = self.constant_scalar_array_data(
+                &type_text,
+                bounds.as_deref(),
+                initializer.as_ref().map(AsRef::as_ref),
+                alignment,
+            ) else {
+                continue;
+            };
+            let count = bytes.len()
+                / self.sizeof_type_text(&self.resolve_typedef_scalar_aliases(&type_text)) as usize;
+            let array_type = format!("{}[{count}]", c_type_without_storage(&type_text));
+            self.var_types.insert(name.clone(), array_type.clone());
+            self.linear_static_array_types
+                .insert(name.clone(), array_type);
+            self.var_sizes.insert(name.clone(), bytes.len() as i64);
+            self.linear_static_arrays.insert(name.clone(), offset);
+            self.linear_pointer_vars.insert(name.clone());
+            self.uses_linear_memory_heap = true;
+            self.linear_static_initializers
+                .push(stmt(StmtKind::DataSegment {
+                    memory_index: 0,
+                    offset: Some(int_lit(i64::from(offset))),
+                    bytes,
+                }));
+            self.linear_static_initializers
+                .push(int_var_decl_stmt(&name, int_lit(i64::from(offset))));
+        }
+        self.enum_constants = saved_enum_constants;
     }
 
     fn predeclare_metadata_top_item(&mut self, pair: Pair<Rule>) {
@@ -3824,6 +4485,7 @@ impl Walker {
     }
 
     fn predeclare_typedef_metadata(&mut self, pair: Pair<Rule>) {
+        let access = self.type_access(pair.as_str());
         let mut specs = None;
         let mut names: Vec<(String, Option<Vec<Expression>>)> = Vec::new();
         let mut function_aliases: HashSet<String> = HashSet::new();
@@ -3868,6 +4530,7 @@ impl Walker {
         let specs_define_aggregate = self.struct_def_from_specifiers(&specs).is_some()
             || self.enum_def_from_specifiers(&specs).is_some();
         let specs_text = self.type_text(specs.clone());
+        for (name, _) in &names { self.preserve_typedef_access(name, access); }
         for (name, bounds) in &names {
             if let Some(bounds) = bounds {
                 let count = bounds.iter().try_fold(1i64, |size, bound| {
@@ -4237,20 +4900,9 @@ impl Walker {
             self.typedef_void_pointer_aliases
                 .insert((*handle).to_string());
         }
-        if base.starts_with("SDL") {
-            for (alias, target) in [
-                ("Uint8", "uint8_t"),
-                ("Sint8", "int8_t"),
-                ("Uint16", "uint16_t"),
-                ("Sint16", "int16_t"),
-                ("Uint32", "uint32_t"),
-                ("Sint32", "int32_t"),
-                ("Uint64", "uint64_t"),
-                ("Sint64", "int64_t"),
-            ] {
-                self.typedef_names.insert(alias.to_string());
-                self.insert_typedef_scalar_alias(alias.to_string(), target.to_string());
-            }
+        for &(alias, target) in posix_adapter::header_scalar_aliases(header) {
+            self.typedef_names.insert(alias.to_string());
+            self.insert_typedef_scalar_alias(alias.to_string(), target.to_string());
         }
     }
 
@@ -4474,6 +5126,8 @@ impl Walker {
             | "SDL2/SDL_endian.h"
             | "SDL_mixer.h"
             | "SDL2/SDL_mixer.h" => &[
+                ("SDL_FALSE", 0),
+                ("SDL_TRUE", 1),
                 // ── event types ──
                 ("SDL_QUIT", 0x100),
                 ("SDL_WINDOWEVENT", 0x200),
@@ -4733,7 +5387,13 @@ impl Walker {
             ],
             _ => &[],
         };
-        for (name, val) in defs {
+        let messagebox_defs = if matches!(header,
+            "SDL.h" | "SDL2/SDL.h" | "SDL_messagebox.h" | "SDL2/SDL_messagebox.h") {
+            sdl_adapter::MESSAGEBOX_CONSTANTS
+        } else {
+            &[]
+        };
+        for (name, val) in defs.iter().chain(messagebox_defs) {
             // Only inject if not already defined by user
             if !self.object_macros.contains_key(*name) {
                 let macro_value = if *val > i32::MAX as i64
@@ -4922,12 +5582,18 @@ impl Walker {
         let mut name = String::new();
         let mut params = Vec::new();
         let mut body = Vec::new();
-        let previous_atexit_finalizers = std::mem::take(&mut self.current_atexit_finalizers);
-        let previous_quick_exit_finalizers =
-            std::mem::take(&mut self.current_quick_exit_finalizers);
-        let previous_on_exit_finalizers = std::mem::take(&mut self.current_on_exit_finalizers);
         let previous_param_names = std::mem::take(&mut self.current_param_names);
-        for p in pair.into_inner() {
+        let previous_record_return_type = self.current_record_return_type.take();
+        let direct = self.direct_statements_enabled();
+        #[cfg(test)]
+        let direct = direct && !function_constructor_tests::REFERENCE_FUNCTIONS.with(|flag| flag.get());
+        let region = if direct { crate::frontend::take_direct_function_region(&pair) } else { None };
+        let mut anchored = region.as_ref().map(|region| region.parts());
+        let mut captured = pair.into_inner();
+        let parts = std::iter::from_fn(|| match &mut anchored {
+            Some(parts) => parts.next(), None => captured.next(),
+        });
+        for p in parts {
             match p.as_rule() {
                 Rule::declaration_specifiers => return_type = Some(self.type_text(p)),
                 Rule::declarator => {
@@ -4955,6 +5621,14 @@ impl Walker {
                             type_hint.push_str(" *");
                         }
                     }
+                    self.current_record_return_type = return_type.as_deref()
+                        .filter(|_| return_pointer_count == 0)
+                        .map(|ty| self.resolve_typedef_scalar_aliases(ty))
+                        .filter(|ty| !self.is_c_pointer_like_type_text(ty)
+                            && !self.typedef_pointer_aliases.contains(&normalized_c_type_name(ty))
+                            && !ty.contains('['))
+                        .and_then(|ty| self.canonical_struct_base_from_type(&ty))
+                        .filter(|record| !self.union_tags.contains(record));
                     self.current_function = name.clone();
                     self.current_param_names = params.iter().map(|p| p.name.clone()).collect();
                     let mut scoped_param_types = Vec::new();
@@ -4978,6 +5652,8 @@ impl Walker {
                     let scoped_array_ptr_vars_before = self.array_ptr_vars.clone();
                     let scoped_byte_array_ptr_vars_before = self.byte_array_ptr_vars.clone();
                     let scoped_pointer_vars_before = self.pointer_vars.clone();
+                    let scoped_pointer_address_aliases_before = self.pointer_address_aliases.clone();
+                    let scoped_pointer_member_aliases_before = self.pointer_member_aliases.clone();
                     let scoped_carray_ptr_vars_before = self.carray_ptr_vars.clone();
                     let scoped_byte_struct_pointer_vars_before =
                         self.byte_struct_pointer_vars.clone();
@@ -4997,13 +5673,13 @@ impl Walker {
                     let scoped_direct_object_pointer_vars_before =
                         self.direct_object_pointer_vars.clone();
                     let scoped_var_types_before = self.var_types.clone();
-                    let file_scope_names_before = scoped_var_types_before
-                        .keys()
-                        .cloned()
-                        .collect::<HashSet<_>>();
+                    let shadowed_parameter_names = visible_parameter_names(&params, &scoped_var_types_before);
                     let scoped_var_sizes_before = self.var_sizes.clone();
                     let scoped_carray_pointer_steps_before = self.carray_pointer_steps.clone();
-                    for (idx, param) in params.iter().enumerate() {
+                    for param in params.iter() {
+                        self.clear_pointer_binding_facts(&param.name);
+                        self.pointer_address_aliases.remove(&param.name);
+                        self.pointer_member_aliases.remove(&param.name);
                         self.char_string_arrays.remove(&param.name);
                         self.initialized_char_buffers.remove(&param.name);
                         if let Some(type_hint) = &param.type_hint {
@@ -5065,7 +5741,12 @@ impl Walker {
                                         "uint8" | "uint8_t" | "byte"
                                     ));
                             let is_char_pointer_vector = is_char_pointer && char_pointer_depth > 1;
-                            if is_char_pointer_vector {
+                            if (&**type_hint == "func" || type_hint.starts_with("func("))
+                                && !type_hint.contains(ARRAY_PARAM_MARKER)
+                            {
+                                self.function_pointer_vars.insert(param.name.clone());
+                                self.current_function_pointer_names.push(param.name.clone());
+                            } else if is_char_pointer_vector {
                                 self.dynamic_char_pointer_vectors
                                     .insert(param.name.clone());
                                 scoped_dynamic_char_vectors.push(param.name.clone());
@@ -5077,9 +5758,6 @@ impl Walker {
                             } else if is_char_pointer {
                                 self.char_pointers.insert(param.name.clone());
                                 scoped_char_params.push(param.name.clone());
-                            } else if &**type_hint == "func" {
-                                self.function_pointer_vars.insert(param.name.clone());
-                                self.current_function_pointer_names.push(param.name.clone());
                             } else if type_hint.matches('*').count() == 1
                                 && self.canonical_struct_base_from_type(type_hint).is_some()
                             {
@@ -5101,6 +5779,10 @@ impl Walker {
                                 self.direct_byte_struct_pointer_vars
                                     .insert(param.name.clone());
                                 self.direct_object_pointer_vars.remove(&param.name);
+                            } else if type_hint.matches('*').count() >= 2
+                                && !self.is_function_pointer_type_text(type_hint)
+                            {
+                                self.pointer_vars.insert(param.name.clone());
                             } else if self.is_carray_compatible_pointer_param(type_hint)
                                 && c_pointer_param_prefers_scalar_ref(
                                     &function_source_text,
@@ -5117,6 +5799,24 @@ impl Walker {
                         }
                     }
                     body = self.walk_block(p);
+                    // A function-pointer callback can erase a first-member
+                    // address before entering a typed C record-pointer parameter.
+                    for param in params.iter().rev() {
+                        let Some(type_hint) = &param.type_hint else { continue; };
+                        let Some(record) = self.c_struct_pointer_pointee_from_type_text(type_hint)
+                            else { continue; };
+                        let Some(first_type) = self.first_struct_field_type(&record)
+                            else { continue; };
+                        if first_type.contains('*') || first_type.contains('[')
+                            || self.canonical_struct_base_from_type(&first_type).is_none()
+                        { continue; }
+                        let recovered = self.guarded_erased_first_member_value(
+                            ident(&param.name), &record,
+                        );
+                        body.insert(0, stmt(StmtKind::Expr(assign_expr(
+                            ident(&param.name), recovered,
+                        ))));
+                    }
                     for param in scoped_carray_params.iter().rev() {
                         let param_ident = ident(param);
                         // Wrap a decayed array pointer in a carray — but leave an
@@ -5199,6 +5899,12 @@ impl Walker {
                         );
                     }
                     if !self.generated_local_declarations.is_empty() {
+                        for declaration in &mut self.generated_local_declarations {
+                            let mut hint = declaration.type_hint.take()
+                                .unwrap_or_else(|| TypeHint::descriptive("any"));
+                            hint.access = Some(vybe_ast::StorageAccess::Ordinary);
+                            declaration.type_hint = Some(hint);
+                        }
                         body.insert(0, stmt(StmtKind::VarDecl {
                             declarations: std::mem::take(&mut self.generated_local_declarations),
                             kind: VarDeclKind::Let,
@@ -5251,58 +5957,67 @@ impl Walker {
                             self.var_types.remove(&param);
                         }
                     }
+                    let visible_global_names = scoped_var_types_before.keys()
+                        .filter(|binding| !self.current_param_names.contains(binding))
+                        .filter(|binding| !self.function_local_var_names.get(&name)
+                            .is_some_and(|locals| locals.contains(binding.as_str())))
+                        .cloned().collect::<HashSet<_>>();
                     let global_carray_ptr_vars_after_body = self
                         .carray_ptr_vars
                         .iter()
-                        .filter(|name| scoped_var_types_before.contains_key(*name))
+                        .filter(|name| visible_global_names.contains(*name))
                         .cloned()
                         .collect::<Vec<_>>();
+                    let global_hybrid_carray_ptr_vars_after_body = self
+                        .hybrid_carray_ptr_vars.iter()
+                        .filter(|name| visible_global_names.contains(*name))
+                        .cloned().collect::<Vec<_>>();
                     let global_byte_struct_pointer_vars_after_body = self
                         .byte_struct_pointer_vars
                         .iter()
-                        .filter(|(name, _)| scoped_var_types_before.contains_key(*name))
+                        .filter(|(name, _)| visible_global_names.contains(*name))
                         .map(|(name, pointee)| (name.clone(), pointee.clone()))
                         .collect::<Vec<_>>();
                     let global_direct_byte_struct_pointer_vars_after_body = self
                         .direct_byte_struct_pointer_vars
                         .iter()
-                        .filter(|name| scoped_var_types_before.contains_key(*name))
+                        .filter(|name| visible_global_names.contains(*name))
                         .cloned()
                         .collect::<Vec<_>>();
                     let global_byte_cast_pointer_vars_after_body = self
                         .byte_cast_pointer_vars
                         .iter()
-                        .filter(|(name, _)| scoped_var_types_before.contains_key(*name))
+                        .filter(|(name, _)| visible_global_names.contains(*name))
                         .map(|(name, width)| (name.clone(), *width))
                         .collect::<Vec<_>>();
                     let global_indexed_struct_pointer_tables_after_body = self
                         .indexed_struct_pointer_tables
                         .iter()
-                        .filter(|(name, _)| scoped_var_types_before.contains_key(*name))
+                        .filter(|(name, _)| visible_global_names.contains(*name))
                         .map(|(name, pointee)| (name.clone(), pointee.clone()))
                         .collect::<Vec<_>>();
                     let global_direct_object_pointer_vars_after_body = self
                         .direct_object_pointer_vars
                         .iter()
-                        .filter(|name| scoped_var_types_before.contains_key(*name))
+                        .filter(|name| visible_global_names.contains(*name))
                         .cloned()
                         .collect::<Vec<_>>();
                     let global_linear_struct_pointer_vars_after_body = self
                         .linear_struct_pointer_vars
                         .iter()
-                        .filter(|name| scoped_var_types_before.contains_key(*name))
+                        .filter(|name| visible_global_names.contains(*name))
                         .cloned()
                         .collect::<Vec<_>>();
                     let global_linear_pointer_vars_after_body = self
                         .linear_pointer_vars
                         .iter()
-                        .filter(|name| scoped_var_types_before.contains_key(*name))
+                        .filter(|name| visible_global_names.contains(*name))
                         .cloned()
                         .collect::<Vec<_>>();
                     let global_hybrid_linear_struct_pointer_vars_after_body = self
                         .hybrid_linear_struct_pointer_vars
                         .iter()
-                        .filter(|name| scoped_var_types_before.contains_key(*name))
+                        .filter(|name| visible_global_names.contains(*name))
                         .cloned()
                         .collect::<Vec<_>>();
                     self.char_string_values = scoped_char_string_values_before;
@@ -5315,6 +6030,8 @@ impl Walker {
                     self.byte_array_ptr_vars = scoped_byte_array_ptr_vars_before;
                     self.byte_cast_array_targets = byte_cast_array_targets_before.clone();
                     self.pointer_vars = scoped_pointer_vars_before;
+                    self.pointer_address_aliases = scoped_pointer_address_aliases_before;
+                    self.pointer_member_aliases = scoped_pointer_member_aliases_before;
                     self.carray_ptr_vars = scoped_carray_ptr_vars_before;
                     self.byte_struct_pointer_vars = scoped_byte_struct_pointer_vars_before;
                     self.direct_byte_struct_pointer_vars =
@@ -5335,6 +6052,7 @@ impl Walker {
                     for name in global_carray_ptr_vars_after_body {
                         self.carray_ptr_vars.insert(name);
                     }
+                    self.hybrid_carray_ptr_vars.extend(global_hybrid_carray_ptr_vars_after_body);
                     for (name, pointee) in global_byte_struct_pointer_vars_after_body {
                         self.byte_struct_pointer_vars.insert(name, pointee);
                     }
@@ -5384,66 +6102,36 @@ impl Walker {
                             );
                         }
                     }
-                    if name == "main" {
-                        self.function_return_types
-                            .insert("__c_stdout_has_buffered".to_string(), "int".to_string());
-                        let mut finally = previous_atexit_finalizers.clone();
-                        finally.extend(std::mem::take(&mut self.current_atexit_finalizers));
-                        let mut on_exit = std::mem::take(&mut self.current_on_exit_finalizers);
-                        finally.reverse();
-                        on_exit.reverse();
-                        on_exit.extend(finally);
-                        let mut final_body = Vec::new();
-                        if !on_exit.is_empty() {
-                            final_body.push(stmt(StmtKind::If {
-                                cond: expr(ExprKind::Binary {
-                                    op: BinOp::Eq,
-                                    left: Box::new(ident("__c_skip_atexit")),
-                                    right: Box::new(int_lit(0)),
-                                }),
-                                then_body: on_exit,
-                                elifs: Vec::new(),
-                                else_body: None,
-                            }));
+                    if self.prefix_only_gotos {
+                        // Earlier block/case walks retained raw labels. Only this
+                        // complete-function barrier may resolve their continuations.
+                        let mut reserved = HashSet::new();
+                        if crate::goto_lowering::contains_unprepared_control(&body, false) {
+                            reserved.extend(self.var_types.keys().cloned());
+                            reserved.extend(self.defined_function_names.iter().cloned());
+                            reserved.extend(params.iter().map(|parameter| parameter.name.clone()));
+                            if let Some(locals) = self.function_local_var_names.get(&name) {
+                                reserved.extend(locals.iter().cloned());
+                            }
                         }
-                        final_body.push(stmt(StmtKind::If {
-                            cond: expr(ExprKind::Binary {
-                                op: BinOp::And,
-                                left: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::Eq,
-                                    left: Box::new(ident("__c_skip_flush")),
-                                    right: Box::new(int_lit(0)),
-                                })),
-                                right: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::NotEq,
-                                    left: Box::new(call_expr(
-                                        ident("__c_stdout_has_buffered"),
-                                        Vec::new(),
-                                    )),
-                                    right: Box::new(int_lit(0)),
-                                })),
-                            }),
-                            then_body: vec![stmt(StmtKind::Expr(call_expr(
-                                ident("__c_stdout_append"),
-                                vec![str_lit("\n")],
-                            )))],
-                            elifs: Vec::new(),
-                            else_body: None,
-                        }));
-                        body = finalize_c_main_body(
-                            body,
-                            final_body,
-                            return_type.as_deref(),
-                            &mut self.tmp_counter,
-                        );
+                        match crate::goto_prefix_policy::prepare_owned(std::mem::take(&mut body), &reserved) {
+                            Ok(prepared) => body = prepared.body,
+                            Err(rejected) => {
+                                self.goto_preparation_errors.push(format!(
+                                    "C goto preparation in {name}: {} at {:?}",
+                                    rejected.error.reason, rejected.error.span));
+                                body = rejected.body;
+                            }
+                        }
+                    } else {
+                        body = lower_c_gotos(body);
                     }
-                    body = lower_c_gotos(body);
                     // setjmp.h: wrap the setjmp re-entry point (if any) so it
                     // "returns twice" via a longjmp-throw catch loop.
                     body = wrap_setjmp_in_block(body, &mut self.tmp_counter);
                     let param_renames = params
                         .iter()
-                        .filter(|param| file_scope_names_before.contains(&param.name))
+                        .filter(|param| shadowed_parameter_names.contains(&param.name))
                         .map(|param| {
                             (
                                 param.name.clone(),
@@ -5475,6 +6163,7 @@ impl Walker {
                 _ => {}
             }
         }
+        drop(anchored);
         if name.is_empty() {
             return None;
         }
@@ -5506,17 +6195,9 @@ impl Walker {
             }
         }
         self.current_param_names = previous_param_names;
-        if name == "main" {
-            self.current_atexit_finalizers = previous_atexit_finalizers;
-        } else {
-            let captured = std::mem::take(&mut self.current_atexit_finalizers);
-            self.current_atexit_finalizers = previous_atexit_finalizers;
-            self.current_atexit_finalizers.extend(captured);
-        }
-        self.current_quick_exit_finalizers = previous_quick_exit_finalizers;
-        self.current_on_exit_finalizers = previous_on_exit_finalizers;
-        // `main(int argc, char *argv[])` is auto-invoked with no args by the
-        // entry point; default its params from the guest argv after `vybex --`.
+        self.current_record_return_type = previous_record_return_type;
+        // Carry guest argv into entry normalization, which consumes these
+        // synthetic defaults to build an explicit call to main.
         if name == "main" {
             let guest_argv = c_guest_argv_values();
             for (idx, p) in params.iter_mut().enumerate() {
@@ -5535,20 +6216,61 @@ impl Walker {
         let emitted_return_type = return_type
             .clone()
             .filter(|type_name| !type_name.contains('*'));
-        Some(stmt(StmtKind::FunctionDecl {
-            name,
-            params: emitted_params,
-            return_type: emitted_return_type,
-            body,
-            modifiers: Modifiers::default(),
-            handles: Vec::new(),
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        }))
+        // The switch closes only into an ordinary narrow function result.
+        // A narrow literal in a wide-returning function is not a narrow ABI.
+        if emitted_return_type.as_ref().is_some_and(|ty| {
+            self.type_access(ty) == StorageAccess::Ordinary
+                && self.is_integral_type_text(ty)
+                && matches!(self.sizeof_type_text(ty), 1..=4)
+        }) {
+            for statement in &mut body {
+                crate::normalize_exact_word_regions::normalize_record_switch(
+                    statement, |value| self.promote_exact_record_selector(value),
+                );
+            }
+        }
+        crate::normalize_exact_word_regions::normalize(
+            &emitted_params,
+            emitted_return_type.as_deref(),
+            &mut body,
+            |source_type| {
+                let resolved = self.resolve_typedef_scalar_aliases(source_type);
+                if self.type_access(source_type) != StorageAccess::Ordinary
+                    || resolved.contains(['*', '[', '(', ')'])
+                    || !(self.is_integral_type_text(&resolved)
+                        || matches!(resolved.trim(), "char" | "signed char" | "unsigned char"))
+                {
+                    return None;
+                }
+                let bits = self.sizeof_type_text(&resolved).checked_mul(8)?;
+                let unsigned = resolved.contains("unsigned") || resolved.contains("uint")
+                    || matches!(resolved.trim(), "char" | "size_t");
+                // Only emitted narrowing casts with established profile widths
+                // may close this region. Unknown types retain existing lowering.
+                let cast = match (bits, unsigned) {
+                    (8, true) => "uint8",
+                    (16, false) => "int16",
+                    (32, false) => "int",
+                    (32, true) => "uint32",
+                    (64, false) => "int64",
+                    (64, true) => "uint64",
+                    _ => return None,
+                };
+                Some(crate::normalize_exact_word_regions::IntegerType {
+                    bits: bits as u8,
+                    cast: cast.into(),
+                })
+            },
+        );
+        Some(if let Some(region) = region {
+            crate::frontend::record_direct_function_handoff();
+            region.finish(name, emitted_params, emitted_return_type, body)
+        } else { construct_function_declaration(name, emitted_params, emitted_return_type, body) })
     }
 
     fn declarator_name_and_params(&mut self, pair: Pair<Rule>) -> (String, Option<Vec<Param>>) {
+        #[cfg(test)]
+        field_type_tests::PREDECLARATOR_DECODES.with(|count| count.set(count.get() + 1));
         // declarator = pointer? ~ direct_declarator
         let mut name = String::new();
         let mut params = None;
@@ -5621,17 +6343,48 @@ impl Walker {
                 for decl in p.into_inner() {
                     if decl.as_rule() == Rule::parameter_decl {
                         let decl_text = decl.as_str().to_string();
+                        let direct = true;
+                        #[cfg(test)]
+                        let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_PARAMETERS.with(|flag| flag.get());
+                        let mut prepared_type_hint = None;
+                        if direct && let Some(mut receipt) = crate::frontend::take_plain_parameter(&decl) {
+                            let spelling = self.type_text(receipt.specifiers);
+                            let resolved = self.resolve_typedef_scalar_aliases(&spelling);
+                            let key = normalized_c_type_name(&spelling);
+                            let scalar = !resolved.contains(['*', '['])
+                                && !self.typedef_pointer_aliases.contains(&key)
+                                && !self.typedef_array_aliases.contains(&key)
+                                && !self.typedef_function_aliases.contains(&key)
+                                && !self.typedef_function_pointer_aliases.contains(&key)
+                                && (self.is_integral_type_text(&spelling)
+                                    || matches!(normalized_c_type_name(&resolved).as_str(),
+                                        "float" | "double" | "long double"));
+                            if scalar {
+                                let mut hint = TypeHint::from(spelling);
+                                hint.access = Some(self.type_access(&decl_text));
+                                receipt.parameter.type_hint = Some(hint);
+                                params.push(receipt.parameter);
+                                crate::frontend::record_direct_parameter_handoff();
+                                continue;
+                            }
+                            // Type-specifier policy may register metadata. A
+                            // rejected syntax receipt must not execute it twice.
+                            prepared_type_hint = Some(spelling);
+                        }
                         let mut pname = String::new();
                         let mut type_hint = None;
                         let mut param_bounds: Option<Vec<Expression>> = None;
                         let mut is_array_param_decl = decl_text.contains('[');
+                        let mut pointer_before_array = false;
                         let mut is_pointer_decl = is_array_param_decl;
                         let is_function_pointer_decl =
                             decl_text.contains("(*") && decl_text.contains(")(");
                         for d in decl.into_inner() {
                             match d.as_rule() {
-                                Rule::declaration_specifiers => type_hint = Some(self.type_text(d)),
+                                Rule::declaration_specifiers => type_hint = Some(
+                                    prepared_type_hint.take().unwrap_or_else(|| self.type_text(d))),
                                 Rule::declarator => {
+                                    pointer_before_array = declarator_binds_pointer_before_array(&d);
                                     is_pointer_decl = is_pointer_decl || declarator_has_pointer(&d);
                                     pname = self.declarator_name_and_params(d.clone()).0;
                                     let (bound_name, bounds) = self.declarator_name_and_bounds(d.clone());
@@ -5695,34 +6448,48 @@ impl Walker {
                                 let existing = hint.matches('*').count();
                                 let declared = declared_pointer_depth
                                     .max(decl_text.matches('*').count())
-                                    .max(1);
+                                    + usize::from(is_array_param_decl && !pointer_before_array);
+                                let declared = declared.max(1);
                                 for _ in existing..declared {
                                     hint.push_str(" *");
                                 }
-                                if is_array_param_decl && !hint.contains(ARRAY_PARAM_MARKER) {
+                                if is_array_param_decl && !pointer_before_array
+                                    && !hint.contains(ARRAY_PARAM_MARKER) {
                                     hint.push(' ');
                                     hint.push_str(ARRAY_PARAM_MARKER);
                                 }
                                 if let Some(bounds) = &param_bounds {
+                                    if pointer_before_array {
+                                        *hint = c_type_remove_one_pointer_level(hint);
+                                    }
                                     for bound in bounds {
                                         hint.push('[');
                                         hint.push_str(&expr_to_c_metadata_text(bound));
                                         hint.push(']');
                                     }
+                                    if pointer_before_array {
+                                        hint.push_str(" *");
+                                    }
                                 }
                             }
                         }
+                        // A scalar callback typedef must reach shared call lowering
+                        // as a callable hint; pointer slots and arrays keep their ABI.
+                        if !is_pointer_decl
+                            && let Some(return_type) = type_hint.as_deref().and_then(|hint|
+                                self.typedef_function_return_types.get(&normalized_c_type_name(hint)))
+                        {
+                            type_hint = Some(format!("func() -> {}",
+                                self.resolve_typedef_scalar_aliases(return_type)));
+                        }
                         if !pname.is_empty() {
-                            params.push(Param {
-                                name: pname,
-                                type_hint: type_hint.map(Into::into),
-                                default: None,
-                                pass_by: PassBy::Value,
-                                is_rest: false,
-                                is_kwargs: false,
-                                is_optional: false,
-                                is_nullable: false,
-                            });
+                            let mut parameter = construct_plain_parameter(pname);
+                            parameter.type_hint = type_hint.map(|spelling| {
+                                    let mut hint = TypeHint::from(spelling);
+                                    hint.access = Some(self.type_access(&decl_text));
+                                    hint
+                                });
+                            params.push(parameter);
                         }
                     }
                 }
@@ -5817,6 +6584,7 @@ impl Walker {
     }
 
     fn walk_typedef(&mut self, pair: Pair<Rule>, out: &mut Vec<Statement>) {
+        let access = self.type_access(pair.as_str());
         // typedef declaration_specifiers declarator (, declarator)* ;
         let mut specs = None;
         let mut names: Vec<(String, Option<Vec<Expression>>)> = Vec::new();
@@ -5858,6 +6626,7 @@ impl Walker {
             }
         }
         if let Some(ref specs) = specs {
+            for (name, _) in &names { self.preserve_typedef_access(name, access); }
             let specs_define_aggregate = self.struct_def_from_specifiers(specs).is_some()
                 || self.enum_def_from_specifiers(specs).is_some();
             let specs_text = self.type_text(specs.clone());
@@ -6035,10 +6804,7 @@ impl Walker {
                 }
                 let mut next_val: i64 = 0;
                 for member in &members {
-                    let val = member
-                        .value
-                        .as_ref()
-                        .and_then(|e| self.eval_int_expr(e))
+                    let val = member.value.as_ref().and_then(|e| self.eval_int_expr(e))
                         .unwrap_or_else(|| extract_enum_val(&member.value, next_val));
                     self.enum_constants.insert(member.name.clone(), val);
                     out.push(stmt(StmtKind::VarDecl {
@@ -6142,10 +6908,7 @@ impl Walker {
             // Auto-increment value starting from 0, incremented per member.
             let mut next_val: i64 = 0;
             for member in &members {
-                let val = member
-                    .value
-                    .as_ref()
-                    .and_then(|e| self.eval_int_expr(e))
+                let val = member.value.as_ref().and_then(|e| self.eval_int_expr(e))
                     .unwrap_or_else(|| extract_enum_val(&member.value, next_val));
                 self.enum_constants.insert(member.name.clone(), val);
                 out.push(stmt(StmtKind::VarDecl {
@@ -6201,10 +6964,17 @@ impl Walker {
             if idecl.as_rule() != Rule::init_declarator {
                 continue;
             }
+            let direct = true;
+            #[cfg(test)]
+            let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_DECLARATORS.with(|flag| flag.get());
+            let direct_receipt = direct.then(|| crate::frontend::take_plain_declarator(&idecl)).flatten();
+            let direct_initializer = direct_receipt.is_some();
+            let owned_receipt = direct_receipt.or_else(|| crate::frontend::take_scalar_declarator(&idecl));
             let declarator_text = idecl.as_str().split('=').next().unwrap_or("").to_string();
             let mut name = String::new();
             let mut array_bounds: Option<Vec<Expression>> = None;
             let mut declared_array_bounds: Option<Vec<Expression>> = None;
+            let mut pointer_before_array = false;
             let mut init = None;
             let mut exact_unsigned_init = None;
             let mut is_pointer_decl = false;
@@ -6218,8 +6988,62 @@ impl Walker {
                 .get(&normalized_c_type_name(&type_text))
                 .cloned();
             let mut was_array_decl = typedef_array_bounds.is_some();
-            for p in idecl.clone().into_inner() {
+            let bypass_declarator_scan = owned_receipt.as_ref().is_some_and(|_| {
+                let scalar_type = self.resolve_typedef_scalar_aliases(&type_text);
+                let type_key = normalized_c_type_name(&type_text);
+                crate::frontend::plain_declarator_scan_enabled()
+                && struct_fields.is_none()
+                && typedef_array_bounds.is_none()
+                && !scalar_type.contains(['*', '['])
+                && !self.typedef_pointer_aliases.contains(&type_key)
+                && !self.typedef_array_aliases.contains(&type_key)
+                && !self.typedef_function_aliases.contains(&type_key)
+                && !self.typedef_function_pointer_aliases.contains(&type_key)
+                && (self.is_integral_type_text(&type_text)
+                    || matches!(normalized_c_type_name(&scalar_type).as_str(),
+                        "float" | "double" | "long double"))
+            });
+            // Raw declarations carry syntax, not permission to change backing.
+            // Rejected type policies keep the complete captured lowering path.
+            let owned_receipt = if direct_initializer && !bypass_declarator_scan {
+                None
+            } else {
+                owned_receipt
+            };
+            let direct_initializer = direct_initializer && bypass_declarator_scan;
+            if direct_initializer {
+                crate::frontend::record_direct_declaration_handoff();
+            }
+            let owned_initializer_text = if bypass_declarator_scan {
+                owned_receipt.as_ref().and_then(|receipt| receipt.syntax.initializer)
+                    .map(|span| &idecl.as_span().get_input()[span.start..span.end])
+            } else {
+                None
+            };
+            let mut owned_declarator = owned_receipt.map(|receipt| receipt.declaration);
+            crate::frontend::record_declarator_scan(bypass_declarator_scan);
+            if bypass_declarator_scan {
+                let declaration = owned_declarator.as_mut().unwrap();
+                let BindingPattern::Ident(binding) = std::mem::replace(&mut declaration.pattern,
+                    BindingPattern::Ident(String::new())) else { unreachable!() };
+                if !type_text.split_whitespace().any(|word| word == "extern") {
+                    self.register_local_binding(&binding);
+                }
+                self.var_types.insert(binding.clone(), type_text.clone());
+                if let Some(scope) = self.block_call_bindings.last_mut() {
+                    scope.insert(binding.clone());
+                } else if self.current_function.is_empty() {
+                    self.global_call_bindings.insert(binding.clone());
+                }
+                name = binding;
+            }
+            // A committed plain-name receipt proves the declarator has no
+            // pointer, bounds or parameter syntax. Other items retain both scans.
+            for p in (!bypass_declarator_scan).then(|| idecl.clone().into_inner())
+                .into_iter().flatten()
+            {
                 if p.as_rule() == Rule::declarator {
+                    pointer_before_array = declarator_binds_pointer_before_array(&p);
                     parsed_pointer_depth = declarator_pointer_depth(&p);
                     is_pointer_decl = is_pointer_decl || declarator_has_pointer(&p);
                     if declarator_text.contains('[') {
@@ -6231,7 +7055,13 @@ impl Walker {
                     {
                         is_pointer_decl = true;
                     }
-                    let (n, bounds) = self.declarator_name_and_bounds(p);
+                    let (n, bounds) = if let Some(declaration) = owned_declarator.as_mut() {
+                        let BindingPattern::Ident(name) = std::mem::replace(&mut declaration.pattern,
+                            BindingPattern::Ident(String::new())) else { unreachable!() };
+                        (name, None)
+                    } else {
+                        self.declarator_name_and_bounds(p)
+                    };
                     if !n.is_empty() {
                         if !type_text.split_whitespace().any(|word| word == "extern") {
                             self.register_local_binding(&n);
@@ -6253,9 +7083,26 @@ impl Walker {
                     }
                 }
             }
-            for p in idecl.into_inner() {
-                match p.as_rule() {
+            // Existing type consumers represent a pointer to a whole row with
+            // the pointer after its bounds. Keep VLA declarations on their
+            // existing captured-runtime-shape path.
+            let fixed_pointer_array_type = if pointer_before_array && parsed_pointer_depth == 1 {
+                declared_array_bounds.as_ref().and_then(|bounds| {
+                    let dimensions = bounds.iter().map(|bound| self.eval_int_expr(bound))
+                        .collect::<Option<Vec<_>>>()?;
+                    if dimensions.is_empty() || dimensions.iter().any(|n| *n <= 0) { return None; }
+                    let mut row = c_type_without_storage(&type_text);
+                    for dimension in dimensions { row.push_str(&format!("[{dimension}]")); }
+                    Some(format!("{row} *"))
+                })
+            } else { None };
+            let captured_parts = (!bypass_declarator_scan).then(|| idecl.into_inner());
+            for captured in captured_parts.into_iter().flatten().map(Some)
+                .chain(owned_initializer_text.map(|_| None))
+            {
+                match captured.as_ref().map_or(Rule::initializer, |p| p.as_rule()) {
                     Rule::declarator => {
+                        let p = captured.unwrap();
                         is_pointer_decl = is_pointer_decl || declarator_has_pointer(&p);
                         if declarator_text.contains('[') {
                             was_array_decl = true;
@@ -6266,17 +7113,8 @@ impl Walker {
                         {
                             is_pointer_decl = true;
                         }
-                        // Detect function-pointer or prototype declarator: has
-                        // param_suffix. A PROTOTYPE has parens but never the
-                        // `(*name)` shape — checking "starts with *" instead
-                        // misclassified `void f(struct St *s);` (the params'
-                        // `*` made it a pointer decl, skipping the skip, so a
-                        // null `var f` clobbered the real function: "null is
-                        // not callable" on every cross-TU call through a
-                        // header prototype) and `int *g(void);` (pointer
-                        // RETURN read as non-proto).
-                        is_function_proto = Self::declarator_has_param_suffix(&p)
-                            && !p.as_str().contains("(*");
+                        // Classify the declared binding, not callback parameters.
+                        is_function_proto = declarator_declares_function(&p);
                         if self
                             .typedef_function_aliases
                             .contains(&normalized_c_type_name(&type_text))
@@ -6297,8 +7135,13 @@ impl Walker {
                         {
                             is_function_pointer_decl = true;
                         }
-                        let (n, bounds) = self.declarator_name_and_bounds(p);
-                        name = n;
+                        let bounds = if owned_declarator.is_some() {
+                            None
+                        } else {
+                            let (n, bounds) = self.declarator_name_and_bounds(p);
+                            name = n;
+                            bounds
+                        };
                         array_bounds = bounds;
                         if let Some(alias_bounds) = &typedef_array_bounds {
                             array_bounds
@@ -6312,7 +7155,16 @@ impl Walker {
                         if array_bounds.is_some() {
                             was_array_decl = true;
                         }
+                        if fixed_pointer_array_type.is_some() {
+                            was_array_decl = false;
+                            array_bounds = None;
+                        }
                         if !name.is_empty() && !is_function_proto {
+                            if let Some(scope) = self.block_call_bindings.last_mut() {
+                                scope.insert(name.clone());
+                            } else if self.current_function.is_empty() {
+                                self.global_call_bindings.insert(name.clone());
+                            }
                             let mut declared_type = type_text.clone();
                             if is_pointer_decl && !is_function_pointer_decl {
                                 let depth = parsed_pointer_depth.max(1);
@@ -6321,17 +7173,24 @@ impl Walker {
                                 }
                                 self.pointer_vars.insert(name.clone());
                             }
-                            self.var_types.insert(name.clone(), declared_type);
+                            self.var_types.insert(name.clone(),
+                                fixed_pointer_array_type.clone().unwrap_or(declared_type));
                         }
                         if was_array_decl && !is_pointer_decl && type_text.contains("char") {
                             self.char_array_vars.insert(name.clone());
                         }
                     }
                     Rule::initializer => {
+                        let initializer_text = captured.as_ref().map(|p| p.as_str())
+                            .or(owned_initializer_text).expect("initializer source");
                         // Check before walking if init is address-of (&x) form
-                        init_is_addr_of = p.as_str().trim().starts_with('&');
-                        exact_unsigned_init = exact_unsigned_literal_text(p.as_str());
-                        let mut raw = self.walk_initializer(p);
+                        init_is_addr_of = initializer_text.trim().starts_with('&');
+                        exact_unsigned_init = exact_unsigned_literal_text(initializer_text);
+                        let mut raw = owned_declarator.as_mut().and_then(|d| d.init.take())
+                            .unwrap_or_else(|| self.walk_initializer(captured.expect("fallback initializer capture")));
+                        if direct_initializer {
+                            raw = self.normalize_direct_syntax(raw);
+                        }
                         if array_bounds.is_none()
                             && struct_fields.is_none()
                             && !is_pointer_decl
@@ -6505,17 +7364,24 @@ impl Walker {
                     type_name,
                 }) = init.as_ref().map(|value| &value.kind)
                 {
-                    if let ExprKind::Ident(source_name) = &source.kind {
-                        let pointee = type_name.trim_end_matches('*').trim();
-                        let width = self.sizeof_type_text(pointee);
-                        if matches!(width, 2 | 4)
-                            && c_int_family_type(pointee)
-                            && self.carray_ptr_vars.contains(source_name)
-                            && self.is_char_pointer_type_var(source_name)
-                        {
-                            self.byte_cast_pointer_vars.insert(name.clone(), width);
-                            init = Some(*source.clone());
-                        }
+                    let pointee = type_name.trim_end_matches('*').trim();
+                    let width = self.sizeof_type_text(pointee);
+                    let byte_source = matches!(&source.kind, ExprKind::Ident(source_name)
+                        if self.carray_ptr_vars.contains(source_name)
+                            && self.is_char_pointer_type_var(source_name))
+                        || self.c_expr_type_text(source).is_some_and(|source_type| {
+                            let resolved = self.resolve_typedef_scalar_aliases(&source_type);
+                            let element = resolved.split('[').next().unwrap_or(&resolved)
+                                .trim_end_matches('*').trim();
+                            (resolved.contains('[') || resolved.contains('*'))
+                                && (normalized_c_type_name(element) == "char"
+                                    || c_int_family_type(element))
+                                && self.sizeof_type_text(element) == 1
+                        });
+                    if matches!(width, 2 | 4) && c_int_family_type(pointee) && byte_source {
+                        self.byte_cast_pointer_vars.insert(name.clone(), width);
+                        init = Some(self.copy_carray_pointer_value(*source.clone()));
+                        self.carray_ptr_vars.insert(name.clone());
                     }
                 }
             }
@@ -6562,7 +7428,13 @@ impl Walker {
                     }
                 } else if (is_pointer_decl || was_array_decl) && !is_function_pointer_decl {
                     let mut metadata_type = c_type_without_storage(&type_text);
-                    let metadata_pointer_depth = if is_pointer_decl {
+                    let metadata_pointer_depth = if self.typedef_function_pointer_aliases
+                        .contains(&normalized_type_text)
+                    {
+                        // A callback typedef already owns its function-pointer
+                        // level; only declarator stars add another indirection.
+                        declarator_pointer_depth
+                    } else if is_pointer_decl {
                         declarator_pointer_depth.max(1)
                     } else {
                         0
@@ -6581,9 +7453,22 @@ impl Walker {
                     } else if was_array_decl {
                         metadata_type.push_str("[]");
                     }
+                    if let Some(complete_type) = self.linear_static_array_types.get(&name) {
+                        metadata_type = complete_type.clone();
+                    }
+                    if let Some(row_pointer) = &fixed_pointer_array_type {
+                        metadata_type = row_pointer.clone();
+                    }
+                    let record_pointee =
+                        self.c_struct_pointer_pointee_from_type_text(&metadata_type);
                     self.var_types.insert(name.clone(), metadata_type);
                     if was_array_decl {
-                        self.array_ptr_vars.insert(name.clone());
+                        if self.linear_static_arrays.contains_key(&name) {
+                            self.linear_pointer_vars.insert(name.clone());
+                            self.array_ptr_vars.remove(&name);
+                        } else {
+                            self.array_ptr_vars.insert(name.clone());
+                        }
                     }
                     let type_is_char_pointer_alias = self
                         .typedef_char_pointer_aliases
@@ -6599,18 +7484,23 @@ impl Walker {
                     {
                         self.char_pointers.insert(name.clone());
                     } else if !was_array_decl {
-                        self.carray_ptr_vars.insert(name.clone());
+                        if let Some(pointee) = record_pointee {
+                            // An external declaration specifies the pointee,
+                            // not whether its eventual backing is linear.
+                            self.byte_struct_pointer_vars.insert(name.clone(), pointee);
+                            self.hybrid_linear_struct_pointer_vars.insert(name.clone());
+                            self.carray_ptr_vars.remove(&name);
+                            self.direct_object_pointer_vars.remove(&name);
+                        } else {
+                            self.carray_ptr_vars.insert(name.clone());
+                        }
                     }
                 } else {
                     self.var_types.insert(name.clone(), c_type_without_storage(&type_text));
                 }
                 continue;
             }
-            // Skip function prototypes: `int foo(int x);` has no init and is
-            // a function-like declarator. Emitting `var foo;` would shadow the
-            // actual function definition. (Function-POINTER variables are
-            // excluded above by their `(*name)` shape, so no is_pointer_decl
-            // guard — the params' own `*`s must not defeat the skip.)
+            // Prototypes declare callable bindings, not uninitialized variables.
             if is_function_proto && init.is_none() {
                 // An explicit prototype IS a declaration — C's alternative to
                 // the header, and clang accepts it. Record it as a
@@ -6630,6 +7520,21 @@ impl Walker {
                     }
                 }
                 continue;
+            }
+            // Predeclared data objects already have a proved, fixed extent.
+            // Do not recapture an enum spelling as a VLA or compute its size
+            // from `.length`: the storage value is now a numeric address.
+            if self.current_function.is_empty() && was_array_decl && !is_pointer_decl {
+                if let Some(array_type) = self.linear_static_array_types.get(&name) {
+                    let (_, count, has_bounds) = split_array_type_text(array_type);
+                    if has_bounds && count > 0 {
+                        let bounds = vec![int_lit(count)];
+                        declared_array_bounds = Some(bounds.clone());
+                        if array_bounds.is_some() {
+                            array_bounds = Some(bounds);
+                        }
+                    }
+                }
             }
             let mut captured_vla_bounds: Option<Vec<Expression>> = None;
             if was_array_decl {
@@ -6687,23 +7592,37 @@ impl Walker {
                 }
             }
             let mut fixed_byte_array_storage = false;
-            // String-initialized C arrays own bytes, including any terminator
-            // and padding that fit their declared bound.
+            if is_pointer_decl && matches!(init.as_ref().map(|value| &value.kind),
+                Some(ExprKind::Lit(Literal::Bytes(_)))) {
+                self.array_ptr_vars.insert(name.clone());
+                self.byte_array_ptr_vars.insert(name.clone());
+            }
+            // One-dimensional character arrays own bytes regardless of whether
+            // their initializer is a string literal or a numeric list.
             if was_array_decl
                 && !is_pointer_decl
                 && !is_function_pointer_decl
                 && normalized_c_type_name(&type_text) == "char"
                 && declared_array_bounds.as_ref().is_none_or(|bounds| bounds.len() == 1)
-                && let Some(ExprKind::Lit(Literal::Str(text))) =
-                    init.as_ref().map(|value| &value.kind)
+                && let Some(mut bytes) = init.as_ref().and_then(|value| match &value.kind {
+                    ExprKind::Lit(Literal::Str(text)) => Some(text.as_bytes().iter()
+                        .copied().chain(std::iter::once(0)).collect::<Vec<_>>()),
+                    ExprKind::Lit(Literal::Bytes(bytes)) => Some(bytes.clone()),
+                    ExprKind::Array(elements) => elements.iter().map(|element| {
+                        match &element.value.kind {
+                            ExprKind::Lit(Literal::Int(value)) => Some(*value as u8),
+                            _ => None,
+                        }
+                    }).collect::<Option<Vec<_>>>(),
+                    _ => None,
+                })
             {
-                let mut bytes = text.as_bytes().to_vec();
                 let count = declared_array_bounds.as_ref()
                     .and_then(|bounds| bounds.first())
                     .and_then(|bound| self.eval_int_expr(bound))
                     .filter(|count| *count > 0)
                     .map(|count| count as usize)
-                    .unwrap_or(bytes.len() + 1);
+                    .unwrap_or(bytes.len());
                 bytes.resize(count, 0);
                 init = Some(expr(ExprKind::Array(bytes.into_iter().map(|byte| ArrayElement {
                     value: int_lit(byte as i64),
@@ -6746,10 +7665,7 @@ impl Walker {
                 if let Some(bounds) = declared_array_bounds.as_ref() {
                     if bounds.len() > 1 {
                         if let Some(json) = self.zero_nd_json_for_bounds(bounds) {
-                            init = Some(call_expr(
-                                ident("__c_static_json_value"),
-                                vec![str_lit(&json)],
-                            ));
+                            init = Some(c_static_json_initializer(&json));
                             array_bounds = None;
                         }
                     }
@@ -6858,7 +7774,9 @@ impl Walker {
                     .map(|n| self.char_array_vars.contains(&n))
                     .unwrap_or(false);
             let init_is_array_backed_pointer =
-                is_pointer_decl && self.pointer_init_looks_array_backed(init.as_ref());
+                is_pointer_decl && (self.pointer_init_looks_array_backed(init.as_ref())
+                    || matches!(init.as_ref().map(|value| &value.kind),
+                        Some(ExprKind::Lit(Literal::Bytes(_)))));
             if (type_text.contains("char") || type_is_char_pointer_alias)
                 && !is_wide_char_pointer_family
                 && !init_is_member
@@ -7074,6 +7992,10 @@ impl Walker {
                         }
                     } else if init_is_allocation
                         && ((is_byte_pointer_type && !is_multi_level_pointer_decl)
+                            || (!is_multi_level_pointer_decl
+                                && matches!(element_size, 2 | 4)
+                                && self.is_integral_type_text(
+                                    &self.resolve_typedef_scalar_aliases(&type_text).replace('*', "")))
                             || self
                                 .linear_pointer_return_functions
                                 .contains(&self.current_function))
@@ -7222,7 +8144,17 @@ impl Walker {
                             // int *p = arr / malloc(n) → wrap as carray
                             self.carray_ptr_vars.insert(name.clone());
                             if let Some(ref raw_init) = init {
-                                init = Some(self.wrap_as_carray_init(raw_init.clone()));
+                                let mut pointer = self.wrap_as_carray_init(raw_init.clone());
+                                if normalized_type_text == "void"
+                                    && memory::is_heap_allocation(raw_init)
+                                    && let ExprKind::Object(properties) = &mut pointer.kind
+                                {
+                                    properties.push(ObjectProperty::KeyValue {
+                                        key: str_lit("__byte_backed"),
+                                        value: expr(ExprKind::Lit(Literal::Bool(true))),
+                                    });
+                                }
+                                init = Some(pointer);
                             }
                             self.direct_object_pointer_vars.remove(&name);
                         } else if self.init_is_pointer_return_call(init.as_ref()) {
@@ -7352,7 +8284,16 @@ impl Walker {
                     // `m[i][j] = v` writes stick. (1-D arrays are allocated by the
                     // compiler from array_bounds metadata, so leave those alone.)
                     if let Some(bounds) = &array_bounds {
-                        if bounds.len() >= 2 && (!is_char_array_storage_type || is_multidim_char_array) {
+                        if is_multidim_char_array {
+                            let bytes = bounds.iter().cloned().fold(int_lit(1), |size, bound| {
+                                binary_expr(BinOp::Integer(vybe_ast::IntOp::Mul,
+                                    vybe_ast::BitLane::W32), size, bound)
+                            });
+                            init = Some(call_expr(ident("__c_ptr_linear_alloc"), vec![bytes]));
+                            array_bounds = None;
+                            self.linear_pointer_vars.insert(name.clone());
+                            self.uses_linear_memory_heap = true;
+                        } else if bounds.len() >= 2 && !is_char_array_storage_type {
                             if let Some(zero) = zero_nd_array(
                                 &self
                                     .evaluable_bounds(bounds)
@@ -7462,6 +8403,18 @@ impl Walker {
                             )));
                         }
                     }
+                }
+            }
+            if self.current_function.is_empty() && was_array_decl && !is_pointer_decl {
+                if let Some(offset) = self.linear_static_arrays.get(&name).copied() {
+                    init = Some(int_lit(i64::from(offset)));
+                    array_bounds = None;
+                    self.linear_pointer_vars.insert(name.clone());
+                    self.carray_ptr_vars.remove(&name);
+                    self.array_ptr_vars.remove(&name);
+                    self.byte_array_ptr_vars.remove(&name);
+                    self.char_pointers.remove(&name);
+                    self.uses_linear_memory_heap = true;
                 }
             }
             let is_char_type = is_char_array_storage_type;
@@ -7699,6 +8652,31 @@ impl Walker {
                 } else {
                     None
                 };
+            if was_array_decl && !is_pointer_decl && !is_function_pointer_decl
+                && struct_fields.is_some()
+                && declared_array_bounds.as_ref().is_none_or(|bounds| bounds.len() == 1)
+                && let Some(initializer) = init.as_ref()
+                && let Some(count) = declared_array_bounds.as_ref()
+                    .and_then(|bounds| bounds.first())
+                    .and_then(|bound| self.eval_int_expr(bound))
+                    .or(unsized_static_array_len)
+                && let Some(storage) = self.initialized_linear_record_array(
+                    &type_text, count, initializer,
+                )
+            {
+                init = Some(storage);
+                array_bounds = None;
+                emitted_type_hint = "int".into();
+                let record = self.aggregate_layout_tag(&type_text).unwrap();
+                self.linear_pointer_vars.insert(name.clone());
+                self.linear_struct_pointer_vars.insert(name.clone());
+                self.byte_struct_pointer_vars.insert(name.clone(), record);
+                self.direct_byte_struct_pointer_vars.insert(name.clone());
+                self.array_ptr_vars.remove(&name);
+                self.carray_ptr_vars.remove(&name);
+                self.direct_object_pointer_vars.remove(&name);
+                self.uses_linear_memory_heap = true;
+            }
             if !self.current_function.is_empty()
                 && !is_static_local
                 && was_array_decl
@@ -7764,7 +8742,11 @@ impl Walker {
             }
             let mut metadata_type = type_text.clone();
             if is_pointer_decl && !is_function_pointer_decl {
-                let metadata_pointer_depth = declarator_pointer_depth.max(1);
+                let metadata_pointer_depth = if self.typedef_function_pointer_aliases
+                    .contains(&normalized_type_text)
+                {
+                    declarator_pointer_depth
+                } else { declarator_pointer_depth.max(1) };
                 while metadata_type.matches('*').count() < metadata_pointer_depth {
                     metadata_type.push('*');
                 }
@@ -7785,6 +8767,9 @@ impl Walker {
                 }
             }
             // Record the type for sizeof resolution
+            if let Some(row_pointer) = &fixed_pointer_array_type {
+                metadata_type = row_pointer.clone();
+            }
             self.var_types.insert(name.clone(), metadata_type.clone());
             if normalized_c_type_name(&type_text) == "tm"
                 && !is_pointer_decl
@@ -7922,12 +8907,7 @@ impl Walker {
                     sizeof_from_type_text(&type_text)
                 }
             } else {
-                let su = self.sizeof_struct_union(&type_text);
-                if su > 0 {
-                    su
-                } else {
-                    sizeof_from_type_text(&type_text)
-                }
+                self.sizeof_type_text(&type_text)
             };
             self.var_sizes.insert(name.clone(), sz);
             if was_array_decl {
@@ -7997,7 +8977,9 @@ impl Walker {
             // Multidimensional char buffers are row-addressable storage too:
             // `char b[4][1024]; char *p = b[i];` must decay the selected row
             // to the shared carray pointer shape, not to the 1-D string path.
-            if was_array_decl && (!is_char_type || is_pointer_decl || is_multidim_char_array) {
+            if was_array_decl && (!is_char_type || is_pointer_decl || is_multidim_char_array)
+                && !self.linear_pointer_vars.contains(&name)
+            {
                 self.array_ptr_vars.insert(name.clone());
             }
             // A static local is `VarDeclKind::Static` — the shared compiler
@@ -8013,7 +8995,9 @@ impl Walker {
                 if struct_fields.is_some() && !was_array_decl && !is_pointer_decl {
                     self.record_static_function_pointer_member_initializer(&name, init.as_ref());
                 }
-                let type_hint = if self.linear_pointer_vars.contains(&name) {
+                let type_hint = if self.linear_pointer_vars.contains(&name) && is_pointer_decl {
+                    Some(TypeHint::descriptive(metadata_type.clone()))
+                } else if self.linear_pointer_vars.contains(&name) {
                     Some("int".into())
                 } else if !is_function_pointer_decl
                     && (is_pointer_decl
@@ -8032,6 +9016,7 @@ impl Walker {
                         emitted_type_hint.clone().into()
                     })
                 };
+                let type_hint = Some(self.storage_access_hint(type_hint, &format!("{} {declarator_text}", specs.as_str())));
                 declarations.push(VarDeclarator {
                     pattern: BindingPattern::Ident(name.clone()),
                     type_hint,
@@ -8142,6 +9127,16 @@ impl Walker {
             } else {
                 None
             };
+            let erased_first_member_init = is_pointer_decl && !was_array_decl
+                && !is_function_pointer_decl
+                && struct_pointer_pointee.as_ref().is_some_and(|pointee| {
+                    init.as_ref().is_some_and(|value|
+                        self.erased_first_member_recovery_needed(value, pointee))
+                });
+            if erased_first_member_init {
+                let pointee = struct_pointer_pointee.as_ref().unwrap();
+                init = init.map(|value| self.guarded_erased_first_member_value(value, pointee));
+            }
             // A compatibility fallback in the initializer does not prove that
             // the selected pointer has managed backing.
             let hybrid_struct_pointer_init = is_pointer_decl
@@ -8259,6 +9254,7 @@ impl Walker {
                 && !is_file_pointer_type
                 && !self.carray_ptr_vars.contains(&emit_name)
                 && !self.linear_pointer_vars.contains(&emit_name)
+                && !self.hybrid_linear_struct_pointer_vars.contains(&emit_name)
                 && !self.byte_array_ptr_vars.contains(&emit_name)
                 && !self.char_pointers.contains(&emit_name)
                 && self
@@ -8269,7 +9265,7 @@ impl Walker {
                 self.byte_struct_pointer_vars.remove(&emit_name);
                 self.direct_byte_struct_pointer_vars.remove(&emit_name);
             }
-            let first_member_recovery_init = init.as_ref().is_some_and(|value| {
+            let first_member_recovery_init = erased_first_member_init || init.as_ref().is_some_and(|value| {
                 expr_contains_member_field(value, C_FIRST_MEMBER_CONTAINER_KEY)
             });
             if first_member_recovery_init && is_pointer_decl && !is_function_pointer_decl {
@@ -8287,7 +9283,18 @@ impl Walker {
                     self.direct_byte_struct_pointer_vars.insert(emit_name.clone());
                 }
             }
-            let type_hint = if self.linear_pointer_vars.contains(&emit_name) {
+            if is_pointer_decl && !is_function_pointer_decl && !was_array_decl
+                && struct_pointer_pointee.is_some()
+                && init.as_ref().is_some_and(|value| self.expr_may_be_backed_struct_view(value))
+            {
+                // Initializers and assignments must select the same physical
+                // carrier instead of retaining a record view's zero placeholders.
+                init = init.map(|value|
+                    self.materialize_struct_pointer_assignment_value(&ident(&emit_name), value));
+            }
+            let type_hint = if self.linear_pointer_vars.contains(&emit_name) && is_pointer_decl {
+                Some(TypeHint::descriptive(metadata_type.clone()))
+            } else if self.linear_pointer_vars.contains(&emit_name) {
                 Some("int".into())
             } else if !is_function_pointer_decl
                 && (is_pointer_decl
@@ -8308,13 +9315,16 @@ impl Walker {
                     emitted_type_hint.into()
                 })
             };
-            declarations.push(VarDeclarator {
-                pattern: BindingPattern::Ident(emit_name),
-                type_hint,
-                init,
-                array_bounds,
-                with_events: false,
+            let mut declaration = owned_declarator.unwrap_or(VarDeclarator {
+                pattern: BindingPattern::Ident(String::new()), type_hint: None,
+                init: None, array_bounds: None, with_events: false,
             });
+            declaration.pattern = BindingPattern::Ident(emit_name);
+            declaration.type_hint = Some(self.storage_access_hint(type_hint,
+                &format!("{} {declarator_text}", specs.as_str())));
+            declaration.init = init;
+            declaration.array_bounds = array_bounds;
+            declarations.push(declaration);
         }
         if !declarations.is_empty() {
             out.push(stmt(StmtKind::VarDecl {
@@ -8354,6 +9364,34 @@ impl Walker {
         } else {
             value
         };
+        if let Some(record) = self.current_record_return_type.clone() {
+            if matches!(&value.kind, ExprKind::Ident(_)) {
+                return self.deep_copy_struct(&record, value);
+            }
+            // A computed record source must be evaluated once before its
+            // fields are copied. The untyped parameter keeps its backing.
+            let name = format!("__c_return_record{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            let body = self.deep_copy_struct(&record, ident(&name));
+            return call_expr(
+                expr(ExprKind::Lambda {
+                    params: vec![Param {
+                        name,
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    }],
+                    body: LambdaBody::Expr(Box::new(body)),
+                    is_async: false,
+                    captures: vec![],
+                }),
+                vec![value],
+            );
+        }
         if !self
             .linear_pointer_return_functions
             .contains(&self.current_function)
@@ -8376,7 +9414,9 @@ impl Walker {
             ExprKind::Call { callee, .. } => {
                 matches!(&callee.kind, ExprKind::Ident(name)
                     if name == "__c_strrchr_linear"
+                        || name == "__c_strchr_linear"
                         || name == "__c_ptr_linear_alloc"
+                        || name == "__c_ptr_linear_realloc"
                         || self.linear_pointer_return_functions.contains(name))
             }
             ExprKind::Cast { expr, .. } => self.expr_is_linear_pointer_return_call(expr),
@@ -8388,7 +9428,11 @@ impl Walker {
         }
     }
 
-    fn make_struct_decl(&self, name: &str, fields: &[String]) -> Statement {
+    fn make_struct_decl(&mut self, name: &str, fields: &[String]) -> Statement {
+        self.struct_class_names.insert(name.to_string(), name.to_string());
+        if let Some(tag) = self.struct_typedef_aliases.get(name) {
+            self.struct_class_names.entry(tag.clone()).or_insert_with(|| name.to_string());
+        }
         let field_types = self.struct_field_types.get(name);
         let members = fields
             .iter()
@@ -8496,6 +9540,20 @@ impl Walker {
             Some((None, _)) => expr(ExprKind::Array(Vec::new())),
             Some((Some(n), rest)) => {
                 let inner = self.build_zero_array(rest, element);
+                if *n > 8 && !matches!(&inner.kind, ExprKind::Lit(_)) {
+                    return call_expr(
+                        ident("__c_struct_array"),
+                        vec![
+                            int_lit(*n as i64),
+                            expr(ExprKind::Lambda {
+                                params: Vec::new(),
+                                body: LambdaBody::Expr(Box::new(inner)),
+                                is_async: false,
+                                captures: Vec::new(),
+                            }),
+                        ],
+                    );
+                }
                 let elems = (0..*n)
                     .map(|_| ArrayElement {
                         key: None,
@@ -8517,7 +9575,7 @@ impl Walker {
         if count < 128 {
             return init;
         }
-        call_expr(ident("__c_static_json_value"), vec![str_lit(&json)])
+        c_static_json_initializer(&json)
     }
 
     fn zero_nd_json_for_bounds(&self, bounds: &[Expression]) -> Option<String> {
@@ -8721,14 +9779,19 @@ impl Walker {
 
     fn linear_pointer_slot_load_expr(&mut self, addr: Expression) -> Expression {
         self.uses_linear_pointer_slots = true;
+        let addr_name = format!("__c_linear_ptr_load_addr{}", self.tmp_counter);
+        self.tmp_counter += 1;
+        self.register_generated_local(&addr_name, "uintptr_t");
+        let addr_once = ident(&addr_name);
         let slot_name = format!("__c_linear_ptr_slot_load{}", self.tmp_counter);
         self.tmp_counter += 1;
+        self.register_generated_local(&slot_name, "void *");
         let slot = ident(&slot_name);
         let read_slot = call_expr(
             ident("__c_array_get"),
             vec![
                 ident("__c_linear_ptr_slots"),
-                c_function_pointer_slot_key(addr.clone()),
+                c_function_pointer_slot_key(addr_once.clone()),
             ],
         );
         let missing_slot = binary_expr(
@@ -8737,10 +9800,13 @@ impl Walker {
             call_expr(ident("__c_ref_eq"), vec![slot.clone(), null_lit()]),
         );
         expr(ExprKind::Sequence(vec![
+            assign_expr(addr_once.clone(), expr(ExprKind::Cast {
+                expr: Box::new(addr), type_name: "uintptr_t".into(),
+            })),
             assign_expr(slot.clone(), read_slot),
             ternary_expr(
                 missing_slot,
-                call_expr(ident("__c_ptr_i32_load"), vec![addr]),
+                call_expr(ident("__c_ptr_i32_load"), vec![addr_once]),
                 slot,
             ),
         ]))
@@ -8752,12 +9818,24 @@ impl Walker {
         value: Expression,
     ) -> Expression {
         self.uses_linear_pointer_slots = true;
+        let addr_name = format!("__c_linear_ptr_store_addr{}", self.tmp_counter);
+        self.tmp_counter += 1;
+        self.register_generated_local(&addr_name, "uintptr_t");
+        let addr_once = ident(&addr_name);
         let value_tmp = format!("__c_linear_ptr_slot_value{}", self.tmp_counter);
         self.tmp_counter += 1;
+        self.register_generated_local(&value_tmp, "void *");
         let value_once = ident(&value_tmp);
-        let key = c_function_pointer_slot_key(addr.clone());
+        let key = c_function_pointer_slot_key(addr_once.clone());
         expr(ExprKind::Sequence(vec![
-            assign_expr(value_once.clone(), value),
+            assign_expr(addr_once.clone(), expr(ExprKind::Cast {
+                expr: Box::new(addr), type_name: "uintptr_t".into(),
+            })),
+            // Capture a pointer value, not a scalar reference binding.
+            assign_expr(value_once.clone(), expr(ExprKind::Cast {
+                expr: Box::new(value),
+                type_name: "void*".into(),
+            })),
             expr(ExprKind::Ternary {
                 cond: Box::new(binary_expr(
                     BinOp::NotEq,
@@ -8776,14 +9854,14 @@ impl Walker {
                             value_once.clone(),
                         ],
                     ),
-                    call_expr(ident("__c_ptr_i32_store"), vec![addr.clone(), int_lit(0)]),
+                    call_expr(ident("__c_ptr_i32_store"), vec![addr_once.clone(), int_lit(0)]),
                 ]))),
                 else_: Box::new(expr(ExprKind::Sequence(vec![
                     call_expr(
                         ident("__c_array_set"),
                         vec![ident("__c_linear_ptr_slots"), key, null_lit()],
                     ),
-                    call_expr(ident("__c_ptr_i32_store"), vec![addr, value_once.clone()]),
+                    call_expr(ident("__c_ptr_i32_store"), vec![addr_once, value_once.clone()]),
                 ]))),
             }),
             value_once,
@@ -8821,8 +9899,13 @@ impl Walker {
         let (mut prefix, pointer_value) = self.c_pointer_assignment_value_parts(value);
         let value_tmp = format!("__c_raw_ptr_store_value{}", self.tmp_counter);
         self.tmp_counter += 1;
+        self.register_generated_local(&value_tmp, "void *");
         let value_once = ident(&value_tmp);
-        prefix.push(assign_expr(value_once.clone(), pointer_value));
+        // Storage normalization may expose AddrOf again at the slot capture.
+        prefix.push(assign_expr(value_once.clone(), expr(ExprKind::Cast {
+            expr: Box::new(pointer_value),
+            type_name: "void*".into(),
+        })));
         let stored_value = self.c_pointer_storage_value(value_once.clone());
         prefix.push(self.linear_pointer_slot_store_expr(addr, stored_value));
         prefix.push(value_once);
@@ -8841,8 +9924,12 @@ impl Walker {
         let (mut prefix, pointer_value) = self.c_pointer_assignment_value_parts(value);
         let id = self.tmp_counter;
         self.tmp_counter += 1;
-        let addr_once = ident(&format!("__c_numeric_ptr_store_addr{id}"));
-        let value_once = ident(&format!("__c_numeric_ptr_store_value{id}"));
+        let addr_name = format!("__c_numeric_ptr_store_addr{id}");
+        let value_name = format!("__c_numeric_ptr_store_value{id}");
+        self.register_generated_local(&addr_name, "uintptr_t");
+        self.register_generated_local(&value_name, "void *");
+        let addr_once = ident(&addr_name);
+        let value_once = ident(&value_name);
         prefix.push(assign_expr(addr_once.clone(), addr));
         prefix.push(assign_expr(value_once.clone(), pointer_value));
         let stored_value = self.c_pointer_storage_value(value_once.clone());
@@ -8862,28 +9949,6 @@ impl Walker {
         expr(ExprKind::Sequence(prefix))
     }
 
-    fn c_nullable_struct_pointer_view(
-        &self,
-        pointer_value: Expression,
-        view: Expression,
-    ) -> Expression {
-        ternary_expr(
-            binary_expr(
-                BinOp::Eq,
-                expr(ExprKind::Unary {
-                    op: UnaryOp::Typeof,
-                    expr: Box::new(pointer_value.clone()),
-                }),
-                str_lit("object"),
-            ),
-            pointer_value.clone(),
-            ternary_expr(
-                binary_expr(BinOp::Eq, pointer_value, int_lit(0)),
-                null_lit(),
-                view,
-            ),
-        )
-    }
 
     fn c_function_pointer_storage_value(&self, value: Expression) -> Expression {
         if let Some(target) = self.known_function_target_expr(&value) {
@@ -8953,6 +10018,97 @@ impl Walker {
         self.static_function_pointer_members
             .get(&(object_name, field.clone()))
             .cloned()
+    }
+
+    fn initialized_linear_record_array(
+        &mut self, type_text: &str, count: i64, initializer: &Expression,
+    ) -> Option<Expression> {
+        let record = self.aggregate_layout_tag(type_text)?;
+        let stride = self.sizeof_type_text(type_text);
+        let byte_count = count.checked_mul(stride)?;
+        if count <= 0 || stride <= 0 || byte_count > i64::from(u32::MAX) { return None; }
+        let ExprKind::Array(elements) = &initializer.kind else { return None; };
+        // Validate the complete literal/layout before generating locals or stores.
+        let mut leaves = Vec::new();
+        let mut cursor = 0i64;
+        for element in elements {
+            if element.spread || element.by_ref { return None; }
+            let index = element.key.as_ref().map_or(Some(cursor), |key| self.eval_int_expr(key))?;
+            if index < 0 || index >= count { return None; }
+            self.record_initializer_leaves(&record, &element.value, index.checked_mul(stride)?,
+                0, &mut leaves)?;
+            cursor = index.checked_add(1)?;
+        }
+        let name = format!("__c_record_array_storage{}", self.tmp_counter);
+        self.tmp_counter += 1;
+        self.register_generated_local(&name, "uintptr_t");
+        let pointer = ident(&name);
+        let mut operations = vec![
+            assign_expr(pointer.clone(), call_expr(ident("__c_ptr_linear_alloc"), vec![int_lit(byte_count)])),
+            call_expr(ident("__c_ptr_memory_fill"), vec![pointer.clone(), int_lit(0), int_lit(byte_count)]),
+        ];
+        for (offset, ty, value) in leaves {
+            let address = pointers::linear_addr_offset(pointer.clone(), int_lit(offset));
+            operations.push(self.linear_integer_store_expr(address, &ty, value));
+        }
+        operations.push(pointer);
+        Some(expr(ExprKind::Sequence(operations)))
+    }
+
+    fn record_initializer_leaves(
+        &self, ty: &str, value: &Expression, offset: i64, depth: usize,
+        leaves: &mut Vec<(i64, String, Expression)>,
+    ) -> Option<()> {
+        if depth > 64 { return None; }
+        if let Some((base, dimensions)) = parse_array_type_text(ty) {
+            let count = dimensions.first()?.parse::<i64>().ok()?;
+            let mut element_type = base.to_string();
+            for dimension in dimensions.iter().skip(1) {
+                element_type.push_str(&format!("[{dimension}]"));
+            }
+            let stride = self.sizeof_type_text(&element_type);
+            let ExprKind::Array(elements) = &value.kind else { return None; };
+            let mut cursor = 0i64;
+            for element in elements {
+                if element.spread || element.by_ref { return None; }
+                let index = element.key.as_ref().map_or(Some(cursor), |key| self.eval_int_expr(key))?;
+                if index < 0 || index >= count || stride <= 0 { return None; }
+                self.record_initializer_leaves(&element_type, &element.value,
+                    offset.checked_add(index.checked_mul(stride)?)?, depth + 1, leaves)?;
+                cursor = index.checked_add(1)?;
+            }
+        } else if !ty.contains('*') && let Some(record) = self.aggregate_layout_tag(ty) {
+            // Union views and bitfields need their own storage-unit initializer.
+            if self.union_tags.contains(&record)
+                || self.struct_bitfields.get(&record).is_some_and(|fields| !fields.is_empty())
+            { return None; }
+            let ExprKind::Object(properties) = &value.kind else { return None; };
+            let types = self.struct_field_types.get(&record)?;
+            for field in self.structs.get(&record)? {
+                let field_type = types.get(field)?;
+                let field_value = properties.iter().find_map(|property| match property {
+                    ObjectProperty::KeyValue { key, value }
+                        if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == field) => Some(value),
+                    _ => None,
+                });
+                if let Some(field_value) = field_value {
+                    self.record_initializer_leaves(field_type, field_value,
+                        offset.checked_add(self.offsetof_struct_field(&record, field))?,
+                        depth + 1, leaves)?;
+                }
+            }
+        } else if !self.is_c_pointer_like_type_text(ty)
+            && !self.is_function_pointer_type_text(ty)
+            && (self.is_integral_type_text(ty) || self.is_enum_scalar_type(ty)
+                || matches!(normalized_c_type_name(&self.resolve_typedef_scalar_aliases(ty)).as_str(),
+                    "char" | "signed char" | "unsigned char"))
+                && matches!(self.sizeof_type_text(ty), 1 | 2 | 4 | 8)
+        {
+            leaves.push((offset, ty.to_string(), value.clone()));
+        } else {
+            return None;
+        }
+        Some(())
     }
 
     fn zero_struct(&self, struct_name_hint: Option<&str>, fields: &[String]) -> Expression {
@@ -9375,13 +10531,31 @@ impl Walker {
         let ft = field_types.and_then(|t| t.get(fname));
         let value = match ft {
             // Array field (`Entry entries[4]`, `int m[2][3]`): a zero element
-            // (the `{0}` idiom) builds the zero array shape; otherwise keep.
+            // (the `{0}` idiom) builds the zero array shape; partial lists pad.
             Some(ft) if ft.replace(' ', "").contains('[') => {
                 if is_zero_int_expr(&value) {
                     self.zero_value_for_field_type(ft)
                 } else if let (base, _, true) = split_array_type_text(ft) {
                     let normalized_base = normalized_c_type_name(base);
-                    if let (Some(nested_fields), ExprKind::Array(items)) =
+                    if matches!(normalized_c_type_name(&self.resolve_typedef_scalar_aliases(base)).as_str(),
+                        "char" | "signed char" | "unsigned char")
+                        && let ExprKind::Lit(Literal::Str(text)) = &value.kind
+                        && let Some((_, dims)) = parse_array_type_text(ft)
+                        && dims.len() == 1
+                        && let Ok(count) = dims[0].parse::<usize>()
+                    {
+                        // A string initializes writable array storage, not a
+                        // string-valued field. A full array may omit the NUL.
+                        let mut bytes = text.as_bytes().to_vec();
+                        bytes.resize(count, 0);
+                        return expr(ExprKind::Array(bytes.into_iter().map(|byte| ArrayElement {
+                            value: int_lit(i64::from(byte)),
+                            spread: false,
+                            key: None,
+                            by_ref: false,
+                        }).collect()));
+                    }
+                    let value = if let (Some(nested_fields), ExprKind::Array(items)) =
                         (self.structs.get(&normalized_base), &value.kind)
                     {
                         let converted = items
@@ -9400,7 +10574,8 @@ impl Walker {
                         expr(ExprKind::Array(converted))
                     } else {
                         value
-                    }
+                    };
+                    self.complete_array_field_initializer(ft, value)
                 } else {
                     value
                 }
@@ -9434,6 +10609,40 @@ impl Walker {
             Some(&(width, signed, is_bool)) => apply_bitfield_mask(value, width, signed, is_bool),
             None => value,
         }
+    }
+
+    fn complete_array_field_initializer(&self, field_type: &str, mut value: Expression) -> Expression {
+        let Some((base, dims)) = parse_array_type_text(field_type) else {
+            return value;
+        };
+        let Some(count) = dims.first().and_then(|bound| bound.parse::<usize>().ok()) else {
+            return value;
+        };
+        let ExprKind::Array(mut items) = value.kind.clone() else {
+            return value;
+        };
+        if items.iter().any(|item| item.key.is_some() || item.spread) {
+            return value;
+        }
+        let mut element_type = base.to_string();
+        for bound in dims.iter().skip(1) {
+            element_type.push_str(&format!("[{bound}]"));
+        }
+        if dims.len() > 1 {
+            for item in &mut items {
+                item.value = self.complete_array_field_initializer(&element_type, item.value.clone());
+            }
+        }
+        while items.len() < count {
+            items.push(ArrayElement {
+                value: self.zero_value_for_field_type(&element_type),
+                key: None,
+                spread: false,
+                by_ref: false,
+            });
+        }
+        value.kind = ExprKind::Array(items);
+        value
     }
 
     /// Resolve a designated (Object-shaped) initializer against the struct's
@@ -9883,17 +11092,35 @@ impl Walker {
                                     anon_fields,
                                     anon_field_types,
                                     anon_bitfields,
-                                    _,
-                                    _,
+                                    anon_groups,
+                                    is_union,
                                 )) = anonymous_aggregate.clone()
                                 {
-                                    let anon_name = format!("__anon_struct_{}", n);
+                                    let anon_name = if is_union {
+                                        format!("__anon_union_{}_{}", n, field_decl.as_span().start())
+                                    } else {
+                                        format!("__anon_struct_{}", n)
+                                    };
+                                    let field_count = anon_fields.len();
                                     self.structs.insert(anon_name.clone(), anon_fields);
                                     self.struct_field_types
                                         .insert(anon_name.clone(), anon_field_types);
+                                    if !anon_groups.is_empty() {
+                                        self.struct_anon_groups
+                                            .insert(anon_name.clone(), anon_groups.clone());
+                                    }
                                     if !anon_bitfields.is_empty() {
                                         self.struct_bitfields
                                             .insert(anon_name.clone(), anon_bitfields);
+                                    }
+                                    if is_union {
+                                        self.union_tags.insert(anon_name.clone());
+                                        let region = self.build_union_region(
+                                            &anon_name, 0, field_count, &anon_groups, &[],
+                                        );
+                                        if region.len() > 1 {
+                                            self.union_regions.insert(anon_name.clone(), vec![region]);
+                                        }
                                     }
                                     anon_name
                                 } else {
@@ -10142,6 +11369,9 @@ impl Walker {
         match inner.as_rule() {
             Rule::assignment_expression => self.walk_assignment(inner),
             Rule::initializer_list => {
+                if let Some(value) = crate::frontend::take_initializer_list(&inner) {
+                    return value;
+                }
                 let mut is_object = false;
                 let mut elems = Vec::new();
                 let mut props = Vec::new();
@@ -10334,6 +11564,9 @@ impl Walker {
     }
 
     fn walk_initializer_list(&mut self, list_pair: Pair<Rule>) -> Expression {
+        if let Some(value) = crate::frontend::take_initializer_list(&list_pair) {
+            return value;
+        }
         let mut is_object = false;
         let mut elems = Vec::new();
         let mut props = Vec::new();
@@ -10449,7 +11682,39 @@ impl Walker {
     }
 
     fn type_text(&mut self, pair: Pair<Rule>) -> String {
-        self.normalize_type_text(strip_alignment_specifiers(pair.as_str()).as_str())
+        let mut parts = Vec::new();
+        let mut named_definition = false;
+        for specifier in pair.clone().into_inner() {
+            let aggregate = if matches!(specifier.as_rule(),
+                Rule::type_specifier | Rule::type_specifier_strict)
+            {
+                specifier.clone().into_inner()
+                    .find(|child| child.as_rule() == Rule::struct_or_union_spec)
+            } else { None };
+            if let Some(aggregate) = aggregate {
+                let mut tag = None;
+                let mut has_body = false;
+                for child in aggregate.clone().into_inner() {
+                    match child.as_rule() {
+                        Rule::ident_name => tag = Some(child.as_str()),
+                        Rule::struct_member => has_body = true,
+                        _ => {}
+                    }
+                }
+                if has_body && let Some(tag) = tag {
+                    let kind = if aggregate.as_str().trim_start().starts_with("union") {
+                        "union"
+                    } else { "struct" };
+                    parts.push(format!("{kind} {tag}"));
+                    named_definition = true;
+                    continue;
+                }
+            }
+            parts.push(specifier.as_str().to_string());
+        }
+        // Member declarations belong to layout metadata, not the owner's type.
+        let text = if named_definition { parts.join(" ") } else { pair.as_str().to_string() };
+        self.normalize_type_text(strip_alignment_specifiers(&text).as_str())
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -10457,8 +11722,24 @@ impl Walker {
 
     fn infer_function_return_type(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
-            ExprKind::Ident(name) => self.function_return_types.get(name).cloned(),
-            ExprKind::Member { field, .. } => self.function_return_types.get(field).cloned(),
+            ExprKind::Ident(name) if self.call_has_object_binding(name)
+                && self.function_pointer_vars.contains(name) => {
+                let ty = self.var_types.get(name)?;
+                if let Some((_, result)) = ty.split_once("->") {
+                    return Some(result.trim().to_string());
+                }
+                self.typedef_function_return_types.get(&normalized_c_type_name(ty))
+                    .cloned().or_else(|| (!self.is_function_pointer_type_text(ty)).then(|| ty.clone()))
+            }
+            ExprKind::Ident(name) => self.function_return_types.get(name)
+                .or_else(|| self.builtin_return_types.get(name)).cloned(),
+            ExprKind::Member { object, field, .. } => {
+                let owner = self.c_expr_type_text(object)?;
+                let record = self.canonical_struct_base_from_type(&owner)?;
+                let ty = self.struct_field_types.get(&record)?.get(field)?;
+                self.declared_callback_return_type(ty,
+                    self.struct_field_is_function_pointer(&record, field, ty))
+            }
             ExprKind::Lambda {
                 body: LambdaBody::Expr(value),
                 ..
@@ -10504,6 +11785,7 @@ impl Walker {
     }
 
     fn insert_typedef_scalar_alias(&mut self, name: String, target: String) {
+        self.invalidate_typedef_scalar_memo();
         self.typedef_scalar_aliases
             .insert(name.clone(), target.clone());
         self.typedef_scalar_alias_order
@@ -10517,15 +11799,55 @@ impl Walker {
     }
 
     fn remove_typedef_scalar_alias(&mut self, name: &str) {
+        self.invalidate_typedef_scalar_memo();
         self.typedef_scalar_aliases.remove(name);
         self.typedef_scalar_alias_order
             .retain(|(existing, _)| existing != name);
     }
 
+    fn invalidate_typedef_scalar_memo(&mut self) {
+        let memo = self.typedef_scalar_memo.get_mut();
+        memo.values.clear();
+        memo.bytes = 0;
+    }
+
     fn resolve_typedef_scalar_aliases(&self, text: &str) -> String {
-        let mut out = text.trim().to_string();
+        #[cfg(test)]
+        if scalar_typedef_cache_tests::REFERENCE_RESOLUTION.with(std::cell::Cell::get) {
+            return scalar_typedef_cache_tests::uncached(self, text);
+        }
+        let text = text.trim();
+        // With no replacements there is no repeated scan/allocation to cache.
+        if self.typedef_scalar_alias_order.is_empty() {
+            #[cfg(test)]
+            { self.typedef_scalar_memo.borrow_mut().misses += 1; }
+            return text.to_string();
+        }
+        let mut memo = self.typedef_scalar_memo.borrow_mut();
+        if let Some(value) = memo.values.get(text).cloned() {
+            #[cfg(test)]
+            { memo.hits += 1; }
+            return value;
+        }
+        #[cfg(test)]
+        {
+            memo.misses += 1;
+            memo.replacement_passes += self.typedef_scalar_alias_order.len();
+        }
+        let mut out = text.to_string();
         for (name, target) in &self.typedef_scalar_alias_order {
             out = replace_word(&out, name, target);
+        }
+        let bytes = text.len().saturating_add(out.len());
+        if bytes <= TYPEDEF_SCALAR_MEMO_BYTES {
+            if memo.values.len() >= TYPEDEF_SCALAR_MEMO_ENTRIES
+                || memo.bytes.saturating_add(bytes) > TYPEDEF_SCALAR_MEMO_BYTES
+            {
+                memo.values.clear();
+                memo.bytes = 0;
+            }
+            memo.values.insert(text.to_string(), out.clone());
+            memo.bytes += bytes;
         }
         out
     }
@@ -10545,86 +11867,6 @@ impl Walker {
             || self.is_enum_scalar_type(scalar)
     }
 
-    #[allow(dead_code)]
-    fn make_c_comparator_adapter(&self, cmp: Expression) -> Expression {
-        let left_name = "__c_cmp_left".to_string();
-        let right_name = "__c_cmp_right".to_string();
-        let left_ident = ident(&left_name);
-        let right_ident = ident(&right_name);
-        let cmp_call = expr(ExprKind::Call {
-            callee: Box::new(cmp),
-            args: vec![
-                Argument::positional(pointers::make_carray_ptr(
-                    expr(ExprKind::Array(vec![ArrayElement {
-                        key: None,
-                        value: left_ident,
-                        spread: false,
-                        by_ref: false,
-                    }])),
-                    int_lit(0),
-                )),
-                Argument::positional(pointers::make_carray_ptr(
-                    expr(ExprKind::Array(vec![ArrayElement {
-                        key: None,
-                        value: right_ident,
-                        spread: false,
-                        by_ref: false,
-                    }])),
-                    int_lit(0),
-                )),
-            ],
-            optional: false,
-        });
-        expr(ExprKind::Lambda {
-            params: vec![
-                Param {
-                    name: "left".to_string(),
-                    type_hint: None,
-                    default: None,
-                    pass_by: PassBy::Value,
-                    is_rest: false,
-                    is_kwargs: false,
-                    is_optional: false,
-                    is_nullable: false,
-                },
-                Param {
-                    name: "right".to_string(),
-                    type_hint: None,
-                    default: None,
-                    pass_by: PassBy::Value,
-                    is_rest: false,
-                    is_kwargs: false,
-                    is_optional: false,
-                    is_nullable: false,
-                },
-            ],
-            body: LambdaBody::Block(vec![
-                stmt(StmtKind::VarDecl {
-                    declarations: vec![VarDeclarator {
-                        pattern: BindingPattern::Ident(left_name.clone()),
-                        type_hint: None,
-                        init: Some(ident("left")),
-                        array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Var,
-                }),
-                stmt(StmtKind::VarDecl {
-                    declarations: vec![VarDeclarator {
-                        pattern: BindingPattern::Ident(right_name.clone()),
-                        type_hint: None,
-                        init: Some(ident("right")),
-                        array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Var,
-                }),
-                stmt(StmtKind::Return(Some(cmp_call))),
-            ]),
-            is_async: false,
-            captures: vec![],
-        })
-    }
 
     /// Array arguments decay to a `carray` pointer object `{__base, __idx}` when
     /// passed to a function. The wide-char (`wchar_t[]` = int array) helpers need
@@ -10647,6 +11889,112 @@ impl Walker {
             } => *expr,
             other => expr(other),
         }
+    }
+
+    fn memcmp_scalar_array_width(&self, value: &Expression) -> Option<i64> {
+        let value = carray_operand_expr(value);
+        let value = carray_zero_base_expr(&value).unwrap_or(value);
+        let value = if let ExprKind::Ternary { cond, then, else_ } = &value.kind
+            && let Some(tested) = match &cond.kind {
+                ExprKind::IsType { expr, type_name } if type_name == "number" => Some(expr.as_ref()),
+                ExprKind::Binary { op: BinOp::Eq, left, right }
+                    if matches!(&right.kind, ExprKind::Lit(Literal::Str(name)) if name == "number") =>
+                {
+                    match &left.kind {
+                        ExprKind::Unary { op: UnaryOp::Typeof, expr } => Some(expr.as_ref()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+            && let ExprKind::Ident(name) = &tested.kind
+            && matches!(&then.kind, ExprKind::Ident(other) if other == name)
+            && carray_zero_base_expr(else_).is_some_and(|base|
+                matches!(&base.kind, ExprKind::Ident(other) if other == name))
+        {
+            ident(name)
+        } else { value };
+        let ExprKind::Ident(name) = &value.kind else { return None; };
+        if self.linear_pointer_vars.contains(name) || self.byte_array_ptr_vars.contains(name) {
+            return None;
+        }
+        let ty = self.var_types.get(name)?;
+        let (element, count, has_bounds) = split_array_type_text(ty);
+        let element = self.resolve_typedef_scalar_aliases(element);
+        if !has_bounds || count <= 0 || ty.matches('[').count() != 1 || ty.contains('*')
+            || self.type_access(ty) != vybe_ast::StorageAccess::Ordinary
+            || !c_int_family_type(&element)
+        { return None; }
+        let width = self.sizeof_type_text(&element);
+        matches!(width, 2 | 4).then_some(width)
+    }
+
+    fn memcmp_scalar_array_bytes(&self, value: Expression, count: Expression, width: i64) -> Expression {
+        let source = ident("__c_memcmp_array");
+        let input = ident("__c_memcmp_input");
+        let length = ident("__c_memcmp_length");
+        let output = ident("__c_memcmp_output");
+        let index = ident("__c_memcmp_index");
+        let word = |op, left, right| binary_expr(
+            BinOp::Integer(op, vybe_ast::BitLane::W32), left, right,
+        );
+        let element = call_expr(ident("__c_array_get"), vec![
+            input, word(vybe_ast::IntOp::DivU, index.clone(), int_lit(width)),
+        ]);
+        let shift = word(vybe_ast::IntOp::Mul,
+            word(vybe_ast::IntOp::RemU, index.clone(), int_lit(width)), int_lit(8));
+        let byte = word(vybe_ast::IntOp::And,
+            word(vybe_ast::IntOp::ShrU, element, shift), int_lit(255));
+        let declarations = stmt(StmtKind::VarDecl {
+            kind: VarDeclKind::Let,
+            declarations: vec![
+                VarDeclarator {
+                    pattern: BindingPattern::Ident("__c_memcmp_input".into()),
+                    type_hint: None,
+                    init: Some(ternary_expr(pointers::is_carray_ptr_kind(source.clone()),
+                        member(source.clone(), CARRAY_BASE_KEY), source.clone())),
+                    array_bounds: None, with_events: false,
+                },
+                VarDeclarator {
+                    pattern: BindingPattern::Ident("__c_memcmp_output".into()),
+                    type_hint: Some("bytes".into()),
+                    init: Some(call_expr(ident("__c_u8array_new"), vec![length.clone()])),
+                    array_bounds: None, with_events: false,
+                },
+                VarDeclarator {
+                    pattern: BindingPattern::Ident("__c_memcmp_index".into()),
+                    type_hint: Some("uint32".into()), init: Some(int_lit(0)),
+                    array_bounds: None, with_events: false,
+                },
+            ],
+        });
+        call_expr(expr(ExprKind::Lambda {
+            params: ["__c_memcmp_array", "__c_memcmp_length"].into_iter().map(|name| Param {
+                name: name.into(), type_hint: None, default: None, pass_by: PassBy::Value,
+                is_rest: false, is_kwargs: false, is_optional: false, is_nullable: false,
+            }).collect(),
+            body: LambdaBody::Block(vec![
+                stmt(StmtKind::If {
+                    cond: expr(ExprKind::IsType {
+                        expr: Box::new(source.clone()), type_name: "number".into(),
+                    }),
+                    then_body: vec![stmt(StmtKind::Return(Some(source)))],
+                    elifs: vec![], else_body: None,
+                }),
+                declarations,
+                stmt(StmtKind::For {
+                    init: None,
+                    cond: Some(binary_expr(BinOp::Integer(vybe_ast::IntOp::LtU, vybe_ast::BitLane::W64),
+                        index.clone(), length)),
+                    update: Some(assign_expr(index.clone(), word(vybe_ast::IntOp::Add,
+                        index.clone(), int_lit(1)))),
+                    body: vec![stmt(StmtKind::Expr(call_expr(ident("__c_array_set"),
+                        vec![output.clone(), index, byte])))],
+                }),
+                stmt(StmtKind::Return(Some(output))),
+            ]),
+            is_async: false, captures: vec![],
+        }), vec![expr(ExprKind::Cast { expr: Box::new(value), type_name: "void*".into() }), count])
     }
 
     fn c_qsort_key_mode(&self, array_arg: &Expression) -> i64 {
@@ -10939,88 +12287,6 @@ impl Walker {
         stmt(StmtKind::Assert { test, msg })
     }
 
-    fn capture_atexit_from_expr(&mut self, expression: &Expression) -> bool {
-        let ExprKind::Call { callee, args, .. } = &expression.kind else {
-            return false;
-        };
-        let ExprKind::Ident(name) = &callee.kind else {
-            return false;
-        };
-        if name != "atexit" || args.len() != 1 {
-            return false;
-        }
-        let finalizer = stmt(StmtKind::Expr(expr(ExprKind::Call {
-            callee: Box::new(args[0].value.clone()),
-            args: vec![],
-            optional: false,
-        })));
-        self.current_atexit_finalizers.push(finalizer);
-        true
-    }
-
-    fn capture_exit_registration_from_raw(&mut self, raw: &str) -> bool {
-        let raw = raw.trim().trim_end_matches(';').trim();
-        let Some(open) = raw.find('(') else {
-            return false;
-        };
-        let Some(close) = raw.rfind(')') else {
-            return false;
-        };
-        if !raw[close + 1..].trim().is_empty() {
-            return false;
-        }
-        let name = raw[..open].trim();
-        if !matches!(name, "atexit" | "at_quick_exit" | "on_exit") {
-            return false;
-        }
-        let args = split_top_level_commas(&raw[open + 1..close]);
-        let Some(handler_raw) = args.first().map(|s| s.trim()).filter(|s| !s.is_empty()) else {
-            return false;
-        };
-        let handler = self.parse_exit_registration_arg(handler_raw);
-        match name {
-            "atexit" => {
-                self.current_atexit_finalizers
-                    .push(stmt(StmtKind::Expr(call_expr(handler, vec![]))));
-                true
-            }
-            "at_quick_exit" => {
-                if self.current_function == "main" {
-                    self.current_quick_exit_finalizers
-                        .push(stmt(StmtKind::Expr(call_expr(handler, vec![]))));
-                }
-                true
-            }
-            "on_exit" => {
-                if self.current_function == "main" {
-                    let arg = args
-                        .get(1)
-                        .map(|arg| self.parse_exit_registration_arg(arg.trim()))
-                        .unwrap_or_else(null_lit);
-                    self.current_on_exit_finalizers
-                        .push(stmt(StmtKind::Expr(call_expr(
-                            handler,
-                            vec![ident("__c_exit_status"), arg],
-                        ))));
-                }
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn parse_exit_registration_arg(&mut self, raw: &str) -> Expression {
-        let raw = raw.trim();
-        if raw == "NULL" {
-            return null_lit();
-        }
-        if raw.starts_with('"') {
-            let unquoted = raw.trim_matches('"');
-            return str_lit(unquoted);
-        }
-        self.parse_define_value(raw)
-    }
-
     fn exit_statement_from_raw(&mut self, raw: &str) -> Option<Statement> {
         let raw = raw.trim().trim_end_matches(';').trim();
         let open = raw.find('(')?;
@@ -11033,26 +12299,32 @@ impl Walker {
             return None;
         }
         let args = split_top_level_commas(&raw[open + 1..close]);
-        let status = args
-            .first()
-            .map(|arg| self.parse_define_value(arg.trim()))
-            .unwrap_or_else(|| int_lit(0));
-        let mut seq = vec![assign_expr(ident("__c_exit_status"), status.clone())];
+        let status = if name == "abort" {
+            int_lit(134)
+        } else {
+            args.first()
+                .map(|arg| self.parse_define_value(arg.trim()))
+                .unwrap_or_else(|| int_lit(0))
+        };
+        let mut seq = Vec::new();
+        if name == "abort" {
+            // A handler may exit normally; only a returning raise falls through
+            // to abnormal termination, which bypasses callbacks and flushing.
+            seq.push(posix_adapter::raise(int_lit(6)));
+        }
+        seq.push(assign_expr(ident("__c_exit_status"), status.clone()));
         match name {
-            "_Exit" | "_exit" => {
+            "_Exit" | "_exit" | "abort" => {
                 seq.push(assign_expr(ident("__c_skip_atexit"), int_lit(1)));
                 seq.push(assign_expr(ident("__c_skip_flush"), int_lit(1)));
             }
             "quick_exit" => {
-                for finalizer in self.current_quick_exit_finalizers.iter().rev() {
-                    if let StmtKind::Expr(expr) = &finalizer.kind {
-                        seq.push(expr.clone());
-                    }
-                }
-                seq.push(assign_expr(ident("__c_skip_atexit"), int_lit(1)));
+                seq.push(assign_expr(ident("__c_quick_shutdown"), int_lit(1)));
+                seq.push(assign_expr(ident("__c_skip_flush"), int_lit(1)));
             }
             _ => {}
         }
+        seq.push(call_expr(ident(crate::normalize_shutdown::FINISH), vec![]));
         seq.push(int_lit(0));
         // Inside an inline forked child (`fork()` returned 0 and we are
         // running the child block), `_exit` ends the CHILD, not the run:
@@ -11070,9 +12342,12 @@ impl Walker {
                 ))),
             ],
             elifs: Vec::new(),
-            else_body: Some(vec![stmt(StmtKind::Return(Some(expr(
-                ExprKind::Sequence(seq),
-            ))))]),
+            else_body: Some(vec![
+                stmt(StmtKind::Expr(expr(ExprKind::Sequence(seq)))),
+                stmt(StmtKind::Exit {
+                    status: Some(ident("__c_exit_status")),
+                }),
+            ]),
         });
         Some(stmt(StmtKind::If {
             cond: binary_expr(BinOp::Eq, ident("__c_child_exec_done"), int_lit(1)),
@@ -11090,13 +12365,32 @@ impl Walker {
     fn walk_block(&mut self, pair: Pair<Rule>) -> Vec<Statement> {
         self.block_depth += 1;
         self.block_renames.push(HashMap::new());
+        self.block_shadowed_facts.push(HashMap::new());
+        self.block_call_bindings.push(HashSet::new());
         let mut out = Vec::new();
-        for p in pair.into_inner() {
-            if p.as_rule() == Rule::statement {
-                self.walk_statement(p, &mut out);
+        let direct = self.direct_statements_enabled()
+            .then(|| crate::frontend::take_body(&pair)).flatten();
+        if let Some(items) = direct {
+            for item in items {
+                match item {
+                    crate::frontend::BodyItem::Owned { pair, value } =>
+                        self.walk_statement_value(pair, Some(value), &mut out),
+                    crate::frontend::BodyItem::Contextual(pair) =>
+                        self.walk_statement(pair, &mut out),
+                }
+            }
+        } else {
+            for p in pair.into_inner() {
+                if p.as_rule() == Rule::statement {
+                    self.walk_statement(p, &mut out);
+                }
             }
         }
         self.block_renames.pop();
+        self.block_call_bindings.pop();
+        for (name, facts) in self.block_shadowed_facts.pop().unwrap() {
+            self.restore_pointer_binding_facts(name, facts);
+        }
         self.block_depth = self.block_depth.saturating_sub(1);
         lower_c_gotos(out)
     }
@@ -11110,13 +12404,37 @@ impl Walker {
     /// own pair is narrower than this one. `to_span` is 1-based, so line 0 only
     /// ever means "never set".
     fn walk_statement(&mut self, pair: Pair<Rule>, out: &mut Vec<Statement>) {
+        self.walk_statement_value(pair, None, out);
+    }
+
+    fn direct_statements_enabled(&self) -> bool {
+        #[cfg(test)]
+        return !field_type_tests::USE_REFERENCE_DIRECT_STATEMENTS.with(|flag| flag.get());
+        #[cfg(not(test))]
+        true
+    }
+
+    fn direct_places_enabled(&self) -> bool {
+        let enabled = self.direct_statements_enabled();
+        #[cfg(test)]
+        return enabled && !place_constructor_tests::REFERENCE_PLACES.with(|flag| flag.get());
+        #[cfg(not(test))]
+        enabled
+    }
+
+    fn walk_statement_value(
+        &mut self,
+        pair: Pair<Rule>,
+        owned: Option<crate::frontend::OwnedStatement>,
+        out: &mut Vec<Statement>,
+    ) {
         let span = to_span(&pair);
         let base = out.len();
-        let debug_timing = c_debug_timings_path();
+        let debug_timing = self.debug_timings.clone();
         let statement_preview = debug_timing
             .as_ref()
             .map(|_| c_debug_item_preview(pair.as_str()));
-        let started = Instant::now();
+        let started = debug_timing.as_ref().map(|_| Instant::now());
         if let Some(path) = debug_timing.as_deref() {
             write_c_debug_timing(
                 path,
@@ -11128,8 +12446,16 @@ impl Walker {
                 ),
             );
         }
-        self.walk_statement_inner(pair, out);
-        if let Some(path) = debug_timing.as_deref() {
+        let owned = owned.or_else(|| self.direct_statements_enabled()
+            .then(|| crate::frontend::take_control_statement(&pair)).flatten());
+        if let Some(value) = owned {
+            if let crate::frontend::OwnedStatement::Emit(value) = value {
+                out.push(value);
+            }
+        } else {
+            self.walk_statement_inner(pair, out);
+        }
+        if let (Some(path), Some(started)) = (debug_timing.as_deref(), started) {
             let elapsed = started.elapsed();
             if elapsed.as_millis() >= 50 {
                 write_c_debug_timing(
@@ -11203,8 +12529,14 @@ impl Walker {
     fn typedef_declaration_from_expression_text(
         &mut self,
         source: &str,
+        capture: &Pair<Rule>,
         out: &mut Vec<Statement>,
     ) -> bool {
+        if leading_captured_identifier(capture.clone())
+            .is_some_and(|name| !self.typedef_names.contains(name))
+        {
+            return false;
+        }
         let candidate = format!("{source};");
         let Ok(mut parsed) = CParser::parse(Rule::declaration, &candidate) else {
             return false;
@@ -11245,19 +12577,16 @@ impl Walker {
             Rule::static_assert_statement => out.push(self.walk_static_assert(inner)),
             Rule::expression_statement => {
                 let e = inner.into_inner().next().unwrap();
-                let raw_expr_text = e.as_str().trim().to_string();
-                let phase_timing = c_debug_timings_path();
+                let raw_expr_text = e.as_str().trim();
+                let phase_timing = self.debug_timings.clone();
                 let phase_preview = phase_timing
                     .as_ref()
-                    .map(|_| c_debug_item_preview(&raw_expr_text));
-                if self.capture_exit_registration_from_raw(&raw_expr_text) {
-                    return;
-                }
-                if let Some(exit_stmt) = self.exit_statement_from_raw(&raw_expr_text) {
+                    .map(|_| c_debug_item_preview(raw_expr_text));
+                if let Some(exit_stmt) = self.exit_statement_from_raw(raw_expr_text) {
                     out.push(exit_stmt);
                     return;
                 }
-                if self.typedef_declaration_from_expression_text(&raw_expr_text, out) {
+                if self.typedef_declaration_from_expression_text(raw_expr_text, &e, out) {
                     return;
                 }
                 let phase_started = Instant::now();
@@ -11330,25 +12659,8 @@ impl Walker {
                     out.push(assert_stmt);
                     return;
                 }
-                let phase_started = Instant::now();
-                if self.capture_atexit_from_expr(&statement_expr) {
-                    if let Some(path) = phase_timing.as_deref() {
-                        let elapsed = phase_started.elapsed();
-                        if elapsed.as_millis() >= 50 {
-                            write_c_debug_timing(
-                                path,
-                                format!(
-                                    "expr_statement_phase function={} phase=capture_atexit elapsed={elapsed:?} preview={}",
-                                    self.current_function,
-                                    phase_preview.as_deref().unwrap_or("")
-                                ),
-                            );
-                        }
-                    }
-                    return;
-                }
                 if c_raw_starts_with_call(
-                    &raw_expr_text,
+                    raw_expr_text,
                     &[
                         "pthread_exit",
                         "thrd_exit",
@@ -11465,12 +12777,7 @@ impl Walker {
             Rule::do_while_statement => out.push(self.walk_do_while(inner)),
             Rule::for_statement => out.push(self.walk_for(inner)),
             Rule::return_statement => {
-                let val = inner.into_inner().next().map(|e| self.walk_expression(e));
-                // `return s[i];` — a char read RETURNED is its integer value
-                // (C promotes); left as a one-char string it Number()s to
-                // NaN at the first arithmetic in the caller.
-                let val = val.map(|v| self.normalize_return_value(v));
-                out.push(stmt(StmtKind::Return(val)));
+                out.push(self.walk_return_statement(inner));
             }
             Rule::break_statement => out.push(stmt(StmtKind::Break(BreakTarget::Implicit))),
             Rule::continue_statement => {
@@ -11490,6 +12797,22 @@ impl Walker {
         }
     }
 
+    fn walk_return_statement(&mut self, pair: Pair<Rule>) -> Statement {
+        let direct = true;
+        #[cfg(test)]
+        let direct = direct && !return_constructor_tests::REFERENCE_RETURNS.with(|flag| flag.get());
+        let region = if direct { crate::frontend::take_direct_return_region(&pair) } else { None };
+        if let Some(region) = region {
+            let value = self.walk_expression(region.expression.clone());
+            let value = self.normalize_return_value(value);
+            crate::frontend::record_direct_return_handoff();
+            region.finish(value)
+        } else {
+            let value = pair.into_inner().next().map(|value| self.walk_expression(value));
+            stmt(StmtKind::Return(value.map(|value| self.normalize_return_value(value))))
+        }
+    }
+
     fn body_of(&mut self, pair: Pair<Rule>) -> Vec<Statement> {
         // A `statement` that may be a block or a single statement.
         let mut out = Vec::new();
@@ -11504,22 +12827,70 @@ impl Walker {
     }
 
     fn walk_if(&mut self, pair: Pair<Rule>) -> Statement {
-        let mut it = pair.into_inner();
-        let cond_raw = self.walk_expression(it.next().unwrap());
+        let direct = true;
+        #[cfg(test)]
+        let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_IF.with(|flag| flag.get());
+        let region = if direct { crate::frontend::take_direct_if_region(&pair) } else { None };
+        let (condition, then_branch, else_branch) = if let Some(region) = &region {
+            (region.condition.clone(), region.then_branch.clone(), region.else_branch.clone())
+        } else {
+            let mut it = pair.into_inner();
+            let condition = it.next().unwrap();
+            let then_branch = it.next().unwrap();
+            let else_branch = it.next().filter(|pair| pair.as_rule() == Rule::else_clause)
+                .map(|pair| pair.into_inner().next().unwrap());
+            (condition, then_branch, else_branch)
+        };
+        let cond_raw = self.walk_expression(condition);
         let cond = self.rewrite_char_condition(cond_raw);
         let linear_before = self.linear_pointer_vars.clone();
-        let then_body = self.body_of(it.next().unwrap());
+        let linear_struct_before = self.linear_struct_pointer_vars.clone();
+        let direct_object_before = self.direct_object_pointer_vars.clone();
+        let hybrid_struct_before = self.hybrid_linear_struct_pointer_vars.clone();
+        let byte_struct_before = self.byte_struct_pointer_vars.clone();
+        let direct_byte_before = self.direct_byte_struct_pointer_vars.clone();
+        let carray_before = self.carray_ptr_vars.clone();
+        let aliases_before = self.pointer_address_aliases.clone();
+        let then_body = self.body_of(then_branch);
         let linear_then = self.linear_pointer_vars.clone();
-        self.linear_pointer_vars = linear_before.clone();
+        let linear_struct_then = self.linear_struct_pointer_vars.clone();
+        let direct_object_then = self.direct_object_pointer_vars.clone();
+        let hybrid_struct_then = self.hybrid_linear_struct_pointer_vars.clone();
+        let byte_struct_then = self.byte_struct_pointer_vars.clone();
+        let direct_byte_then = self.direct_byte_struct_pointer_vars.clone();
+        let carray_then = self.carray_ptr_vars.clone();
+        let aliases_then = self.pointer_address_aliases.clone();
+        self.linear_pointer_vars = linear_before;
+        self.linear_struct_pointer_vars = linear_struct_before;
+        self.direct_object_pointer_vars = direct_object_before;
+        self.hybrid_linear_struct_pointer_vars = hybrid_struct_before;
+        self.byte_struct_pointer_vars = byte_struct_before;
+        self.direct_byte_struct_pointer_vars = direct_byte_before;
+        self.carray_ptr_vars = carray_before;
+        self.pointer_address_aliases = aliases_before;
         let mut else_body = None;
-        if let Some(else_clause) = it.next() {
-            if else_clause.as_rule() == Rule::else_clause {
-                let st = else_clause.into_inner().next().unwrap();
-                else_body = Some(self.body_of(st));
-            }
+        if let Some(branch) = else_branch {
+            else_body = Some(self.body_of(branch));
         }
         // A branch-local assignment is not a proof of backing after the join.
         self.linear_pointer_vars.retain(|name| linear_then.contains(name));
+        let linear_struct_else = self.linear_struct_pointer_vars.clone();
+        let direct_object_else = self.direct_object_pointer_vars.clone();
+        self.linear_struct_pointer_vars.retain(|name| linear_struct_then.contains(name));
+        self.direct_object_pointer_vars.retain(|name| direct_object_then.contains(name));
+        self.direct_byte_struct_pointer_vars.retain(|name| direct_byte_then.contains(name));
+        self.carray_ptr_vars.retain(|name| carray_then.contains(name));
+        // Record layout remains known even when the backing differs by branch.
+        for (name, record) in byte_struct_then {
+            self.byte_struct_pointer_vars.entry(name).or_insert(record);
+        }
+        self.hybrid_linear_struct_pointer_vars.extend(hybrid_struct_then);
+        for name in linear_struct_then.symmetric_difference(&linear_struct_else)
+            .chain(direct_object_then.symmetric_difference(&direct_object_else))
+        {
+            self.hybrid_linear_struct_pointer_vars.insert(name.clone());
+        }
+        self.pointer_address_aliases.retain(|name, target| aliases_then.get(name) == Some(target));
         if self.is_fork_child_condition(&cond) && stmts_contain_fork_child_exit(&then_body) {
             let parent_pid_var = self.fork_pid_name_from_condition(&cond);
             let mut block = Vec::new();
@@ -11563,6 +12934,10 @@ impl Walker {
                 block.extend(restore);
             }
             return stmt(StmtKind::Block(block));
+        }
+        if let Some(region) = region {
+            crate::frontend::record_direct_if_handoff();
+            return region.finish(cond, then_body, else_body);
         }
         if let Some(parent_body) = else_body {
             return stmt(StmtKind::If {
@@ -11616,12 +12991,25 @@ impl Walker {
     }
 
     fn walk_while(&mut self, pair: Pair<Rule>) -> Statement {
-        let mut it = pair.into_inner();
-        let cond_raw = self.walk_expression(it.next().unwrap());
+        let direct = self.direct_statements_enabled();
+        #[cfg(test)]
+        let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_LOOPS.with(|flag| flag.get());
+        let region = if direct { crate::frontend::take_direct_while_region(&pair) } else { None };
+        let (condition, body_pair) = if let Some(region) = &region {
+            (region.condition.clone(), region.body.clone())
+        } else {
+            let mut it = pair.into_inner();
+            (it.next().unwrap(), it.next().unwrap())
+        };
+        let cond_raw = self.walk_expression(condition);
         let cond = self.rewrite_char_condition(cond_raw);
-        let body = self.body_of(it.next().unwrap());
+        let body = self.body_of(body_pair);
         if matches!(cond.kind, ExprKind::Lit(Literal::Int(1))) && body.is_empty() {
             return stmt(StmtKind::Expr(int_lit(0)));
+        }
+        if let Some(region) = region {
+            crate::frontend::record_direct_loop_handoff();
+            return region.finish(cond, body);
         }
         stmt(StmtKind::While {
             cond,
@@ -11631,9 +13019,18 @@ impl Walker {
     }
 
     fn walk_do_while(&mut self, pair: Pair<Rule>) -> Statement {
-        let mut it = pair.into_inner();
-        let mut body = self.body_of(it.next().unwrap());
-        let cond_raw = self.walk_expression(it.next().unwrap());
+        let direct = self.direct_statements_enabled();
+        #[cfg(test)]
+        let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_LOOPS.with(|flag| flag.get());
+        let region = if direct { crate::frontend::take_direct_do_while_region(&pair) } else { None };
+        let (body_pair, condition) = if let Some(region) = &region {
+            (region.body.clone(), region.condition.clone())
+        } else {
+            let mut it = pair.into_inner();
+            (it.next().unwrap(), it.next().unwrap())
+        };
+        let mut body = self.body_of(body_pair);
+        let cond_raw = self.walk_expression(condition);
         let cond = self.rewrite_char_condition(cond_raw);
         if is_c_false_expr(&cond) {
             body = rewrite_current_loop_continue_to_break(body);
@@ -11644,6 +13041,10 @@ impl Walker {
                 else_body: None,
             });
         }
+        if let Some(region) = region {
+            crate::frontend::record_direct_loop_handoff();
+            return region.finish(cond, body);
+        }
         stmt(StmtKind::DoWhile {
             body,
             cond,
@@ -11652,11 +13053,24 @@ impl Walker {
     }
 
     fn walk_for(&mut self, pair: Pair<Rule>) -> Statement {
+        let direct = self.direct_statements_enabled();
+        #[cfg(test)]
+        let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_LOOPS.with(|flag| flag.get());
+        let region = if direct { crate::frontend::take_direct_for_region(&pair) } else { None };
+        let mut captured = pair.into_inner();
+        let mut anchors = region.as_ref().map(|region|
+            [Some(region.init.clone()), Some(region.condition.clone()),
+                region.update.clone(), Some(region.body.clone())].into_iter().flatten());
+        let clauses = std::iter::from_fn(|| match &mut anchors {
+            Some(anchors) => anchors.next(),
+            None => captured.next(),
+        });
+        self.block_call_bindings.push(HashSet::new());
         let mut init = None;
         let mut cond = None;
         let mut update = None;
         let mut body = Vec::new();
-        for p in pair.into_inner() {
+        for p in clauses {
             match p.as_rule() {
                 Rule::for_init => {
                     let mut inits = Vec::new();
@@ -11689,6 +13103,11 @@ impl Walker {
                 _ => {}
             }
         }
+        self.block_call_bindings.pop();
+        if let Some(region) = region {
+            crate::frontend::record_direct_loop_handoff();
+            return region.finish(init, cond, update, body);
+        }
         stmt(StmtKind::For {
             init,
             cond,
@@ -11698,8 +13117,18 @@ impl Walker {
     }
 
     fn walk_switch(&mut self, pair: Pair<Rule>) -> Statement {
-        let mut it = pair.into_inner();
-        let subject = self.walk_expression(it.next().unwrap());
+        let direct = self.direct_statements_enabled();
+        #[cfg(test)]
+        let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_SWITCHES.with(|flag| flag.get());
+        let region = if direct { crate::frontend::take_direct_switch_region(&pair) } else { None };
+        let (selector, body_stmt) = if let Some(region) = &region {
+            (region.subject.clone(), region.body.clone())
+        } else {
+            let mut it = pair.into_inner();
+            (it.next().unwrap(), it.next().unwrap())
+        };
+        let subject = self.walk_expression(selector);
+        self.block_call_bindings.push(HashSet::new());
         // C applies integer promotions to the selector, then converts every
         // case constant to that type. Preserve that contract after lowering
         // record reads or unary constant expressions to helper expressions.
@@ -11730,7 +13159,6 @@ impl Walker {
             }
         };
         let subject = promoted(subject);
-        let body_stmt = it.next().unwrap();
         // The body is a compound statement of case/default labels.
         let mut cases: Vec<SwitchCase> = Vec::new();
         let mut default: Option<Vec<Statement>> = None;
@@ -11780,11 +13208,63 @@ impl Walker {
                 }
             }
         }
+        self.block_call_bindings.pop();
+        if let Some(region) = region {
+            crate::frontend::record_direct_switch_handoff();
+            return region.finish(subject, cases, default);
+        }
         stmt(StmtKind::Switch {
             expr: subject,
             cases,
             default,
         })
+    }
+
+    fn promote_exact_record_selector(&self, value: &mut Expression) -> bool {
+        let ExprKind::Cast { expr: producer, type_name } = &mut value.kind else {
+            return false;
+        };
+        let resolved = self.resolve_typedef_scalar_aliases(type_name);
+        if self.type_access(type_name) != StorageAccess::Ordinary
+            || resolved.contains(['*', '['])
+            || !self.is_integral_type_text(&resolved)
+            || self.sizeof_type_text(&resolved) != 8
+        {
+            return false;
+        }
+        // Field reads retain their source spelling (e.g. unsigned long long),
+        // whereas the switch promotion uses the canonical profile cast name.
+        *type_name = if resolved.contains("unsigned") || resolved.contains("uint") {
+            "uint64".into()
+        } else { "int64".into() };
+        if matches!(&producer.kind, ExprKind::Cast { .. }) {
+            return self.promote_exact_record_selector(producer);
+        }
+        let ExprKind::Call { callee, args, optional: false } = &mut producer.kind else {
+            return false;
+        };
+        if let ExprKind::Ident(name) = &callee.kind {
+            return matches!(name.as_str(), "__c_ptr_i64_load" | "__c_ptr_u64_load")
+                && args.len() == 1
+                && !self.defined_function_names.contains(name)
+                && !self.var_types.contains_key(name);
+        }
+        let ExprKind::Lambda { params, body, captures, is_async: false } = &mut callee.kind else {
+            return false;
+        };
+        if params.len() != 1 || args.len() != 1 || !captures.is_empty()
+            || !self.wide_record_read_helpers.contains(&params[0].name)
+        {
+            return false;
+        }
+        let LambdaBody::Expr(read) = body else { return false; };
+        *body = LambdaBody::Block(vec![
+            crate::normalize_exact_word_regions::exact_directive(),
+            stmt(StmtKind::Return(Some(expr(ExprKind::Cast {
+                expr: Box::new((**read).clone()), type_name: type_name.clone(),
+            })))),
+        ]);
+        true
     }
 
     fn collect_switch_cases(
@@ -12089,12 +13569,7 @@ impl Walker {
             Rule::do_while_statement => out.push(self.walk_do_while(inner)),
             Rule::for_statement => out.push(self.walk_for(inner)),
             Rule::return_statement => {
-                let val = inner.into_inner().next().map(|e| self.walk_expression(e));
-                // `return s[i];` — a char read RETURNED is its integer value
-                // (C promotes); left as a one-char string it Number()s to
-                // NaN at the first arithmetic in the caller.
-                let val = val.map(|v| self.normalize_return_value(v));
-                out.push(stmt(StmtKind::Return(val)));
+                out.push(self.walk_return_statement(inner));
             }
             Rule::break_statement => out.push(stmt(StmtKind::Break(BreakTarget::Implicit))),
             Rule::continue_statement => {
@@ -12130,6 +13605,9 @@ impl Walker {
     // ── Expressions ──────────────────────────────────────────────────────────
 
     fn walk_expression(&mut self, pair: Pair<Rule>) -> Expression {
+        if let Some(value) = self.take_direct_syntax(&pair) {
+            return value;
+        }
         match pair.as_rule() {
             Rule::expression => {
                 let mut parts: Vec<Expression> =
@@ -12183,6 +13661,19 @@ impl Walker {
         if is_pointer_var {
             if self.expr_may_be_hybrid_carray_pointer(&value) {
                 self.hybrid_carray_ptr_vars.insert(name.clone());
+            }
+            if self.is_mixed_global_pointer_var(name) {
+                let mut allocation = &value;
+                while let ExprKind::Cast { expr, type_name } = &allocation.kind {
+                    if !type_name.contains('*') { break; }
+                    allocation = expr;
+                }
+                if let Some(bytes) = memory::heap_allocation_count(allocation) {
+                    // Only this assigned value is byte-addressed. The binding
+                    // can still receive managed element storage in another call.
+                    self.uses_linear_memory_heap = true;
+                    return call_expr(ident("__c_ptr_linear_alloc"), vec![bytes.clone()]);
+                }
             }
             let target_names_struct_pointer = self
                 .var_types
@@ -12240,7 +13731,16 @@ impl Walker {
         // Earlier functions can already use this storage as a linear pointer.
         // Honor that backing when its allocation is assigned later.
         let value = if is_pointer_var && self.is_predeclared_linear_pointer_var(name) {
-            if let Some(bytes) = memory::heap_allocation_count(&value) {
+            // Pointer casts retain the allocation's byte count. Inspect their
+            // payload without discarding numeric casts or evaluating it twice.
+            let mut allocation = &value;
+            while let ExprKind::Cast { expr, type_name } = &allocation.kind {
+                if !type_name.contains('*') {
+                    break;
+                }
+                allocation = expr;
+            }
+            if let Some(bytes) = memory::heap_allocation_count(allocation) {
                 call_expr(ident("__c_ptr_linear_alloc"), vec![bytes.clone()])
             } else {
                 value
@@ -12328,6 +13828,11 @@ impl Walker {
                 }
             }
             if memory::is_heap_allocation(&value) {
+                return self.wrap_as_carray_init(value);
+            }
+            // Rebinding an existing pointer still requires array-to-pointer
+            // decay; storing the raw array loses its zero-offset coordinate.
+            if should_wrap_pointer_init_as_carray(&Some(value.clone()), &self.array_ptr_vars) {
                 return self.wrap_as_carray_init(value);
             }
             return value;
@@ -12577,9 +14082,10 @@ impl Walker {
                 ident(&temp),
                 expr(ExprKind::Sequence(vec![
                     assign_expr(ident(&temp), pointers::ensure_carray_ptr(ident(&temp))),
-                    pointers::make_carray_ptr(
+                    self.copy_carray_pointer_carrier(
                         member(ident(&temp), CARRAY_BASE_KEY),
                         member(ident(&temp), CARRAY_IDX_KEY),
+                        member(ident(&temp), "__byte_backed"),
                     ),
                 ])),
             ),
@@ -12602,12 +14108,28 @@ impl Walker {
         // Only the latter have a mutable cursor that needs a value copy.
         ternary_expr(
             pointers::is_carray_ptr_kind(value.clone()),
-            pointers::make_carray_ptr(
+            self.copy_carray_pointer_carrier(
                 member(ident(source_name), CARRAY_BASE_KEY),
                 member(ident(source_name), CARRAY_IDX_KEY),
+                member(ident(source_name), "__byte_backed"),
             ),
             value,
         )
+    }
+
+    fn copy_carray_pointer_carrier(
+        &self,
+        base: Expression,
+        index: Expression,
+        byte_backed: Expression,
+    ) -> Expression {
+        let mut pointer = pointers::make_carray_ptr(base, index);
+        if let ExprKind::Object(properties) = &mut pointer.kind {
+            properties.push(ObjectProperty::KeyValue {
+                key: str_lit("__byte_backed"), value: byte_backed,
+            });
+        }
+        pointer
     }
 
     fn expr_may_be_backed_struct_view(&self, value: &Expression) -> bool {
@@ -12697,19 +14219,26 @@ impl Walker {
     }
 
     fn expr_yields_carray_pointer(&self, value: &Expression) -> bool {
-        let operand = carray_operand_expr(value);
-        if is_carray_like_expr(&operand) {
+        #[cfg(test)]
+        if field_type_tests::USE_OWNED_CLASSIFIER.with(std::cell::Cell::get) {
+            return field_type_tests::owned_carray_classifier(self, value);
+        }
+        let operand = carray_operand_ref(value);
+        if is_carray_like_expr(operand) {
             return true;
         }
-        let backing = self.struct_backing_pointer_or_value(value.clone());
-        let backing_operand = carray_operand_expr(&backing);
-        if is_carray_like_expr(&backing_operand) {
+        let backing = match self.borrowed_struct_backing_projection(value) {
+            Some(backing) => std::borrow::Cow::Borrowed(backing),
+            None => std::borrow::Cow::Owned(self.struct_backing_pointer_or_value(value.clone())),
+        };
+        let backing_operand = carray_operand_ref(&backing);
+        if is_carray_like_expr(backing_operand) {
             return true;
         }
         if let ExprKind::Sequence(parts) = &backing_operand.kind {
             if parts
                 .last()
-                .map(|last| is_carray_like_expr(&carray_operand_expr(last)))
+                .map(is_carray_like_expr)
                 .unwrap_or(false)
             {
                 return true;
@@ -12720,7 +14249,7 @@ impl Walker {
                         return false;
                     };
                     matches!(&target.kind, ExprKind::Ident(name) if name == result_name)
-                        && is_carray_like_expr(&carray_operand_expr(value))
+                        && is_carray_like_expr(value)
                 }) {
                     return true;
                 }
@@ -12743,7 +14272,7 @@ impl Walker {
                 return false;
             };
             matches!(&target.kind, ExprKind::Ident(name) if name == result_name)
-                && is_carray_like_expr(&carray_operand_expr(value))
+                && is_carray_like_expr(value)
         })
     }
 
@@ -12819,7 +14348,7 @@ impl Walker {
                     str_lit("number"),
                 ),
                 numeric_read,
-                dynamic_carray_deref_read(ptr),
+                c_pointer_element_value(dynamic_carray_deref_read(ptr)),
             );
         }
         if self.hybrid_carray_ptr_vars.contains(ptr_name) {
@@ -12899,7 +14428,7 @@ impl Walker {
         if pair.as_rule() != Rule::assignment_expression {
             return self.walk_conditional(pair);
         }
-        let assignment_timing = c_debug_timings_path();
+        let assignment_timing = self.debug_timings.clone();
         let assignment_preview = assignment_timing
             .as_ref()
             .map(|_| c_debug_item_preview(pair.as_str()));
@@ -12947,6 +14476,9 @@ impl Walker {
         }
         if op == "=" {
             let value = self.wrap_signed_32_assignment(&target, value);
+            if let Some(write) = self.scalar_reference_integer_write(&target, value.clone()) {
+                return write;
+            }
             if let Some(copy) = self.rewrite_linear_record_assignment(&target, &value) {
                 return copy;
             }
@@ -12970,7 +14502,8 @@ impl Walker {
                 }
             }
             let phase_started = Instant::now();
-            self.sync_pointer_alias_on_assign(&target, &value);
+            let alias_target = self.rewrite_pointer_member_alias_target(target.clone());
+            self.sync_pointer_alias_on_assign(&alias_target, &value);
             if let Some(path) = assignment_timing.as_deref() {
                 let elapsed = phase_started.elapsed();
                 if elapsed.as_millis() >= 50 {
@@ -13167,6 +14700,42 @@ impl Walker {
             }
             if let Some(ptr_name) = carray_deref_target_name(&target) {
                 return self.carray_deref_write_for_name(&ptr_name, value);
+            }
+            if let ExprKind::Unary { op: UnaryOp::Deref, expr: pointer } = &target.kind
+                && !matches!(&pointer.kind, ExprKind::Ident(_))
+                && let Some(pointer_type) = self.c_expr_type_text(pointer)
+                && pointer_type.contains('*')
+            {
+                let element = self.resolve_typedef_scalar_aliases(
+                    &self.c_indexed_pointer_element_type(&pointer_type),
+                );
+                if !element.contains('*') && !element.contains('[')
+                    && self.sizeof_type_text(&element) == 1
+                    && !matches!(normalized_c_type_name(&element).as_str(), "bool" | "_Bool")
+                    && (c_int_family_type(&element)
+                        || normalized_c_type_name(&element) == "char")
+                {
+                    let id = self.tmp_counter;
+                    self.tmp_counter += 1;
+                    let pointer_once = ident(&format!("__c_byte_store_ptr{id}"));
+                    let value_once = ident(&format!("__c_byte_store_value{id}"));
+                    let unsigned = element.contains("unsigned")
+                        || matches!(normalized_c_type_name(&element).as_str(), "uint8_t" | "uint8" | "byte");
+                    let byte_value = char_assignment_value_to_code(&value);
+                    let narrowed = if unsigned {
+                        binary_expr(BinOp::Integer(vybe_ast::IntOp::And, vybe_ast::BitLane::W32), byte_value, int_lit(255))
+                    } else {
+                        binary_expr(BinOp::Integer(vybe_ast::IntOp::ShrS, vybe_ast::BitLane::W32),
+                            binary_expr(BinOp::Integer(vybe_ast::IntOp::Shl, vybe_ast::BitLane::W32), byte_value, int_lit(24)),
+                            int_lit(24))
+                    };
+                    return expr(ExprKind::Sequence(vec![
+                        assign_expr(pointer_once.clone(), *pointer.clone()),
+                        assign_expr(value_once.clone(), narrowed),
+                        self.c_byte_pointer_write(pointer_once, int_lit(0), value_once.clone()),
+                        value_once,
+                    ]));
+                }
             }
             if let ExprKind::Unary {
                 op: UnaryOp::Deref,
@@ -13394,6 +14963,20 @@ impl Walker {
             {
                 return rewrite;
             }
+            // A C pointer stores an address value, not a variable-alias binding.
+            // Keep the reference producer beneath its existing pointer cast so
+            // shared assignment lowering does not mark the pointer as a cell.
+            let value = if matches!(&target.kind, ExprKind::Ident(_))
+                && matches!(&value.kind, ExprKind::RefOf(_)
+                    | ExprKind::Unary { op: UnaryOp::AddrOf, .. })
+                && let Some(pointer_type) = self.c_expr_type_text(&target)
+                && let resolved = self.resolve_typedef_scalar_aliases(&pointer_type)
+                && resolved.contains('*')
+            {
+                expr(ExprKind::Cast { expr: Box::new(value), type_name: resolved })
+            } else {
+                value
+            };
             expr(ExprKind::Assign {
                 target: Box::new(target),
                 value: Box::new(value),
@@ -13428,6 +15011,19 @@ impl Walker {
                 CompoundOp::Shr => BinOp::Shr,
                 _ => BinOp::Add,
             };
+            if matches!(bin, BinOp::Add | BinOp::Sub)
+                && let ExprKind::Ident(name) = &target.kind
+                && let Some(updated) = self.mixed_pointer_offset_expr(
+                    name, value.clone(), bin == BinOp::Sub,
+                )
+            {
+                return assign_expr(target, updated);
+            }
+            if let Some(update) = self.scalar_reference_integer_update(
+                &target, value.clone(), bin, false,
+            ) {
+                return update;
+            }
             if let Some(update) =
                 self.integer_pointer_index_update(&target, value.clone(), bin, false)
             {
@@ -13438,12 +15034,35 @@ impl Walker {
                 ExprKind::RefLoad(inner) => *inner,
                 _ => target,
             };
+            let (target, owner_capture) = if let ExprKind::Member { object, field, .. } = &target.kind
+                && !matches!(&object.kind, ExprKind::Ident(_))
+                && let Some(struct_base) = self.c_expr_type_text(object)
+                    .and_then(|ty| self.c_struct_pointer_pointee_from_type_text(&ty))
+                && self.struct_field_types.get(&struct_base)
+                    .and_then(|fields| fields.get(field))
+                    .is_some_and(|ty| self.is_integral_type_text(ty))
+            {
+                // A compound lvalue selects its owner once, before both the read
+                // and write. Do not duplicate a lowered nested backing selector.
+                let (capture, owner) = self.capture_struct_field_owner(
+                    (**object).clone(), &struct_base,
+                );
+                (member(owner, field), Some(capture))
+            } else {
+                (target, None)
+            };
+            let finish = |value| match &owner_capture {
+                Some(capture) => expr(ExprKind::Sequence(vec![capture.clone(), value])),
+                None => value,
+            };
             let lhs_read = self
                 .carray_struct_field_read_target(&target)
                 .unwrap_or_else(|| target.clone());
             let unsigned_32_add_sub = self.is_unsigned_32_assignment_target(&target)
                 && matches!(bin, BinOp::Add | BinOp::Sub)
-                && !self.has_wide_integer_operand(&value);
+                && !self.has_wide_integer_operand(&value)
+                && !(self.has_declared_narrow_integer_type(&lhs_read)
+                    && self.has_declared_narrow_integer_type(&value));
             let rhs_raw = expr(ExprKind::Binary {
                 op: bin,
                 left: Box::new(if unsigned_32_add_sub {
@@ -13475,12 +15094,12 @@ impl Walker {
             if matches!(target.kind, ExprKind::Member { .. })
                 && let Some(rewrite) = self.carray_struct_field_write(&target, rhs.clone())
             {
-                return rewrite;
+                return finish(rewrite);
             }
             // Compound assignment through a pointer deref (`*p *= 2`) must write
             // back through the cell, the same as a plain `*p = ...` does.
             if let Some(ptr_name) = carray_deref_target_name(&target) {
-                return self.carray_deref_write_for_name(&ptr_name, rhs);
+                return finish(self.carray_deref_write_for_name(&ptr_name, rhs));
             }
             // Compound assignment into a char buffer element (`s[i] -= 32`) must
             // splice the computed char-code back through the string model, not
@@ -13488,23 +15107,23 @@ impl Walker {
             if let Some(rewrite) =
                 self.rewrite_typed_struct_pointer_array_field_assignment(&target, rhs.clone())
             {
-                return rewrite;
+                return finish(rewrite);
             }
             if c_target_may_be_char_index_assignment(&target)
                 && let Some(rewrite) = self.rewrite_char_index_assignment(&target, rhs.clone())
             {
-                return rewrite;
+                return finish(rewrite);
             }
             if let Some(rewrite) = self.rewrite_carray_index_assignment(&target, rhs.clone()) {
-                return rewrite;
+                return finish(rewrite);
             }
             if let Some(rewrite) = self.rewrite_fixed_array_index_assignment(&target, rhs.clone()) {
-                return rewrite;
+                return finish(rewrite);
             }
-            expr(ExprKind::Assign {
+            finish(expr(ExprKind::Assign {
                 target: Box::new(target),
                 value: Box::new(rhs),
-            })
+            }))
         }
     }
 
@@ -13562,6 +15181,10 @@ impl Walker {
         let Some(fields) = self.structs.get(&target_base).cloned() else {
             return value;
         };
+        if self.erased_first_member_recovery_needed(&value, &target_base) {
+            self.mark_first_member_container_pointer_target(target_name, &target_base);
+            return self.guarded_erased_first_member_value(value, &target_base);
+        }
         if self.value_points_to_first_field_of_struct(&value, &target_base) {
             self.mark_first_member_container_pointer_target(target_name, &target_base);
             return self.first_member_pointer_container_value(value);
@@ -13878,7 +15501,12 @@ impl Walker {
             types.get(field).is_none_or(|ty| {
                 let resolved = self.resolve_typedef_scalar_aliases(ty);
                 ty.contains('*') || ty.contains('[')
-                    || (!c_int_family_type(&resolved) && !self.is_enum_scalar_type(&resolved))
+                    || (!c_int_family_type(&resolved)
+                        && !matches!(resolved.trim(), "char" | "signed char" | "unsigned char")
+                        && !self.is_enum_scalar_type(&resolved)
+                        && !self.canonical_struct_base_from_type(&resolved)
+                            .is_some_and(|nested| nested != record
+                                && self.scalar_record_fields(&nested).is_some()))
             })
         }) {
             return None;
@@ -13903,7 +15531,13 @@ impl Walker {
                 && let ExprKind::Lit(Literal::Str(field)) = &key.kind
                 && fields.contains(field)
             {
-                *value = self.typed_struct_pointer_field_read(ident(&name), record, field)?;
+                let field_type = self.struct_field_types.get(record)?.get(field)?.clone();
+                *value = if let Some(nested) = self.canonical_struct_base_from_type(&field_type) {
+                    let pointer = self.embedded_record_place(ident(&name), record, field)?;
+                    self.scalar_record_pointer_snapshot(pointer, &nested)?
+                } else {
+                    self.typed_struct_pointer_field_read(ident(&name), record, field)?
+                };
             }
         }
         Some(call_expr(
@@ -13949,6 +15583,20 @@ impl Walker {
         let ExprKind::Index { object, index, .. } = &target.kind else {
             return None;
         };
+        if let Some((base, field_type)) = self.array_field_linear_addr(object) {
+            let element = self.c_subscript_result_type(&field_type)?;
+            if !element.contains('*')
+                && !element.contains('[')
+                && let Some(record) = self.canonical_struct_base_from_type(&element)
+            {
+                let address = pointers::linear_index_addr(
+                    base,
+                    (**index).clone(),
+                    self.sizeof_type_text(&record),
+                );
+                return self.linear_scalar_record_copy(address, value, &record);
+            }
+        }
         let ExprKind::Ident(name) = &object.kind else {
             return None;
         };
@@ -14006,24 +15654,22 @@ impl Walker {
             }
         }
         let fields = self.scalar_record_fields(record)?;
-        let (source, is_pointer) = match &value.kind {
-            ExprKind::Unary { op: UnaryOp::Deref, expr: source } => {
-                let ty = self.c_expr_type_text(source)?;
-                if self.c_struct_pointer_pointee_from_type_text(&ty).as_deref() != Some(record) {
-                    return None;
-                }
-                ((**source).clone(), true)
-            }
-            _ => {
+        let (source, is_pointer, project_backing) =
+            if let Some(source) = self.record_copy_source_pointer(value, record) {
+                (source, true, false)
+            } else {
                 let ty = self.c_expr_type_text(value)?;
                 if ty.contains('*')
                     || self.canonical_struct_base_from_type(&ty).as_deref() != Some(record)
                 {
                     return None;
                 }
-                (value.clone(), false)
-            }
-        };
+                if self.expr_may_be_backed_struct_view(value) {
+                    (value.clone(), true, true)
+                } else {
+                    (value.clone(), false, false)
+                }
+            };
         let id = self.tmp_counter;
         self.tmp_counter += 1;
         let destination_name = format!("__c_record_destination{id}");
@@ -14033,6 +15679,18 @@ impl Walker {
         let mut stores = Vec::with_capacity(fields.len() + 1);
         for field in &fields {
             let field_type = self.struct_field_types.get(record)?.get(field)?.clone();
+            if let Some(nested) = self.canonical_struct_base_from_type(&field_type) {
+                let source = self.embedded_record_place(source_slot.clone(), record, field)?;
+                let source = unary_expr(UnaryOp::Deref, expr(ExprKind::Cast {
+                    expr: Box::new(source),
+                    type_name: format!("{nested}*"),
+                }));
+                let address = self.linear_field_addr(
+                    destination.clone(), self.offsetof_struct_field(record, field),
+                );
+                stores.push(self.linear_scalar_record_copy(address, &source, &nested)?);
+                continue;
+            }
             let value = self.typed_struct_pointer_field_read(source_slot.clone(), record, field)?;
             stores.push(self.linear_integer_store_expr(
                 self.linear_field_addr(
@@ -14054,7 +15712,7 @@ impl Walker {
                 expr(ExprKind::Sequence(vec![
                     call_expr(
                         ident("__c_ptr_memory_copy"),
-                        vec![destination, source_slot, int_lit(self.sizeof_type_text(record))],
+                        vec![destination, source_slot.clone(), int_lit(self.sizeof_type_text(record))],
                     ),
                     result,
                 ])),
@@ -14062,6 +15720,25 @@ impl Walker {
             )
         } else {
             managed
+        };
+        let body = if project_backing {
+            // A view's fields are placeholders. Project after the source has
+            // been evaluated once, preserving the managed-record fallback.
+            let backing = member(source_slot.clone(), C_STRUCT_BACKING_POINTER_KEY);
+            let projected = ternary_expr(
+                unary_expr(
+                    UnaryOp::Not,
+                    call_expr(
+                        ident("__c_tag_eq"),
+                        vec![unary_expr(UnaryOp::Typeof, backing.clone()), str_lit("undefined")],
+                    ),
+                ),
+                backing,
+                source_slot.clone(),
+            );
+            expr(ExprKind::Sequence(vec![assign_expr(source_slot, projected), body]))
+        } else {
+            body
         };
         Some(call_expr(
             expr(ExprKind::Lambda {
@@ -14214,6 +15891,27 @@ impl Walker {
         view
     }
 
+    fn borrowed_struct_backing_projection<'a>(&self, value: &'a Expression) -> Option<&'a Expression> {
+        // Match only branches that return an existing subtree unchanged. The
+        // cstruct early return precedes both projections in the materializer.
+        if is_cstruct_pointer_object(value) {
+            return None;
+        }
+        let props = match &value.kind {
+            ExprKind::Object(props) => props,
+            ExprKind::Ternary { then, else_, .. } if matches!(&then.kind, ExprKind::Index { .. }) => {
+                let ExprKind::Object(props) = &else_.kind else { return None; };
+                props
+            }
+            _ => return None,
+        };
+        props.iter().find_map(|prop| {
+            let ObjectProperty::KeyValue { key, value } = prop else { return None; };
+            matches!(&key.kind, ExprKind::Lit(Literal::Str(key))
+                if key == C_STRUCT_BACKING_POINTER_KEY).then_some(value)
+        })
+    }
+
     fn struct_backing_pointer_or_value(&self, value: Expression) -> Expression {
         if let ExprKind::Cast { expr, .. } = &value.kind
             && self.expr_may_be_backed_struct_view(expr)
@@ -14256,6 +15954,9 @@ impl Walker {
         }
         if let ExprKind::NullCoalesce { left, right } = value.kind {
             let left = *left;
+            let captured = (!matches!(&left.kind, ExprKind::Ident(_)))
+                .then(|| left.clone());
+            let left = if captured.is_some() { ident("__c_backing_choice") } else { left };
             let left_backing = member(left.clone(), C_STRUCT_BACKING_POINTER_KEY);
             let left_has_backing = binary_expr(
                 BinOp::And,
@@ -14280,10 +15981,14 @@ impl Walker {
                     ),
                 ),
             );
-            return expr(ExprKind::NullCoalesce {
+            let choice = expr(ExprKind::NullCoalesce {
                 left: Box::new(ternary_expr(left_has_backing, left_backing, left)),
                 right: Box::new(self.struct_backing_pointer_or_value(*right)),
             });
+            return match captured {
+                Some(value) => c_value_once(value, "__c_backing_choice", choice),
+                None => choice,
+            };
         }
         if let ExprKind::Object(props) = &value.kind {
             for prop in props {
@@ -14300,7 +16005,7 @@ impl Walker {
             return value;
         }
         if let ExprKind::Ident(name) = &value.kind {
-            let pointer_value = self.ident_or_refload(name);
+            let pointer_value = ident(name);
             if self.linear_pointer_vars.contains(name)
                 || self.linear_struct_pointer_vars.contains(name)
             {
@@ -14402,6 +16107,9 @@ impl Walker {
             }
         }
         if self.expr_may_be_backed_struct_view(&value) {
+            let captured = (!matches!(&value.kind, ExprKind::Ident(_)))
+                .then(|| value.clone());
+            let value = if captured.is_some() { ident("__c_backing_view") } else { value };
             let direct_backing = member(value.clone(), C_STRUCT_BACKING_POINTER_KEY);
             let cstruct_base = member(value.clone(), CARRAY_BASE_KEY);
             let object_pointer = ternary_expr(
@@ -14435,6 +16143,9 @@ impl Walker {
                     value.clone(),
                 ),
             );
+            if let Some(value) = captured {
+                return c_value_once(value, "__c_backing_view", object_pointer);
+            }
             if matches!(value.kind, ExprKind::Ident(_)) {
                 return ternary_expr(
                     binary_expr(
@@ -14501,11 +16212,33 @@ impl Walker {
         self.tmp_counter += 1;
         let left_once = ident(&format!("__c_ptr_eq_left{id}"));
         let right_once = ident(&format!("__c_ptr_eq_right{id}"));
-        let eq = expr(ExprKind::Sequence(vec![
-            assign_expr(left_once.clone(), left),
-            assign_expr(right_once.clone(), right),
-            mixed_c_pointer_equality(left_once, right_once),
-        ]));
+        // Pointer values are arguments, not reference-binding assignments.
+        // A synthetic global assigned an address can acquire auto-dereference
+        // semantics and lose the identity that this comparison must preserve.
+        let eq = call_expr(
+            expr(ExprKind::Lambda {
+                params: [format!("__c_ptr_eq_left{id}"), format!("__c_ptr_eq_right{id}")]
+                    .into_iter()
+                    .map(|name| Param {
+                        name,
+                        type_hint: Some("void*".into()),
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    })
+                    .collect(),
+                body: LambdaBody::Expr(Box::new(mixed_c_pointer_equality(left_once, right_once))),
+                is_async: false,
+                captures: vec![],
+            }),
+            vec![
+                expr(ExprKind::Cast { expr: Box::new(left), type_name: "void*".into() }),
+                expr(ExprKind::Cast { expr: Box::new(right), type_name: "void*".into() }),
+            ],
+        );
         if matches!(op, BinOp::Eq) {
             eq
         } else {
@@ -14519,6 +16252,10 @@ impl Walker {
 
     fn struct_pointer_for_ident_base(&self, name: &str, base: Expression) -> Option<Expression> {
         let type_text = self.var_types.get(name)?;
+        self.struct_pointer_for_record_base(type_text, base)
+    }
+
+    fn struct_pointer_for_record_base(&self, type_text: &str, base: Expression) -> Option<Expression> {
         if type_text.contains('*') || type_text.contains('[') {
             return None;
         }
@@ -14740,10 +16477,17 @@ impl Walker {
     }
 
     fn c_pointer_index_stride_from_type(&self, type_text: &str) -> i64 {
+        if type_text.contains(ARRAY_PARAM_MARKER)
+            && let Some(element) = self.c_subscript_result_type(type_text)
+        {
+            return self.sizeof_type_text(&element).max(1);
+        }
+        let cleaned = strip_internal_type_markers(type_text);
+        let type_text = cleaned.as_str();
         if type_text.contains('[') && !type_text.trim_end().ends_with('*') {
             let element = self.c_indexed_pointer_element_type(type_text);
-            if element.contains('*') {
-                // Array decay keeps the pointer element, not its pointee.
+            if element.contains('*') || element.contains('[') {
+                // Array decay keeps a pointer or entire row as its element.
                 return self.sizeof_type_text(&element).max(1);
             }
         }
@@ -14789,7 +16533,6 @@ impl Walker {
         }
         let stride = self.c_pointer_index_stride_from_type(type_text);
         let pointer = ident(name);
-        let op = if subtract { BinOp::Sub } else { BinOp::Add };
         let numeric = if self.is_char_pointer_type_var(name) {
             let byte_offset = pointers::linear_scaled_offset(offset.clone(), stride);
             let byte_offset = if subtract {
@@ -14800,7 +16543,10 @@ impl Walker {
             pointers::linear_addr_offset(pointer.clone(), byte_offset)
         } else {
             binary_expr(
-                op,
+                BinOp::Integer(
+                    if subtract { vybe_ast::IntOp::Sub } else { vybe_ast::IntOp::Add },
+                    vybe_ast::BitLane::W32,
+                ),
                 pointer.clone(),
                 pointers::linear_scaled_offset(offset.clone(), stride),
             )
@@ -14824,7 +16570,7 @@ impl Walker {
                 self.carray_pointer_scaled_offset_expr(name, offset),
             )
         } else {
-            offset
+            self.carray_pointer_scaled_offset_expr(name, offset)
         };
         let array_offset = if subtract {
             unary_expr(UnaryOp::Neg, offset.clone())
@@ -14837,15 +16583,199 @@ impl Walker {
             array,
             pointers::make_carray_ptr(pointer.clone(), array_offset),
         );
-        Some(ternary_expr(
+        Some(expr(ExprKind::Cast {
+            type_name: type_text.clone(),
+            expr: Box::new(ternary_expr(
+                binary_expr(
+                    BinOp::Eq,
+                    unary_expr(UnaryOp::Typeof, pointer),
+                    str_lit("number"),
+                ),
+                numeric,
+                other,
+            )),
+        }))
+    }
+
+    fn is_unclassified_nonidentifier_object_pointer(&self, value: &Expression) -> bool {
+        if matches!(value.kind, ExprKind::Ident(_))
+            || is_carray_like_expr(&carray_operand_expr(value))
+            || self.linear_pointer_addr_and_stride(value).is_some()
+        {
+            return false;
+        }
+        self.c_expr_type_text(value).is_some_and(|ty| {
+            let resolved = self.resolve_typedef_scalar_aliases(&ty);
+            resolved.contains('*')
+                && (!resolved.contains('[') || resolved.trim_end().ends_with('*'))
+                && !self.is_function_pointer_type_text(&resolved)
+        })
+    }
+
+    fn typed_hybrid_pointer_offset(
+        &mut self,
+        pointer: Expression,
+        offset: Expression,
+        subtract: bool,
+    ) -> Expression {
+        let Some(type_text) = self.c_expr_type_text(&pointer)
+            .filter(|ty| ty.contains('*') || ty.contains('[')) else {
+            return if subtract { pointers::hybrid_retreat(pointer, offset) }
+                else { pointers::hybrid_offset(pointer, offset) };
+        };
+        let stride = self.c_pointer_index_stride_from_type(&type_text);
+        let result_type = if type_text.contains('[') && !type_text.trim_end().ends_with('*') {
+            decayed_array_pointer_type(&type_text)
+        } else {
+            type_text.clone()
+        };
+        let name = format!("__c_pointer_offset{}", self.tmp_counter);
+        self.tmp_counter += 1;
+        self.register_generated_local(&name, &type_text);
+        self.hybrid_carray_ptr_vars.insert(name.clone());
+        let saved = ident(&name);
+        let offset_name = format!("{name}_displacement");
+        self.register_generated_local(&offset_name, "ptrdiff_t");
+        let saved_offset = ident(&offset_name);
+        let numeric = binary_expr(BinOp::Integer(
+            if subtract { vybe_ast::IntOp::Sub } else { vybe_ast::IntOp::Add },
+            vybe_ast::BitLane::W32,
+        ), saved.clone(), pointers::linear_scaled_offset(saved_offset.clone(), stride));
+        // Managed element indices retain their existing coordinate convention.
+        // The outer numeric arm alone consumes a byte-scaled displacement.
+        let managed = if subtract { pointers::hybrid_retreat(saved.clone(), saved_offset.clone()) }
+            else { pointers::hybrid_offset(saved.clone(), saved_offset.clone()) };
+        // A pointer field may retain a bare managed array rather than a carray
+        // wrapper. Its coordinates count elements, not numeric byte addresses.
+        let array_offset = if subtract {
+            unary_expr(UnaryOp::Neg, saved_offset)
+        } else {
+            saved_offset
+        };
+        let managed = ternary_expr(
+            call_expr(ident("__c_is_array"), vec![saved.clone()]),
+            pointers::make_carray_ptr(saved.clone(), array_offset),
+            managed,
+        );
+        expr(ExprKind::Cast { type_name: result_type, expr: Box::new(expr(ExprKind::Sequence(vec![
+            assign_expr(saved.clone(), pointer),
+            assign_expr(ident(&offset_name), offset),
+            ternary_expr(expr(ExprKind::IsType { expr: Box::new(saved), type_name: "number".into() }), numeric, managed),
+        ]))) })
+    }
+
+    fn indexed_record_pointer_address(
+        &mut self,
+        pointer: Expression,
+        index: Expression,
+        type_text: &str,
+    ) -> Expression {
+        if !self.expr_may_be_backed_struct_view(&pointer)
+            && let Some((address, _)) = self.linear_pointer_addr_and_stride(&pointer)
+        {
+            return expr(ExprKind::Cast {
+                expr: Box::new(pointers::linear_index_addr(
+                    address, index, self.c_pointer_index_stride_from_type(type_text),
+                )),
+                type_name: type_text.into(),
+            });
+        }
+        let id = self.tmp_counter;
+        self.tmp_counter += 1;
+        let pointer_name = format!("__c_record_address_base{id}");
+        let index_name = format!("__c_record_address_index{id}");
+        let pointer_once = ident(&pointer_name);
+        let index_once = ident(&index_name);
+        let stride = self.c_pointer_index_stride_from_type(type_text);
+        let (base, existing_index) = self.c_byte_pointer_parts(pointer_once.clone(), int_lit(0));
+        let object_elements = binary_expr(
+            BinOp::And,
+            call_expr(ident("__c_is_array"), vec![base.clone()]),
             binary_expr(
                 BinOp::Eq,
-                unary_expr(UnaryOp::Typeof, pointer),
-                str_lit("number"),
+                unary_expr(UnaryOp::Typeof, index_expr(base.clone(), int_lit(0))),
+                str_lit("object"),
             ),
-            numeric,
-            other,
-        ))
+        );
+        let byte_index = pointers::linear_scaled_offset(index_once.clone(), stride);
+        let address = ternary_expr(
+            expr(ExprKind::IsType {
+                expr: Box::new(base.clone()),
+                type_name: "number".into(),
+            }),
+            pointers::linear_addr_offset(
+                base.clone(),
+                pointers::linear_addr_offset(existing_index.clone(), byte_index.clone()),
+            ),
+            pointers::make_carray_ptr(
+                base,
+                pointers::linear_addr_offset(
+                    existing_index,
+                    ternary_expr(object_elements, index_once.clone(), byte_index),
+                ),
+            ),
+        );
+        let cell_value = member(pointer_once.clone(), REF_VALUE_KEY);
+        let singleton_cell = binary_expr(BinOp::And,
+            binary_expr(BinOp::Eq, member(pointer_once.clone(), REF_KIND_KEY), str_lit(CELL_KIND)),
+            binary_expr(BinOp::And,
+                binary_expr(BinOp::Eq, unary_expr(UnaryOp::Typeof, cell_value.clone()), str_lit("object")),
+                binary_expr(BinOp::And,
+                    unary_expr(UnaryOp::Not,
+                        call_expr(ident("__c_ref_eq"), vec![cell_value.clone(), null_lit()])),
+                    binary_expr(BinOp::Eq,
+                        unary_expr(UnaryOp::Typeof, member(cell_value, C_STRUCT_TYPE_KEY)),
+                        str_lit("string")),
+                ),
+            ),
+        );
+        let singleton_record = binary_expr(BinOp::And,
+            binary_expr(BinOp::Eq,
+                unary_expr(UnaryOp::Typeof, pointer_once.clone()), str_lit("object")),
+            binary_expr(BinOp::And,
+                unary_expr(UnaryOp::Not,
+                    call_expr(ident("__c_ref_eq"), vec![pointer_once.clone(), null_lit()])),
+                binary_expr(BinOp::Eq,
+                    unary_expr(UnaryOp::Typeof,
+                        member(pointer_once.clone(), C_STRUCT_TYPE_KEY)), str_lit("string")),
+            ),
+        );
+        // Index zero of a singleton preserves its address identity and owner cell.
+        let address = ternary_expr(
+            binary_expr(BinOp::And,
+                binary_expr(BinOp::Or,
+                    binary_expr(BinOp::Eq, member(pointer_once.clone(), REF_KIND_KEY),
+                        str_lit(C_STRUCT_PTR_KIND)),
+                    binary_expr(BinOp::Or, singleton_cell, singleton_record),
+                ),
+                binary_expr(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                    index_once, int_lit(0)),
+            ),
+            pointer_once,
+            address,
+        );
+        // Evaluate the owner and index once without introducing reference cells.
+        call_expr(
+            expr(ExprKind::Lambda {
+                params: [pointer_name, index_name].into_iter().map(|name| Param {
+                    name,
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                }).collect(),
+                body: LambdaBody::Expr(Box::new(expr(ExprKind::Cast {
+                    expr: Box::new(address),
+                    type_name: type_text.into(),
+                }))),
+                is_async: false,
+                captures: vec![],
+            }),
+            vec![pointer, index],
+        )
     }
 
     fn hybrid_pointer_update(
@@ -14879,15 +16809,8 @@ impl Walker {
     }
 
     fn c_indexed_pointer_element_type(&self, type_text: &str) -> String {
-        if type_text.contains('[') && type_text.trim_end().ends_with('*') {
-            return type_text
-                .trim_end()
-                .trim_end_matches('*')
-                .trim()
-                .to_string();
-        }
-        if let Some(element_type) = type_text.split_once('[') {
-            return element_type.0.trim().to_string();
+        if let Some(element_type) = self.c_subscript_result_type(type_text) {
+            return element_type;
         }
         let resolved = self.resolve_typedef_scalar_aliases(type_text);
         if resolved.contains('*') {
@@ -14898,7 +16821,20 @@ impl Walker {
     }
 
     fn c_subscript_result_type(&self, type_text: &str) -> Option<String> {
-        let resolved = self.resolve_typedef_scalar_aliases(type_text);
+        let resolved = self.resolve_typedef_scalar_aliases(&strip_internal_type_markers(type_text));
+        if type_text.contains(ARRAY_PARAM_MARKER)
+            && let Some((base, bounds)) = resolved.split_once('[')
+            && let Some((_, remaining)) = bounds.split_once(']')
+        {
+            // Parameter adjustment adds a pointer separately from the original
+            // array bounds; one subscript consumes both the decay and first bound.
+            let element = if base.trim_start().starts_with("func(") {
+                base.trim().to_string()
+            } else {
+                c_type_remove_one_pointer_level(base)
+            };
+            return Some(format!("{element}{remaining}"));
+        }
         if resolved.contains('[') && resolved.trim_end().ends_with('*') {
             return Some(c_type_remove_one_pointer_level(&resolved));
         }
@@ -15070,7 +17006,21 @@ impl Walker {
                     && !self.hybrid_carray_ptr_vars.contains(name)
                     && !self.direct_object_pointer_vars.contains(name) =>
             {
-                Some(self.ident_or_refload(name))
+                Some(ident(name))
+            }
+            ExprKind::Index { object, index, .. } => {
+                let owner_type = self.c_expr_type_text(object)?;
+                let element_type = self.c_indexed_pointer_element_type(&owner_type);
+                if self.is_c_pointer_like_type_text(&element_type) {
+                    return None;
+                }
+                self.canonical_struct_base_from_type(&element_type)?;
+                let owner_addr = self.linear_embedded_struct_addr(object)?;
+                Some(pointers::linear_index_addr(
+                    owner_addr,
+                    (**index).clone(),
+                    self.sizeof_type_text(&element_type).max(1),
+                ))
             }
             ExprKind::Member { object, field, .. } => {
                 let owner_type = self.c_expr_type_text(object)?;
@@ -15147,6 +17097,11 @@ impl Walker {
     }
 
     fn linear_pointer_addr_and_stride(&self, value: &Expression) -> Option<(Expression, i64)> {
+        if matches!(&value.kind, ExprKind::Cast { type_name, .. }
+            if c_int_family_type(&self.resolve_typedef_scalar_aliases(type_name)))
+        {
+            return None;
+        }
         if matches!(value.kind, ExprKind::Member { .. })
             && let Some(address) = self.linear_embedded_struct_addr(value)
         {
@@ -15154,7 +17109,11 @@ impl Walker {
             return Some((address, self.sizeof_type_text(&type_text).max(1)));
         }
         if self.is_linear_pointer_value_expr(value) {
-            return Some((value.clone(), 1));
+            let stride = self.c_expr_type_text(value)
+                .filter(|ty| ty.contains('*') || ty.contains('['))
+                .map(|ty| self.c_pointer_index_stride_from_type(&ty))
+                .unwrap_or(1);
+            return Some((value.clone(), stride));
         }
         if let Some((address, field_type)) = self.array_field_linear_addr(value) {
             return Some((address, self.c_pointer_index_stride_from_type(&field_type)));
@@ -15188,16 +17147,31 @@ impl Walker {
             right,
         } = &value.kind
         {
+            let pointer_type = |operand: &Expression| self.c_expr_type_text(operand)
+                .filter(|ty| ty.contains('*') || ty.contains('['));
+            if matches!(&value.kind, ExprKind::Binary {
+                op: BinOp::Sub | BinOp::Integer(vybe_ast::IntOp::Sub, _), ..
+            })
+                && pointer_type(left).is_some() && pointer_type(right).is_some()
+            {
+                return None;
+            }
             if self.linear_pointer_addr_and_stride(left).is_some()
                 || self.linear_pointer_addr_and_stride(right).is_some()
             {
-                return Some((value.clone(), 1));
+                let stride = self.c_expr_type_text(value)
+                    .filter(|ty| ty.contains('*') || ty.contains('['))
+                    .map(|ty| self.c_pointer_index_stride_from_type(&ty)).unwrap_or(1);
+                return Some((value.clone(), stride));
             }
         }
         if let ExprKind::Sequence(parts) = &value.kind {
             if let Some(last) = parts.last() {
                 if self.is_linear_pointer_address_expr(last) {
-                    return Some((value.clone(), 1));
+                    let stride = self.c_expr_type_text(value)
+                        .filter(|ty| ty.contains('*') || ty.contains('['))
+                        .map(|ty| self.c_pointer_index_stride_from_type(&ty)).unwrap_or(1);
+                    return Some((value.clone(), stride));
                 }
             }
         }
@@ -15207,7 +17181,10 @@ impl Walker {
             let else_linear =
                 is_null_expr(else_) || self.linear_pointer_addr_and_stride(else_).is_some();
             if then_linear && else_linear {
-                return Some((value.clone(), 1));
+                let stride = self.c_expr_type_text(value)
+                    .filter(|ty| ty.contains('*') || ty.contains('['))
+                    .map(|ty| self.c_pointer_index_stride_from_type(&ty)).unwrap_or(1);
+                return Some((value.clone(), stride));
             }
         }
         if let ExprKind::NullCoalesce { left, right } = &value.kind {
@@ -15216,21 +17193,27 @@ impl Walker {
             let right_linear =
                 is_null_expr(right) || self.linear_pointer_addr_and_stride(right).is_some();
             if left_linear && right_linear {
-                return Some((value.clone(), 1));
+                let stride = self.c_expr_type_text(value)
+                    .filter(|ty| ty.contains('*') || ty.contains('['))
+                    .map(|ty| self.c_pointer_index_stride_from_type(&ty)).unwrap_or(1);
+                return Some((value.clone(), stride));
             }
         }
         if let ExprKind::Ident(name) = &value.kind {
             if !self.name_has_current_pointer_or_array_type(name) {
                 return None;
             }
-            if self.carray_ptr_vars.contains(name) {
+            if self.carray_ptr_vars.contains(name)
+                || self.hybrid_linear_struct_pointer_vars.contains(name)
+                || self.hybrid_carray_ptr_vars.contains(name)
+            {
                 return None;
             }
             if self.linear_struct_pointer_vars.contains(name)
                 || self.is_predeclared_linear_pointer_var(name)
             {
                 let stride = if let Some(ty) = self.var_types.get(name)
-                    && ty.contains('[')
+                    && (ty.contains('*') || ty.contains('['))
                 {
                     self.c_pointer_index_stride_from_type(ty)
                 } else {
@@ -15276,7 +17259,9 @@ impl Walker {
                 ExprKind::Ident(name)
                     if name == "__c_ptr_i32_load"
                         || name == "__c_ptr_i64_load"
+                        || name == "__c_ptr_u64_load"
                         || name == "__c_ptr_linear_alloc"
+                        || name == "__c_ptr_linear_realloc"
                         || name == "__libc_strdup"
                         || name == "__c_ptr_usize_load"
             ),
@@ -15292,7 +17277,7 @@ impl Walker {
     }
 
     fn is_linear_pointer_address_or_value_expr(&self, value: &Expression) -> bool {
-        if is_carray_like_expr(value) || is_carray_like_expr(&carray_operand_expr(value)) {
+        if is_carray_like_expr(value) {
             return false;
         }
         self.is_linear_pointer_address_expr(value) || self.is_linear_pointer_value_expr(value)
@@ -15324,7 +17309,7 @@ impl Walker {
     }
 
     fn is_linear_pointer_address_expr(&self, value: &Expression) -> bool {
-        if is_carray_like_expr(value) || is_carray_like_expr(&carray_operand_expr(value)) {
+        if is_carray_like_expr(value) {
             return false;
         }
         if self.linear_pointer_addr_and_stride(value).is_some() {
@@ -15431,16 +17416,167 @@ impl Walker {
         offset
     }
 
+    fn scalar_reference_integer_place(&self, target: &Expression) -> Option<(String, String, bool)> {
+        let (pointer, cell) = match &target.kind {
+            ExprKind::RefLoad(pointer) => (pointer, true),
+            ExprKind::Unary { op: UnaryOp::Deref, expr } => (expr, false),
+            _ => return None,
+        };
+        let ExprKind::Ident(name) = &pointer.kind else { return None; };
+        if cell && !self.scalar_ref_pointer_vars.contains(name) { return None; }
+        let ty = self.var_types.get(name)?;
+        if !cell && (ty.matches('*').count() != 1 || self.is_function_pointer_type_text(ty)) {
+            return None;
+        }
+        let element = self.resolve_typedef_scalar_aliases(
+            &self.c_indexed_pointer_element_type(ty),
+        );
+        let width = self.sizeof_type_text(&element);
+        (c_int_family_type(&element)
+            && if cell { width <= 4 } else { matches!(width, 2 | 4) })
+            .then(|| (name.clone(), element, cell))
+    }
+
+    fn scalar_reference_integer_write(&mut self, target: &Expression, value: Expression) -> Option<Expression> {
+        if let ExprKind::Unary { op: UnaryOp::Deref, expr: pointer } = &target.kind
+            && !matches!(&pointer.kind, ExprKind::Ident(_))
+        {
+            let ty = self.c_expr_type_text(pointer)?;
+            let element = self.resolve_typedef_scalar_aliases(
+                &self.c_indexed_pointer_element_type(&ty));
+            if ty.matches('*').count() != 1 || self.is_function_pointer_type_text(&ty)
+                || !c_int_family_type(&element)
+                || !matches!(self.sizeof_type_text(&element), 2 | 4)
+            { return None; }
+            let id = self.tmp_counter;
+            self.tmp_counter += 1;
+            let pointer_name = format!("__c_scalar_store_operand{id}");
+            let value_name = format!("__c_scalar_store_rhs{id}");
+            self.register_generated_local(&pointer_name, &ty);
+            self.register_generated_local(&value_name, "integer");
+            self.hybrid_carray_ptr_vars.insert(pointer_name.clone());
+            let place = unary_expr(UnaryOp::Deref, ident(&pointer_name));
+            let pointer_value = self.carray_struct_field_read_target(pointer)
+                .unwrap_or_else(|| (**pointer).clone());
+            let write = self.scalar_reference_integer_write(&place, ident(&value_name))?;
+            return Some(expr(ExprKind::Cast {
+                expr: Box::new(expr(ExprKind::Sequence(vec![
+                    assign_expr(ident(&pointer_name), expr(ExprKind::Cast {
+                        expr: Box::new(pointer_value), type_name: ty,
+                    })),
+                    assign_expr(ident(&value_name), expr(ExprKind::Cast {
+                        expr: Box::new(value), type_name: "integer".into(),
+                    })),
+                    write,
+                ]))), type_name: "integer".into(),
+            }));
+        }
+        let (name, element, cell) = self.scalar_reference_integer_place(target)?;
+        let mut prefix = Vec::new();
+        let value = if !cell && self.sizeof_type_text(&element) == 2 {
+            let temporary = format!("__c_scalar_store_value{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            self.register_generated_local(&temporary, "int");
+            prefix.push(assign_expr(ident(&temporary), expr(ExprKind::Cast {
+                expr: Box::new(value), type_name: "integer".into(),
+            })));
+            apply_bitfield_mask(ident(&temporary), 16,
+                !element.contains("unsigned") && !element.contains("uint"), false)
+        } else { value };
+        let type_name = if !cell { "integer".into() }
+            else { c_emitted_scalar_type_hint(&element) };
+        let value = expr(ExprKind::Cast {
+            expr: Box::new(value), type_name,
+        });
+        let managed_write = if cell { assign_expr(target.clone(), value.clone()) }
+            else { self.carray_deref_write_for_name(&name, value.clone()) };
+        prefix.push(ternary_expr(
+            binary_expr(BinOp::Eq, unary_expr(UnaryOp::Typeof, ident(&name)), str_lit("number")),
+            self.linear_integer_store_expr(ident(&name), &element, value.clone()),
+            managed_write,
+        ));
+        Some(expr(ExprKind::Cast {
+            expr: Box::new(expr(ExprKind::Sequence(prefix))), type_name: "integer".into(),
+        }))
+    }
+
+    fn scalar_reference_integer_update(
+        &mut self, target: &Expression, value: Expression, op: BinOp, postfix: bool,
+    ) -> Option<Expression> {
+        if let ExprKind::Unary { op: UnaryOp::Deref, expr: pointer } = &target.kind
+            && !matches!(&pointer.kind, ExprKind::Ident(_))
+        {
+            let ty = self.c_expr_type_text(pointer)?;
+            let element = self.resolve_typedef_scalar_aliases(
+                &self.c_indexed_pointer_element_type(&ty));
+            if ty.matches('*').count() != 1 || self.is_function_pointer_type_text(&ty)
+                || !c_int_family_type(&element)
+                || !matches!(self.sizeof_type_text(&element), 2 | 4)
+            { return None; }
+            let name = format!("__c_scalar_update_operand{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            self.register_generated_local(&name, &ty);
+            self.hybrid_carray_ptr_vars.insert(name.clone());
+            let place = unary_expr(UnaryOp::Deref, ident(&name));
+            let pointer_value = self.carray_struct_field_read_target(pointer)
+                .unwrap_or_else(|| (**pointer).clone());
+            let update = self.scalar_reference_integer_update(&place, value, op, postfix)?;
+            return Some(expr(ExprKind::Cast {
+                expr: Box::new(expr(ExprKind::Sequence(vec![
+                    assign_expr(ident(&name), expr(ExprKind::Cast {
+                        expr: Box::new(pointer_value), type_name: ty,
+                    })), update,
+                ]))), type_name: "integer".into(),
+            }));
+        }
+        let (name, element, cell) = self.scalar_reference_integer_place(target)?;
+        let mut parts = Vec::new();
+        let (name, target) = if cell {
+            (name, target.clone())
+        } else {
+            let pointer_name = format!("__c_scalar_update_ptr{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            let pointer_type = self.var_types.get(&name)?.clone();
+            self.register_generated_local(&pointer_name, &pointer_type);
+            self.hybrid_carray_ptr_vars.insert(pointer_name.clone());
+            parts.push(assign_expr(ident(&pointer_name), ident(&name)));
+            (pointer_name.clone(), unary_expr(UnaryOp::Deref, ident(&pointer_name)))
+        };
+        let old_name = format!("__c_scalar_update_old{}", self.tmp_counter);
+        self.tmp_counter += 1;
+        self.var_types.insert(old_name.clone(), element.clone());
+        let old = ident(&old_name);
+        let managed_read = if cell { target.clone() }
+            else { self.carray_deref_read_for_name(&name) };
+        let read = expr(ExprKind::Cast {
+            expr: Box::new(ternary_expr(
+                binary_expr(BinOp::Eq, unary_expr(UnaryOp::Typeof, ident(&name)), str_lit("number")),
+                self.linear_integer_load_expr(ident(&name), &element), managed_read,
+            )), type_name: c_emitted_scalar_type_hint(&element),
+        });
+        let updated = binary_expr(op, old.clone(), value);
+        let updated = self.rewrite_unsigned_shift(updated);
+        let updated = self.rewrite_integer_division(updated);
+        let updated = self.rewrite_integer_bitwise_lanes(updated);
+        let write = self.scalar_reference_integer_write(&target, updated)?;
+        parts.extend([assign_expr(old.clone(), read), write]);
+        if postfix { parts.push(old); }
+        Some(expr(ExprKind::Cast {
+            expr: Box::new(expr(ExprKind::Sequence(parts))), type_name: "integer".into(),
+        }))
+    }
+
     fn linear_integer_load_expr(&self, addr: Expression, type_text: &str) -> Expression {
         let resolved = self.resolve_typedef_scalar_aliases(type_text);
         let unsigned = resolved.contains("unsigned")
             || resolved.contains("uint")
             || normalized_c_type_name(&resolved) == "size_t";
-        match self.sizeof_type_text(type_text).max(1) {
+        match self.sizeof_type_text(&resolved).max(1) {
             1 if unsigned => call_expr(ident("__c_ptr_i32_load8_u"), vec![addr]),
             1 => call_expr(ident("__c_ptr_i32_load8_s"), vec![addr]),
             2 if unsigned => call_expr(ident("__c_ptr_i32_load16_u"), vec![addr]),
             2 => call_expr(ident("__c_ptr_i32_load16_s"), vec![addr]),
+            8 if unsigned => call_expr(ident("__c_ptr_u64_load"), vec![addr]),
             8 => call_expr(ident("__c_ptr_i64_load"), vec![addr]),
             4 if unsigned => call_expr(
                 ident("__c_unsigned32_from_bits"),
@@ -15456,9 +17592,25 @@ impl Walker {
         type_text: &str,
         value: Expression,
     ) -> Expression {
-        match self.sizeof_type_text(type_text).max(1) {
+        let resolved = self.resolve_typedef_scalar_aliases(type_text);
+        let value = if self.sizeof_type_text(&resolved) == 1
+            && (resolved.contains("unsigned") || resolved.contains("uint"))
+        {
+            // Assignment yields the destination-converted value, not the
+            // source value that the byte store would otherwise truncate.
+            expr(ExprKind::Cast {
+                expr: Box::new(value),
+                type_name: "uint8".into(),
+            })
+        } else {
+            value
+        };
+        match self.sizeof_type_text(&resolved).max(1) {
             1 => call_expr(ident("__c_ptr_i32_store8"), vec![addr, value]),
             2 => call_expr(ident("__c_ptr_i32_store16"), vec![addr, value]),
+            8 if resolved.contains("unsigned") || resolved.contains("uint")
+                || normalized_c_type_name(&resolved) == "size_t" =>
+                call_expr(ident("__c_ptr_u64_store"), vec![addr, value]),
             8 => call_expr(ident("__c_ptr_i64_store"), vec![addr, value]),
             _ => call_expr(ident("__c_ptr_i32_store"), vec![addr, value]),
         }
@@ -15489,6 +17641,22 @@ impl Walker {
         )
     }
 
+    fn capture_struct_field_owner(
+        &mut self,
+        pointer: Expression,
+        struct_base: &str,
+    ) -> (Expression, Expression) {
+        let name = format!("__c_field_owner{}", self.tmp_counter);
+        self.tmp_counter += 1;
+        self.register_generated_local(&name, &format!("{struct_base} *"));
+        // The logical pointee type does not prove a physical backing. The
+        // existing compact read/write paths retain numeric and managed arms.
+        self.byte_struct_pointer_vars.insert(name.clone(), struct_base.into());
+        self.hybrid_linear_struct_pointer_vars.insert(name.clone());
+        let owner = ident(&name);
+        (assign_expr(owner.clone(), pointer), owner)
+    }
+
     fn carray_struct_field_read(
         &mut self,
         pointer: Expression,
@@ -15500,6 +17668,11 @@ impl Walker {
             .get(struct_base)
             .and_then(|types| types.get(field))
             .cloned()?;
+        if !matches!(&pointer.kind, ExprKind::Ident(_)) {
+            let (capture, owner) = self.capture_struct_field_owner(pointer, struct_base);
+            let read = self.carray_struct_field_read(owner, struct_base, field)?;
+            return Some(expr(ExprKind::Sequence(vec![capture, read])));
+        }
         let struct_offset = self.offsetof_struct_field(struct_base, field);
         let field_is_function_pointer =
             self.struct_field_is_function_pointer(struct_base, field, &field_type);
@@ -15545,6 +17718,20 @@ impl Walker {
             }
             if self.hybrid_linear_struct_pointer_vars.contains(name) {
                 let raw_pointer = self.struct_backing_pointer_or_value(ident(name));
+                let (raw_pointer, normalization) = if matches!(&raw_pointer.kind, ExprKind::Ident(_)) {
+                    (raw_pointer, None)
+                } else {
+                    let backing_name = format!("__c_field_read_backing{}", self.tmp_counter);
+                    self.tmp_counter += 1;
+                    self.register_generated_local(&backing_name, "void *");
+                    let backing = ident(&backing_name);
+                    let capture = assign_expr(backing.clone(), raw_pointer);
+                    (backing, Some(capture))
+                };
+                let finish = |read| match &normalization {
+                    Some(capture) => expr(ExprKind::Sequence(vec![capture.clone(), read])),
+                    None => read,
+                };
                 let resolved_field_type = self.resolve_typedef_scalar_aliases(&field_type);
                 if !self.is_c_pointer_like_type_text(&field_type)
                     && !field_type.contains('[')
@@ -15552,14 +17739,14 @@ impl Walker {
                     && let Some(fields) = self.structs.get(&field_base).cloned()
                 {
                     let backing = call_expr(
-                        ident("__c_hybrid_struct_field_ptr"),
+                        ident("__c_hybrid_embedded_record_ptr"),
                         vec![raw_pointer, str_lit(field), int_lit(struct_offset)],
                     );
-                    return Some(self.struct_view_object_with_pointer_backing(
+                    return Some(finish(self.struct_view_object_with_pointer_backing(
                         &field_base,
                         &fields,
                         backing,
-                    ));
+                    )));
                 }
                 if self.is_c_pointer_like_type_text(&field_type) && !field_is_function_pointer {
                     let linear_read = self.linear_raw_pointer_load_expr(
@@ -15581,16 +17768,16 @@ impl Walker {
                             vec![raw_pointer.clone(), str_lit(field), int_lit(struct_offset)],
                         ),
                     );
-                    return Some(expr(ExprKind::Cast {
+                    return Some(finish(expr(ExprKind::Cast {
                         expr: Box::new(pointer_value),
                         type_name: field_type,
-                    }));
+                    })));
                 }
                 if field_type.contains('[') {
-                    return Some(call_expr(
+                    return Some(finish(call_expr(
                         ident("__c_hybrid_struct_field_ptr"),
                         vec![raw_pointer.clone(), str_lit(field), int_lit(struct_offset)],
-                    ));
+                    )));
                 }
                 let width = self.sizeof_type_text(&field_type).max(1);
                 if matches!(width, 1..=4)
@@ -15601,7 +17788,7 @@ impl Walker {
                     let unsigned = resolved_field_type.contains("unsigned")
                         || resolved_field_type.contains("uint")
                         || normalized_c_type_name(&resolved_field_type) == "size_t";
-                    return Some(expr(ExprKind::Cast {
+                    return Some(finish(expr(ExprKind::Cast {
                         expr: Box::new(ternary_expr(
                             binary_expr(
                                 BinOp::Eq,
@@ -15627,7 +17814,7 @@ impl Walker {
                             ),
                         )),
                         type_name: c_emitted_scalar_type_hint(&resolved_field_type),
-                    }));
+                    })));
                 }
                 let field_addr = self.linear_field_addr(raw_pointer.clone(), struct_offset);
                 let linear_read = if field_is_function_pointer {
@@ -15705,7 +17892,7 @@ impl Walker {
                         ),
                     ),
                 );
-                return Some(self.typed_field_read_value(expr(ExprKind::Ternary {
+                return Some(finish(self.typed_field_read_value(expr(ExprKind::Ternary {
                     cond: Box::new(binary_expr(
                         BinOp::Eq,
                         expr(ExprKind::Unary {
@@ -15716,7 +17903,7 @@ impl Walker {
                     )),
                     then: Box::new(linear_read),
                     else_: Box::new(object_read),
-                }), &field_type));
+                }), &field_type)));
             }
         }
         let pointer = self.struct_backing_pointer_or_value(pointer);
@@ -15918,8 +18105,22 @@ impl Walker {
                 type_name: format!("{element_type} *"),
             }));
         }
-        let field_pointer =
-            self.struct_pointer_field_pointer_read(field_owner, &struct_base, &field, &field_type);
+        let field_pointer = if field_type.contains('[') {
+            self.struct_pointer_array_field_decay_read(field_owner, &struct_base, &field, &field_type)
+        } else {
+            self.struct_pointer_field_pointer_read(field_owner, &struct_base, &field, &field_type)
+        };
+        let element_type = self.c_indexed_pointer_element_type(&field_type);
+        if self.c_struct_pointer_pointee_from_type_text(&field_type).is_some()
+            || (!element_type.contains('*')
+                && self.canonical_struct_base_from_type(&element_type).is_some())
+        {
+            return Some(self.indexed_record_pointer_address(
+                field_pointer,
+                relative_index,
+                &field_type,
+            ));
+        }
         let tmp = format!("__c_addr_field_ptr{}", self.tmp_counter);
         self.tmp_counter += 1;
         let tmp_ident = ident(&tmp);
@@ -16105,7 +18306,8 @@ impl Walker {
             self.struct_field_is_function_pointer(struct_base, field, &field_type);
         let may_have_non_linear_backing = matches!(&pointer.kind, ExprKind::Ident(name)
             if self.hybrid_linear_struct_pointer_vars.contains(name)
-                || self.hybrid_carray_ptr_vars.contains(name));
+                || self.hybrid_carray_ptr_vars.contains(name))
+            || self.expr_may_be_backed_struct_view(&pointer);
         if let Some((linear_addr, _)) = (!may_have_non_linear_backing)
             .then(|| self.linear_pointer_addr_and_stride(&pointer))
             .flatten()
@@ -16148,19 +18350,24 @@ impl Walker {
         if self.is_c_pointer_like_type_text(&field_type) && !field_is_function_pointer {
             let pointer_tmp = format!("__c_struct_field_source{}", self.tmp_counter);
             self.tmp_counter += 1;
+            self.register_generated_local(&pointer_tmp, &format!("{struct_base} *"));
             let pointer_once = ident(&pointer_tmp);
             let fallback = call_expr(
                 ident("__c_hybrid_struct_field_read_ptr"),
                 vec![pointer_once.clone(), str_lit(field), int_lit(struct_offset)],
             );
-            let direct_field = member(pointer_once.clone(), field);
-            let object_read = ternary_expr(
+            let direct_field = self.typed_record_member_expr(
+                pointer_once.clone(), struct_base, field,
+            );
+            let direct_object_read = ternary_expr(
                 binary_expr(
                     BinOp::Eq,
                     member(pointer_once.clone(), REF_KIND_KEY),
                     str_lit(C_STRUCT_PTR_KIND),
                 ),
-                member(member(pointer_once.clone(), CARRAY_BASE_KEY), field),
+                self.typed_record_member_expr(
+                    member(pointer_once.clone(), CARRAY_BASE_KEY), struct_base, field,
+                ),
                 ternary_expr(
                     binary_expr(
                         BinOp::NotEq,
@@ -16168,8 +18375,18 @@ impl Walker {
                         str_lit("undefined"),
                     ),
                     direct_field,
-                    fallback,
+                    fallback.clone(),
                 ),
+            );
+            let object_read = ternary_expr(
+                binary_expr(
+                    BinOp::NotEq,
+                    unary_expr(UnaryOp::Typeof,
+                        member(pointer_once.clone(), C_STRUCT_BACKING_POINTER_KEY)),
+                    str_lit("undefined"),
+                ),
+                fallback,
+                direct_object_read,
             );
             let pointer_value = expr(ExprKind::Sequence(vec![
                 assign_expr(pointer_once.clone(), pointer),
@@ -16216,6 +18433,7 @@ impl Walker {
                 || normalized_c_type_name(&resolved_field_type) == "size_t";
             let pointer_tmp = format!("__c_struct_field_source{}", self.tmp_counter);
             self.tmp_counter += 1;
+            self.register_generated_local(&pointer_tmp, &format!("{struct_base} *"));
             let pointer_once = ident(&pointer_tmp);
             let linear_read = self.linear_integer_load_expr(
                 self.linear_field_addr(pointer_once.clone(), struct_offset),
@@ -16269,6 +18487,19 @@ impl Walker {
         Some(self.typed_field_read_value(read, &field_type))
     }
 
+    fn typed_record_member_expr(
+        &self,
+        owner: Expression,
+        record: &str,
+        field: &str,
+    ) -> Expression {
+        member(expr(ExprKind::Cast {
+            expr: Box::new(owner),
+            type_name: self.struct_class_names.get(record)
+                .cloned().unwrap_or_else(|| record.into()),
+        }), field)
+    }
+
     fn typed_field_read_value(&self, read: Expression, field_type: &str) -> Expression {
         let resolved = self.resolve_typedef_scalar_aliases(field_type);
         let type_name = if self.is_function_pointer_type_text(field_type) {
@@ -16298,17 +18529,82 @@ impl Walker {
         expr(ExprKind::Cast { expr: Box::new(read), type_name })
     }
 
+    fn materialize_indexed_record_pointer(&mut self, value: Expression) -> Expression {
+        let (object, index, dereference) = match &value.kind {
+            ExprKind::Index { object, index, .. } =>
+                (object.clone(), index.clone(), false),
+            ExprKind::Unary { op: UnaryOp::Deref, expr: pointer } =>
+                (pointer.clone(), Box::new(int_lit(0)), true),
+            _ => return value,
+        };
+        let Some(table_type) = self.c_expr_type_text(&object) else { return value; };
+        let element_type = self.c_indexed_pointer_element_type(&table_type);
+        if self.c_struct_pointer_pointee_from_type_text(&element_type).is_none() {
+            return value;
+        }
+        // An assignment-place index/dereference is still raw here. Load its slot
+        // before using it as a record owner, preserving managed side slots.
+        let id = self.tmp_counter;
+        self.tmp_counter += 1;
+        let base_name = format!("__c_record_table_base{id}");
+        let index_name = format!("__c_record_table_index{id}");
+        self.register_generated_local(&base_name, "void*");
+        self.register_generated_local(&index_name, "ptrdiff_t");
+        let base = ident(&base_name);
+        let offset = ident(&index_name);
+        let address = pointers::linear_index_addr(
+            base.clone(), offset.clone(), self.c_pointer_index_stride_from_type(&table_type),
+        );
+        let linear = self.linear_raw_pointer_load_expr(address, &element_type);
+        let managed = if dereference {
+            dynamic_carray_deref_read(base.clone())
+        } else {
+            carray_indexed_access_maybe_pointer_or_plain(base.clone(), offset.clone())
+        };
+        expr(ExprKind::Cast {
+            expr: Box::new(expr(ExprKind::Sequence(vec![
+                assign_expr(base.clone(), expr(ExprKind::Cast {
+                    expr: object, type_name: "void*".into(),
+                })),
+                assign_expr(offset.clone(), expr(ExprKind::Cast {
+                    expr: index, type_name: "ptrdiff_t".into(),
+                })),
+                ternary_expr(
+                    expr(ExprKind::IsType {
+                        expr: Box::new(base.clone()), type_name: "number".into(),
+                    }),
+                    linear,
+                    managed,
+                ),
+            ]))),
+            type_name: element_type,
+        })
+    }
+
     fn struct_pointer_field_read_backings(
         &mut self,
         pointer: Expression,
         struct_base: &str,
         field: &str,
     ) -> Option<Expression> {
+        let pointer = self.materialize_indexed_record_pointer(pointer);
         let field_type = self
             .struct_field_types
             .get(struct_base)
             .and_then(|types| types.get(field))
             .cloned()?;
+        if !matches!(&pointer.kind, ExprKind::Ident(_)) {
+            let name = format!("__c_record_read_owner{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            self.register_generated_local(&name, &format!("{struct_base}*"));
+            self.hybrid_linear_struct_pointer_vars.insert(name.clone());
+            let read = self.struct_pointer_field_read_backings(
+                ident(&name), struct_base, field,
+            )?;
+            return Some(expr(ExprKind::Sequence(vec![
+                assign_expr(ident(&name), pointer), read,
+            ])));
+        }
         let struct_offset = self.offsetof_struct_field(struct_base, field);
         let field_is_function_pointer =
             self.struct_field_is_function_pointer(struct_base, field, &field_type);
@@ -16353,11 +18649,16 @@ impl Walker {
                         str_lit("cstruct"),
                     ),
                 ),
-                member(member(pointer.clone(), "__base"), field),
+                self.typed_record_member_expr(
+                    member(pointer.clone(), "__base"), struct_base, field,
+                ),
                 ternary_expr(
                     pointers::is_carray_ptr_kind(pointer.clone()),
                     carray_read,
-                    member(pointer.clone(), field),
+                    self.typed_record_member_expr(
+                        call_expr(ident("__c_record_pointer_value"), vec![pointer.clone()]),
+                        struct_base, field,
+                    ),
                 ),
             );
             let object_read =
@@ -16430,12 +18731,19 @@ impl Walker {
                     str_lit("cstruct"),
                 ),
             ),
-            member(member(pointer.clone(), "__base"), field),
-            expr(ExprKind::Member {
-                object: Box::new(pointer.clone()),
-                field: field.to_string(),
-                null_safe: false,
-            }),
+            self.typed_record_member_expr(
+                member(pointer.clone(), "__base"), struct_base, field,
+            ),
+            ternary_expr(
+                pointers::is_carray_ptr_kind(pointer.clone()),
+                self.carray_struct_field_read_from_carray_pointer(
+                    pointer.clone(), struct_base, field, &field_type, struct_offset,
+                ),
+                self.typed_record_member_expr(
+                    call_expr(ident("__c_record_pointer_value"), vec![pointer.clone()]),
+                    struct_base, field,
+                ),
+            ),
         );
         if matches!(&pointer.kind, ExprKind::Ident(name)
             if !self.linear_struct_pointer_vars.contains(name)
@@ -16470,37 +18778,29 @@ impl Walker {
         record: &str,
         field: &str,
     ) -> Option<Expression> {
-        let name = format!("__c_place_owner{}", self.tmp_counter);
-        self.tmp_counter += 1;
-        let saved = ident(&name);
-        let managed = self.struct_pointer_value_field_read(saved.clone(), record, field)?;
-        let address =
-            self.linear_field_addr(saved.clone(), self.offsetof_struct_field(record, field));
+        if let Some((address, _)) = self.linear_pointer_addr_and_stride(&owner) {
+            return Some(self.linear_field_addr(
+                address, self.offsetof_struct_field(record, field),
+            ));
+        }
+        let owner = self.record_owner_pointer(owner);
         Some(call_expr(
-            expr(ExprKind::Lambda {
-                params: vec![Param {
-                    name,
-                    type_hint: None,
-                    default: None,
-                    pass_by: PassBy::Value,
-                    is_rest: false,
-                    is_kwargs: false,
-                    is_optional: false,
-                    is_nullable: false,
-                }],
-                body: LambdaBody::Expr(Box::new(ternary_expr(
-                    expr(ExprKind::IsType {
-                        expr: Box::new(saved),
-                        type_name: "number".into(),
-                    }),
-                    address,
-                    managed,
-                ))),
-                is_async: false,
-                captures: vec![],
-            }),
-            vec![owner],
+            ident("__c_hybrid_embedded_record_ptr"),
+            vec![owner, str_lit(field), int_lit(self.offsetof_struct_field(record, field))],
         ))
+    }
+
+    fn record_owner_pointer(&self, owner: Expression) -> Expression {
+        let record = self.c_expr_type_text(&owner)
+            .filter(|ty| !ty.contains('*') && !ty.contains('['))
+            .and_then(|ty| self.canonical_struct_base_from_type(&ty));
+        match record {
+            Some(record) => expr(ExprKind::Cast {
+                expr: Box::new(unary_expr(UnaryOp::AddrOf, owner)),
+                type_name: format!("{record}*"),
+            }),
+            None => owner,
+        }
     }
 
     fn struct_pointer_value_field_read(
@@ -16509,6 +18809,7 @@ impl Walker {
         struct_base: &str,
         field: &str,
     ) -> Option<Expression> {
+        let pointer = self.materialize_indexed_record_pointer(pointer);
         let has_direct_object_representation = matches!(&pointer.kind, ExprKind::Ident(name)
             if self.carray_ptr_vars.contains(name)
                 || self.hybrid_carray_ptr_vars.contains(name)
@@ -16742,7 +19043,7 @@ impl Walker {
         let read = call_expr(
             expr(ExprKind::Lambda {
                 params: vec![Param {
-                    name: pointer_tmp,
+                    name: pointer_tmp.clone(),
                     type_hint: None,
                     default: None,
                     pass_by: PassBy::Value,
@@ -16758,6 +19059,15 @@ impl Walker {
             vec![pointer],
         );
         let resolved_field_type = self.resolve_typedef_scalar_aliases(&field_type);
+        if self.is_integral_type_text(&resolved_field_type)
+            && self.sizeof_type_text(&resolved_field_type) == 8
+            && self.type_access(&field_type) == StorageAccess::Ordinary
+            && !resolved_field_type.contains(['*', '['])
+            && ["__c_ptr_i64_load", "__c_ptr_u64_load"].iter().all(|name|
+                !self.defined_function_names.contains(*name) && !self.var_types.contains_key(*name))
+        {
+            self.wide_record_read_helpers.insert(pointer_tmp);
+        }
         if self.is_integral_type_text(&resolved_field_type)
             || matches!(
                 c_type_without_storage(&resolved_field_type).trim(),
@@ -16797,36 +19107,30 @@ impl Walker {
         // record-array element to its backing before decaying its inline array.
         let pointer = if let ExprKind::Index { object, index, .. } = &pointer.kind
             && let Some(owner_type) = self.c_expr_type_text(object)
-            && owner_type.contains('*')
+            && (owner_type.contains('*') || owner_type.contains('['))
             && let element_type = self.c_indexed_pointer_element_type(&owner_type)
             && !element_type.contains('*')
             && self.canonical_struct_base_from_type(&element_type).as_deref() == Some(struct_base)
         {
-            let id = self.tmp_counter;
-            self.tmp_counter += 1;
-            let base = ident(&format!("__c_array_field_owner{id}"));
-            let element = ident(&format!("__c_array_field_element{id}"));
-            expr(ExprKind::Sequence(vec![
-                assign_expr(base.clone(), (**object).clone()),
-                assign_expr(element.clone(), (**index).clone()),
-                ternary_expr(
-                    expr(ExprKind::IsType {
-                        expr: Box::new(base.clone()),
-                        type_name: "number".into(),
-                    }),
-                    pointers::linear_index_addr(
-                        base.clone(), element.clone(), self.sizeof_type_text(struct_base).max(1),
-                    ),
-                    carray_indexed_access_maybe_pointer_or_plain(base, element),
-                ),
-            ]))
+            self.indexed_record_pointer_address(
+                (**object).clone(), (**index).clone(), &format!("{element_type} *"),
+            )
         } else {
             pointer
         };
         let struct_offset = self.offsetof_struct_field(struct_base, field);
         let pointer_type = decayed_array_pointer_type(field_type);
+        if !self.expr_may_be_backed_struct_view(&pointer)
+            && let Some((address, _)) = self.linear_pointer_addr_and_stride(&pointer)
+        {
+            return expr(ExprKind::Cast {
+                expr: Box::new(self.linear_field_addr(address, struct_offset)),
+                type_name: pointer_type,
+            });
+        }
         let pointer_name = format!("__c_array_field_base{}", self.tmp_counter);
         self.tmp_counter += 1;
+        self.register_generated_local(&pointer_name, "void *");
         let pointer_once = ident(&pointer_name);
         let field_pointer = expr(ExprKind::Sequence(vec![
             assign_expr(pointer_once.clone(), pointer),
@@ -16856,6 +19160,54 @@ impl Walker {
         field: &str,
         value: Expression,
     ) -> Option<Expression> {
+        let pointer = self.materialize_indexed_record_pointer(pointer);
+        if self.linear_pointer_addr_and_stride(&pointer).is_some() {
+            return self.typed_struct_pointer_field_write_backing(pointer, struct_base, field, value);
+        }
+        let source = format!("__c_field_write_source{}", self.tmp_counter);
+        self.tmp_counter += 1;
+        let backing = format!("__c_field_write_backing{}", self.tmp_counter);
+        self.tmp_counter += 1;
+        for name in [&source, &backing] {
+            self.register_generated_local(name, &format!("{struct_base}*"));
+        }
+        let source_value = ident(&source);
+        let pointer_backing = member(source_value.clone(), C_STRUCT_BACKING_POINTER_KEY);
+        // A record view and its backing are one C place. Reads already follow
+        // this metadata; writes must not update only the view's cached fields.
+        let has_backing = binary_expr(
+            BinOp::And,
+            expr(ExprKind::IsType {
+                expr: Box::new(source_value.clone()),
+                type_name: "object".into(),
+            }),
+            binary_expr(
+                BinOp::And,
+                binary_expr(BinOp::NotEq, source_value.clone(), null_lit()),
+                binary_expr(
+                    BinOp::NotEq,
+                    unary_expr(UnaryOp::Typeof, pointer_backing.clone()),
+                    str_lit("undefined"),
+                ),
+            ),
+        );
+        let write = self.typed_struct_pointer_field_write_backing(
+            ident(&backing), struct_base, field, value,
+        )?;
+        Some(expr(ExprKind::Sequence(vec![
+            assign_expr(source_value.clone(), pointer),
+            assign_expr(ident(&backing), ternary_expr(has_backing, pointer_backing, source_value)),
+            write,
+        ])))
+    }
+
+    fn typed_struct_pointer_field_write_backing(
+        &mut self,
+        pointer: Expression,
+        struct_base: &str,
+        field: &str,
+        value: Expression,
+    ) -> Option<Expression> {
         let field_type = self
             .struct_field_types
             .get(struct_base)
@@ -16865,44 +19217,63 @@ impl Walker {
         let field_is_function_pointer =
             self.struct_field_is_function_pointer(struct_base, field, &field_type);
         if !matches!(&pointer.kind, ExprKind::Ident(_))
-            && self.is_c_pointer_like_type_text(&field_type)
-            && !field_is_function_pointer
+            && !self.is_c_pointer_like_type_text(&field_type)
+            && (self.is_integral_type_text(&field_type)
+                || matches!(self.resolve_typedef_scalar_aliases(&field_type).trim(),
+                    "char" | "signed char" | "unsigned char"))
+        {
+            let name = format!("__c_scalar_field_target{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            self.register_generated_local(&name, &format!("{struct_base}*"));
+            let write = self.typed_struct_pointer_field_write_backing(
+                ident(&name), struct_base, field, value,
+            )?;
+            return Some(expr(ExprKind::Sequence(vec![
+                assign_expr(ident(&name), pointer), write,
+            ])));
+        }
+        if !matches!(&value.kind, ExprKind::Ident(_) | ExprKind::Lit(_))
+            && !self.is_c_pointer_like_type_text(&field_type)
+            && (self.is_integral_type_text(&field_type)
+                || matches!(self.resolve_typedef_scalar_aliases(&field_type).trim(),
+                    "char" | "signed char" | "unsigned char"))
+        {
+            let name = format!("__c_scalar_field_value{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            self.register_generated_local(&name, &field_type);
+            let write = self.typed_struct_pointer_field_write_backing(
+                pointer, struct_base, field, ident(&name),
+            )?;
+            return Some(expr(ExprKind::Sequence(vec![
+                assign_expr(ident(&name), value), write,
+            ])));
+        }
+        if self.is_c_pointer_like_type_text(&field_type)
+            && (!matches!(&pointer.kind, ExprKind::Ident(_))
+                || !matches!(&value.kind, ExprKind::Ident(_) | ExprKind::Lit(_)))
         {
             self.uses_linear_pointer_slots = true;
             let pointer_tmp = format!("__c_struct_field_target{}", self.tmp_counter);
             self.tmp_counter += 1;
+            self.register_generated_local(&pointer_tmp, &format!("{struct_base}*"));
             let pointer_once = ident(&pointer_tmp);
             let value = self
                 .carray_struct_field_read_target(&value)
                 .unwrap_or(value);
-            let (mut prefix, pointer_value) = self.c_pointer_assignment_value_parts(value);
-            let stored_value = self.c_pointer_storage_value(pointer_value.clone());
-            prefix.insert(0, assign_expr(pointer_once.clone(), pointer));
-            let linear_write = self.linear_pointer_slot_store_expr(
-                self.linear_field_addr(pointer_once.clone(), struct_offset),
-                stored_value.clone(),
-            );
-            prefix.push(ternary_expr(
-                binary_expr(
-                    BinOp::Eq,
-                    expr(ExprKind::Unary {
-                        op: UnaryOp::Typeof,
-                        expr: Box::new(pointer_once.clone()),
-                    }),
-                    str_lit("number"),
-                ),
-                linear_write,
-                call_expr(
-                    ident("__c_hybrid_struct_field_write_ptr"),
-                    vec![
-                        pointer_once,
-                        str_lit(field),
-                        int_lit(struct_offset),
-                        stored_value,
-                    ],
-                ),
-            ));
-            prefix.push(pointer_value);
+            let value_tmp = format!("__c_struct_field_value{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            self.register_generated_local(&value_tmp, &field_type);
+            // Capture the owner before the complete RHS, including nested
+            // assignments. Dispatch and assignment-result paths reuse both.
+            let mut prefix = vec![assign_expr(pointer_once.clone(), expr(ExprKind::Cast {
+                expr: Box::new(pointer), type_name: "void*".into(),
+            }))];
+            prefix.push(assign_expr(ident(&value_tmp), expr(ExprKind::Cast {
+                expr: Box::new(value), type_name: "void*".into(),
+            })));
+            prefix.push(self.typed_struct_pointer_field_write_backing(
+                pointer_once, struct_base, field, ident(&value_tmp),
+            )?);
             return Some(expr(ExprKind::Sequence(prefix)));
         }
         let statically_linear_pointer = self.linear_pointer_addr_and_stride(&pointer).is_some();
@@ -16982,6 +19353,36 @@ impl Walker {
                 value.clone(),
             ),
         );
+        let direct_record_write = assign_expr(
+            self.typed_record_member_expr(
+                call_expr(ident("__c_record_pointer_value"), vec![pointer.clone()]),
+                struct_base, field,
+            ),
+            value.clone(),
+        );
+        let direct_record_write = if self.is_integral_type_text(&field_type)
+            && matches!(self.sizeof_type_text(&field_type), 1..=4)
+            && self.type_access(&field_type) == StorageAccess::Ordinary
+        {
+            // A raw byte array cast to a record pointer has no named fields.
+            // Record-element arrays must retain their existing object path.
+            let byte_array = binary_expr(
+                BinOp::And,
+                call_expr(ident("__c_is_array"), vec![pointer.clone()]),
+                unary_expr(UnaryOp::Not, expr(ExprKind::IsType {
+                    expr: Box::new(call_expr(ident("__c_array_get"),
+                        vec![pointer.clone(), int_lit(0)])),
+                    type_name: "object".into(),
+                })),
+            );
+            let write = self.carray_struct_field_write_to_carray_pointer(
+                pointers::make_carray_ptr(pointer.clone(), int_lit(0)),
+                &field_type, struct_offset, value.clone(),
+            );
+            ternary_expr(byte_array, write, direct_record_write)
+        } else {
+            direct_record_write
+        };
         let object_write = ternary_expr(
             binary_expr(
                 BinOp::And,
@@ -17000,13 +19401,15 @@ impl Walker {
                 ),
             ),
             assign_expr(
-                member(member(pointer.clone(), "__base"), field),
+                self.typed_record_member_expr(
+                    member(pointer.clone(), CARRAY_BASE_KEY), struct_base, field,
+                ),
                 value.clone(),
             ),
             ternary_expr(
                 pointers::is_carray_ptr_kind(pointer.clone()),
                 carray_write,
-                assign_expr(member(pointer.clone(), field), value.clone()),
+                direct_record_write,
             ),
         );
         if statically_linear_pointer {
@@ -17034,6 +19437,16 @@ impl Walker {
         let ExprKind::Member { object, field, .. } = &target.kind else {
             return None;
         };
+        // An indexed inline record array is a place in its owner's backing,
+        // not an ordinary object-field array on a byte-backed record view.
+        if matches!(&object.kind, ExprKind::Index { .. })
+            && let Some(record) = self.c_expr_type_text(object)
+                .filter(|ty| !ty.contains('*'))
+                .and_then(|ty| self.canonical_struct_base_from_type(&ty))
+            && let Some(address) = self.address_of_indexed_struct_pointer_field(object)
+        {
+            return self.typed_struct_pointer_field_write(address, &record, field, value);
+        }
         if let Some(address) = self.linear_embedded_struct_addr(object)
             && let Some(struct_base) = self
                 .c_expr_type_text(object)
@@ -17149,16 +19562,22 @@ impl Walker {
                                 owner_field,
                             ) {
                                 let owner_value = (**owner).clone();
+                                let field_addr = self.linear_field_addr(
+                                    owner_value.clone(),
+                                    self.offsetof_struct_field(&owner_struct_base, owner_field),
+                                );
+                                let linear_target = if self.is_c_pointer_like_type_text(&owner_field_type) {
+                                    self.linear_raw_pointer_load_expr(field_addr, &owner_field_type)
+                                } else {
+                                    field_addr
+                                };
                                 let owner_pointer = ternary_expr(
                                     binary_expr(
                                         BinOp::Eq,
                                         unary_expr(UnaryOp::Typeof, owner_value.clone()),
                                         str_lit("number"),
                                     ),
-                                    self.linear_field_addr(
-                                        owner_value,
-                                        self.offsetof_struct_field(&owner_struct_base, owner_field),
-                                    ),
+                                    linear_target,
                                     self.struct_backing_pointer_or_value(owner_pointer),
                                 );
                                 return self.typed_struct_pointer_field_write(
@@ -17254,16 +19673,22 @@ impl Walker {
                     owner_field,
                 )?;
                 let owner_value = (**owner).clone();
+                let field_addr = self.linear_field_addr(
+                    owner_value.clone(),
+                    self.offsetof_struct_field(&owner_struct_base, owner_field),
+                );
+                let linear_target = if self.is_c_pointer_like_type_text(&owner_field_type) {
+                    self.linear_raw_pointer_load_expr(field_addr, &owner_field_type)
+                } else {
+                    field_addr
+                };
                 let pointer = ternary_expr(
                     binary_expr(
                         BinOp::Eq,
                         unary_expr(UnaryOp::Typeof, owner_value.clone()),
                         str_lit("number"),
                     ),
-                    self.linear_field_addr(
-                        owner_value,
-                        self.offsetof_struct_field(&owner_struct_base, owner_field),
-                    ),
+                    linear_target,
                     self.struct_backing_pointer_or_value(pointer),
                 );
                 Some((target_base, pointer))
@@ -17324,8 +19749,9 @@ impl Walker {
             self.struct_field_is_function_pointer(&struct_base, field, &field_type);
         if !matches!(&pointer.kind, ExprKind::Ident(_))
             && (self.is_c_pointer_like_type_text(&field_type)
-                || self.is_integral_type_text(&field_type))
-            && !field_is_function_pointer
+                || self.is_integral_type_text(&field_type)
+                || matches!(self.resolve_typedef_scalar_aliases(&field_type).trim(),
+                    "char" | "signed char" | "unsigned char"))
         {
             return self.typed_struct_pointer_field_write(pointer, &struct_base, field, value);
         }
@@ -17662,6 +20088,7 @@ impl Walker {
             let mut seq = Vec::new();
             let value_tmp = format!("__c_struct_field_write{}", self.tmp_counter);
             self.tmp_counter += 1;
+            self.register_generated_local(&value_tmp, &field_type);
             let value_once = ident(&value_tmp);
             seq.push(assign_expr(value_once.clone(), value));
             for i in 0..width {
@@ -17692,6 +20119,19 @@ impl Walker {
 
     fn c_pointer_storage_value(&self, value: Expression) -> Expression {
         match value.kind {
+            ExprKind::Cast { expr: inner, type_name } if type_name.contains('*') => {
+                self.c_pointer_storage_value(*inner)
+            }
+            ExprKind::Call { mut callee, args, optional }
+                if matches!(&callee.kind, ExprKind::Lambda { body: LambdaBody::Expr(_), .. }) =>
+            {
+                // Normalize the returned branches, not a property of the mixed
+                // result: a linear address has no managed-pointer index slot.
+                if let ExprKind::Lambda { body: LambdaBody::Expr(body), .. } = &mut callee.kind {
+                    **body = self.c_pointer_storage_value((**body).clone());
+                }
+                expr(ExprKind::Call { callee, args, optional })
+            }
             ExprKind::Unary {
                 op: UnaryOp::AddrOf,
                 expr: operand,
@@ -17868,6 +20308,7 @@ impl Walker {
             let mut seq = Vec::new();
             let value_tmp = format!("__c_struct_field_write{}", self.tmp_counter);
             self.tmp_counter += 1;
+            self.register_generated_local(&value_tmp, field_type);
             let value_once = ident(&value_tmp);
             seq.push(assign_expr(value_once.clone(), value));
             for i in 0..width {
@@ -17974,6 +20415,27 @@ impl Walker {
             return ternary_expr(element_is_object, object_backed_field_read, backed_view);
         }
         let width = self.sizeof_type_text(field_type).max(1);
+        if width == 8 && self.is_integral_type_text(field_type)
+            && self.type_access(field_type) == StorageAccess::Ordinary
+        {
+            let mut value = expr(ExprKind::Cast {
+                expr: Box::new(self.byte_from_carray_index_expr(base.clone(), byte_offset.clone())),
+                type_name: "uint64".into(),
+            });
+            for index in 1..8 {
+                let byte = expr(ExprKind::Cast {
+                    expr: Box::new(self.byte_from_carray_index_expr(base.clone(),
+                        binary_expr(BinOp::Add, byte_offset.clone(), int_lit(index)))),
+                    type_name: "uint64".into(),
+                });
+                value = binary_expr(BinOp::Integer(vybe_ast::IntOp::Or, vybe_ast::BitLane::W64),
+                    value, binary_expr(BinOp::Integer(vybe_ast::IntOp::Shl, vybe_ast::BitLane::W64),
+                        byte, int_lit(index * 8)));
+            }
+            return self.typed_field_read_value(
+                ternary_expr(element_is_object, object_backed_field_read, value), field_type,
+            );
+        }
         if c_int_family_type(field_type) || matches!(width, 1..=4) {
             let value = self.little_endian_int_from_carray_index_expr(base, byte_offset, width);
             let resolved = self.resolve_typedef_scalar_aliases(field_type);
@@ -18007,6 +20469,16 @@ impl Walker {
         } else {
             let object_type = self.c_expr_type_text(object)?;
             if !object_type.contains('*') {
+                if matches!(&object.kind, ExprKind::Index { .. })
+                    && let Some(record) = self.canonical_struct_base_from_type(&object_type)
+                    && let Some(field_type) = self.struct_field_types.get(&record)
+                        .and_then(|fields| fields.get(field)).cloned()
+                    && field_type.contains('[')
+                {
+                    return Some(self.struct_pointer_array_field_decay_read(
+                        (**object).clone(), &record, field, &field_type,
+                    ));
+                }
                 return None;
             }
             self.canonical_struct_base_from_type(&object_type)?
@@ -18018,7 +20490,57 @@ impl Walker {
         let ExprKind::Member { object, field, .. } = &value.kind else {
             return None;
         };
+        if let Some(owner_type) = self.c_expr_type_text(object)
+            && let Some(record) = self.c_struct_pointer_pointee_from_type_text(&owner_type)
+            && let Some(field_type) = self.struct_field_types.get(&record)
+                .and_then(|fields| fields.get(field))
+            && !field_type.contains('*') && !field_type.contains('[')
+            && self.canonical_struct_base_from_type(field_type).is_some()
+        {
+            return Some(expr(ExprKind::Cast {
+                expr: Box::new(call_expr(ident("__c_hybrid_embedded_record_ptr"), vec![
+                    (**object).clone(), str_lit(field),
+                    int_lit(self.offsetof_struct_field(&record, field)),
+                ])),
+                type_name: format!("{} *", field_type.trim()),
+            }));
+        }
         let (struct_base, pointer) = if let ExprKind::Ident(name) = &object.kind {
+            if !self.byte_struct_pointer_vars.contains_key(name)
+                && let Some(owner_type) = self.c_expr_type_text(object)
+                && let Some(record) = self.c_struct_pointer_pointee_from_type_text(&owner_type)
+                && let Some(field_type) = self.struct_field_types.get(&record)
+                    .and_then(|fields| fields.get(field))
+            {
+                // A typed record pointer loaded from a pointer table need not
+                // carry a byte-view classification. Numeric owners still use
+                // their declared field offset, never a string property index.
+                return Some(expr(ExprKind::Cast {
+                    expr: Box::new(ternary_expr(
+                        expr(ExprKind::IsType {
+                            expr: object.clone(), type_name: "number".into(),
+                        }),
+                        self.linear_field_addr((**object).clone(),
+                            self.offsetof_struct_field(&record, field)),
+                        ternary_expr(
+                            call_expr(ident("__c_tag_eq"), vec![
+                                member((**object).clone(), REF_KIND_KEY), str_lit(C_STRUCT_PTR_KIND),
+                            ]),
+                            unary_expr(UnaryOp::AddrOf, member(
+                                call_expr(ident("__c_record_pointer_value"), vec![
+                                    member((**object).clone(), CARRAY_BASE_KEY),
+                                ]), field,
+                            )),
+                            unary_expr(UnaryOp::AddrOf, member(
+                                call_expr(ident("__c_record_pointer_value"), vec![
+                                    (**object).clone(),
+                                ]), field,
+                            )),
+                        ),
+                    )),
+                    type_name: format!("{} *", field_type.trim()),
+                }));
+            }
             (
                 self.byte_struct_pointer_vars.get(name)?.clone(),
                 self.struct_backing_pointer_or_value(ident(name)),
@@ -18036,27 +20558,65 @@ impl Walker {
             if !self.structs.contains_key(&base) {
                 return None;
             }
-            if !self.expr_may_be_backed_struct_view(object) && !is_carray_like_expr(object) {
+            if self.linear_embedded_struct_addr(object).is_none()
+                && !self.expr_may_be_backed_struct_view(object)
+                && !is_carray_like_expr(object)
+                && !self.is_linear_pointer_address_or_value_expr(object)
+            {
                 return None;
             }
             (base, self.struct_backing_pointer_or_value((**object).clone()))
         };
         let field_type = self.struct_field_types.get(&struct_base)?.get(field)?;
         let field_offset = self.offsetof_struct_field(&struct_base, field);
+        if !field_type.contains('*') && !field_type.contains('[')
+            && self.canonical_struct_base_from_type(field_type).is_some()
+        {
+            return Some(expr(ExprKind::Cast {
+                expr: Box::new(call_expr(ident("__c_hybrid_embedded_record_ptr"), vec![
+                    (**object).clone(), str_lit(field), int_lit(field_offset),
+                ])),
+                type_name: format!("{} *", field_type.trim()),
+            }));
+        }
         if let Some(linear_addr) = self.linear_struct_pointer_addr(object, &pointer) {
             return Some(expr(ExprKind::Cast {
                 expr: Box::new(self.linear_field_addr(linear_addr, field_offset)),
                 type_name: format!("{} *", field_type.trim()),
             }));
         }
+        let captured = (!matches!(&pointer.kind, ExprKind::Ident(_) | ExprKind::Lit(_)))
+            .then(|| pointer.clone());
+        let pointer = if captured.is_some() {
+            ident("__c_field_address_owner")
+        } else {
+            pointer
+        };
         let byte_offset = expr(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(member(pointer.clone(), CARRAY_IDX_KEY)),
             right: Box::new(int_lit(field_offset)),
         });
-        let managed_address =
+        let byte_address =
             pointers::make_carray_ptr(member(pointer.clone(), CARRAY_BASE_KEY), byte_offset);
-        Some(ternary_expr(
+        let record_owner = ternary_expr(
+            call_expr(ident("__c_tag_eq"), vec![
+                member(pointer.clone(), REF_KIND_KEY), str_lit(C_STRUCT_PTR_KIND),
+            ]),
+            member(pointer.clone(), CARRAY_BASE_KEY),
+            pointer.clone(),
+        );
+        let record_address = unary_expr(UnaryOp::AddrOf, member(
+            call_expr(ident("__c_record_pointer_value"), vec![record_owner]), field,
+        ));
+        let managed_address = ternary_expr(
+            call_expr(ident("__c_tag_eq"), vec![
+                member(pointer.clone(), REF_KIND_KEY), str_lit(CARRAY_KIND),
+            ]),
+            byte_address,
+            record_address,
+        );
+        let address = ternary_expr(
             expr(ExprKind::IsType {
                 expr: Box::new(pointer.clone()),
                 type_name: "number".into(),
@@ -18066,7 +20626,20 @@ impl Walker {
                 type_name: format!("{} *", field_type.trim()),
             }),
             managed_address,
-        ))
+        );
+        Some(if let Some(source) = captured {
+            call_expr(expr(ExprKind::Lambda {
+                params: vec![Param {
+                    name: "__c_field_address_owner".into(), type_hint: None,
+                    default: None, pass_by: PassBy::Value, is_rest: false,
+                    is_kwargs: false, is_optional: false, is_nullable: false,
+                }],
+                body: LambdaBody::Expr(Box::new(address)),
+                captures: vec![], is_async: false,
+            }), vec![source])
+        } else {
+            address
+        })
     }
 
     fn struct_pointer_for_address_expr(&self, value: &Expression) -> Option<Expression> {
@@ -18140,13 +20713,40 @@ impl Walker {
         let object_base = normalized_c_type_name(object_type.trim_end_matches('*').trim());
         let first_field = self.first_struct_field(&object_base)?;
         if first_field == field {
+            // The saved owner is a pointer, not a generic reference cell.
+            // Resolve its backing before selecting an embedded record's place.
+            if let ExprKind::Cast { expr: owner, .. } = &object.kind
+                && let ExprKind::Unary { op: UnaryOp::Deref, expr: pointer } = &owner.kind
+            {
+                let member_value = self.typed_struct_pointer_field_read(
+                    (**pointer).clone(), &object_base, field,
+                )?;
+                let field_type = self.struct_field_types.get(&object_base)?.get(field)?;
+                let member_pointer = self.struct_pointer_for_record_base(field_type, member_value)?;
+                // The first member shares the owner's linear address. Reading
+                // its aggregate value is only appropriate for managed storage.
+                let backing = self.struct_backing_pointer_or_value((**pointer).clone());
+                let linear_member = expr(ExprKind::Cast {
+                    expr: Box::new(backing.clone()),
+                    type_name: format!("{} *", field_type.trim()),
+                });
+                let member_pointer = ternary_expr(
+                    expr(ExprKind::IsType {
+                        expr: Box::new(backing),
+                        type_name: "number".into(),
+                    }),
+                    linear_member,
+                    member_pointer,
+                );
+                return Some((member_pointer, (**pointer).clone()));
+            }
             let member_value = if self
                 .c_struct_pointer_pointee_from_type_text(&object_type)
                 .is_some()
             {
                 self.struct_pointer_value_field_read(*object.clone(), &object_base, field)?
             } else {
-                value.clone()
+                unary_expr(UnaryOp::AddrOf, value.clone())
             };
             Some((member_value, *object.clone()))
         } else {
@@ -18162,21 +20762,13 @@ impl Walker {
         let tmp = format!("__c_first_member_ptr{}", self.tmp_counter);
         self.tmp_counter += 1;
         let tmp_ident = ident(&tmp);
-        let container_ref = expr(ExprKind::Member {
-            object: Box::new(tmp_ident.clone()),
-            field: C_FIRST_MEMBER_CONTAINER_KEY.to_string(),
-            null_safe: false,
-        });
-        let container_backing = expr(ExprKind::Member {
-            object: Box::new(container_ref.clone()),
-            field: C_STRUCT_BACKING_POINTER_KEY.to_string(),
-            null_safe: false,
-        });
-        let value_backing = expr(ExprKind::Member {
-            object: Box::new(tmp_ident.clone()),
-            field: C_STRUCT_BACKING_POINTER_KEY.to_string(),
-            null_safe: false,
-        });
+        let container = self.record_owner_pointer(container);
+        let container_ref = call_expr(ident("__c_array_get"),
+            vec![tmp_ident.clone(), str_lit(C_FIRST_MEMBER_CONTAINER_KEY)]);
+        let container_backing = call_expr(ident("__c_array_get"),
+            vec![container_ref.clone(), str_lit(C_STRUCT_BACKING_POINTER_KEY)]);
+        let value_backing = call_expr(ident("__c_array_get"),
+            vec![tmp_ident.clone(), str_lit(C_STRUCT_BACKING_POINTER_KEY)]);
         let tmp_is_number = binary_expr(
             BinOp::Eq,
             expr(ExprKind::Unary {
@@ -18236,42 +20828,59 @@ impl Walker {
         );
         expr(ExprKind::Sequence(vec![
             assign_expr(tmp_ident.clone(), member_value),
-            assign_expr(container_ref, container),
-            assign_expr(
-                expr(ExprKind::Member {
-                    object: Box::new(tmp_ident.clone()),
-                    field: C_STRUCT_BACKING_POINTER_KEY.to_string(),
-                    null_safe: false,
-                }),
-                backing,
-            ),
+            call_expr(ident("__c_array_set"),
+                vec![tmp_ident.clone(), str_lit(C_FIRST_MEMBER_CONTAINER_KEY), container]),
+            call_expr(ident("__c_array_set"),
+                vec![tmp_ident.clone(), str_lit(C_STRUCT_BACKING_POINTER_KEY), backing]),
             tmp_ident,
         ]))
+    }
+
+    fn owner_pointer_to_first_record_member(
+        &mut self, value: Expression, target: &str,
+    ) -> Option<Expression> {
+        let source = self.c_expr_type_text(&value)?;
+        let source_record = self.c_struct_pointer_pointee_from_type_text(&source)?;
+        let field = self.first_struct_field(&source_record)?.to_string();
+        let field_type = self.first_struct_field_type(&source_record)?;
+        if field_type.contains('*') || field_type.contains('[')
+            || self.canonical_struct_base_from_type(&field_type).as_deref() != Some(target)
+        { return None; }
+        let name = format!("__c_first_record_owner{}", self.tmp_counter);
+        self.tmp_counter += 1;
+        self.register_generated_local(&name, "void*");
+        let owner = ident(&name);
+        let member = call_expr(ident("__c_hybrid_embedded_record_ptr"), vec![
+            owner.clone(), str_lit(&field), int_lit(0),
+        ]);
+        let pointer = self.struct_pointer_for_record_base(&field_type, member)?;
+        let pointer = self.tag_first_member_pointer_expr(pointer, owner.clone());
+        Some(expr(ExprKind::Sequence(vec![
+            assign_expr(owner.clone(), expr(ExprKind::Cast {
+                expr: Box::new(value), type_name: "void*".into(),
+            })),
+            ternary_expr(expr(ExprKind::IsType {
+                expr: Box::new(owner.clone()), type_name: "number".into(),
+            }), owner, pointer),
+        ])))
     }
 
     fn first_member_pointer_container_value(&mut self, value: Expression) -> Expression {
         let tmp = format!("__c_first_member_container{}", self.tmp_counter);
         self.tmp_counter += 1;
         let tmp_ident = ident(&tmp);
-        let container = expr(ExprKind::Member {
-            object: Box::new(tmp_ident.clone()),
-            field: C_FIRST_MEMBER_CONTAINER_KEY.to_string(),
-            null_safe: false,
-        });
+        let container = call_expr(ident("__c_array_get"),
+            vec![tmp_ident.clone(), str_lit(C_FIRST_MEMBER_CONTAINER_KEY)]);
         let container_source = ternary_expr(
-            binary_expr(
-                BinOp::Eq,
-                member(container.clone(), REF_KIND_KEY),
-                str_lit(C_STRUCT_PTR_KIND),
+            call_expr(
+                ident("__c_tag_eq"),
+                vec![member(container.clone(), REF_KIND_KEY), str_lit(C_STRUCT_PTR_KIND)],
             ),
             member(container.clone(), CARRAY_BASE_KEY),
             container.clone(),
         );
-        let value_backing = expr(ExprKind::Member {
-            object: Box::new(tmp_ident.clone()),
-            field: C_STRUCT_BACKING_POINTER_KEY.to_string(),
-            null_safe: false,
-        });
+        let value_backing = call_expr(ident("__c_array_get"),
+            vec![tmp_ident.clone(), str_lit(C_STRUCT_BACKING_POINTER_KEY)]);
         let has_container = binary_expr(
             BinOp::And,
             binary_expr(
@@ -18327,6 +20936,67 @@ impl Walker {
         ]))
     }
 
+    fn erased_first_member_recovery_needed(&self, value: &Expression, target: &str) -> bool {
+        let Some(first_type) = self.first_struct_field_type(target) else { return false; };
+        if first_type.contains('*') || first_type.contains('[')
+            || self.canonical_struct_base_from_type(&first_type).is_none()
+            || memory::is_heap_allocation(value)
+            || memory::is_heap_allocation(&carray_operand_expr(value))
+            || self.expr_is_linear_pointer_return_call(value)
+        { return false; }
+        self.c_expr_type_text(value).is_some_and(|ty| {
+            let ty = self.resolve_typedef_scalar_aliases(&ty);
+            ty.matches('*').count() == 1 && !ty.contains('[')
+                && normalized_c_type_name(ty.split('*').next().unwrap_or_default()) == "void"
+        })
+    }
+
+    fn guarded_erased_first_member_value(&mut self, value: Expression, target: &str) -> Expression {
+        let id = self.tmp_counter;
+        self.tmp_counter += 1;
+        let names = [format!("__c_erased_member_value{id}"),
+            format!("__c_erased_member_container{id}"), format!("__c_erased_member_owner{id}")];
+        for name in &names { self.register_generated_local(name, "void*"); }
+        let value_once = ident(&names[0]);
+        let container = ident(&names[1]);
+        let owner = ident(&names[2]);
+        let get = |object: Expression, key: &str|
+            call_expr(ident("__c_array_get"), vec![object, str_lit(key)]);
+        let object = |value: Expression| binary_expr(BinOp::And,
+            expr(ExprKind::IsType { expr: Box::new(value.clone()), type_name: "object".into() }),
+            unary_expr(UnaryOp::Not, call_expr(ident("__c_ref_eq"), vec![value, null_lit()])));
+        let base = get(value_once.clone(), CARRAY_BASE_KEY);
+        let candidate = ternary_expr(object(container.clone()), container.clone(),
+            ternary_expr(object(base.clone()), get(base, C_FIRST_MEMBER_CONTAINER_KEY),
+                expr(ExprKind::Lit(Literal::Undefined))));
+        let root = ternary_expr(
+            call_expr(ident("__c_tag_eq"), vec![get(container.clone(), REF_KIND_KEY),
+                str_lit(C_STRUCT_PTR_KIND)]),
+            get(container.clone(), CARRAY_BASE_KEY),
+            call_expr(ident("__c_record_pointer_value"), vec![container.clone()]));
+        // A void carrier may name the first member itself. Only matching owner
+        // metadata authorizes recovery; numeric addresses and other owners stay intact.
+        let managed = expr(ExprKind::Sequence(vec![
+            assign_expr(container.clone(), get(value_once.clone(), C_FIRST_MEMBER_CONTAINER_KEY)),
+            assign_expr(container.clone(), candidate),
+            ternary_expr(object(container.clone()), expr(ExprKind::Sequence(vec![
+                assign_expr(owner.clone(), root),
+                ternary_expr(binary_expr(BinOp::And, object(owner.clone()),
+                    call_expr(ident("__c_tag_eq"), vec![get(owner.clone(), C_STRUCT_TYPE_KEY),
+                        str_lit(target)])), container.clone(), value_once.clone()),
+            ])), value_once.clone()),
+        ]));
+        expr(ExprKind::Cast {
+            expr: Box::new(expr(ExprKind::Sequence(vec![
+                assign_expr(value_once.clone(), expr(ExprKind::Cast {
+                    expr: Box::new(value), type_name: "void*".into(),
+                })),
+                ternary_expr(object(value_once.clone()), managed, value_once),
+            ]))),
+            type_name: format!("{target} *"),
+        })
+    }
+
     fn value_points_to_first_field_of_struct(
         &self,
         value: &Expression,
@@ -18336,7 +21006,8 @@ impl Walker {
             ExprKind::Cast { expr, .. } => expr.as_ref(),
             _ => value,
         };
-        let Some(source_type) = self.c_expr_type_text(source_value) else {
+        let Some(source_type) = self.c_expr_type_text(value)
+            .or_else(|| self.c_expr_type_text(source_value)) else {
             return false;
         };
         if !source_type.contains('*') {
@@ -18354,17 +21025,6 @@ impl Walker {
         source_base == first_base
     }
 
-    fn recover_first_member_container_cast(
-        &mut self,
-        target_struct_base: &str,
-        value: Expression,
-    ) -> Expression {
-        if self.value_points_to_first_field_of_struct(&value, target_struct_base) {
-            self.first_member_pointer_container_value(value)
-        } else {
-            value
-        }
-    }
 
     fn mark_first_member_container_pointer_target(&mut self, target_name: &str, target_base: &str) {
         self.byte_struct_pointer_vars
@@ -18400,6 +21060,10 @@ impl Walker {
         if !self.structs.contains_key(&target_base) {
             return value;
         }
+        if self.erased_first_member_recovery_needed(&value, &target_base) {
+            self.mark_first_member_container_pointer_target(target_name, &target_base);
+            return self.guarded_erased_first_member_value(value, &target_base);
+        }
         if self.value_points_to_first_field_of_struct(&value, &target_base) {
             self.mark_first_member_container_pointer_target(target_name, &target_base);
             return self.first_member_pointer_container_value(value);
@@ -18413,15 +21077,57 @@ impl Walker {
             .cloned()
             .map(|mut param| {
                 if let Some(type_hint) = param.type_hint.as_deref() {
+                    let access = param.type_hint.as_ref().and_then(|hint| hint.access);
+                    let source_type = type_hint.to_string();
                     if type_hint.contains('*') {
                         param.type_hint = None;
                     } else if self.is_enum_scalar_type(type_hint) {
                         param.type_hint = Some("int".into());
                     }
+                    param.type_hint = Some(self.storage_access_hint(param.type_hint.take(), &source_type));
+                    if let Some(access) = access { param.type_hint.as_mut().unwrap().access = Some(access); }
                 }
                 param
             })
             .collect()
+    }
+
+    fn storage_access_hint(&self, hint: Option<TypeHint>, source_type: &str) -> TypeHint {
+        let mut hint = hint.unwrap_or_else(|| TypeHint::descriptive(source_type));
+        hint.access = Some(self.type_access(source_type));
+        hint
+    }
+
+    fn type_access(&self, source_type: &str) -> vybe_ast::StorageAccess {
+        use vybe_ast::StorageAccess::*;
+        let mut access = Ordinary;
+        for word in source_type.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_') {
+            let qualifier = match word {
+                "volatile" => Volatile,
+                "_Atomic" => Atomic,
+                "typeof" | "__typeof__" => Unknown,
+                _ => self.typedef_access.get(word).copied().unwrap_or(Ordinary),
+            };
+            access = match (access, qualifier) {
+                (Atomic, _) | (_, Atomic) => Atomic,
+                (Volatile, _) | (_, Volatile) => Volatile,
+                (Unknown, _) | (_, Unknown) => Unknown,
+                _ => Ordinary,
+            };
+        }
+        access
+    }
+
+    fn preserve_typedef_access(&mut self, name: &str, access: vybe_ast::StorageAccess) {
+        use vybe_ast::StorageAccess::*;
+        let previous = self.typedef_access.get(name).copied().unwrap_or(Ordinary);
+        let access = match (previous, access) {
+            (Atomic, _) | (_, Atomic) => Atomic,
+            (Volatile, _) | (_, Volatile) => Volatile,
+            (Unknown, _) | (_, Unknown) => Unknown,
+            _ => Ordinary,
+        };
+        self.typedef_access.insert(name.into(), access);
     }
 
     fn is_enum_scalar_type(&self, type_text: &str) -> bool {
@@ -18473,9 +21179,14 @@ impl Walker {
             } => {
                 let left_type = self.c_expr_type_text(left);
                 let right_type = self.c_expr_type_text(right);
-                let left_pointer = left_type.filter(|ty| ty.contains('*'));
-                let right_pointer = right_type.filter(|ty| ty.contains('*'));
+                let left_pointer = left_type.filter(|ty| ty.contains('*') || ty.contains('['));
+                let right_pointer = right_type.filter(|ty| ty.contains('*') || ty.contains('['));
                 match (left_pointer, right_pointer) {
+                    (Some(_), Some(_))
+                        if matches!(&value.kind, ExprKind::Binary { op: BinOp::Sub, .. }) =>
+                    {
+                        Some("ptrdiff_t".into())
+                    }
                     (Some(ty), None) => Some(ty),
                     (None, Some(ty))
                         if matches!(&value.kind, ExprKind::Binary {
@@ -18668,6 +21379,14 @@ impl Walker {
     }
 
     fn is_unsigned_32_arithmetic_expr(&self, value: &Expression) -> bool {
+        if matches!(&value.kind, ExprKind::Binary {
+            op: BinOp::Integer(operation, _), ..
+        } if operation.is_comparison()) || matches!(&value.kind,
+            ExprKind::Binary { op: BinOp::Eq | BinOp::NotEq | BinOp::Lt
+                | BinOp::LtEq | BinOp::Gt | BinOp::GtEq | BinOp::And | BinOp::Or, .. }
+            | ExprKind::Unary { op: UnaryOp::Not, .. }) {
+            return false;
+        }
         self.is_unsigned_32_assignment_target(value)
             || match &value.kind {
                 ExprKind::Binary { left, right, .. } => {
@@ -18713,6 +21432,14 @@ impl Walker {
 
     fn wrap_unsigned_32_assignment(&self, target: &Expression, value: Expression) -> Expression {
         if self.is_unsigned_32_assignment_target(target) {
+            if matches!(&value.kind, ExprKind::Cast { type_name, .. } if type_name == "uint32")
+                || matches!(&value.kind, ExprKind::Call { callee, args, optional: false }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_unsigned32_from_bits")
+                        && args.len() == 1
+                        && !args[0].by_ref && !args[0].spread && args[0].name.is_none())
+            {
+                return value;
+            }
             if matches!(&value.kind, ExprKind::Lit(Literal::Int(n)) if (0..=u32::MAX as i64).contains(n))
                 || (matches!(&value.kind, ExprKind::Ident(_))
                     && self.is_unsigned_32_assignment_target(&value))
@@ -18778,7 +21505,11 @@ impl Walker {
         if !postfix {
             return Some(assign_expr(target, updated));
         }
-        let old = ident(&format!("__c_post{}", self.tmp_counter));
+        let old_name = format!("__c_post{}", self.tmp_counter);
+        // The temporary retains the unsigned value's declared range. Later
+        // adapter selection must not treat post-increment as an unknown count.
+        self.var_types.insert(old_name.clone(), "uint32".into());
+        let old = ident(&old_name);
         self.tmp_counter += 1;
         Some(expr(ExprKind::Sequence(vec![
             assign_expr(old.clone(), target.clone()),
@@ -18893,7 +21624,25 @@ impl Walker {
         let ExprKind::Index { object, index, .. } = &target.kind else {
             return None;
         };
-        let pointer_type = self.c_expr_type_text(object)?;
+        let mut pointer_type = self.c_expr_type_text(object)?;
+        let mut pointer_value = (**object).clone();
+        if pointer_type.contains('[') {
+            let ExprKind::Member { object: owner, field, .. } = &object.kind else {
+                return None;
+            };
+            let record = self.c_expr_type_text(owner)
+                .and_then(|ty| self.c_struct_pointer_pointee_from_type_text(&ty))?;
+            let element = pointer_type.split('[').next()?.trim();
+            if !c_int_family_type(&self.resolve_typedef_scalar_aliases(element)) {
+                return None;
+            }
+            // An assignment-place member is not a scalar read on numeric records.
+            // Decay it once before capturing the index and reading the old value.
+            pointer_value = self.struct_pointer_array_field_decay_read(
+                (**owner).clone(), &record, field, &pointer_type,
+            );
+            pointer_type = format!("{element} *");
+        }
         if !pointer_type.contains('*') {
             return None;
         }
@@ -18946,7 +21695,7 @@ impl Walker {
         let write = self.rewrite_carray_index_assignment(&target, updated)?;
         // Preserve the C lvalue across the read and write, including p[i++] += f().
         let mut parts = vec![
-            assign_expr(pointer, *object.clone()),
+            assign_expr(pointer, pointer_value),
             assign_expr(offset, *index.clone()),
             assign_expr(old.clone(), read),
             write,
@@ -18955,6 +21704,25 @@ impl Walker {
             parts.push(old);
         }
         Some(expr(ExprKind::Sequence(parts)))
+    }
+
+    fn record_copy_source_pointer(&self, value: &Expression, record: &str) -> Option<Expression> {
+        let source = match &value.kind {
+            ExprKind::Unary { op: UnaryOp::Deref, expr: source } => (**source).clone(),
+            ExprKind::Index { object, index, .. } => {
+                let ExprKind::Member { object: owner, field, .. } = &object.kind else {
+                    return None;
+                };
+                if field != CARRAY_BASE_KEY || !carray_idx_member_matches_owner(index, owner) {
+                    return None;
+                }
+                (**owner).clone()
+            }
+            _ => return None,
+        };
+        let ty = self.c_expr_type_text(&source)?;
+        (self.c_struct_pointer_pointee_from_type_text(&ty).as_deref() == Some(record))
+            .then_some(source)
     }
 
     fn rewrite_struct_deref_assignment(
@@ -18969,15 +21737,9 @@ impl Walker {
         else {
             return None;
         };
-        let ExprKind::Unary {
-            op: UnaryOp::Deref,
-            expr: source,
-        } = &value.kind
-        else {
-            return None;
-        };
         let pointer_type = self.c_expr_type_text(destination)?;
         let struct_base = self.c_struct_pointer_pointee_from_type_text(&pointer_type)?;
+        let source = self.record_copy_source_pointer(value, &struct_base)?;
         let fields = self.structs.get(&struct_base)?.clone();
         let size = self.sizeof_type_text(&struct_base);
         if size <= 0 {
@@ -19014,7 +21776,7 @@ impl Walker {
         );
         Some(expr(ExprKind::Sequence(vec![
             assign_expr(dst.clone(), (**destination).clone()),
-            assign_expr(src.clone(), (**source).clone()),
+            assign_expr(src.clone(), source),
             ternary_expr(both_linear, linear_copy, managed_copy),
         ])))
     }
@@ -19040,7 +21802,15 @@ impl Walker {
         }
         let struct_base = self
             .c_expr_type_text(owner)
-            .and_then(|ty| self.c_struct_pointer_pointee_from_type_text(&ty))?;
+            .and_then(|ty| self.c_struct_pointer_pointee_from_type_text(&ty))
+            .or_else(|| {
+                let ExprKind::Index { object, .. } = &owner.kind else { return None; };
+                let ty = self.c_expr_type_text(object)?;
+                if !ty.contains('*') { return None; }
+                let element = self.c_indexed_pointer_element_type(&ty);
+                if element.contains('*') { return None; }
+                self.canonical_struct_base_from_type(&element)
+            })?;
         let field_type = self
             .struct_field_types
             .get(&struct_base)
@@ -19062,6 +21832,10 @@ impl Walker {
         let pointer = ident(&format!("__c_field_array_ptr{id}"));
         let offset = ident(&format!("__c_field_array_index{id}"));
         let stored = ident(&format!("__c_field_array_value{id}"));
+        self.register_generated_local(&format!("__c_field_array_ptr{id}"),
+            &decayed_array_pointer_type(&field_type));
+        self.register_generated_local(&format!("__c_field_array_index{id}"), "ptrdiff_t");
+        self.register_generated_local(&format!("__c_field_array_value{id}"), &element);
         let field_pointer = self.struct_pointer_array_field_decay_read(
             (**owner).clone(),
             &struct_base,
@@ -19132,6 +21906,9 @@ impl Walker {
                 let pointer = ident(&format!("__c_index_member_pointer{id}"));
                 let offset = ident(&format!("__c_index_member_offset{id}"));
                 let stored = ident(&format!("__c_index_member_value{id}"));
+                self.register_generated_local(&format!("__c_index_member_pointer{id}"), &pointer_type);
+                self.register_generated_local(&format!("__c_index_member_offset{id}"), "ptrdiff_t");
+                self.register_generated_local(&format!("__c_index_member_value{id}"), &element);
                 let address = pointers::linear_index_addr(
                     pointer.clone(), offset.clone(),
                     self.c_pointer_index_stride_from_type(&pointer_type),
@@ -19153,10 +21930,19 @@ impl Walker {
                         pointer.clone(), offset.clone(), stored.clone(),
                     ]),
                 );
+                let stored_value = if element.contains('*') {
+                    expr(ExprKind::Cast {
+                        expr: Box::new(value), type_name: "void*".into(),
+                    })
+                } else {
+                    value
+                };
                 return Some(expr(ExprKind::Sequence(vec![
-                    assign_expr(pointer.clone(), read),
+                    assign_expr(pointer.clone(), expr(ExprKind::Cast {
+                        expr: Box::new(read), type_name: "void*".into(),
+                    })),
                     assign_expr(offset, *index.clone()),
-                    assign_expr(stored.clone(), value),
+                    assign_expr(stored.clone(), stored_value),
                     ternary_expr(
                         binary_expr(BinOp::Eq,
                             unary_expr(UnaryOp::Typeof, pointer), str_lit("number")),
@@ -19217,7 +22003,7 @@ impl Walker {
             }
         }
         if let ExprKind::Ident(name) = &object.kind {
-            if self.linear_pointer_vars.contains(name) {
+            if self.linear_pointer_vars.contains(name) && !self.carray_ptr_vars.contains(name) {
                 let type_text = self.var_types.get(name).cloned()?;
                 let stride = self.c_pointer_index_stride_from_type(&type_text);
                 let element_type = self.c_indexed_pointer_element_type(&type_text);
@@ -19242,6 +22028,83 @@ impl Walker {
                         .canonical_struct_base_from_type(&element_type)
                         .is_none()
                 {
+                    let scalar_type = self.resolve_typedef_scalar_aliases(&element_type);
+                    let ordinary_word = |ty: &str| {
+                        self.is_integral_type_text(ty)
+                            && !ty.contains('*') && !ty.contains('[')
+                            && matches!(self.sizeof_type_text(ty), 1 | 2 | 4)
+                            && self.type_access(ty) == vybe_ast::StorageAccess::Ordinary
+                    };
+                    if !self.current_function.is_empty()
+                        && ordinary_word(&scalar_type)
+                        && self.type_access(&type_text) == vybe_ast::StorageAccess::Ordinary
+                        && self.c_expr_type_text(index).is_some_and(|ty| ordinary_word(&ty))
+                        && self.c_expr_type_text(&value).is_some_and(|ty| ordinary_word(&ty))
+                    {
+                        let id = self.tmp_counter;
+                        self.tmp_counter += 1;
+                        let pointer_name = format!("__c_index_scalar_pointer{id}");
+                        let index_name = format!("__c_index_scalar_offset{id}");
+                        let value_name = format!("__c_index_scalar_value{id}");
+                        let unsigned = scalar_type.contains("unsigned") || scalar_type.contains("uint");
+                        let scalar_cast = match (self.sizeof_type_text(&scalar_type), unsigned) {
+                            (1, false) => "int8", (1, true) => "uint8",
+                            (2, false) => "int16", (2, true) => "uint16",
+                            (4, false) => "int", (4, true) => "uint32",
+                            _ => unreachable!(),
+                        };
+                        self.register_generated_local(&pointer_name, &type_text);
+                        self.register_generated_local(&index_name, "ptrdiff_t");
+                        self.register_generated_local(&value_name, scalar_cast);
+                        let pointer = ident(&pointer_name);
+                        let offset = ident(&index_name);
+                        let stored = ident(&value_name);
+                        let converted = match scalar_cast {
+                            "int8" => signed_char_cast_expr(value),
+                            "uint16" => expr(ExprKind::Cast {
+                                expr: Box::new(binary_expr(BinOp::Integer(
+                                    vybe_ast::IntOp::And, vybe_ast::BitLane::W32,
+                                ), value, int_lit(65535))),
+                                type_name: "uint16".into(),
+                            }),
+                            _ => expr(ExprKind::Cast {
+                                expr: Box::new(value), type_name: scalar_cast.into(),
+                            }),
+                        };
+                        let address = pointers::linear_index_addr_in_lane(
+                            pointer.clone(), offset.clone(),
+                            self.c_pointer_index_stride_from_type(&type_text),
+                            vybe_ast::BitLane::W32,
+                        );
+                        let numeric_store = self.linear_integer_store_expr(
+                            address, &scalar_type, stored.clone(),
+                        );
+                        let managed_store = ternary_expr(
+                            pointers::is_carray_ptr_kind(pointer.clone()),
+                            call_expr(ident("__c_array_set"), vec![
+                                member(pointer.clone(), CARRAY_BASE_KEY),
+                                binary_expr(BinOp::Add,
+                                    member(pointer.clone(), CARRAY_IDX_KEY), offset.clone()),
+                                stored.clone(),
+                            ]),
+                            call_expr(ident("__c_array_set"), vec![
+                                pointer.clone(), offset.clone(), stored.clone(),
+                            ]),
+                        );
+                        // Branch on backing only after capturing the C operands;
+                        // an effectful RHS must not be cloned into each store arm.
+                        return Some(expr(ExprKind::Sequence(vec![
+                            assign_expr(pointer.clone(), expr(ExprKind::Cast {
+                                expr: Box::new(ident(name)), type_name: "void*".into(),
+                            })),
+                            assign_expr(offset, *index.clone()),
+                            assign_expr(stored.clone(), converted),
+                            ternary_expr(expr(ExprKind::IsType {
+                                expr: Box::new(pointer), type_name: "number".into(),
+                            }), numeric_store, managed_store),
+                            stored,
+                        ])));
+                    }
                     let value = self.pointer_slot_allocation_value(value, &element_type);
                     let pointer = ident(name);
                     let addr = pointers::linear_index_addr_in_lane(
@@ -19439,6 +22302,13 @@ impl Walker {
         self.direct_object_pointer_vars.remove(name);
         self.scalar_ref_pointer_vars.remove(name);
 
+        if self.is_mixed_global_pointer_var(name) {
+            self.linear_pointer_vars.remove(name);
+            self.linear_struct_pointer_vars.remove(name);
+            self.hybrid_carray_ptr_vars.insert(name.clone());
+            return;
+        }
+
         let target_base = self
             .var_types
             .get(name)
@@ -19463,6 +22333,10 @@ impl Walker {
             self.direct_object_pointer_vars.remove(name);
             return;
         }
+
+        // A rebinding through an alias can replace a linear address with managed
+        // storage. Subsequent indexing must not retain the old backing proof.
+        self.linear_pointer_vars.remove(name);
 
         if let Some(target_base) = target_base {
             if self.value_has_same_struct_pointer_type(value, &target_base) {
@@ -19724,14 +22598,6 @@ impl Walker {
         }
         seq.push(value);
         Some(expr(ExprKind::Sequence(seq)))
-    }
-
-    fn ident_or_refload(&self, name: &str) -> Expression {
-        if self.address_taken.contains(name) || self.shared_globals.iter().any(|g| g == name) {
-            expr(ExprKind::RefLoad(Box::new(ident(name))))
-        } else {
-            ident(name)
-        }
     }
 
     fn rewrite_carray_postfix_discard(&self, value: Expression) -> Expression {
@@ -20083,7 +22949,36 @@ impl Walker {
                 ));
             }
             if self.hybrid_carray_ptr_vars.contains(name) {
-                return Some(value.clone());
+                let element_size = self.carray_byte_element_size_for_expr(value);
+                if element_size <= 1 { return Some(value.clone()); }
+                let pointer = ident("__c_byte_view_pointer");
+                let (base, index) = self.c_byte_pointer_parts(pointer.clone(), int_lit(0));
+                let packed = if self.byte_cast_pointer_vars.contains_key(name)
+                    || self.byte_array_ptr_vars.contains(name)
+                {
+                    expr(ExprKind::Lit(Literal::Bool(true)))
+                } else {
+                    binary_expr(BinOp::Or,
+                        call_expr(ident("__c_is_buffer_view"), vec![base.clone()]),
+                        expr(ExprKind::IsType { expr: Box::new(base.clone()), type_name: "number".into() }),
+                    )
+                };
+                let view = pointers::make_carray_ptr(base, ternary_expr(packed,
+                    index.clone(), binary_expr(BinOp::Mul, index, int_lit(element_size))));
+                let body = ternary_expr(
+                    expr(ExprKind::IsType { expr: Box::new(pointer.clone()), type_name: "number".into() }),
+                    pointer, view,
+                );
+                return Some(call_expr(expr(ExprKind::Lambda {
+                    params: vec![Param {
+                        name: "__c_byte_view_pointer".into(), type_hint: None,
+                        default: None, pass_by: PassBy::Value,
+                        is_rest: false, is_kwargs: false,
+                        is_optional: false, is_nullable: false,
+                    }],
+                    body: LambdaBody::Expr(Box::new(body)),
+                    is_async: false, captures: vec![],
+                }), vec![value.clone()]));
             }
             if !self.carray_ptr_vars.contains(name) {
                 return None;
@@ -20122,7 +23017,7 @@ impl Walker {
 
     fn normalize_pointer_call_args(&self, callee: &str, args: Vec<Argument>) -> Vec<Argument> {
         let leaf = callee.rsplit('.').next().unwrap_or(callee);
-        if matches!(
+        if !self.call_has_user_binding(callee) && matches!(
             leaf,
             "strlen" | "strcmp" | "strncmp" | "strcasecmp" | "stricmp" | "strncasecmp" | "strnicmp"
         ) {
@@ -20280,7 +23175,7 @@ impl Walker {
                 offset.clone()
             } else {
                 expr(ExprKind::Binary {
-                    op: BinOp::Add,
+                    op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
                     left: Box::new(offset.clone()),
                     right: Box::new(int_lit(i)),
                 })
@@ -20289,12 +23184,12 @@ impl Walker {
         let mut out = self.byte_from_data_index_expr(data.clone(), index_at(0));
         for i in 1..width {
             let shifted = expr(ExprKind::Binary {
-                op: BinOp::Shl,
+                op: BinOp::Integer(vybe_ast::IntOp::Shl, vybe_ast::BitLane::W32),
                 left: Box::new(self.byte_from_data_index_expr(data.clone(), index_at(i))),
                 right: Box::new(int_lit(8 * i)),
             });
             out = expr(ExprKind::Binary {
-                op: BinOp::BitOr,
+                op: BinOp::Integer(vybe_ast::IntOp::Or, vybe_ast::BitLane::W32),
                 left: Box::new(out),
                 right: Box::new(shifted),
             });
@@ -20573,9 +23468,6 @@ impl Walker {
                 .is_some_and(|ty| ty.contains("char") && (ty.contains('*') || ty.contains('[')))
     }
 
-    fn char_copy_slice(&self, src: Expression, count: usize) -> Expression {
-        self.char_copy_slice_dynamic(src, int_lit(count as i64), Some(count))
-    }
 
     fn char_copy_slice_dynamic(
         &self,
@@ -20833,25 +23725,176 @@ impl Walker {
         ])))
     }
 
+    fn record_copy_fields_in_place(
+        &mut self, destination: Expression, source: Expression, record: &str,
+        depth: usize, reads: &mut Vec<Expression>, writes: &mut Vec<Expression>,
+    ) -> Option<()> {
+        if depth > 16 || self.union_tags.contains(record)
+            || self.struct_bitfields.get(record).is_some_and(|fields| !fields.is_empty())
+        { return None; }
+        let fields = self.structs.get(record)?.clone();
+        let types = self.struct_field_types.get(record)?.clone();
+        for field in fields {
+            let ty = types.get(&field)?;
+            if ty.contains('[') || self.struct_field_is_function_pointer(record, &field, ty) {
+                return None;
+            }
+            if !ty.contains('*') && let Some(nested) = self.canonical_struct_base_from_type(ty) {
+                let offset = self.offsetof_struct_field(record, &field);
+                let mut owners = Vec::new();
+                for owner in [destination.clone(), source.clone()] {
+                    let name = format!("__c_copy_nested{}", self.tmp_counter);
+                    self.tmp_counter += 1;
+                    self.register_generated_local(&name, &format!("{nested}*"));
+                    self.hybrid_linear_struct_pointer_vars.insert(name.clone());
+                    let pointer = ident(&name);
+                    reads.push(assign_expr(pointer.clone(), expr(ExprKind::Cast {
+                        expr: Box::new(call_expr(ident("__c_hybrid_embedded_record_ptr"), vec![
+                            owner, str_lit(&field), int_lit(offset),
+                        ])), type_name: format!("{nested}*"),
+                    })));
+                    owners.push(pointer);
+                }
+                self.record_copy_fields_in_place(owners[0].clone(), owners[1].clone(),
+                    &nested, depth + 1, reads, writes)?;
+                continue;
+            }
+            let resolved = self.resolve_typedef_scalar_aliases(ty);
+            if !ty.contains('*') && !c_int_family_type(&resolved)
+                && !self.is_enum_scalar_type(&resolved)
+            { return None; }
+            let name = format!("__c_copy_field{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            self.register_generated_local(&name, ty);
+            let value = ident(&name);
+            reads.push(assign_expr(value.clone(),
+                self.typed_struct_pointer_field_read(source.clone(), record, &field)?));
+            writes.push(self.typed_struct_pointer_field_write(destination.clone(), record,
+                &field, self.typed_field_read_value(value, ty))?);
+        }
+        Some(())
+    }
+
+    fn rewrite_complete_record_copy(
+        &mut self, dst: &Expression, src: &Expression, bytes: &Expression,
+    ) -> Option<Expression> {
+        let destination_type = self.c_expr_type_text(dst)?;
+        let source_type = self.c_expr_type_text(src)?;
+        let record = self.c_struct_pointer_pointee_from_type_text(&destination_type)?;
+        if self.c_struct_pointer_pointee_from_type_text(&source_type).as_deref() != Some(&record)
+            || self.eval_int_expr(bytes)? != self.sizeof_type_text(&record)
+            || self.sizeof_type_text(&record) <= 0
+        { return None; }
+        let id = self.tmp_counter;
+        self.tmp_counter += 1;
+        let destination_name = format!("__c_inplace_copy_destination{id}");
+        let source_name = format!("__c_inplace_copy_source{id}");
+        for name in [&destination_name, &source_name] {
+            self.register_generated_local(name, &destination_type);
+            self.hybrid_linear_struct_pointer_vars.insert(name.clone());
+        }
+        let destination = ident(&destination_name);
+        let source = ident(&source_name);
+        let mut reads = Vec::new();
+        let mut writes = Vec::new();
+        self.record_copy_fields_in_place(destination.clone(), source.clone(), &record,
+            0, &mut reads, &mut writes)?;
+        let mut copy = vec![
+            assign_expr(destination.clone(), expr(ExprKind::Cast {
+                expr: Box::new(dst.clone()), type_name: destination_type,
+            })),
+            assign_expr(source.clone(), expr(ExprKind::Cast {
+                expr: Box::new(src.clone()), type_name: source_type,
+            })),
+        ];
+        // Snapshot every leaf before writes, including self/overlapping memmove.
+        copy.extend(reads);
+        let both_numeric = binary_expr(BinOp::And,
+            expr(ExprKind::IsType { expr: Box::new(destination.clone()), type_name: "number".into() }),
+            expr(ExprKind::IsType { expr: Box::new(source.clone()), type_name: "number".into() }));
+        // Preserve raw padding for linear records, then transfer pointer side slots.
+        copy.push(ternary_expr(both_numeric,
+            self.linear_byte_copy_expr(destination.clone(), source, bytes.clone()), int_lit(0)));
+        copy.extend(writes);
+        copy.push(destination);
+        Some(expr(ExprKind::Sequence(copy)))
+    }
+
     fn rewrite_memcpy_like(
         &mut self,
         dst: Expression,
         src: Expression,
         bytes: Expression,
     ) -> Expression {
-        let dst = if let ExprKind::Member { object, field, .. } = &dst.kind
-            && let Some(record) = self.indexed_pointer_value_struct_base(object)
-            && let Some(field_type) = self.struct_field_types.get(&record)
-                .and_then(|fields| fields.get(field)).cloned()
-            && field_type.contains('[')
+        // Backing-specific helpers still implement the C void-pointer result.
+        let value = self.rewrite_memcpy_value(dst, src, bytes);
+        expr(ExprKind::Cast {
+            expr: Box::new(value),
+            type_name: "void*".into(),
+        })
+    }
+
+    fn rewrite_memcpy_value(
+        &mut self,
+        dst: Expression,
+        src: Expression,
+        bytes: Expression,
+    ) -> Expression {
+        if let Some(copy) = self.rewrite_complete_record_copy(&dst, &src, &bytes) {
+            return copy;
+        }
+        if self.member_is_char_array_field(&dst)
+            && let Some(destination) = self.carray_struct_field_read_target(&dst)
         {
-            self.carray_struct_field_read((**object).clone(), &record, field)
-                .unwrap_or(dst)
-        } else {
-            dst
-        };
+            // Inline array fields decay to their backing, not a detached field
+            // value. The accessor preserves both linear and managed owners.
+            let (helper, source) = if let ExprKind::Lit(Literal::Str(text)) = &src.kind {
+                let source = expr(ExprKind::Array(
+                    text.as_bytes().iter().copied().chain(std::iter::once(0))
+                        .map(|byte| ArrayElement {
+                            value: int_lit(byte as i64),
+                            spread: false,
+                            key: None,
+                            by_ref: false,
+                        }).collect(),
+                ));
+                ("__c_ptr_byte_copy", source)
+            } else {
+                ("__c_string_byte_copy", src)
+            };
+            return call_expr(ident(helper), vec![destination, source, bytes]);
+        }
+        let dst = self.decay_memory_array_field_operand(dst);
+        let src = self.decay_memory_array_field_operand(src);
+        if let Some((destination, _)) = self.linear_pointer_addr_and_stride(&dst)
+            && let Some((source, _)) = self.linear_pointer_addr_and_stride(&src)
+        {
+            return self.linear_byte_copy_expr(destination, source, bytes);
+        }
         if let Some(copy) = self.rewrite_struct_to_linear_copy(&dst, &src, &bytes) {
             return copy;
+        }
+        // Embedded record addresses can be linear even when the source
+        // parameter still refers to a managed record with a declared layout.
+        if let Some((address, _)) = self.linear_pointer_addr_and_stride(&dst)
+            && let Some(source_type) = self.c_expr_type_text(&src)
+            && let Some(record) = self.c_struct_pointer_pointee_from_type_text(&source_type)
+            && self.eval_int_expr(&bytes) == Some(self.sizeof_type_text(&record))
+        {
+            let id = self.tmp_counter;
+            self.tmp_counter += 1;
+            let destination = ident(&format!("__c_embedded_copy_dst{id}"));
+            if let Some(copy) = self.linear_scalar_record_copy(
+                destination.clone(),
+                &unary_expr(UnaryOp::Deref, src.clone()),
+                &record,
+            ) {
+                return expr(ExprKind::Sequence(vec![
+                    assign_expr(destination.clone(), address),
+                    copy,
+                    destination,
+                ]));
+            }
         }
         // Parameter types do not prove a backing. When both operands are
         // pointer variables, select linear memory at runtime without rebinding
@@ -20861,6 +23904,50 @@ impl Walker {
                 if self.var_types.get(name).is_some_and(|ty| ty.contains('*')))
         };
         let both_pointer_variables = pointer_variable(&dst) && pointer_variable(&src);
+        // Capture effectful operands before selecting their storage backing.
+        if !both_pointer_variables
+            && let Some(destination_type) = self.c_expr_type_text(&dst)
+            && let Some(source_type) = self.c_expr_type_text(&src)
+            && let Some(record) = self.c_struct_pointer_pointee_from_type_text(&destination_type)
+            && self.c_struct_pointer_pointee_from_type_text(&source_type).as_deref()
+                == Some(record.as_str())
+            && self.eval_int_expr(&bytes) == Some(self.sizeof_type_text(&record))
+        {
+            let id = self.tmp_counter;
+            self.tmp_counter += 1;
+            let destination = ident(&format!("__c_copy_destination{id}"));
+            let source = ident(&format!("__c_copy_source{id}"));
+            let typed_source = expr(ExprKind::Cast {
+                expr: Box::new(source.clone()),
+                type_name: source_type,
+            });
+            if let Some(copy) = self.linear_scalar_record_copy(
+                destination.clone(),
+                &unary_expr(UnaryOp::Deref, typed_source.clone()),
+                &record,
+            ) {
+                let fallback = self.rewrite_memcpy_backing(
+                    expr(ExprKind::Cast {
+                        expr: Box::new(destination.clone()),
+                        type_name: destination_type,
+                    }),
+                    typed_source,
+                    bytes,
+                );
+                return expr(ExprKind::Sequence(vec![
+                    assign_expr(destination.clone(), dst),
+                    assign_expr(source, src),
+                    ternary_expr(
+                        expr(ExprKind::IsType {
+                            expr: Box::new(destination.clone()),
+                            type_name: "number".into(),
+                        }),
+                        expr(ExprKind::Sequence(vec![copy, destination])),
+                        fallback,
+                    ),
+                ]));
+            }
+        }
         if both_pointer_variables
             && let Some(destination_type) = self.c_expr_type_text(&dst)
             && let Some(source_type) = self.c_expr_type_text(&src)
@@ -20911,6 +23998,21 @@ impl Walker {
         }
     }
 
+    fn decay_memory_array_field_operand(&mut self, value: Expression) -> Expression {
+        let ExprKind::Member { object, field, .. } = &value.kind else { return value; };
+        let record = self.indexed_pointer_value_struct_base(object).or_else(|| {
+            self.c_expr_type_text(object)
+                .and_then(|ty| self.canonical_struct_base_from_type(&ty))
+        });
+        let Some(record) = record else { return value; };
+        let Some(field_type) = self.struct_field_types.get(&record)
+            .and_then(|fields| fields.get(field)).cloned()
+            .filter(|ty| ty.contains('[')) else { return value; };
+        self.struct_pointer_array_field_decay_read(
+            (**object).clone(), &record, field, &field_type,
+        )
+    }
+
     fn rewrite_memcpy_backing(
         &mut self,
         dst: Expression,
@@ -20919,12 +24021,9 @@ impl Walker {
     ) -> Expression {
         // A literal denotes byte storage, including embedded NULs and the
         // trailing terminator; it must not replace the destination pointer.
-        let literal_bytes = if let ExprKind::Lit(Literal::Str(text)) = &src.kind {
-            Some(expr(ExprKind::Array(
-                text.as_bytes()
-                    .iter()
-                    .copied()
-                    .chain(std::iter::once(0))
+        let literal_bytes = c_string_literal_bytes(&src).map(|bytes| {
+            expr(ExprKind::Array(
+                bytes.into_iter()
                     .map(|byte| ArrayElement {
                         value: int_lit(byte as i64),
                         spread: false,
@@ -20932,21 +24031,35 @@ impl Walker {
                         by_ref: false,
                     })
                     .collect(),
-            )))
-        } else {
-            None
-        };
+            ))
+        });
         if let Some(source) = literal_bytes.clone()
             && self.linear_pointer_addr_and_stride(&dst).is_some()
         {
             return call_expr(ident("__c_ptr_byte_copy"), vec![dst, source, bytes]);
+        }
+        if base_ident_name(&dst).is_some_and(|name| self.byte_array_ptr_vars.contains(&name))
+            && self.c_expr_type_text(&dst).is_some_and(|ty|
+                self.c_pointer_index_stride_from_type(&ty) == 1)
+        {
+            let copy = match literal_bytes {
+                Some(source) => call_expr(ident("__c_ptr_byte_copy"), vec![dst, source, bytes]),
+                None => call_expr(ident("__c_string_byte_copy"), vec![dst, src, bytes]),
+            };
+            return expr(ExprKind::Cast {
+                expr: Box::new(copy),
+                type_name: "void*".into(),
+            });
         }
         if matches!(&dst.kind, ExprKind::Ident(name)
             if self.is_char_array_var(name)
                 && self.var_types.get(name).is_some_and(|ty| ty.matches('[').count() == 1))
             && self.linear_pointer_addr_and_stride(&src).is_some()
         {
-            return call_expr(ident("__c_ptr_byte_copy"), vec![dst, src, bytes]);
+            return expr(ExprKind::Cast {
+                expr: Box::new(call_expr(ident("__c_ptr_byte_copy"), vec![dst, src, bytes])),
+                type_name: "void*".into(),
+            });
         }
         if let ExprKind::Unary {
             op: UnaryOp::AddrOf,
@@ -21000,14 +24113,18 @@ impl Walker {
         // Byte storage is not a C-string replacement, including when one
         // operand is linear memory and the other is a managed byte buffer.
         if is_unsigned_byte_storage(&dst) && is_unsigned_byte_storage(&src) {
-            return call_expr(ident("__c_ptr_byte_copy"), vec![dst, src, bytes]);
+            return expr(ExprKind::Cast {
+                expr: Box::new(call_expr(ident("__c_ptr_byte_copy"), vec![dst, src, bytes])),
+                type_name: "void*".into(),
+            });
         }
         if matches!(dst.kind, ExprKind::Member { .. }) && self.member_is_char_array_field(&dst) {
-            let copied = self.strncpy_copied_char_array(src.clone(), &bytes);
-            if let Some(write) = self.carray_struct_field_write(&dst, copied.clone()) {
-                return write;
-            }
-            return assign_expr(dst, copied);
+            // memcpy mutates byte storage: replacing the field would detach
+            // existing aliases and lose bytes beyond a partial copy.
+            return match literal_bytes {
+                Some(source) => call_expr(ident("__c_ptr_byte_copy"), vec![dst, source, bytes]),
+                None => call_expr(ident("__c_string_byte_copy"), vec![dst, src, bytes]),
+            };
         }
 
         // `memcpy(&i, &f, 4)` between SCALARS — the byte-copy idiom for type
@@ -21062,6 +24179,27 @@ impl Walker {
         if let Some((dst_name, dst_offset)) =
             char_buffer_target_offset(&dst).filter(|(name, _)| self.is_char_buffer_name(name))
         {
+            let mutable_byte_array = self.is_char_array_var(&dst_name)
+                && self.var_types.get(&dst_name)
+                    .is_some_and(|ty| ty.matches('[').count() == 1)
+                && (self.byte_array_ptr_vars.contains(&dst_name)
+                    || !self.initialized_char_buffers.contains(&dst_name)
+                        && !self.char_string_arrays.contains(&dst_name));
+            if mutable_byte_array {
+                // A computed view of a declared byte array must mutate its
+                // backing, not replace the owner with concatenated text.
+                let destination = pointers::make_carray_ptr(ident(&dst_name), dst_offset);
+                let copy = match literal_bytes {
+                    Some(source) => call_expr(
+                        ident("__c_ptr_byte_copy"), vec![destination, source, bytes]),
+                    None => call_expr(
+                        ident("__c_string_byte_copy"), vec![destination, src, bytes]),
+                };
+                return expr(ExprKind::Cast {
+                    expr: Box::new(copy),
+                    type_name: "void*".into(),
+                });
+            }
             let numeric_copy = if self
                 .var_types
                 .get(&dst_name)
@@ -21069,14 +24207,18 @@ impl Walker {
                 && !self.initialized_char_buffers.contains(&dst_name)
                 && !self.char_string_values.contains_key(&dst_name)
             {
-                let destination_numeric = binary_expr(
-                    BinOp::Eq,
-                    unary_expr(UnaryOp::Typeof, dst.clone()),
-                    str_lit("number"),
+                let destination_storage = binary_expr(
+                    BinOp::Or,
+                    binary_expr(
+                        BinOp::Eq,
+                        unary_expr(UnaryOp::Typeof, dst.clone()),
+                        str_lit("number"),
+                    ),
+                    pointers::is_carray_ptr_kind(dst.clone()),
                 );
                 if let Some(source) = literal_bytes {
                     Some((
-                        destination_numeric,
+                        destination_storage,
                         call_expr(
                             ident("__c_ptr_byte_copy"),
                             vec![dst.clone(), source, bytes.clone()],
@@ -21084,7 +24226,7 @@ impl Walker {
                     ))
                 } else {
                     Some((
-                        destination_numeric,
+                        destination_storage,
                         call_expr(
                             ident("__c_string_byte_copy"),
                             vec![dst.clone(), src.clone(), bytes.clone()],
@@ -21190,7 +24332,9 @@ impl Walker {
             }));
         }
         if let Some(name) = base_ident_name(&dst) {
-            if self.is_fixed_array_var(&name) {
+            if self.is_fixed_array_var(&name)
+                && self.linear_pointer_addr_and_stride(&dst).is_none()
+            {
                 // `carray_base_expr` only unwraps a carray OBJECT LITERAL. A
                 // pointer VARIABLE — `int *p = malloc(...)`, the shape Doom uses
                 // everywhere — is an Ident holding that object, so it fell
@@ -21250,7 +24394,12 @@ impl Walker {
             })
         };
         if is_byte_storage(&dst) || is_byte_storage(&src) {
-            return call_expr(ident("__c_ptr_byte_copy"), vec![dst, src, bytes]);
+            let helper = if self.is_char_pointer_expr(&src) {
+                "__c_string_byte_copy"
+            } else {
+                "__c_ptr_byte_copy"
+            };
+            return call_expr(ident(helper), vec![dst, src, bytes]);
         }
         let element_width = |value: &Expression| {
             self.c_expr_type_text(value)
@@ -21394,7 +24543,6 @@ impl Walker {
         if self.linear_pointer_addr_and_stride(&pointer).is_some() {
             return linear_read;
         }
-        let (base, object_index) = self.c_byte_pointer_parts(pointer.clone(), index.clone());
         expr(ExprKind::Cast {
             expr: Box::new(ternary_expr(
                 binary_expr(
@@ -21403,7 +24551,7 @@ impl Walker {
                     str_lit("number"),
                 ),
                 linear_read,
-                call_expr(ident("__c_array_get"), vec![base, object_index]),
+                call_expr(ident("__c_char_ptr_read"), vec![pointer, index]),
             )),
             type_name: "uint8".to_string(),
         })
@@ -21525,161 +24673,11 @@ impl Walker {
         args.first().map(|arg| arg.value.clone())
     }
 
-    fn strncasecmp8_pointer_vector_field_call(
-        &self,
-        value: &Expression,
-        rhs: Expression,
-    ) -> Option<Expression> {
-        let ExprKind::Call { callee, args, .. } = &value.kind else {
-            return None;
-        };
-        if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_hybrid_struct_field_ptr") {
-            return None;
-        }
-        let indexed = args.first()?.value.clone();
-        let field = args.get(1)?.value.clone();
-        let offset = args.get(2)?.value.clone();
-        let (object, index) = if let ExprKind::Index { object, index, .. } = indexed.kind {
-            if !self.expr_is_pointer_vector(&object) {
-                return None;
-            }
-            (*object, *index)
-        } else {
-            self.pointer_vector_index_from_lowered_hybrid_expr(&indexed)?
-        };
-        Some(call_expr(
-            ident("__c_strncasecmp8_ptrvec_field_h"),
-            vec![object, index, field, offset, self.c_printf_arg(rhs)],
-        ))
-    }
 
-    fn pointer_vector_index_from_lowered_hybrid_expr(
-        &self,
-        value: &Expression,
-    ) -> Option<(Expression, Expression)> {
-        self.find_pointer_vector_index_expr(value, 0)
-    }
 
-    fn find_pointer_vector_index_expr(
-        &self,
-        value: &Expression,
-        depth: usize,
-    ) -> Option<(Expression, Expression)> {
-        if depth > 64 {
-            return None;
-        }
-        if let Some(found) = self.pointer_vector_index_from_addr_expr(value) {
-            return Some(found);
-        }
-        match &value.kind {
-            ExprKind::Cast { expr, .. } | ExprKind::RefLoad(expr) => {
-                self.find_pointer_vector_index_expr(expr, depth + 1)
-            }
-            ExprKind::Unary { expr, .. } => self.find_pointer_vector_index_expr(expr, depth + 1),
-            ExprKind::Binary { left, right, .. } => self
-                .find_pointer_vector_index_expr(left, depth + 1)
-                .or_else(|| self.find_pointer_vector_index_expr(right, depth + 1)),
-            ExprKind::Ternary { cond, then, else_ } => self
-                .find_pointer_vector_index_expr(cond, depth + 1)
-                .or_else(|| self.find_pointer_vector_index_expr(then, depth + 1))
-                .or_else(|| self.find_pointer_vector_index_expr(else_, depth + 1)),
-            ExprKind::Call { callee, args, .. } => self
-                .find_pointer_vector_index_expr(callee, depth + 1)
-                .or_else(|| {
-                    args.iter()
-                        .find_map(|arg| self.find_pointer_vector_index_expr(&arg.value, depth + 1))
-                }),
-            ExprKind::Member { object, .. } => {
-                self.find_pointer_vector_index_expr(object, depth + 1)
-            }
-            ExprKind::Index { object, index, .. } => self
-                .find_pointer_vector_index_expr(object, depth + 1)
-                .or_else(|| self.find_pointer_vector_index_expr(index, depth + 1)),
-            ExprKind::Sequence(items) => items
-                .iter()
-                .find_map(|item| self.find_pointer_vector_index_expr(item, depth + 1)),
-            ExprKind::Array(items) => items
-                .iter()
-                .find_map(|item| self.find_pointer_vector_index_expr(&item.value, depth + 1)),
-            _ => None,
-        }
-    }
 
-    fn pointer_vector_index_from_addr_expr(
-        &self,
-        value: &Expression,
-    ) -> Option<(Expression, Expression)> {
-        match &value.kind {
-            ExprKind::Cast { expr, .. } | ExprKind::RefLoad(expr) => {
-                self.pointer_vector_index_from_addr_expr(expr)
-            }
-            ExprKind::Binary {
-                op: BinOp::Add,
-                left,
-                right,
-            } => {
-                if self.expr_is_pointer_vector(left) {
-                    if let Some(index) = self.pointer_width_index_expr(right) {
-                        return Some((*left.clone(), index));
-                    }
-                }
-                if self.expr_is_pointer_vector(right) {
-                    if let Some(index) = self.pointer_width_index_expr(left) {
-                        return Some((*right.clone(), index));
-                    }
-                }
-                None
-            }
-            ExprKind::Index { object, index, .. } if self.expr_is_pointer_vector(object) => {
-                Some((*object.clone(), *index.clone()))
-            }
-            _ => None,
-        }
-    }
 
-    fn pointer_width_index_expr(&self, value: &Expression) -> Option<Expression> {
-        match &value.kind {
-            ExprKind::Cast { expr, .. } | ExprKind::RefLoad(expr) => {
-                self.pointer_width_index_expr(expr)
-            }
-            ExprKind::Binary {
-                op: BinOp::Mul,
-                left,
-                right,
-            } => {
-                if matches!(&right.kind, ExprKind::Lit(Literal::Int(8))) {
-                    return Some(*left.clone());
-                }
-                if matches!(&left.kind, ExprKind::Lit(Literal::Int(8))) {
-                    return Some(*right.clone());
-                }
-                None
-            }
-            _ => None,
-        }
-    }
 
-    fn expr_is_pointer_vector(&self, value: &Expression) -> bool {
-        if let ExprKind::Member { object, field, .. } = &value.kind
-            && field == "__base"
-        {
-            return self.expr_is_pointer_vector(object);
-        }
-        if let ExprKind::Ident(name) = &value.kind {
-            if self.carray_ptr_vars.contains(name)
-                || self.array_ptr_vars.contains(name)
-                || self.dynamic_char_pointer_vectors.contains(name)
-            {
-                return true;
-            }
-        }
-        self.c_expr_type_text(value)
-            .map(|type_text| {
-                type_text.matches('*').count() >= 2
-                    || (type_text.contains('[') && type_text.contains('*'))
-            })
-            .unwrap_or(false)
-    }
 
     fn split_const_linear_offset(&self, value: Expression) -> (Expression, i64) {
         match value.kind {
@@ -21751,12 +24749,277 @@ impl Walker {
         }
     }
 
+    fn has_declared_i32_scalar_type(&self, value: &Expression) -> bool {
+        self.c_expr_type_text(value).is_some_and(|ty| {
+            let resolved = self.resolve_typedef_scalar_aliases(&ty);
+            !resolved.contains('*') && !resolved.contains('[')
+                && (c_int_family_type(&resolved)
+                    || matches!(c_type_without_storage(&resolved).trim(),
+                        "char" | "signed char" | "unsigned char"))
+                && self.sizeof_type_text(&resolved) <= 4
+                && !self.is_unsigned_32_assignment_target(value)
+        })
+    }
+
+    fn rewrite_memchr_bytes(
+        &mut self,
+        buffer: Expression,
+        needle: Expression,
+        count: Expression,
+    ) -> Expression {
+        // These facts prove the SIMD recipe's domain without narrowing the
+        // legacy managed, mixed, fractional or signed dynamic-count paths.
+        let linear_search = self.is_linear_pointer_address_or_value_expr(&buffer)
+            && (matches!(&count.kind, ExprKind::Lit(Literal::Int(n))
+                if *n >= 0 && *n <= i32::MAX as i64)
+                || self.is_unsigned_32_assignment_target(&count))
+            && match &needle.kind {
+                ExprKind::Lit(Literal::Int(n)) => i32::try_from(*n).is_ok(),
+                ExprKind::Unary { op: UnaryOp::Neg, expr } =>
+                    matches!(&expr.kind, ExprKind::Lit(Literal::Int(n))
+                        if n.checked_neg().is_some_and(|n| i32::try_from(n).is_ok())),
+                _ => self.has_declared_i32_scalar_type(&needle),
+            };
+        if let Some(name) = base_ident_name(&buffer)
+            && self
+                .var_types
+                .get(&name)
+                .is_some_and(|ty| ty.contains('[') && !ty.contains('*'))
+        {
+            // Array decay retains declared storage identity even when
+            // character tracking records a legacy string initializer.
+            self.array_ptr_vars.insert(name);
+        }
+        let id = self.tmp_counter;
+        self.tmp_counter += 1;
+        let buffer_name = format!("__c_memchr_buffer{id}");
+        let needle_name = format!("__c_memchr_needle{id}");
+        let count_name = format!("__c_memchr_count{id}");
+        let index_name = format!("__c_memchr_index{id}");
+        self.var_types.insert(buffer_name.clone(), "void*".into());
+        self.var_types.insert(index_name.clone(), "int64".into());
+        let buffer_once = ident(&buffer_name);
+        let index_once = ident(&index_name);
+        // indexOf returns -1 or a wasm32 byte index, all exact in Number.
+        // Keep its pointer-offset use intact; only comparisons need a numeric hint.
+        let index_number = expr(ExprKind::Cast {
+            expr: Box::new(index_once.clone()), type_name: "double".into(),
+        });
+        let (base, offset) = self.c_byte_pointer_parts(buffer_once.clone(), index_once.clone());
+        let advanced = ternary_expr(
+            expr(ExprKind::IsType {
+                expr: Box::new(base.clone()),
+                type_name: "number".into(),
+            }),
+            pointers::linear_addr_offset(base.clone(), offset.clone()),
+            pointers::make_carray_ptr(base, offset),
+        );
+        let pointer = ternary_expr(
+            binary_expr(BinOp::Eq, index_number.clone(), int_lit(0)),
+            buffer_once.clone(),
+            advanced,
+        );
+        expr(ExprKind::Cast {
+            // Pointer operands are value parameters, not assignments that can
+            // copy a managed array or bind a reference cell to its owner.
+            expr: Box::new(call_expr(
+                expr(ExprKind::Lambda {
+                    params: [buffer_name, needle_name.clone(), count_name.clone()]
+                        .into_iter()
+                        .map(|name| Param {
+                            name,
+                            type_hint: None,
+                            default: None,
+                            pass_by: PassBy::Value,
+                            is_rest: false,
+                            is_kwargs: false,
+                            is_optional: false,
+                            is_nullable: false,
+                        })
+                        .collect(),
+                    body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
+                        assign_expr(
+                            index_once.clone(),
+                            call_expr(
+                                ident(if linear_search { "__c_mem_index_of_linear" }
+                                    else { "__c_mem_index_of_h" }),
+                                if linear_search {
+                                    vec![buffer_once, ident(&needle_name), ident(&count_name)]
+                                } else {
+                                    vec![buffer_once, ident(&needle_name), ident(&count_name), int_lit(0)]
+                                },
+                            ),
+                        ),
+                        ternary_expr(
+                            binary_expr(BinOp::GtEq, index_number, int_lit(0)),
+                            pointer,
+                            expr(ExprKind::Lit(Literal::Null)),
+                        ),
+                    ])))),
+                    is_async: false,
+                    captures: vec![],
+                }),
+                vec![buffer, needle, count],
+            )),
+            type_name: "void*".into(),
+        })
+    }
+
+    fn record_array_zero_in_place(
+        &mut self, pointer: Expression, record: &str, field: &str, ty: &str,
+        element_record: &str, depth: usize, pointer_slots_only: bool,
+    ) -> Option<Expression> {
+        let (_, dimensions) = parse_array_type_text(ty)?;
+        // Managed multidimensional arrays are nested rows, not a flat sequence
+        // of records. Do not silently traverse them with a flat element index.
+        if dimensions.len() != 1 { return None; }
+        let count = dimensions[0].parse::<i64>().ok()
+            .or_else(|| self.enum_constants.get(dimensions[0]).copied())?;
+        let stride = self.sizeof_type_text(element_record);
+        if count <= 0 || stride <= 0 || count.checked_mul(stride)? > i64::from(i32::MAX) {
+            return None;
+        }
+        let field_pointer = self.struct_pointer_array_field_decay_read(pointer, record, field, ty);
+        let id = self.tmp_counter;
+        self.tmp_counter += 1;
+        let base_name = format!("__c_record_zero_array{id}");
+        let index_name = format!("__c_record_zero_index{id}");
+        let element_name = format!("__c_record_zero_element{id}");
+        let base = ident(&base_name);
+        let index = ident(&index_name);
+        let element = ident(&element_name);
+        let element_type = format!("{element_record} *");
+        let declarations_start = self.generated_local_declarations.len();
+        self.register_generated_local(&index_name, "int");
+        self.register_generated_local(&element_name, &element_type);
+        self.hybrid_linear_struct_pointer_vars.insert(element_name);
+        let address = self.indexed_record_pointer_address(base, index.clone(), &element_type);
+        let reset = self.record_zero_in_place(element.clone(), element_record, depth + 1,
+            pointer_slots_only);
+        // These captures belong to this invoked loop, not its enclosing C
+        // function. Keep recursive/reentrant resets on independent frames.
+        let declarations = self.generated_local_declarations.split_off(declarations_start);
+        let reset = reset?;
+        Some(call_expr(expr(ExprKind::Lambda {
+            params: vec![Param {
+                name: base_name, type_hint: None, default: None, pass_by: PassBy::Value,
+                is_rest: false, is_kwargs: false, is_optional: false, is_nullable: false,
+            }],
+            body: LambdaBody::Block(vec![
+                stmt(StmtKind::VarDecl { declarations, kind: VarDeclKind::Let }),
+                stmt(StmtKind::For {
+                    init: Some(Box::new(stmt(StmtKind::Expr(assign_expr(index.clone(), int_lit(0)))))),
+                    cond: Some(binary_expr(BinOp::Integer(vybe_ast::IntOp::LtS, vybe_ast::BitLane::W32),
+                        index.clone(), int_lit(count))),
+                    update: Some(assign_expr(index.clone(), binary_expr(
+                        BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32), index, int_lit(1)))),
+                    body: vec![stmt(StmtKind::Expr(assign_expr(element, address))),
+                        stmt(StmtKind::Expr(reset))],
+                }),
+                stmt(StmtKind::Return(Some(int_lit(0)))),
+            ]),
+            captures: vec![], is_async: false,
+        }), vec![field_pointer]))
+    }
+
+    fn record_zero_in_place(
+        &mut self, pointer: Expression, record: &str, depth: usize, pointer_slots_only: bool,
+    ) -> Option<Expression> {
+        if depth > 32 { return None; }
+        let fields = self.structs.get(record)?.clone();
+        let types = self.struct_field_types.get(record)?.clone();
+        let mut writes = Vec::new();
+        for field in fields {
+            let ty = types.get(&field)?;
+            if ty.contains('[') {
+                let element = ty.split('[').next()?.trim();
+                if !element.contains('*')
+                    && let Some(nested) = self.canonical_struct_base_from_type(element)
+                {
+                    writes.push(self.record_array_zero_in_place(pointer.clone(), record, &field,
+                        ty, &nested, depth, pointer_slots_only)?);
+                    continue;
+                }
+                if pointer_slots_only { continue; }
+                let field_pointer = self.struct_pointer_array_field_decay_read(
+                    pointer.clone(), record, &field, ty,
+                );
+                writes.push(call_expr(ident("__c_byte_fill"), vec![
+                    field_pointer, int_lit(0), int_lit(self.sizeof_type_text(ty)),
+                ]));
+            } else if !ty.contains('*')
+                && let Some(nested) = self.canonical_struct_base_from_type(ty)
+            {
+                let nested_pointer = call_expr(ident("__c_hybrid_embedded_record_ptr"), vec![
+                    pointer.clone(), str_lit(&field),
+                    int_lit(self.offsetof_struct_field(record, &field)),
+                ]);
+                writes.push(self.record_zero_in_place(nested_pointer, &nested, depth + 1,
+                    pointer_slots_only)?);
+            } else {
+                if pointer_slots_only && !ty.contains('*') { continue; }
+                let value = self.zero_value_for_field_type(ty);
+                writes.push(self.typed_struct_pointer_field_write(
+                    pointer.clone(), record, &field, value,
+                )?);
+            }
+        }
+        Some(expr(ExprKind::Sequence(writes)))
+    }
+
+    fn rewrite_record_zero_fill(
+        &mut self, dst: &Expression, fill: &Expression, bytes: &Expression,
+    ) -> Option<Expression> {
+        if self.eval_int_expr(fill)? & 255 != 0 { return None; }
+        let ty = self.c_expr_type_text(dst)?;
+        let record = self.c_struct_pointer_pointee_from_type_text(&ty)?;
+        if self.eval_int_expr(bytes)? != self.sizeof_type_text(&record) { return None; }
+        let id = self.tmp_counter;
+        self.tmp_counter += 1;
+        let name = format!("__c_record_reset_ptr{id}");
+        self.register_generated_local(&name, &format!("{record} *"));
+        let pointer = ident(&name);
+        let managed = self.record_zero_in_place(pointer.clone(), &record, 0, false)?;
+        let pointer_slots = self.record_zero_in_place(pointer.clone(), &record, 0, true)?;
+        let backing = self.struct_backing_pointer_or_value(pointer.clone());
+        Some(expr(ExprKind::Cast {
+            expr: Box::new(expr(ExprKind::Sequence(vec![
+                assign_expr(pointer.clone(), dst.clone()),
+                ternary_expr(expr(ExprKind::IsType {
+                    expr: Box::new(backing.clone()), type_name: "number".into(),
+                }),
+                    expr(ExprKind::Sequence(vec![
+                        call_expr(ident("__c_byte_fill"), vec![backing, fill.clone(), bytes.clone()]),
+                        pointer_slots,
+                    ])),
+                    managed,
+                ),
+                pointer,
+            ]))), type_name: "void*".into(),
+        }))
+    }
+
     fn rewrite_memset(
         &mut self,
         dst: Expression,
         fill: Expression,
         bytes: Expression,
     ) -> Expression {
+        expr(ExprKind::Cast {
+            expr: Box::new(self.rewrite_memset_value(dst, fill, bytes)),
+            type_name: "void*".into(),
+        })
+    }
+
+    fn rewrite_memset_value(
+        &mut self,
+        dst: Expression,
+        fill: Expression,
+        bytes: Expression,
+    ) -> Expression {
+        if let Some(reset) = self.rewrite_record_zero_fill(&dst, &fill, &bytes) {
+            return reset;
+        }
         let linear = self.char_array_field_linear_addr(&dst).or_else(|| {
             self.linear_pointer_addr_and_stride(&dst)
                 .map(|(addr, _)| addr)
@@ -21769,24 +25032,70 @@ impl Walker {
                 self.resolve_typedef_scalar_aliases(&self.c_indexed_pointer_element_type(&ty));
             element.trim() == "void"
                 || self.c_pointer_index_stride_from_type(&ty) == 1
-                    && (c_int_family_type(&element)
+                    && (element.trim() == "char"
+                        || c_int_family_type(&element)
                         || element.contains("unsigned char")
                         || element.contains("signed char"))
         });
         if let Some(address) = linear {
-            return call_expr(ident("__c_ptr_memory_fill"), vec![address, fill, bytes]);
+            return expr(ExprKind::Cast {
+                expr: Box::new(call_expr(ident("__c_ptr_memory_fill"), vec![address, fill, bytes])),
+                type_name: "void*".into(),
+            });
+        }
+        // A value-record inline byte array remains a plain managed array.
+        // Decay it before applying a byte offset; array + offset is not an address.
+        if let ExprKind::Binary { op: BinOp::Add | BinOp::Sub, left, right } = &dst.kind
+            && let ExprKind::Member { object, field, .. } = &left.kind
+            && let Some(owner_type) = self.c_expr_type_text(object)
+            && !owner_type.contains('*')
+            && let Some(record) = self.canonical_struct_base_from_type(&owner_type)
+            && let Some(field_type) = self.struct_field_types.get(&record)
+                .and_then(|fields| fields.get(field))
+            && field_type.matches('[').count() == 1
+            && self.sizeof_type_text(field_type.split('[').next().unwrap_or("")) == 1
+        {
+            let offset = if matches!(&dst.kind, ExprKind::Binary { op: BinOp::Sub, .. }) {
+                unary_expr(UnaryOp::Neg, (**right).clone())
+            } else { (**right).clone() };
+            return call_expr(ident("__c_byte_fill"), vec![
+                pointers::make_carray_ptr((**left).clone(), offset), fill, bytes,
+            ]);
+        }
+        // Pointer parameters may refer to either managed or linear records.
+        // Inline array destinations must decay to backing storage in both cases.
+        if let ExprKind::Member { object, field, .. } = &dst.kind
+            && let Some(struct_base) = self.c_expr_type_text(object)
+                .and_then(|ty| self.c_struct_pointer_pointee_from_type_text(&ty))
+            && let Some(field_type) = self.struct_field_types.get(&struct_base)
+                .and_then(|fields| fields.get(field)).cloned()
+            && field_type.contains('[')
+        {
+            let pointer = self.struct_pointer_array_field_decay_read(
+                (**object).clone(), &struct_base, field, &field_type,
+            );
+            return expr(ExprKind::Cast {
+                expr: Box::new(call_expr(ident("__c_byte_fill"), vec![pointer, fill, bytes])),
+                type_name: "void*".into(),
+            });
         }
         if byte_pointer {
-            return call_expr(ident("__c_byte_fill"), vec![dst, fill, bytes]);
+            return expr(ExprKind::Cast {
+                expr: Box::new(call_expr(ident("__c_byte_fill"), vec![dst, fill, bytes])),
+                type_name: "void*".into(),
+            });
         }
         if let Some((dst_name, dst_offset)) =
             char_buffer_target_offset(&dst).filter(|(name, _)| self.is_char_buffer_name(name))
         {
             if self.is_char_array_var(&dst_name)
-                && !self.initialized_char_buffers.contains(&dst_name)
-                && !self.char_string_arrays.contains(&dst_name)
+                && self.var_types.get(&dst_name)
+                    .is_some_and(|ty| ty.matches('[').count() == 1)
+                && (self.byte_array_ptr_vars.contains(&dst_name)
+                    || !self.initialized_char_buffers.contains(&dst_name)
+                        && !self.char_string_arrays.contains(&dst_name))
             {
-                return call_expr(
+                let fill = call_expr(
                     ident("__c_byte_fill"),
                     vec![
                         pointers::make_carray_ptr(ident(&dst_name), dst_offset),
@@ -21794,6 +25103,10 @@ impl Walker {
                         bytes,
                     ],
                 );
+                return expr(ExprKind::Cast {
+                    expr: Box::new(fill),
+                    type_name: "void*".into(),
+                });
             }
             self.char_pointers.insert(dst_name.clone());
             let count = self.byte_count_to_usize(&bytes).unwrap_or(0);
@@ -22239,17 +25552,17 @@ impl Walker {
                 var_decl_stmt(&byte_name, int_lit(0)),
                 var_decl_stmt(&done_name, int_lit(0)),
                 stmt(StmtKind::While {
-                    cond: binary_expr(BinOp::Lt, index.clone(), count.clone()),
+                    cond: binary_expr(BinOp::Integer(vybe_ast::IntOp::LtU, vybe_ast::BitLane::W32), index.clone(), count.clone()),
                     body: vec![
                         if_stmt(
-                            binary_expr(BinOp::Eq, done.clone(), int_lit(0)),
+                            binary_expr(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), done.clone(), int_lit(0)),
                             vec![
                                 stmt(StmtKind::Expr(assign_expr(
                                     byte.clone(),
                                     self.c_byte_pointer_read(src.clone(), index.clone()),
                                 ))),
                                 if_stmt(
-                                    binary_expr(BinOp::Eq, byte.clone(), int_lit(0)),
+                                    binary_expr(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), byte.clone(), int_lit(0)),
                                     vec![stmt(StmtKind::Expr(assign_expr(
                                         done.clone(),
                                         int_lit(1),
@@ -22260,7 +25573,7 @@ impl Walker {
                             None,
                         ),
                         if_stmt(
-                            binary_expr(BinOp::NotEq, done.clone(), int_lit(0)),
+                            binary_expr(BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32), done.clone(), int_lit(0)),
                             vec![stmt(StmtKind::Expr(assign_expr(byte.clone(), int_lit(0))))],
                             None,
                         ),
@@ -22271,7 +25584,7 @@ impl Walker {
                         ))),
                         stmt(StmtKind::Expr(assign_expr(
                             index.clone(),
-                            binary_expr(BinOp::Add, index.clone(), int_lit(1)),
+                            binary_expr(BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32), index.clone(), int_lit(1)),
                         ))),
                     ],
                     else_body: None,
@@ -22282,6 +25595,18 @@ impl Walker {
                 expr(ExprKind::Lambda {
                     params,
                     body: LambdaBody::Block(vec![
+                        if_stmt(
+                            binary_expr(
+                                BinOp::And,
+                                expr(ExprKind::IsType { expr: Box::new(dst.clone()), type_name: "number".into() }),
+                                expr(ExprKind::IsType { expr: Box::new(src.clone()), type_name: "number".into() }),
+                            ),
+                            vec![stmt(StmtKind::Return(Some(call_expr(
+                                ident("__libc_strncpy_carray"),
+                                vec![dst.clone(), src.clone(), count.clone()],
+                            ))))],
+                            None,
+                        ),
                         if_stmt(
                             binary_expr(
                                 BinOp::Eq,
@@ -22751,7 +26076,7 @@ impl Walker {
                 })
                 .unwrap_or(false),
             ExprKind::Cast { type_name, .. } => {
-                let t = normalized_c_type_name(&self.resolve_typedef_scalar_aliases(type_name));
+                let t = self.resolve_typedef_scalar_aliases(type_name);
                 !t.contains('*')
                     && !t.contains('[')
                     && (t.contains("unsigned") || t.contains("uint") || t == "size_t")
@@ -22759,7 +26084,7 @@ impl Walker {
             ExprKind::Call { .. } => self
                 .c_expr_type_text(e)
                 .map(|t| {
-                    let t = normalized_c_type_name(&self.resolve_typedef_scalar_aliases(&t));
+                    let t = self.resolve_typedef_scalar_aliases(&t);
                     !t.contains('*')
                         && !t.contains('[')
                         && (t.contains("unsigned") || t.contains("uint") || t == "size_t")
@@ -22804,6 +26129,11 @@ impl Walker {
                 expr,
             } => self.is_integral_expr(expr),
             ExprKind::Binary { op, left, right } => {
+                if *op == BinOp::Sub
+                    && self.c_expr_type_text(e).as_deref() == Some("ptrdiff_t")
+                {
+                    return true;
+                }
                 matches!(
                     op,
                     BinOp::Add
@@ -22836,6 +26166,8 @@ impl Walker {
             }
             ExprKind::Call { callee, .. } => {
                 matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_char_code_at")
+                    || self.infer_function_return_type(callee)
+                        .is_some_and(|ty| self.is_integral_type_text(&ty))
             }
             ExprKind::Index { object, .. } => {
                 matches!(&object.kind, ExprKind::Member { field, .. } if field == CARRAY_BASE_KEY)
@@ -22848,7 +26180,93 @@ impl Walker {
                 .c_expr_type_text(e)
                 .map(|ty| self.is_integral_type_text(&ty))
                 .unwrap_or(false),
+            ExprKind::RefLoad(_) => self
+                .c_expr_type_text(e)
+                .is_some_and(|ty| self.is_integral_type_text(&ty)),
+            ExprKind::Sequence(parts) => parts.last().is_some_and(|last| self.is_integral_expr(last)),
             _ => false,
+        }
+    }
+
+    fn constant_scalar_array_data(
+        &mut self,
+        type_text: &str,
+        bounds: Option<&[Expression]>,
+        initializer: Option<&Expression>,
+        requested_alignment: i64,
+    ) -> Option<(u32, Vec<u8>)> {
+        let resolved = self.resolve_typedef_scalar_aliases(type_text);
+        if !c_int_family_type(&resolved) {
+            return None;
+        }
+        let width = usize::try_from(self.sizeof_type_text(&resolved)).ok()?;
+        if !matches!(width, 1 | 2 | 4 | 8) {
+            return None;
+        }
+        let bounds = bounds?;
+        if bounds.len() != 1 {
+            return None;
+        }
+        let count = usize::try_from(self.eval_int_expr(&bounds[0])?).ok()?;
+        let elements = match initializer.map(|value| &value.kind) {
+            Some(ExprKind::Array(elements)) => elements.as_slice(),
+            None => &[],
+            _ => return None,
+        };
+        if elements.len() > count {
+            return None;
+        }
+        let byte_count = count.checked_mul(width)?;
+        let byte_count_u32 = u32::try_from(byte_count).ok()?;
+        let alignment = u32::try_from(requested_alignment).ok()?.max(width as u32);
+        if !alignment.is_power_of_two() {
+            return None;
+        }
+        let offset = self.linear_static_data_end.max(1024)
+            .checked_add(alignment - 1)? & !(alignment - 1);
+        let end = offset.checked_add(byte_count_u32)?;
+        // The bump cursor is an i32 address, including its aligned initial value.
+        end.checked_add(15)?;
+        let mut bytes = vec![0; byte_count];
+        for (index, element) in elements.iter().enumerate() {
+            if element.key.is_some() || element.spread || element.by_ref {
+                return None;
+            }
+            let value = self.constant_integer_literal(&element.value)?;
+            bytes[index * width..(index + 1) * width]
+                .copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        self.linear_static_data_end = end;
+        Some((offset, bytes))
+    }
+
+    fn constant_integer_literal(&self, value: &Expression) -> Option<i64> {
+        match &value.kind {
+            ExprKind::Lit(Literal::Int(value) | Literal::BigInt(value)) => Some(*value),
+            ExprKind::Unary { op: UnaryOp::Neg, expr } => {
+                self.constant_integer_literal(expr)?.checked_neg()
+            }
+            ExprKind::Cast { expr, type_name } => {
+                let resolved = self.resolve_typedef_scalar_aliases(type_name);
+                if !c_int_family_type(&resolved) {
+                    return None;
+                }
+                let value = self.constant_integer_literal(expr)?;
+                let unsigned = resolved.split_whitespace().any(|part| part == "unsigned")
+                    || normalized_c_type_name(&resolved).starts_with("uint")
+                    || matches!(resolved.trim(), "size_t" | "uintptr_t");
+                match (self.sizeof_type_text(&resolved), unsigned) {
+                    (1, true) => Some(i64::from(value as u8)),
+                    (1, false) => Some(i64::from(value as i8)),
+                    (2, true) => Some(i64::from(value as u16)),
+                    (2, false) => Some(i64::from(value as i16)),
+                    (4, true) => Some(i64::from(value as u32)),
+                    (4, false) => Some(i64::from(value as i32)),
+                    (8, _) => Some(value),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
@@ -22869,7 +26287,7 @@ impl Walker {
             ExprKind::Unary { op, expr } => {
                 let value = self.eval_int_expr(expr)?;
                 match op {
-                    UnaryOp::Neg => Some(-value),
+                    UnaryOp::Neg => value.checked_neg(),
                     UnaryOp::Not => Some(if value == 0 { 1 } else { 0 }),
                     UnaryOp::BitNot => Some(!value),
                     _ => None,
@@ -22877,18 +26295,30 @@ impl Walker {
             }
             ExprKind::Binary { op, left, right } => {
                 let l = self.eval_int_expr(left)?;
+                if *op == BinOp::And && l == 0 { return Some(0); }
+                if *op == BinOp::Or && l != 0 { return Some(1); }
                 let r = self.eval_int_expr(right)?;
                 match op {
-                    BinOp::Add => Some(l + r),
-                    BinOp::Sub => Some(l - r),
-                    BinOp::Mul => Some(l * r),
-                    BinOp::Div if r != 0 => Some(l / r),
-                    BinOp::Mod if r != 0 => Some(l % r),
-                    BinOp::Shl => Some(l << r),
-                    BinOp::Shr | BinOp::UShr => Some(l >> r),
+                    BinOp::Integer(operation, lane) => fold_c_integer_constant(
+                        *operation, *lane, l, r,
+                        self.is_unsigned_expr(left)
+                            || (*operation != vybe_ast::IntOp::Shl && self.is_unsigned_expr(right)),
+                    ),
+                    BinOp::Add => l.checked_add(r),
+                    BinOp::Sub => l.checked_sub(r),
+                    BinOp::Mul => l.checked_mul(r),
+                    BinOp::Div | BinOp::IDiv => l.checked_div(r),
+                    BinOp::Mod => l.checked_rem(r),
+                    BinOp::Shl if (0..64).contains(&r) => {
+                        i64::try_from(i128::from(l).checked_shl(r as u32)?).ok()
+                    }
+                    BinOp::Shr if (0..64).contains(&r) => Some(l >> r),
+                    BinOp::UShr if (0..64).contains(&r) => Some(((l as u64) >> r) as i64),
                     BinOp::BitAnd => Some(l & r),
                     BinOp::BitOr => Some(l | r),
                     BinOp::BitXor => Some(l ^ r),
+                    BinOp::And => Some(i64::from(r != 0)),
+                    BinOp::Or => Some(i64::from(r != 0)),
                     BinOp::Eq => Some(if l == r { 1 } else { 0 }),
                     BinOp::NotEq => Some(if l != r { 1 } else { 0 }),
                     BinOp::Lt => Some(if l < r { 1 } else { 0 }),
@@ -22985,7 +26415,6 @@ impl Walker {
         let left = self.rewrite_integer_bitwise_comparison_lanes(*left, retain_lane);
         let right = self.rewrite_integer_bitwise_comparison_lanes(*right, retain_lane);
         if let Some(word_op) = word_op
-            && comparison_operand
             && self.is_integral_expr(&left)
             && self.is_integral_expr(&right)
             && !self.is_floatish_expr(&left)
@@ -23047,66 +26476,147 @@ impl Walker {
         };
         let left = self.rewrite_unsigned_32_arithmetic_lanes(*left);
         let right = self.rewrite_unsigned_32_arithmetic_lanes(*right);
-        if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
+        if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul
+            | BinOp::Div | BinOp::IDiv | BinOp::Mod)
             && (self.is_unsigned_32_arithmetic_expr(&left)
                 || self.is_unsigned_32_arithmetic_expr(&right))
             && self.is_integral_expr(&left)
             && self.is_integral_expr(&right)
+            && self.has_declared_narrow_integer_type(&left)
+            && self.has_declared_narrow_integer_type(&right)
+            && !self.is_floatish_expr(&left)
+            && !self.is_floatish_expr(&right)
             && !self.has_wide_integer_operand(&left)
             && !self.has_wide_integer_operand(&right)
         {
-            return binary_expr(
-                op,
-                binary_expr(BinOp::BitOr, left, int_lit(0)),
-                binary_expr(BinOp::BitOr, right, int_lit(0)),
-            );
+            let operation = match op {
+                BinOp::Add => vybe_ast::IntOp::Add,
+                BinOp::Sub => vybe_ast::IntOp::Sub,
+                BinOp::Mul => vybe_ast::IntOp::Mul,
+                BinOp::Div | BinOp::IDiv => vybe_ast::IntOp::DivU,
+                BinOp::Mod => vybe_ast::IntOp::RemU,
+                _ => unreachable!(),
+            };
+            return call_expr(ident("__c_unsigned32_from_bits"), vec![binary_expr(
+                BinOp::Integer(operation, vybe_ast::BitLane::W32), left, right,
+            )]);
         }
         binary_expr(op, left, right)
     }
 
+    fn has_declared_narrow_integer_type(&self, value: &Expression) -> bool {
+        if let Some(ty) = self.c_expr_type_text(value) {
+            let resolved = self.resolve_typedef_scalar_aliases(&ty);
+            if !resolved.contains('*') && !resolved.contains('[')
+                && self.is_integral_type_text(&resolved)
+                && self.sizeof_type_text(&resolved) <= 4
+            {
+                return true;
+            }
+        }
+        match &value.kind {
+            // Explicit L/LL suffixes retain wide casts; an uncast int-range
+            // literal participates in the ordinary integer promotions.
+            ExprKind::Lit(Literal::Int(value)) => i32::try_from(*value).is_ok(),
+            ExprKind::Binary { op: BinOp::Integer(_, vybe_ast::BitLane::W32), .. } => true,
+            ExprKind::Sequence(parts) => parts.last()
+                .is_some_and(|value| self.has_declared_narrow_integer_type(value)),
+            ExprKind::Ternary { then, else_, .. } => {
+                self.has_declared_narrow_integer_type(then)
+                    && self.has_declared_narrow_integer_type(else_)
+            }
+            _ => false,
+        }
+    }
+
+    fn binary_operand_value(&self, operand: Expression) -> Expression {
+        if matches!(&operand.kind, ExprKind::Assign { .. } | ExprKind::Member { .. })
+                && let Some(type_text) = self.c_expr_type_text(&operand)
+                && !type_text.contains('[')
+                && self.is_integral_type_text(&type_text)
+            {
+                expr(ExprKind::Cast {
+                    expr: Box::new(operand),
+                    type_name: self.resolve_typedef_scalar_aliases(&type_text),
+                })
+            } else {
+                operand
+            }
+    }
+
     fn walk_binary(&mut self, pair: Pair<Rule>) -> Expression {
+        let direct = true;
+        #[cfg(test)]
+        let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_BINARIES.with(|flag| flag.get());
+        if direct && let Some(region) = crate::frontend::take_direct_binary_region(&pair) {
+            let result = region.lower(|_, raw| {
+                let operand = self.normalize_direct_syntax(raw);
+                self.binary_operand_value(operand)
+            });
+            return self.rewrite_binary_result(result);
+        }
         // binary_expression = unary (op unary)*
+        let lower_operand = |walker: &mut Self, p: Pair<Rule>| {
+            let operand = walker.walk_unary(p);
+            walker.binary_operand_value(operand)
+        };
+        let owned = crate::frontend::take_binary(&pair).or_else(|| {
+            let mut children = pair.clone().into_inner();
+            if let Some(first) = children.next()
+                && first.as_rule() == Rule::unary_expression
+                && children.next().is_none()
+            {
+                return Some(lower_operand(self, first));
+            }
+            crate::frontend::take_binary_with_context(&pair, |p| lower_operand(self, p))
+                .or_else(|| crate::frontend::construct_contextual_binary(
+                    &pair, |p| lower_operand(self, p),
+                ))
+        });
         let mut operands: Vec<Expression> = Vec::new();
-        let mut ops: Vec<String> = Vec::new();
-        for p in pair.into_inner() {
-            match p.as_rule() {
-                Rule::binary_op => ops.push(p.as_str().to_string()),
-                _ => {
-                    let operand = self.walk_unary(p);
-                    let operand = if matches!(&operand.kind,
-                        ExprKind::Assign { .. } | ExprKind::Member { .. })
-                        && let Some(type_text) = self.c_expr_type_text(&operand)
-                        && !type_text.contains('[')
-                        && self.is_integral_type_text(&type_text)
-                    {
-                        expr(ExprKind::Cast {
-                            expr: Box::new(operand),
-                            type_name: self.resolve_typedef_scalar_aliases(&type_text),
-                        })
-                    } else {
-                        operand
-                    };
-                    operands.push(operand);
+        let mut ops: Vec<(BinOp, u8)> = Vec::new();
+        if owned.is_none() {
+            for p in pair.into_inner() {
+                match p.as_rule() {
+                    Rule::binary_op => ops.push(bin_op(p.as_str())),
+                    _ => {
+                        operands.push(lower_operand(self, p));
+                    }
                 }
             }
         }
-        let result = self.rewrite_wide_integer_binary(fold_binary(operands, ops));
-        let result = self.rewrite_unsigned_shift(result);
-        let result = self.rewrite_unsigned_32_arithmetic_lanes(result);
-        let result = self.rewrite_unsigned_division_remainder(result);
-        let result = self.rewrite_integer_division(result);
-        let result = self.rewrite_pointer_zero_comparison(result);
+        self.rewrite_binary_result(owned.unwrap_or_else(|| fold_binary(operands, ops)))
+    }
+
+    fn rewrite_binary_result(&mut self, mut result: Expression) -> Expression {
+        #[cfg(test)]
+        let skip_finished = !field_type_tests::USE_REFERENCE_BINARY_REWRITES.with(|flag| flag.get());
+        #[cfg(not(test))]
+        let skip_finished = true;
+        // Every pass below is an identity on non-Binary roots, including the
+        // pointer wrappers (their result-type query only admits Binary +/-).
+        if skip_finished && !matches!(result.kind, ExprKind::Binary { .. }) {
+            return result;
+        }
+        macro_rules! rewrite {
+            ($($pass:ident),+ $(,)?) => { $(
+                #[cfg(test)]
+                field_type_tests::BINARY_REWRITE_CALLS.with(|count| count.set(count.get() + 1));
+                result = self.$pass(result);
+            )+ };
+        }
+        rewrite!(rewrite_wide_integer_binary, rewrite_unsigned_shift,
+            rewrite_unsigned_32_arithmetic_lanes, rewrite_unsigned_division_remainder,
+            rewrite_integer_division, rewrite_pointer_zero_comparison);
         // Convert char-buffer reads to char codes BEFORE wrapping logical ops in a
         // ternary — `rewrite_logical_bool` turns `a && b` into `(a && b) ? 1 : 0`,
         // and `rewrite_char_index_numeric` only descends `Binary` nodes.
-        let result = self.rewrite_char_index_numeric(result);
-        let result = self.rewrite_integer_bitwise_lanes(result);
-        let result = self.rewrite_unsigned_relational(result);
-        let result = self.rewrite_char_ptr_arith(result);
-        let result = self.rewrite_carray_ptr_arith(result);
-        let result = self.rewrite_logical_bool(result);
-        let result = self.rewrite_complex_binary_expr(result);
-        self.rewrite_fenv_binary(result)
+        rewrite!(rewrite_char_index_numeric, rewrite_integer_bitwise_lanes,
+            rewrite_unsigned_relational, rewrite_char_ptr_arith, rewrite_carray_ptr_arith);
+        // Backing-aware pointer differences introduce their scalar result lane here.
+        rewrite!(rewrite_wide_integer_binary, rewrite_pointer_ordering,
+            rewrite_logical_bool, rewrite_complex_binary_expr, rewrite_fenv_binary);
+        result
     }
 
     fn rewrite_wide_integer_binary(&self, value: Expression) -> Expression {
@@ -23115,6 +26625,9 @@ impl Walker {
         };
         let left = self.rewrite_wide_integer_binary(*left);
         let right = self.rewrite_wide_integer_binary(*right);
+        if self.is_floatish_expr(&left) || self.is_floatish_expr(&right) {
+            return binary_expr(op, left, right);
+        }
         // Pointer arithmetic belongs to the backing-aware pointer pass, even
         // when its offset has the wider ptrdiff_t/size_t integer type.
         if [&left, &right].iter().any(|operand| {
@@ -23183,17 +26696,15 @@ impl Walker {
     fn is_floatish_expr(&self, expr_in: &Expression) -> bool {
         match &expr_in.kind {
             ExprKind::Lit(Literal::Float(_)) => true,
-            ExprKind::Ident(name) => self
-                .var_types
-                .get(name)
-                .map(|ty| {
-                    let ty = normalized_c_type_name(ty);
-                    ty.contains("float") || ty.contains("double") || ty.contains("long double")
-                })
-                .unwrap_or(false),
-            ExprKind::Cast { type_name, .. } => {
-                type_name.contains("double") || type_name.contains("float")
-            }
+            ExprKind::Ident(_) | ExprKind::Cast { .. } | ExprKind::Call { .. }
+            | ExprKind::Member { .. } | ExprKind::Index { .. }
+            | ExprKind::RefLoad(_) | ExprKind::Assign { .. } => self
+                .c_expr_type_text(expr_in)
+                .is_some_and(|ty| {
+                    let resolved = self.resolve_typedef_scalar_aliases(&ty);
+                    matches!(normalized_c_type_name(&resolved).as_str(),
+                        "float" | "double" | "long double")
+                }),
             ExprKind::Unary { expr, .. } => self.is_floatish_expr(expr),
             ExprKind::Binary { left, right, .. } => {
                 self.is_floatish_expr(left) || self.is_floatish_expr(right)
@@ -23201,6 +26712,8 @@ impl Walker {
             ExprKind::Ternary { then, else_, .. } => {
                 self.is_floatish_expr(then) || self.is_floatish_expr(else_)
             }
+            ExprKind::Sequence(parts) => parts.last()
+                .is_some_and(|value| self.is_floatish_expr(value)),
             _ => false,
         }
     }
@@ -23500,6 +27013,13 @@ impl Walker {
     }
 
     fn c_null_pointer_test(&mut self, value: Expression) -> Expression {
+        if let Some((address, _)) = self.linear_pointer_addr_and_stride(&value) {
+            return binary_expr(
+                BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                address,
+                int_lit(0),
+            );
+        }
         if matches!(&value.kind, ExprKind::Unary { op: UnaryOp::AddrOf, .. }) {
             // An object address is non-null, independent of its stored value.
             // Evaluate the address expression without promoting it to a value binding.
@@ -23517,7 +27037,7 @@ impl Walker {
                     str_lit("number"),
                 ),
                 binary_expr(
-                    BinOp::Eq,
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     expr(ExprKind::Cast {
                         expr: Box::new(pointer.clone()),
                         type_name: "unsigned int".to_string(),
@@ -23530,6 +27050,12 @@ impl Walker {
     }
 
     fn is_pointer_like_expr(&self, expr_in: &Expression) -> bool {
+        if self.c_expr_type_text(expr_in).is_some_and(|ty| {
+            let resolved = self.resolve_typedef_scalar_aliases(&ty);
+            resolved.contains('*') || resolved.contains('[')
+        }) {
+            return true;
+        }
         match &expr_in.kind {
             ExprKind::Unary { op: UnaryOp::AddrOf, .. } => true,
             ExprKind::Ident(name) => {
@@ -23544,7 +27070,14 @@ impl Walker {
             }
             ExprKind::Lit(Literal::Null) => true,
             ExprKind::Object(_) => is_carray_like_expr(expr_in),
-            ExprKind::Call { .. } => is_carray_like_expr(expr_in),
+            ExprKind::Call { .. } => {
+                is_carray_like_expr(expr_in)
+                    || self.c_expr_type_text(expr_in).is_some_and(|ty| {
+                        self.resolve_typedef_scalar_aliases(&ty).contains('*')
+                    })
+            }
+            ExprKind::RefLoad(inner) => self.is_pointer_like_expr(inner),
+            ExprKind::Sequence(parts) => parts.last().is_some_and(|last| self.is_pointer_like_expr(last)),
             ExprKind::Ternary { then, else_, .. } => {
                 self.is_pointer_like_expr(then) || self.is_pointer_like_expr(else_)
             }
@@ -23583,32 +27116,6 @@ impl Walker {
             return args;
         };
         for (arg_index, spec) in printf_value_specs(format_text).into_iter().enumerate() {
-            // `%s` of a char buffer that is an ARRAY at runtime (an
-            // uninitialized `char b[5]` written through a promoted pointer)
-            // must NUL-clip and join, not stringify to "a,b,c,…".
-            if spec == 's' {
-                let Some(arg) = args.get_mut(arg_index + 1) else {
-                    break;
-                };
-                let needs_char_array_decode = match &arg.value.kind {
-                    ExprKind::Ident(name) => {
-                        self.is_char_array_var(name)
-                            || self.carray_ptr_vars.contains(name)
-                            || self.linear_pointer_vars.contains(name)
-                    }
-                    ExprKind::Array(_) => true,
-                    _ => {
-                        self.member_is_char_array_field(&arg.value)
-                            || self.is_linear_pointer_address_or_value_expr(&arg.value)
-                    }
-                };
-                if needs_char_array_decode {
-                    let value = arg.value.clone();
-                    let string_arg = self.char_array_field_linear_addr(&value).unwrap_or(value);
-                    arg.value = call_expr(ident("__libc_char_to_str"), vec![string_arg]);
-                }
-                continue;
-            }
             if !matches!(spec, 'd' | 'i' | 'u' | 'x' | 'X' | 'o') {
                 continue;
             }
@@ -23724,15 +27231,32 @@ impl Walker {
         };
         let left = self.rewrite_unsigned_relational(*left);
         let right = self.rewrite_unsigned_relational(*right);
+        // Keep declared pointer/array comparisons visible to the following
+        // backing-aware pass. Integer element types do not prove integer values.
+        if [&left, &right].iter().any(|operand|
+            self.c_expr_type_text(operand).is_some_and(|ty| {
+                let resolved = self.resolve_typedef_scalar_aliases(&ty);
+                resolved.contains('*') || resolved.contains('[')
+            }))
+        {
+            return binary_expr(op, left, right);
+        }
         if matches!(op, BinOp::Eq | BinOp::NotEq)
-            && (self.is_unsigned_32_arithmetic_expr(&left)
-                || self.is_unsigned_32_arithmetic_expr(&right))
             && self.is_integral_expr(&left)
             && self.is_integral_expr(&right)
+            && !self.is_floatish_expr(&left)
+            && !self.is_floatish_expr(&right)
             && !self.has_wide_integer_operand(&left)
             && !self.has_wide_integer_operand(&right)
         {
-            return binary_expr(op, unsigned_u32_expr(left), unsigned_u32_expr(right));
+            return binary_expr(
+                BinOp::Integer(
+                    if op == BinOp::Eq { vybe_ast::IntOp::Eq } else { vybe_ast::IntOp::Ne },
+                    vybe_ast::BitLane::W32,
+                ),
+                left,
+                right,
+            );
         }
         if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq)
             && (self.is_unsigned_expr(&left) || self.is_unsigned_expr(&right))
@@ -24127,7 +27651,39 @@ impl Walker {
 
     /// Rewrite carray pointer arithmetic expressions.
     /// Runs after `rewrite_char_ptr_arith` so char* expressions are already handled.
+    fn pointer_arithmetic_result_type(&self, value: &Expression) -> Option<String> {
+        if !matches!(value.kind, ExprKind::Binary { op: BinOp::Add | BinOp::Sub, .. }) {
+            return None;
+        }
+        let ty = self.c_expr_type_text(value)?;
+        if ty.contains('[') && !ty.trim_end().ends_with('*') {
+            Some(decayed_array_pointer_type(&ty))
+        } else if ty.contains('*') {
+            Some(ty)
+        } else {
+            None
+        }
+    }
+
+    fn retain_pointer_result_type(&self, value: Expression, type_text: Option<String>) -> Expression {
+        let Some(type_name) = type_text else { return value; };
+        // An unlowered arithmetic node must remain visible to the next pass.
+        if matches!(value.kind, ExprKind::Binary { op: BinOp::Add | BinOp::Sub, .. }) {
+            return value;
+        }
+        if matches!(&value.kind, ExprKind::Cast { type_name: existing, .. } if existing == &type_name) {
+            return value;
+        }
+        expr(ExprKind::Cast { expr: Box::new(value), type_name })
+    }
+
     fn rewrite_carray_ptr_arith(&mut self, e: Expression) -> Expression {
+        let type_text = self.pointer_arithmetic_result_type(&e);
+        let result = self.rewrite_carray_ptr_arith_value(e);
+        self.retain_pointer_result_type(result, type_text)
+    }
+
+    fn rewrite_carray_ptr_arith_value(&mut self, e: Expression) -> Expression {
         let ExprKind::Binary { op, left, right } = e.kind else {
             return e;
         };
@@ -24252,6 +27808,13 @@ impl Walker {
                 if (left_is_carray_obj || left_is_carray_var)
                     && (right_is_carray_obj || right_is_carray_var)
                 {
+                    // A carray-classified binding can still carry a numeric
+                    // address. Only managed values have __base and __idx.
+                    if self.expr_may_be_hybrid_carray_pointer(&left)
+                        || self.expr_may_be_hybrid_carray_pointer(&right)
+                    {
+                        return self.pointer_equality_once(*left, *right, op);
+                    }
                     let ptr_eq =
                         carray_ptr_equality(left_carray_expr.clone(), right_carray_expr.clone());
                     return if matches!(op, BinOp::Eq) {
@@ -24288,7 +27851,7 @@ impl Walker {
                     {
                         return offset;
                     }
-                    return pointers::hybrid_offset((*left).clone(), *right);
+                    return self.typed_hybrid_pointer_offset(*left, *right, false);
                 }
                 if self.expr_may_be_hybrid_carray_pointer(&right) {
                     if let ExprKind::Ident(name) = &right.kind
@@ -24297,7 +27860,7 @@ impl Walker {
                     {
                         return offset;
                     }
-                    return pointers::hybrid_offset((*right).clone(), *left);
+                    return self.typed_hybrid_pointer_offset(*right, *left, false);
                 }
                 if let Some(ptr) = cstruct_pointer_byte_carray(&left) {
                     return pointers::carray_advance(ptr, *right);
@@ -24348,6 +27911,12 @@ impl Walker {
                         pointers::linear_scaled_offset(*left, stride),
                     );
                     return self.typed_linear_address_expr(address, &right);
+                }
+                if self.is_unclassified_nonidentifier_object_pointer(&left) {
+                    return self.typed_hybrid_pointer_offset(*left, *right, false);
+                }
+                if self.is_unclassified_nonidentifier_object_pointer(&right) {
+                    return self.typed_hybrid_pointer_offset(*right, *left, false);
                 }
                 if left_name
                     .as_deref()
@@ -24407,6 +27976,25 @@ impl Walker {
                     }
                     return pointers::make_carray_ptr(*left, *right);
                 }
+                if right_is_array_var
+                    && self.c_expr_type_text(&right).is_some_and(|ty|
+                        ty.contains('[') && !ty.trim_end().ends_with('*'))
+                {
+                    // Keep the scalar operand first even when its evaluation
+                    // mutates storage used by the array expression.
+                    let name = format!("__c_array_offset{}", self.tmp_counter);
+                    self.tmp_counter += 1;
+                    self.register_generated_local(&name, "ptrdiff_t");
+                    let offset = ident(&name);
+                    let index = right_name.as_deref()
+                        .and_then(|name| self.dynamic_vla_row_stride(name))
+                        .map(|stride| binary_expr(BinOp::Mul, offset.clone(), stride))
+                        .unwrap_or_else(|| offset.clone());
+                    return expr(ExprKind::Sequence(vec![
+                        assign_expr(offset, *left),
+                        pointers::make_carray_ptr(*right, index),
+                    ]));
+                }
                 if is_carray_object(&left) {
                     return pointers::carray_advance(left_carray_expr.clone(), *right);
                 }
@@ -24427,6 +28015,11 @@ impl Walker {
                 }
             }
             BinOp::Sub => {
+                if let Some(distance) = self.pointer_element_distance(
+                    (*left).clone(), (*right).clone(),
+                ) {
+                    return distance;
+                }
                 if let Some(ptr) = cstruct_pointer_byte_carray(&left) {
                     return carray_retreat(ptr, *right);
                 }
@@ -24437,7 +28030,7 @@ impl Walker {
                     {
                         return offset;
                     }
-                    return pointers::hybrid_retreat((*left).clone(), *right);
+                    return self.typed_hybrid_pointer_offset(*left, *right, true);
                 }
                 if let Some((addr, stride)) = self.linear_pointer_addr_and_stride(&left) {
                     let address = pointers::linear_addr_offset(
@@ -24448,6 +28041,9 @@ impl Walker {
                         }),
                     );
                     return self.typed_linear_address_expr(address, &left);
+                }
+                if self.is_unclassified_nonidentifier_object_pointer(&left) {
+                    return self.typed_hybrid_pointer_offset(*left, *right, true);
                 }
                 if let (Some((left_base, left_index)), Some((right_base, right_index))) = (
                     self.address_linear_index(&left),
@@ -24593,6 +28189,9 @@ impl Walker {
                     if let Some(l) = addr_as_carray(&left) {
                         return carray_ptr_relational(l, right_carray_expr.clone(), op);
                     }
+                }
+                if self.is_pointer_like_expr(&left) && self.is_pointer_like_expr(&right) {
+                    return mixed_c_pointer_relational(*left, *right, op);
                 }
             }
             _ => {}
@@ -25291,8 +28890,10 @@ impl Walker {
             right,
         } = e.kind
         {
-            let left = self.rewrite_char_condition(*left);
-            let right = self.rewrite_char_condition(*right);
+            let left = self.rewrite_logical_bool(*left);
+            let right = self.rewrite_logical_bool(*right);
+            let left = self.rewrite_char_condition(left);
+            let right = self.rewrite_char_condition(right);
             return expr(ExprKind::Ternary {
                 cond: Box::new(binary_expr(op, left, right)),
                 then: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
@@ -25302,11 +28903,166 @@ impl Walker {
         e
     }
 
+    fn pointer_element_distance(
+        &mut self,
+        left: Expression,
+        right: Expression,
+    ) -> Option<Expression> {
+        let left_type = self.c_expr_type_text(&left)?;
+        let right_type = self.c_expr_type_text(&right)?;
+        let is_pointer = |ty: &str| {
+            let resolved = self.resolve_typedef_scalar_aliases(ty);
+            (resolved.contains('*') || resolved.contains('['))
+                && !self.is_function_pointer_type_text(&resolved)
+        };
+        if !is_pointer(&left_type) || !is_pointer(&right_type) {
+            return None;
+        }
+        let left_is_array = left_type.contains('[') && !left_type.contains('*')
+            && !is_carray_like_expr(&left);
+        let right_is_array = right_type.contains('[') && !right_type.contains('*')
+            && !is_carray_like_expr(&right);
+        let stride = self.c_pointer_index_stride_from_type(&left_type);
+        let byte_cast_stride = |value: &Expression| {
+            let ExprKind::Cast { expr, type_name } = &value.kind else {
+                return 1;
+            };
+            if !type_name.contains('*') || self.c_pointer_index_stride_from_type(type_name) != 1 {
+                return 1;
+            }
+            self.c_expr_type_text(expr)
+                .filter(|ty| ty.contains('*') || ty.contains('['))
+                .map(|ty| self.c_pointer_index_stride_from_type(&ty))
+                .unwrap_or(1)
+        };
+        let left_byte_stride = byte_cast_stride(&left);
+        let right_byte_stride = byte_cast_stride(&right);
+        let mut prefix = Vec::new();
+        let (left, right) = if matches!(left.kind, ExprKind::Ident(_))
+            && matches!(right.kind, ExprKind::Ident(_))
+        {
+            (left, right)
+        } else {
+            let id = self.tmp_counter;
+            self.tmp_counter += 1;
+            let left_once = ident(&format!("__c_ptr_diff_left{id}"));
+            let right_once = ident(&format!("__c_ptr_diff_right{id}"));
+            prefix.push(assign_expr(left_once.clone(), left));
+            prefix.push(assign_expr(right_once.clone(), right));
+            (left_once, right_once)
+        };
+        let coordinate_id = self.tmp_counter;
+        if left_byte_stride != 1 || right_byte_stride != 1 {
+            self.tmp_counter += 1;
+        }
+        let mut byte_coordinates = |value: Expression, byte_stride: i64, side: &str| {
+            if byte_stride == 1 {
+                return value;
+            }
+            let backing = ident(&format!("__c_distance_backing_{side}{coordinate_id}"));
+            let coordinate = ident(&format!("__c_distance_coordinate_{side}{coordinate_id}"));
+            prefix.push(assign_expr(backing.clone(), ternary_expr(
+                binary_expr(BinOp::Eq, unary_expr(UnaryOp::Typeof, value.clone()), str_lit("number")),
+                value.clone(), pointers::ensure_carray_ptr(value),
+            )));
+            // Record arrays index elements; packed buffers already index bytes.
+            prefix.push(assign_expr(coordinate.clone(), ternary_expr(
+                binary_expr(BinOp::Eq, unary_expr(UnaryOp::Typeof, backing.clone()), str_lit("number")),
+                backing.clone(),
+                pointers::make_carray_ptr(
+                    member(backing.clone(), CARRAY_BASE_KEY),
+                    ternary_expr(
+                        binary_expr(BinOp::And,
+                            binary_expr(BinOp::Gt, member(member(backing.clone(), CARRAY_BASE_KEY), "length"), int_lit(0)),
+                            binary_expr(BinOp::Eq, unary_expr(UnaryOp::Typeof, expr(ExprKind::Index {
+                                object: Box::new(member(backing.clone(), CARRAY_BASE_KEY)),
+                                index: Box::new(int_lit(0)), null_safe: false,
+                            })), str_lit("object")),
+                        ),
+                        binary_expr(BinOp::Mul, member(backing.clone(), CARRAY_IDX_KEY), int_lit(byte_stride)),
+                        member(backing, CARRAY_IDX_KEY),
+                    ),
+                ),
+            )));
+            coordinate
+        };
+        let left = byte_coordinates(left, left_byte_stride, "left");
+        let right = byte_coordinates(right, right_byte_stride, "right");
+        let distance = expr(ExprKind::Cast {
+            expr: Box::new(pointers::hybrid_element_distance(
+                left, right,
+                stride, left_is_array && left_byte_stride == 1, right_is_array && right_byte_stride == 1,
+            )),
+            type_name: if self.sizeof_type_text("ptrdiff_t") == 8 {
+                "int64"
+            } else {
+                "int"
+            }.into(),
+        });
+        if prefix.is_empty() {
+            return Some(distance);
+        }
+        prefix.push(distance);
+        Some(expr(ExprKind::Sequence(prefix)))
+    }
+
+    fn rewrite_pointer_ordering(&mut self, value: Expression) -> Expression {
+        let ExprKind::Binary { op, left, right } = value.kind else {
+            return value;
+        };
+        let left = self.rewrite_pointer_ordering(*left);
+        let right = self.rewrite_pointer_ordering(*right);
+        let comparison = match op {
+            BinOp::Lt => Some(vybe_ast::IntOp::LtS),
+            BinOp::LtEq => Some(vybe_ast::IntOp::LeS),
+            BinOp::Gt => Some(vybe_ast::IntOp::GtS),
+            BinOp::GtEq => Some(vybe_ast::IntOp::GeS),
+            _ => None,
+        };
+        if comparison.is_some()
+            && [&left, &right].iter().all(|value| {
+                self.c_expr_type_text(value).is_some_and(|ty| {
+                    let resolved = self.resolve_typedef_scalar_aliases(&ty);
+                    resolved.contains('*') || resolved.contains('[')
+                })
+            })
+            && let (Some((left_address, _)), Some((right_address, _))) = (
+                self.linear_pointer_addr_and_stride(&left),
+                self.linear_pointer_addr_and_stride(&right),
+            )
+        {
+            let comparison = match op {
+                BinOp::Lt => vybe_ast::IntOp::LtU,
+                BinOp::LtEq => vybe_ast::IntOp::LeU,
+                BinOp::Gt => vybe_ast::IntOp::GtU,
+                BinOp::GtEq => vybe_ast::IntOp::GeU,
+                _ => unreachable!(),
+            };
+            return binary_expr(
+                BinOp::Integer(comparison, vybe_ast::BitLane::W32), left_address, right_address,
+            );
+        }
+        if let Some(comparison) = comparison
+            && let Some(distance) = self.pointer_element_distance(left.clone(), right.clone())
+        {
+            return binary_expr(
+                BinOp::Integer(comparison, vybe_ast::BitLane::W64), distance, int_lit(0),
+            );
+        }
+        binary_expr(op, left, right)
+    }
+
     /// Rewrite char pointer + integer into string suffix form for the current
     /// text-backed char pointer model. Non-char C array pointers should lower
     /// through fixed/dense array metadata in the compiler, not object wrappers.
     ///   char_ptr + n  → ptr.substring(n)
     fn rewrite_char_ptr_arith(&mut self, e: Expression) -> Expression {
+        let type_text = self.pointer_arithmetic_result_type(&e);
+        let result = self.rewrite_char_ptr_arith_value(e);
+        self.retain_pointer_result_type(result, type_text)
+    }
+
+    fn rewrite_char_ptr_arith_value(&mut self, e: Expression) -> Expression {
         if let ExprKind::Binary { op, left, right } = e.kind {
             let left = Box::new(self.rewrite_char_ptr_arith(*left));
             let right = Box::new(self.rewrite_char_ptr_arith(*right));
@@ -25360,57 +29116,16 @@ impl Walker {
                 return expr(ExprKind::Binary { op, left, right });
             }
             if matches!(op, BinOp::Sub) {
-                let left_type = self.c_expr_type_text(&left);
-                let right_type = self.c_expr_type_text(&right);
-                let is_pointer = |ty: &str| {
-                    let resolved = self.resolve_typedef_scalar_aliases(ty);
-                    resolved.contains('*') || resolved.contains('[')
-                };
-                if left_type.as_deref().is_some_and(is_pointer)
-                    && right_type.as_deref().is_some_and(is_pointer)
-                {
-                    let right_is_array = right_type
-                        .as_deref()
-                        .is_some_and(|ty| ty.contains('[') && !ty.contains('*'));
-                    let left_is_array = left_type
-                        .as_deref()
-                        .is_some_and(|ty| ty.contains('[') && !ty.contains('*'));
-                    let stride = self
-                        .c_pointer_index_stride_from_type(left_type.as_deref().unwrap_or("char*"));
-                    let mut prefix = Vec::new();
-                    let (left, right) = if matches!(left.kind, ExprKind::Ident(_))
-                        && matches!(right.kind, ExprKind::Ident(_))
-                    {
-                        (*left, *right)
-                    } else {
-                        let id = self.tmp_counter;
-                        self.tmp_counter += 1;
-                        let left_once = ident(&format!("__c_ptr_diff_left{id}"));
-                        let right_once = ident(&format!("__c_ptr_diff_right{id}"));
-                        prefix.push(assign_expr(left_once.clone(), *left));
-                        prefix.push(assign_expr(right_once.clone(), *right));
-                        (left_once, right_once)
-                    };
-                    let distance = pointers::hybrid_element_distance(
-                        left,
-                        right,
-                        stride,
-                        left_is_array,
-                        right_is_array,
-                    );
-                    let distance = expr(ExprKind::Cast {
-                        expr: Box::new(distance),
-                        type_name: if self.sizeof_type_text("ptrdiff_t") == 8 {
-                            "int64"
-                        } else {
-                            "int"
-                        }.into(),
-                    });
-                    if prefix.is_empty() {
-                        return distance;
-                    }
-                    prefix.push(distance);
-                    return expr(ExprKind::Sequence(prefix));
+                if [&left, &right].iter().all(|value| {
+                    self.c_expr_type_text(value).is_some_and(|ty| {
+                        let resolved = self.resolve_typedef_scalar_aliases(&ty);
+                        (resolved.contains('*') || resolved.contains('['))
+                            && !self.is_function_pointer_type_text(&resolved)
+                    })
+                }) {
+                    // Array offsets still need the following carray pass. A
+                    // distance capture here would hide them inside a Sequence.
+                    return expr(ExprKind::Binary { op, left, right });
                 }
             }
             if self.expr_may_be_hybrid_carray_pointer(&left) {
@@ -25423,15 +29138,7 @@ impl Walker {
                 {
                     return offset;
                 }
-                let offset = if matches!(op, BinOp::Add) {
-                    *right.clone()
-                } else {
-                    expr(ExprKind::Unary {
-                        op: UnaryOp::Neg,
-                        expr: right.clone(),
-                    })
-                };
-                return pointers::hybrid_offset((*left).clone(), offset);
+                return self.typed_hybrid_pointer_offset(*left, *right, matches!(op, BinOp::Sub));
             }
             if self.is_raw_byte_pointer_arith_operand(&left) {
                 let offset = if matches!(op, BinOp::Add) {
@@ -25459,10 +29166,7 @@ impl Walker {
                         carray_retreat(carray_operand_expr(&left), *right.clone())
                     };
                 }
-                return self.typed_linear_address_expr(
-                    pointers::hybrid_offset(carray_operand_expr(&left), offset),
-                    &left,
-                );
+                return self.typed_hybrid_pointer_offset(*left, *right, matches!(op, BinOp::Sub));
             }
             if let Some((address, stride)) = self.linear_pointer_addr_and_stride(&left) {
                 if self.linear_pointer_addr_and_stride(&right).is_none() {
@@ -25745,6 +29449,9 @@ impl Walker {
     }
 
     fn walk_unary(&mut self, pair: Pair<Rule>) -> Expression {
+        if let Some(value) = self.take_direct_syntax(&pair) {
+            return value;
+        }
         match pair.as_rule() {
             Rule::unary_expression => {
                 let mut it = pair.into_inner().peekable();
@@ -25896,6 +29603,28 @@ impl Walker {
     }
 
     fn apply_prefix(&mut self, op: &str, operand: Expression) -> Expression {
+        if op == "*"
+            && !self.in_address_of_operand
+            && let Some(pointer_type) = self.c_expr_type_text(&operand)
+            && pointer_type.trim_end().ends_with('*')
+            && let Some(row_type) = self.c_subscript_result_type(&pointer_type)
+            && row_type.contains('[')
+            && !row_type.trim_end().ends_with('*')
+        {
+            // An array lvalue decays to its first element, not to a scalar
+            // loaded from that element. Capture before selecting either backing.
+            let name = format!("__c_row_pointer{}", self.tmp_counter);
+            self.tmp_counter += 1;
+            self.register_generated_local(&name, &pointer_type);
+            let saved = ident(&name);
+            let row = ternary_expr(expr(ExprKind::IsType {
+                expr: Box::new(saved.clone()), type_name: "number".into(),
+            }), saved.clone(), c_pointer_element_value(dynamic_carray_deref_read(saved.clone())));
+            return expr(ExprKind::Cast {
+                type_name: decayed_array_pointer_type(&row_type),
+                expr: Box::new(expr(ExprKind::Sequence(vec![assign_expr(saved, operand), row]))),
+            });
+        }
         let scalar_read_type = (op == "*"
             && !self.in_assignment_lhs
             && !self.in_address_of_operand
@@ -25909,8 +29638,9 @@ impl Walker {
                 );
                 (!element.contains('*')
                     && !element.contains('[')
-                    && c_int_family_type(&element)
-                    && self.sizeof_type_text(&element) <= 4)
+                    && ((c_int_family_type(&element)
+                        && self.sizeof_type_text(&element) <= 8)
+                        || matches!(element.trim(), "float" | "double")))
                     .then(|| c_emitted_scalar_type_hint(&element))
             });
         let lowered = self.apply_prefix_value(op, operand);
@@ -25947,10 +29677,38 @@ impl Walker {
                         if self.linear_pointer_addr_and_stride(&operand).is_some() {
                             return self.linear_integer_load_expr(operand, "signed char");
                         }
+                        // A cell here can itself be &scalar_char. Loading it
+                        // yields the character, not another byte-buffer address.
+                        let name = format!("__c_char_deref_pointer{}", self.tmp_counter);
+                        self.tmp_counter += 1;
+                        self.register_generated_local(&name, "void*");
+                        let pointer = ident(&name);
+                        let is_scalar_reference = binary_expr(BinOp::And,
+                            expr(ExprKind::IsType {
+                                expr: Box::new(pointer.clone()), type_name: "object".into(),
+                            }),
+                            binary_expr(BinOp::Or,
+                                call_expr(ident("__c_tag_eq"), vec![
+                                    member(pointer.clone(), REF_KIND_KEY), str_lit("cell"),
+                                ]),
+                                call_expr(ident("__c_tag_eq"), vec![
+                                    member(pointer.clone(), REF_KIND_KEY), str_lit("shared"),
+                                ]),
+                            ),
+                        );
                         return expr(ExprKind::Cast {
-                            expr: Box::new(call_expr(
-                                ident("__c_char_ptr_read"), vec![operand, int_lit(0)],
-                            )),
+                            expr: Box::new(expr(ExprKind::Sequence(vec![
+                                assign_expr(pointer.clone(), expr(ExprKind::Cast {
+                                    expr: Box::new(operand), type_name: "void*".into(),
+                                })),
+                                // Managed char storage can hold the byte bits
+                                // (255 for -1). Match the signed linear load
+                                // explicitly, not an unregistered int8 cast.
+                                apply_bitfield_mask(ternary_expr(is_scalar_reference,
+                                    expr(ExprKind::RefLoad(Box::new(pointer.clone()))),
+                                    call_expr(ident("__c_char_ptr_read"), vec![pointer, int_lit(0)]),
+                                ), 8, true, false),
+                            ]))),
                             type_name: "int8".to_string(),
                         });
                     }
@@ -26055,7 +29813,7 @@ impl Walker {
                 } = &operand.kind
                 {
                     if let ExprKind::Ident(name) = &inner.kind {
-                        return self.ident_or_refload(name);
+                        return ident(name);
                     }
                     return *inner.clone();
                 }
@@ -26158,8 +29916,54 @@ impl Walker {
                         return target.clone();
                     }
                     if self.scalar_ref_pointer_vars.contains(name) {
+                        if !self.in_assignment_lhs
+                            && !self.in_address_of_operand
+                            && let Some(type_text) = self.var_types.get(name).cloned()
+                            && let pointee = self.c_indexed_pointer_element_type(&type_text)
+                            && pointee.contains('*')
+                        {
+                            return expr(ExprKind::Cast {
+                                expr: Box::new(ternary_expr(
+                                    binary_expr(BinOp::Eq, unary_expr(UnaryOp::Typeof, ident(name)), str_lit("number")),
+                                    self.linear_raw_pointer_load_expr(ident(name), &pointee),
+                                    call_expr(ident("__c_record_pointer_value"), vec![ident(name)]),
+                                )),
+                                type_name: pointee,
+                            });
+                        }
+                        if !self.in_assignment_lhs
+                            && !self.in_address_of_operand
+                            && let Some(type_text) = self.var_types.get(name).cloned()
+                        {
+                            let pointee = self.c_indexed_pointer_element_type(&type_text);
+                            let resolved = self.resolve_typedef_scalar_aliases(&pointee);
+                            if !resolved.contains('*')
+                                && !resolved.contains('[')
+                                && c_int_family_type(&resolved)
+                            {
+                                return expr(ExprKind::Cast {
+                                    expr: Box::new(ternary_expr(
+                                        binary_expr(BinOp::Eq,
+                                            unary_expr(UnaryOp::Typeof, ident(name)),
+                                            str_lit("number")),
+                                        self.linear_integer_load_expr(ident(name), &pointee),
+                                        expr(ExprKind::RefLoad(Box::new(ident(name)))),
+                                    )),
+                                    type_name: c_emitted_scalar_type_hint(&resolved),
+                                });
+                            }
+                        }
                         return expr(ExprKind::RefLoad(Box::new(ident(name))));
                     }
+                }
+                // Keep a typed record destination as one place, including
+                // *++p. Splitting its advance from its deref hides the copy ABI.
+                if self.in_assignment_lhs
+                    && self.c_expr_type_text(&operand)
+                        .and_then(|ty| self.c_struct_pointer_pointee_from_type_text(&ty))
+                        .is_some()
+                {
+                    return unary_expr(UnaryOp::Deref, operand);
                 }
                 // *carray_var → carray_deref_read
                 if let ExprKind::Ident(ref name) = operand.kind {
@@ -26310,11 +30114,19 @@ impl Walker {
                 if let (Some(base), Some(index)) =
                     (carray_base_expr(&operand), carray_idx_expr(&operand))
                 {
-                    return expr(ExprKind::Index {
+                    let element_type = self.c_expr_type_text(&base)
+                        .and_then(|ty| self.c_subscript_result_type(&ty));
+                    let read = expr(ExprKind::Index {
                         object: Box::new(base),
                         index: Box::new(index),
                         null_safe: false,
                     });
+                    return if !self.in_assignment_lhs && !self.in_address_of_operand {
+                        element_type.map(|ty| self.typed_field_read_value(read.clone(), &ty))
+                            .unwrap_or(read)
+                    } else {
+                        read
+                    };
                 }
                 if is_carray_object(&operand) {
                     return pointers::carray_deref_read(operand);
@@ -26352,7 +30164,7 @@ impl Walker {
                             return member_target.clone();
                         }
                         if let Some(address_target) = self.pointer_address_aliases.get(name) {
-                            return self.ident_or_refload(address_target);
+                            return ident(address_target);
                         }
                     }
                     if self.hybrid_carray_ptr_vars.contains(name) {
@@ -26373,7 +30185,7 @@ impl Walker {
                                     str_lit("number"),
                                 ),
                                 numeric_read,
-                                carray_read,
+                                c_pointer_element_value(carray_read),
                             );
                         }
                         return carray_read;
@@ -26419,14 +30231,29 @@ impl Walker {
                 if let ExprKind::Ident(name) = &operand.kind {
                     if self.pointer_vars.contains(name)
                         && !self.char_pointers.contains(name)
-                        && let Some(type_text) = self.var_types.get(name)
+                        && let Some(type_text) = self.var_types.get(name).cloned()
                     {
                         if self.in_assignment_lhs || self.in_address_of_operand {
                             return unary_expr(UnaryOp::Deref, operand);
                         }
-                        let pointee = type_text.trim_end_matches('*').trim();
-                        if type_text.contains('*') && c_int_family_type(pointee) {
-                            let load = self.linear_integer_load_expr(operand.clone(), pointee);
+                        let pointee = c_type_remove_one_pointer_level(&type_text);
+                        if pointee.contains('*') {
+                            let numeric_read = self.linear_raw_pointer_load_expr(operand.clone(), &pointee);
+                            let managed_read = ternary_expr(
+                                binary_expr(BinOp::Eq, member(operand.clone(), REF_KIND_KEY), str_lit("cell")),
+                                member(operand.clone(), "__value"),
+                                c_pointer_element_value(dynamic_carray_deref_read(operand.clone())),
+                            );
+                            return expr(ExprKind::Cast {
+                                expr: Box::new(ternary_expr(
+                                    binary_expr(BinOp::Eq, unary_expr(UnaryOp::Typeof, operand), str_lit("number")),
+                                    numeric_read, managed_read,
+                                )),
+                                type_name: pointee,
+                            });
+                        }
+                        if type_text.contains('*') && c_int_family_type(&pointee) {
+                            let load = self.linear_integer_load_expr(operand.clone(), &pointee);
                             if self.linear_pointer_vars.contains(name) {
                                 return load;
                             }
@@ -26476,6 +30303,16 @@ impl Walker {
                 })
             }
             "&" => {
+                if let ExprKind::Index { object, index, .. } = &operand.kind
+                    && let Some(type_text) = self.c_expr_type_text(object)
+                    && self.c_struct_pointer_pointee_from_type_text(&type_text).is_some()
+                    && let element = self.c_indexed_pointer_element_type(&type_text)
+                    && !element.contains('*') && !element.contains('[')
+                {
+                    return self.indexed_record_pointer_address(
+                        (**object).clone(), (**index).clone(), &type_text,
+                    );
+                }
                 if let ExprKind::Member { object, field, .. } = &operand.kind
                     && let ExprKind::Unary {
                         op: UnaryOp::Deref,
@@ -26511,9 +30348,9 @@ impl Walker {
                         return expr(ExprKind::FuncRef(name.clone()));
                     }
                     if self.ident_is_struct_object(name) {
-                        // Static addresses denote storage, including forward
-                        // definitions, not the value present during initialization.
-                        if self.block_depth == 0
+                        // Global addresses denote storage across calls, not a
+                        // snapshot of the record read by the current function.
+                        if (self.block_depth == 0 || self.file_scope_var_names.contains(name))
                             && !self.linear_pointer_vars.contains(name)
                             && !self.linear_struct_pointer_vars.contains(name)
                         {
@@ -26548,9 +30385,8 @@ impl Walker {
                     }
                     if let Some(ty) = self.c_expr_type_text(&base)
                         && ty.contains('[')
-                        && self
+                        && let Some(record_type) = self
                             .canonical_struct_base_from_type(ty.split('[').next().unwrap_or(&ty))
-                            .is_some()
                     {
                         let address = pointers::linear_index_addr(
                             base.clone(),
@@ -26563,8 +30399,20 @@ impl Walker {
                                 type_name: "number".into(),
                             }),
                             self.typed_linear_address_expr(address, &base),
-                            pointers::make_carray_ptr(base, index),
+                            unary_expr(UnaryOp::AddrOf, expr(ExprKind::Index {
+                                object: Box::new(expr(ExprKind::Cast {
+                                    expr: Box::new(base),
+                                    type_name: format!("{record_type} *"),
+                                })),
+                                index: Box::new(index),
+                                null_safe: false,
+                            })),
                         );
+                    }
+                    if let Some(ty) = self.c_expr_type_text(&base)
+                        && self.c_struct_pointer_pointee_from_type_text(&ty).is_some()
+                    {
+                        return self.indexed_record_pointer_address(base, index, &ty);
                     }
                     return pointers::make_carray_ptr(base, index);
                 }
@@ -26608,12 +30456,45 @@ impl Walker {
                         unreachable!();
                     };
                     let owner = *object.clone();
-                    let owner_type = self.c_expr_type_text(&owner).unwrap();
+                    let source_type = self.c_expr_type_text(&owner).unwrap();
+                    let owner = self.materialize_indexed_record_pointer(owner);
+                    let owner_is_pointer = self
+                        .c_struct_pointer_pointee_from_type_text(&source_type)
+                        .is_some();
+                    let owner_type = self.canonical_struct_base_from_type(&source_type)
+                        .unwrap_or(source_type);
+                    let member_pointer_type = self.struct_field_types.get(&owner_type)
+                        .and_then(|fields| fields.get(field))
+                        .map(|field_type| format!("{} *", field_type.trim()));
+                    if self.first_struct_field(&owner_type) != Some(field.as_str())
+                        && let Some(address) = self.byte_struct_member_address_expr(&operand)
+                    {
+                        return address;
+                    }
+                    if self.first_struct_field(&owner_type) != Some(field.as_str())
+                        && let Some(address) = self.embedded_record_place(
+                            if owner_is_pointer {
+                                owner.clone()
+                            } else {
+                                unary_expr(UnaryOp::AddrOf, owner.clone())
+                            },
+                            &owner_type,
+                            field,
+                        )
+                    {
+                        return match member_pointer_type {
+                            Some(type_name) => expr(ExprKind::Cast {
+                                expr: Box::new(address),
+                                type_name,
+                            }),
+                            None => address,
+                        };
+                    }
                     let owner_name = format!("__c_member_owner{}", self.tmp_counter);
                     self.tmp_counter += 1;
                     let saved_member = member(
                         expr(ExprKind::Cast {
-                            expr: Box::new(ident(&owner_name)),
+                            expr: Box::new(unary_expr(UnaryOp::Deref, ident(&owner_name))),
                             type_name: owner_type,
                         }),
                         field,
@@ -26648,7 +30529,7 @@ impl Walker {
                             container,
                             tagged,
                         );
-                        return call_expr(
+                        let address = call_expr(
                             expr(ExprKind::Lambda {
                                 params: vec![Param {
                                     name: owner_name,
@@ -26664,8 +30545,19 @@ impl Walker {
                                 is_async: false,
                                 captures: vec![],
                             }),
-                            vec![owner],
+                            vec![if owner_is_pointer {
+                                owner
+                            } else {
+                                unary_expr(UnaryOp::AddrOf, owner)
+                            }],
                         );
+                        return match member_pointer_type {
+                            Some(type_name) => expr(ExprKind::Cast {
+                                expr: Box::new(address),
+                                type_name,
+                            }),
+                            None => address,
+                        };
                     }
                 }
                 if let Some(address) = self.byte_struct_member_address_expr(&operand) {
@@ -26695,10 +30587,10 @@ impl Walker {
                                     || self.hybrid_carray_ptr_vars.contains(name)
                                     || self.pointer_vars.contains(name))
                         {
-                            return ternary_expr(
-                                pointers::is_carray_ptr_kind(pointer_obj.clone()),
-                                pointers::carray_advance(pointer_obj.clone(), *index.clone()),
-                                pointers::make_carray_ptr(pointer_obj, *index.clone()),
+                            return self.typed_hybrid_pointer_offset(
+                                object.as_ref().clone(),
+                                index.as_ref().clone(),
+                                false,
                             );
                         }
                         let stride = self.c_pointer_index_stride_from_type(&type_text);
@@ -26820,6 +30712,15 @@ impl Walker {
                     }
                 }
                 if let ExprKind::Ident(name) = &operand.kind {
+                    if self.linear_pointer_vars.contains(name)
+                        && let Some(type_name) = self.var_types.get(name)
+                        && type_name.contains('[')
+                    {
+                        return expr(ExprKind::Cast {
+                            expr: Box::new(operand.clone()),
+                            type_name: format!("{type_name} *"),
+                        });
+                    }
                     self.address_taken.insert(name.clone());
                 }
                 expr(ExprKind::Unary {
@@ -26827,20 +30728,15 @@ impl Walker {
                     expr: Box::new(operand),
                 })
             }
-            "+" => operand,
-            "-" => expr(ExprKind::Unary {
-                op: UnaryOp::Neg,
-                expr: Box::new(operand),
-            }),
+            "+" | "-" | "~" => construct_numeric_prefix(op, operand),
             "!" => expr(ExprKind::Unary {
                 op: UnaryOp::Not,
                 expr: Box::new(operand),
             }),
-            "~" => expr(ExprKind::Unary {
-                op: UnaryOp::BitNot,
-                expr: Box::new(operand),
-            }),
             "++" => {
+                if let Some(updated) = self.scalar_reference_integer_update(
+                    &operand, int_lit(1), BinOp::Add, false,
+                ) { return updated; }
                 if let Some(rewritten) = self.char_pointer_cell_preinc_expr(&operand) {
                     return rewritten;
                 }
@@ -26904,6 +30800,9 @@ impl Walker {
                 })
             }
             "--" => {
+                if let Some(updated) = self.scalar_reference_integer_update(
+                    &operand, int_lit(1), BinOp::Sub, false,
+                ) { return updated; }
                 if let ExprKind::Ident(ref name) = operand.kind {
                     if let Some(updated) = self.hybrid_pointer_update(name, true, false) {
                         return updated;
@@ -27208,10 +31107,27 @@ impl Walker {
                     return self.zero_struct(Some(&target_struct_base), &fields);
                 }
             }
+            if tn.matches('*').count() == 1
+                && let Some(member_pointer) = self.owner_pointer_to_first_record_member(
+                    operand.clone(), &target_struct_base,
+                )
+            {
+                return expr(ExprKind::Cast {
+                    expr: Box::new(member_pointer), type_name: tn.clone(),
+                });
+            }
+            if self.structs.contains_key(&target_struct_base)
+                && self.erased_first_member_recovery_needed(&operand, &target_struct_base)
+            {
+                return self.guarded_erased_first_member_value(operand, &target_struct_base);
+            }
             if self.structs.contains_key(&target_struct_base)
                 && self.value_points_to_first_field_of_struct(&operand, &target_struct_base)
             {
-                return self.first_member_pointer_container_value(operand);
+                return expr(ExprKind::Cast {
+                    expr: Box::new(self.first_member_pointer_container_value(operand)),
+                    type_name: tn.clone(),
+                });
             }
             if let Some(fields) = self.structs.get(&target_struct_base).cloned() {
                 if memory::is_heap_allocation(&operand) {
@@ -27493,8 +31409,13 @@ impl Walker {
                             });
                         }
                         if let Some(byte_view) = self.carray_byte_pointer_view(&operand) {
+                            // Retain the source stride without changing adapter selection.
+                            let source_type = self.var_types.get(name).unwrap().clone();
                             return expr(ExprKind::Cast {
-                                expr: Box::new(byte_view),
+                                expr: Box::new(expr(ExprKind::Cast {
+                                    expr: Box::new(byte_view),
+                                    type_name: source_type,
+                                })),
                                 type_name: tn.clone(),
                             });
                         }
@@ -27692,14 +31613,12 @@ impl Walker {
                     }
                 }
             }
-            if target_is_byte_pointer_base {
-                // Keep the pointee width for indexed loads/stores after field reads.
-                return expr(ExprKind::Cast {
-                    expr: Box::new(operand),
-                    type_name: tn,
-                });
-            }
-            return operand;
+            // Every pointer cast retains its pointee type, including scalar
+            // views over byte-array members.
+            return expr(ExprKind::Cast {
+                expr: Box::new(operand),
+                type_name: tn,
+            });
         }
         // An `alignas(N)` variable's address is observable only through integer
         // casts (`((uintptr_t)&x % N) == 0`). Objects here have no numeric
@@ -27734,7 +31653,10 @@ impl Walker {
         // intptr_t/uintptr_t must preserve pointer payloads so pointer round-trips
         // like (intptr_t)&x then (int*)p do not coerce through Number(NaN).
         if tn.contains("intptr_t") || tn.contains("uintptr_t") {
-            return operand;
+            return expr(ExprKind::Cast {
+                expr: Box::new(operand),
+                type_name: tn,
+            });
         }
         if let ExprKind::Ident(name) = &operand.kind {
             let tn_resolved = self.resolve_typedef_scalar_aliases(&tn);
@@ -27742,12 +31664,11 @@ impl Walker {
                 || tn_resolved.contains("long")
                 || tn_resolved.contains("short")
             {
-                let known_float = self
-                    .var_types
-                    .get(name)
-                    .map(|ty| ty.contains("float") || ty.contains("double"))
-                    .unwrap_or(false);
-                let same_width = self.var_types.get(name).is_some_and(|source_type| {
+                let source_type = self.var_types.get(name)
+                    .map(|ty| self.resolve_typedef_scalar_aliases(ty));
+                let known_float = source_type.as_ref()
+                    .is_some_and(|ty| ty.contains("float") || ty.contains("double"));
+                let same_width = source_type.as_ref().is_some_and(|source_type| {
                     self.sizeof_type_text(source_type) == self.sizeof_type_text(&tn_resolved)
                 });
                 if !known_float
@@ -27789,6 +31710,8 @@ impl Walker {
             "long"
         } else if tn_resolved.contains("unsigned") && tn_resolved.contains("char") {
             "uint8"
+        } else if tn_resolved.contains("unsigned") && tn_resolved.contains("short") {
+            "uint16"
         } else if tn_resolved.contains("unsigned") && tn_resolved.contains("long") {
             "long"
         } else if tn_resolved.contains("unsigned") {
@@ -27834,6 +31757,12 @@ impl Walker {
         }
         // Widening casts carry the arithmetic lane to enclosing expressions;
         // an integral operand alone does not make a 64-bit cast redundant.
+        if canon == "uint16" {
+            return expr(ExprKind::Cast {
+                expr: Box::new(binary_expr(BinOp::BitAnd, operand, int_lit(0xffff))),
+                type_name: "uint16".into(),
+            });
+        }
         if canon == "uint8" {
             if is_masked_to_u8(&operand) {
                 return operand;
@@ -27851,6 +31780,7 @@ impl Walker {
     }
 
     fn walk_postfix(&mut self, pair: Pair<Rule>) -> Expression {
+        let callback_returns = self.unevaluated_callback_call_returns(pair.clone());
         // Resolve the C field type before backing expansion obscures the
         // source member chain. Storage representation cannot change its type.
         let field_read_type = pair.clone().into_inner().last().and_then(|suffix| {
@@ -27861,9 +31791,10 @@ impl Walker {
             let resolved = self.resolve_typedef_scalar_aliases(&ty);
             (suffix.as_rule() == Rule::index_suffix
                 && !resolved.contains('*') && !resolved.contains('[')
-                && (self.is_integral_type_text(&resolved)
+                && (((self.is_integral_type_text(&resolved)
                     || matches!(resolved.trim(), "char" | "signed char" | "unsigned char"))
-                && self.sizeof_type_text(&resolved) <= 4).then_some(ty)
+                    && self.sizeof_type_text(&resolved) <= 8)
+                    || matches!(resolved.trim(), "float" | "double"))).then_some(ty)
         });
         let mut it = pair.into_inner().peekable();
         let updates_place = it.clone().any(|suffix| suffix.as_rule() == Rule::inc_dec_suffix);
@@ -27877,7 +31808,7 @@ impl Walker {
         let mut indexed_read_type_applied = false;
         while let Some(suffix) = it.next() {
             indexed_read_type_applied = false;
-            let debug_timing = c_debug_timings_path();
+            let debug_timing = self.debug_timings.clone();
             let suffix_rule = suffix.as_rule();
             let followed_by_inc_dec = it
                 .peek()
@@ -27888,7 +31819,7 @@ impl Walker {
             let suffix_preview = debug_timing
                 .as_ref()
                 .map(|_| c_debug_item_preview(suffix.as_str()));
-            let suffix_started = Instant::now();
+            let suffix_started = debug_timing.as_ref().map(|_| Instant::now());
             if let Some(path) = debug_timing.as_deref() {
                 write_c_debug_timing(
                     path,
@@ -27902,48 +31833,64 @@ impl Walker {
             }
             base = match suffix_rule {
                 Rule::call_suffix => {
+                    let declared_return = callback_returns.get(&suffix.as_span().start());
+                    let direct = self.direct_statements_enabled();
+                    #[cfg(test)]
+                    let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_CALLS.with(|flag| flag.get());
+                    let region = if direct { crate::frontend::take_direct_call_region(&suffix) } else { None };
+                    let mut captured = suffix.into_inner().next().map(|arguments| arguments.into_inner());
+                    let mut anchored = region.as_ref().map(|region| region.arguments.iter().cloned());
+                    let arguments = std::iter::from_fn(|| match &mut anchored {
+                        Some(arguments) => arguments.next(),
+                        None => captured.as_mut().and_then(Iterator::next),
+                    });
                     let mut args = Vec::new();
-                    if let Some(arglist) = suffix.into_inner().next() {
-                        for (idx, a) in arglist.into_inner().enumerate() {
-                            if c_call_arg_should_preserve_lvalue(&base, idx) {
-                                let previous_lhs = self.in_assignment_lhs;
-                                self.in_assignment_lhs = true;
-                                let mut value = self.walk_assignment(a);
-                                self.in_assignment_lhs = previous_lhs;
-                                // A destination pointer field is read, not assigned by
-                                // the library call. Preserve array lvalues, but load
-                                // pointer members through their record backing.
-                                if let ExprKind::Member { object, field, .. } = &value.kind
-                                    && self
-                                        .c_expr_type_text(&value)
-                                        .is_some_and(|ty| ty.contains('*') && !ty.contains('['))
-                                    && let Some(owner_type) = self.c_expr_type_text(object)
-                                    && owner_type.contains('*')
-                                    && let Some(record) =
-                                        self.canonical_struct_base_from_type(&owner_type)
-                                    && let Some(read) = self.typed_struct_pointer_field_read(
-                                        *object.clone(),
-                                        &record,
-                                        field,
-                                    )
-                                {
-                                    value = read;
-                                }
-                                args.push(Argument::positional(value));
-                            } else {
-                                args.push(Argument::positional(self.walk_assignment(a)));
+                    for (idx, a) in arguments.enumerate() {
+                        if c_call_arg_should_preserve_lvalue(&base, idx) {
+                            let previous_lhs = self.in_assignment_lhs;
+                            self.in_assignment_lhs = true;
+                            let mut value = self.walk_assignment(a);
+                            self.in_assignment_lhs = previous_lhs;
+                            // A destination pointer field is read, not assigned by
+                            // the library call. Preserve array lvalues, but load
+                            // pointer members through their record backing.
+                            if let ExprKind::Member { object, field, .. } = &value.kind
+                                && self
+                                    .c_expr_type_text(&value)
+                                    .is_some_and(|ty| ty.contains('*') && !ty.contains('['))
+                                && let Some(owner_type) = self.c_expr_type_text(object)
+                                && owner_type.contains('*')
+                                && let Some(record) =
+                                    self.canonical_struct_base_from_type(&owner_type)
+                                && let Some(read) = self.typed_struct_pointer_field_read(
+                                    *object.clone(),
+                                    &record,
+                                    field,
+                                )
+                            {
+                                value = read;
                             }
+                            args.push(Argument::positional(value));
+                        } else {
+                            args.push(Argument::positional(self.walk_assignment(a)));
                         }
                     }
-                    self.normalize_call(base, args)
+                    let value = self.normalize_call_with_region(base, args, region);
+                    if let Some(ty) = declared_return {
+                        self.typed_field_read_value(value, ty)
+                    } else { value }
                 }
                 Rule::index_suffix => {
+                    let direct = self.direct_places_enabled();
+                    let region = if direct { crate::frontend::take_direct_index_region(&suffix) } else { None };
                     // The element may be a place, but its index is always a value.
                     let previous_lhs = self.in_assignment_lhs;
                     let previous_address = self.in_address_of_operand;
                     self.in_assignment_lhs = false;
                     self.in_address_of_operand = false;
-                    let idx = self.walk_expression(suffix.into_inner().next().unwrap());
+                    let anchor = region.as_ref().map(|region| region.index.clone())
+                        .unwrap_or_else(|| suffix.into_inner().next().unwrap());
+                    let idx = self.walk_expression(anchor);
                     self.in_assignment_lhs = previous_lhs;
                     self.in_address_of_operand = previous_address;
                     // C: `n[ptr]` == `ptr[n]` — swap when base is int literal
@@ -27954,8 +31901,10 @@ impl Walker {
                     };
                     let member_pointer_type = pending_member_pointer_type.take();
                     let lowered_type = self.c_expr_type_text(&obj);
-                    let from_member_hint = lowered_type.is_none() && member_pointer_type.is_some();
-                    let indexed_type = lowered_type.or(member_pointer_type);
+                    // A lowered field read can expose its storage type rather than
+                    // the declared pointer type needed for subscript stride/load.
+                    let from_member_hint = member_pointer_type.is_some();
+                    let indexed_type = member_pointer_type.or(lowered_type);
                     let scalar_read_type = indexed_type.as_ref().and_then(|ty| {
                         if self.in_assignment_lhs
                             || self.in_address_of_operand
@@ -27984,9 +31933,10 @@ impl Walker {
                         {
                             return Some("int8".to_string());
                         }
-                        ((c_int_family_type(&element)
+                        (((c_int_family_type(&element)
                             || matches!(element.trim(), "signed char" | "unsigned char"))
-                            && self.sizeof_type_text(&element) <= 4)
+                            && self.sizeof_type_text(&element) <= 8)
+                            || matches!(element.trim(), "float" | "double"))
                             .then(|| c_emitted_scalar_type_hint(&element))
                     });
                     let byte_postfix_target = followed_by_inc_dec
@@ -28013,7 +31963,12 @@ impl Walker {
                                 ).is_some()
                             }))
                         || (self.in_address_of_operand
-                            && indexed_type.as_ref().is_some_and(|ty| ty.contains('*')))
+                            && indexed_type.as_ref().is_some_and(|ty| {
+                                ty.contains('*') || (ty.contains('[')
+                                    && self.canonical_struct_base_from_type(
+                                        &self.c_indexed_pointer_element_type(ty),
+                                    ).is_some())
+                            }))
                     {
                         expr(ExprKind::Index {
                             object: Box::new(obj),
@@ -28022,12 +31977,11 @@ impl Walker {
                         })
                     } else if !self.in_assignment_lhs
                         && !self.in_address_of_operand
-                        && matches!(&obj.kind, ExprKind::Ident(n) if self.linear_pointer_vars.contains(n))
+                        && pointer_ident_name(&obj)
+                            .is_some_and(|name| self.linear_pointer_vars.contains(name))
+                        && let Some((pointer, _)) = self.linear_pointer_addr_and_stride(&obj)
                     {
-                        let ExprKind::Ident(name) = &obj.kind else {
-                            unreachable!();
-                        };
-                        let Some(type_text) = self.var_types.get(name).cloned() else {
+                        let Some(type_text) = indexed_type.clone() else {
                             base = expr(ExprKind::Index {
                                 object: Box::new(obj),
                                 index: Box::new(ix),
@@ -28037,7 +31991,7 @@ impl Walker {
                         };
                         let stride = self.c_pointer_index_stride_from_type(&type_text);
                         let element_type = self.c_indexed_pointer_element_type(&type_text);
-                        let addr = pointers::linear_index_addr(ident(name), ix, stride);
+                        let addr = pointers::linear_index_addr(pointer, ix, stride);
                         if element_type.contains('[') {
                             expr(ExprKind::Cast {
                                 expr: Box::new(addr),
@@ -28092,15 +32046,44 @@ impl Walker {
                                 unreachable!();
                             };
                             let width = self.byte_cast_pointer_vars[name];
-                            let scaled_ix = self.carray_pointer_scaled_offset_expr(name, ix);
-                            self.little_endian_int_from_data_index_expr(
+                            let scaled_ix = binary_expr(
+                                BinOp::Integer(vybe_ast::IntOp::Mul, vybe_ast::BitLane::W32),
+                                ix.clone(), int_lit(width),
+                            );
+                            let value = self.little_endian_int_from_data_index_expr(
                                 member(ident(name), CARRAY_BASE_KEY),
                                 binary_expr(
-                                    BinOp::Add,
+                                    BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
                                     member(ident(name), CARRAY_IDX_KEY),
                                     scaled_ix,
                                 ),
                                 width,
+                            );
+                            let resolved = self.var_types.get(name)
+                                .map(|ty| self.resolve_typedef_scalar_aliases(ty))
+                                .unwrap_or_default();
+                            let managed_value = if width == 2 && !resolved.contains("unsigned")
+                                && !resolved.contains("uint")
+                            {
+                                binary_expr(
+                                    BinOp::Integer(vybe_ast::IntOp::ShrS, vybe_ast::BitLane::W32),
+                                    binary_expr(
+                                        BinOp::Integer(vybe_ast::IntOp::Shl, vybe_ast::BitLane::W32),
+                                        value, int_lit(16),
+                                    ),
+                                    int_lit(16),
+                                )
+                            } else {
+                                value
+                            };
+                            ternary_expr(
+                                binary_expr(BinOp::Eq,
+                                    unary_expr(UnaryOp::Typeof, obj.clone()), str_lit("number")),
+                                self.linear_integer_load_expr(
+                                    pointers::linear_index_addr(obj, ix, width),
+                                    resolved.trim_end_matches('*').trim(),
+                                ),
+                                managed_value,
                             )
                         } else if !self.in_assignment_lhs
                             && !self.in_address_of_operand
@@ -28114,9 +32097,11 @@ impl Walker {
                                 }
                                 _ => obj.clone(),
                             };
-                            let pointer_once = if from_member_hint {
+                            let capture_pointer = from_member_hint || index_has_side_effects(&pointer_obj);
+                            let pointer_once = if capture_pointer {
                                 let name = format!("__c_index_field_ptr{}", self.tmp_counter);
                                 self.tmp_counter += 1;
+                                self.register_generated_local(&name, &type_text);
                                 ident(&name)
                             } else {
                                 pointer_obj.clone()
@@ -28131,7 +32116,19 @@ impl Walker {
                                 pointer_once.clone(),
                                 ix.clone(),
                             );
-                            let object_index = if element_type.contains('*') {
+                            let object_index = if !element_type.contains('*')
+                                && !element_type.contains('[')
+                                && let Some(record) = self.canonical_struct_base_from_type(&element_type)
+                                && let Some(fields) = self.structs.get(&record).cloned()
+                            {
+                                // Byte storage is indexed in bytes, whereas managed
+                                // record arrays are indexed in records. Preserve the
+                                // selected element's backing instead of reading a byte.
+                                let address = self.indexed_record_pointer_address(
+                                    pointer_once.clone(), ix.clone(), &type_text,
+                                );
+                                self.struct_view_object_with_pointer_backing(&record, &fields, address)
+                            } else if element_type.contains('*') || element_type.contains('[') {
                                 c_pointer_element_value(object_index)
                             } else if normalized_c_type_name(&element_type) == "char"
                                 && !element_type.contains('*')
@@ -28158,9 +32155,11 @@ impl Walker {
                             let object_index = if !element_type.contains('*')
                                 && !element_type.contains('[')
                                 && self.sizeof_type_text(&element_type) == 1
-                                && c_int_family_type(
-                                    &self.resolve_typedef_scalar_aliases(&element_type),
-                                )
+                                && {
+                                    let resolved = self.resolve_typedef_scalar_aliases(&element_type);
+                                    c_int_family_type(&resolved)
+                                        || matches!(resolved.trim(), "char" | "signed char" | "unsigned char")
+                                }
                             {
                                 call_expr(
                                     ident("__c_char_ptr_read"),
@@ -28234,9 +32233,11 @@ impl Walker {
                             } else {
                                 value
                             };
-                            if from_member_hint {
+                            if capture_pointer {
                                 expr(ExprKind::Sequence(vec![
-                                    assign_expr(pointer_once, pointer_obj),
+                                    assign_expr(pointer_once, expr(ExprKind::Cast {
+                                        expr: Box::new(pointer_obj), type_name: "void*".into(),
+                                    })),
                                     value,
                                 ]))
                             } else {
@@ -28294,11 +32295,7 @@ impl Walker {
                                 || self.initialized_char_buffers.contains(n)
                                 || self.char_string_values.contains_key(n))
                         {
-                            let indexed = expr(ExprKind::Index {
-                                object: Box::new(obj),
-                                index: Box::new(ix),
-                                null_safe: false,
-                            });
+                            let indexed = crate::frontend::finish_direct_index(region, obj, ix);
                             self.char_index_read_to_code(indexed)
                         } else if matches!(&obj.kind, ExprKind::Ident(n) if self.char_pointers.contains(n))
                         {
@@ -28312,11 +32309,7 @@ impl Walker {
                                 })),
                             })
                         } else {
-                            let indexed = expr(ExprKind::Index {
-                                object: Box::new(obj),
-                                index: Box::new(ix),
-                                null_safe: false,
-                            });
+                            let indexed = crate::frontend::finish_direct_index(region, obj, ix);
                             self.dynamic_vla_flat_index_access(&indexed)
                                 .unwrap_or(indexed)
                         }
@@ -28350,8 +32343,11 @@ impl Walker {
                     }
                 }
                 Rule::member_suffix | Rule::arrow_suffix => {
+                    let direct = self.direct_places_enabled();
+                    let region = if direct { crate::frontend::take_direct_member_region(&suffix) } else { None };
                     let is_arrow = suffix_rule == Rule::arrow_suffix;
-                    let field = suffix.into_inner().next().unwrap().as_str().to_string();
+                    let field = region.as_ref().map(|region| region.field.as_str().to_string())
+                        .unwrap_or_else(|| suffix.into_inner().next().unwrap().as_str().to_string());
                     if is_arrow
                         && !self.in_assignment_lhs
                         && !self.in_address_of_operand
@@ -28406,7 +32402,7 @@ impl Walker {
                     // Postfix updates need the field's place, even when the
                     // surrounding expression (such as a subscript) needs a value.
                     if followed_by_inc_dec {
-                        base = member(base, &field);
+                        base = crate::frontend::finish_direct_member(region, base, &field);
                         continue;
                     }
                     pending_member_pointer_type = self
@@ -28421,7 +32417,10 @@ impl Walker {
                         .filter(|ty| ty.contains('*'));
                     // Only the final member is an assignment place. A pointer
                     // field used by another dereference must load its value.
-                    if self.in_address_of_operand
+                    if (self.in_assignment_lhs || self.in_address_of_operand
+                        || self.c_expr_type_text(&base)
+                            .and_then(|ty| self.c_struct_pointer_pointee_from_type_text(&ty))
+                            .is_some())
                         && it.peek().is_some_and(|next| {
                             matches!(next.as_rule(), Rule::member_suffix | Rule::arrow_suffix)
                         })
@@ -28442,7 +32441,7 @@ impl Walker {
                         // the pointer wrapper. Preserve its type for the next place.
                         base = expr(ExprKind::Cast {
                             expr: Box::new(place),
-                            type_name: field_type,
+                            type_name: format!("{field_type}*"),
                         });
                         continue;
                     }
@@ -28789,7 +32788,7 @@ impl Walker {
                                 .or_else(|| {
                                     self.pointer_address_aliases
                                         .get(name)
-                                        .map(|target| self.ident_or_refload(target))
+                                        .map(|target| ident(target))
                                 })
                                 .unwrap_or_else(|| base.clone());
                             expr(ExprKind::Member {
@@ -28838,7 +32837,7 @@ impl Walker {
                                 } else {
                                     None
                                 };
-                            struct_pointer_read.unwrap_or_else(|| member(base, &field))
+                            struct_pointer_read.unwrap_or_else(|| crate::frontend::finish_direct_member(region, base, &field))
                         }
                     } else {
                         if !self.in_assignment_lhs && !self.in_address_of_operand {
@@ -28901,17 +32900,16 @@ impl Walker {
                                 })
                             }
                         } else {
-                            expr(ExprKind::Member {
-                                object: Box::new(base),
-                                field,
-                                null_safe: false,
-                            })
+                            crate::frontend::finish_direct_member(region, base, &field)
                         }
                     }
                 }
                 Rule::inc_dec_suffix => {
                     if suffix.as_str() == "++" {
                         let base = self.pointer_alias_postfix_target(base);
+                        if let Some(updated) = self.scalar_reference_integer_update(
+                            &base, int_lit(1), BinOp::Add, true,
+                        ) { return updated; }
                         if let Some(rewritten) = self.byte_pointer_index_postfix(&base, 1) {
                             return rewritten;
                         }
@@ -29061,6 +33059,9 @@ impl Walker {
                     } else {
                         // suffix is "--"
                         let base = self.pointer_alias_postfix_target(base);
+                        if let Some(updated) = self.scalar_reference_integer_update(
+                            &base, int_lit(1), BinOp::Sub, true,
+                        ) { return updated; }
                         if let Some(rewritten) = self.byte_pointer_index_postfix(&base, -1) {
                             return rewritten;
                         }
@@ -29149,7 +33150,7 @@ impl Walker {
                 }
                 _ => base,
             };
-            if let Some(path) = debug_timing.as_deref() {
+            if let (Some(path), Some(suffix_started)) = (debug_timing.as_deref(), suffix_started) {
                 let elapsed = suffix_started.elapsed();
                 if elapsed.as_millis() >= 50 {
                     write_c_debug_timing(
@@ -29176,6 +33177,69 @@ impl Walker {
     /// C library call normalizations. Returns the final expression to use
     /// (may wrap the call in puts() for printf-style functions).
     fn normalize_call(&mut self, callee: Expression, args: Vec<Argument>) -> Expression {
+        self.normalize_call_with_region(callee, args, None)
+    }
+
+    fn normalize_call_with_region(&mut self, callee: Expression, args: Vec<Argument>,
+        region: Option<crate::frontend::CallRegion<'_>>) -> Expression
+    {
+        let result_type = match &callee.kind {
+            ExprKind::Ident(name) if !self.macros.contains_key(name) => match name.as_str() {
+                "fseek" | "fseeko" if !self.call_has_user_binding(name) => Some("int".to_string()),
+                "fread" if !self.call_has_user_binding(name) => {
+                    let declared = self
+                        .infer_function_return_type(&callee)
+                        .unwrap_or_else(|| "size_t".into());
+                    let resolved = self.resolve_typedef_scalar_aliases(&declared);
+                    Some(if self.sizeof_type_text(&resolved) <= 4 {
+                        "uint32"
+                    } else {
+                        "uint64"
+                    }.to_string())
+                }
+                _ => self.infer_function_return_type(&callee).and_then(|declared| {
+                    let resolved = self.resolve_typedef_scalar_aliases(&declared);
+                    (!self.is_c_pointer_like_type_text(&resolved)
+                        && !resolved.contains('[')
+                        && (self.is_integral_type_text(&resolved)
+                            || matches!(resolved.trim(), "float" | "double" | "long double")))
+                        .then(|| c_emitted_scalar_type_hint(&resolved))
+                }),
+            },
+            _ => None,
+        };
+        let value = self.normalize_call_impl(callee, args, region);
+        // Adapter selection changes backing, not the C expression's result type.
+        if let Some(type_name) = result_type {
+            if self.c_expr_type_text(&value).is_some_and(|actual|
+                c_emitted_scalar_type_hint(&self.resolve_typedef_scalar_aliases(&actual))
+                    == type_name)
+            {
+                return value;
+            }
+            expr(ExprKind::Cast {
+                expr: Box::new(value),
+                type_name,
+            })
+        } else {
+            value
+        }
+    }
+
+    fn call_has_object_binding(&self, name: &str) -> bool {
+        self.global_call_bindings.contains(name)
+            || self.current_param_names.iter().any(|param| param == name)
+            || self.block_call_bindings.iter().rev().any(|scope| scope.contains(name))
+            || self.block_renames.iter().rev().any(|scope| scope.values().any(|value| value == name))
+    }
+
+    fn call_has_user_binding(&self, name: &str) -> bool {
+        self.defined_function_names.contains(name) || self.call_has_object_binding(name)
+    }
+
+    fn normalize_call_impl(&mut self, callee: Expression, args: Vec<Argument>,
+        region: Option<crate::frontend::CallRegion<'_>>) -> Expression
+    {
         let args = self.normalize_fixed_array_call_args(args);
         if let Some(target) = self.static_function_pointer_member_target(&callee) {
             return self.normalize_call(ident(&target), args);
@@ -29206,6 +33270,13 @@ impl Walker {
                 }
                 return self.expand_macro_call(&params, &body, args);
             }
+            normalized_call_args = self.normalize_pointer_call_args(name, args.clone());
+        }
+        // Definitions (including later ones) and object bindings outrank library
+        // adapters. An extern-only function prototype is not an object binding.
+        if let ExprKind::Ident(name) = &callee.kind
+            && !self.call_has_user_binding(name)
+        {
             if name == "strtok" {
                 let mut inner_args = args;
                 if inner_args.is_empty() {
@@ -29245,7 +33316,6 @@ impl Walker {
                 }
                 _ => {}
             }
-            normalized_call_args = self.normalize_pointer_call_args(name, args.clone());
             let args = normalized_call_args.clone();
             match name.as_str() {
                 "__builtin_expect" => {
@@ -29349,7 +33419,7 @@ impl Walker {
                     }
                     let mut rest = inner_args
                         .into_iter()
-                        .map(|a| self.c_printf_arg(strip_putchar_side_effect_value(a.value)))
+                        .map(|a| self.c_format_variadic_arg(strip_putchar_side_effect_value(a.value)))
                         .collect::<Vec<_>>();
                     if name == "printf" {
                         if let ExprKind::Lit(Literal::Str(format_text)) = &fmt.kind {
@@ -29531,36 +33601,19 @@ impl Walker {
                     ]));
                 }
                 "fileno" => {
-                    if let Some(file) = args.into_iter().next() {
-                        if matches!(file.value.kind, ExprKind::Lit(Literal::Int(_))) {
-                            return file.value;
-                        }
-                        return if is_null_expr(&file.value) {
-                            int_lit(-1)
-                        } else {
-                            int_lit(3)
-                        };
-                    }
-                    return int_lit(-1);
+                    self.require_header("fileno", "libc.stdio");
+                    let file = args.into_iter().next().map(|arg| arg.value)
+                        .unwrap_or_else(|| int_lit(-1));
+                    return stdio_adapter::descriptor_call("fileno", file);
                 }
                 "isatty" => {
+                    self.require_header("isatty", "libc.unistd");
                     let fd = args
                         .into_iter()
                         .next()
                         .map(|a| a.value)
                         .unwrap_or_else(|| int_lit(-1));
-                    if let Some(value) = self.eval_int_expr(&fd) {
-                        return int_lit(if (0..=2).contains(&value) { 1 } else { 0 });
-                    }
-                    return expr(ExprKind::Ternary {
-                        cond: Box::new(binary_expr(
-                            BinOp::And,
-                            binary_expr(BinOp::GtEq, fd.clone(), int_lit(0)),
-                            binary_expr(BinOp::LtEq, fd, int_lit(2)),
-                        )),
-                        then: Box::new(int_lit(1)),
-                        else_: Box::new(int_lit(0)),
-                    });
+                    return stdio_adapter::descriptor_call("isatty", fd);
                 }
                 "fputs" | "fputws" => {
                     let mut inner_args = args;
@@ -29636,7 +33689,10 @@ impl Walker {
                             // never fired for never-created paths.
                             return expr(ExprKind::Ternary {
                                 cond: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::Eq,
+                                    op: BinOp::Integer(
+                                        vybe_ast::IntOp::Eq,
+                                        vybe_ast::BitLane::W32,
+                                    ),
                                     left: Box::new(call_expr(
                                         ident("__c_path_present"),
                                         vec![path.clone()],
@@ -29854,24 +33910,10 @@ impl Walker {
                         return int_lit(0);
                     }
                     let data_arg = inner_args.remove(0).value;
-                    let data = carray_base_expr(&data_arg)
-                        .unwrap_or_else(|| self.value_from_c_address_arg(data_arg));
-                    let _size = inner_args.remove(0).value;
+                    let size = inner_args.remove(0).value;
                     let count = inner_args.remove(0).value;
                     let file = inner_args.remove(0).value;
-                    if !is_carray_like_expr(&data)
-                        && !matches!(data.kind, ExprKind::Lit(Literal::Str(_)))
-                    {
-                        return expr(ExprKind::Sequence(vec![
-                            assign_expr(index_expr(ident("__c_file_content"), file.clone()), data),
-                            assign_expr(
-                                index_expr(ident("__c_file_pos"), file.clone()),
-                                count.clone(),
-                            ),
-                            count,
-                        ]));
-                    }
-                    return call_expr(ident("__c_fwrite_h"), vec![data, count, file]);
+                    return call_expr(ident("__c_fwrite_h"), vec![data_arg, size, count, file]);
                 }
                 "fread" => {
                     let mut inner_args = args;
@@ -30150,7 +34192,7 @@ impl Walker {
                     }
                     return stdio_adapter::sprintf_assign(buf, fmt, rest);
                 }
-                // snprintf(buf, size, fmt, ...) → buf = libc sprintf(fmt, ...).slice(0, size-1)
+                // Format once, then write through C pointers without replacing them.
                 "snprintf" => {
                     let mut inner_args = args;
                     if inner_args.len() < 3 {
@@ -30164,8 +34206,14 @@ impl Walker {
                     let size_val = inner_args.remove(0).value;
                     let sanitized: Vec<Argument> = inner_args
                         .into_iter()
-                        .map(|mut a| {
-                            a.value = self.c_printf_arg(strip_putchar_side_effect_value(a.value));
+                        .enumerate()
+                        .map(|(index, mut a)| {
+                            let value = strip_putchar_side_effect_value(a.value);
+                            a.value = if index == 0 {
+                                self.c_printf_arg(value)
+                            } else {
+                                self.c_format_variadic_arg(value)
+                            };
                             a
                         })
                         .collect();
@@ -30177,9 +34225,11 @@ impl Walker {
                         optional: false,
                     });
                     // limit to size-1 characters (leave room for null terminator)
+                    let destination = ident("__c_snprintf_destination");
+                    let capacity = ident("__c_snprintf_capacity");
                     let max_len = expr(ExprKind::Binary {
                         op: BinOp::Sub,
-                        left: Box::new(size_val.clone()),
+                        left: Box::new(capacity.clone()),
                         right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
                     });
                     let formatted_name = "__c_snprintf_formatted".to_string();
@@ -30196,31 +34246,18 @@ impl Walker {
                         ],
                         optional: false,
                     });
-                    let write_empty_string_buffer = matches!(&buf.kind, ExprKind::Ident(name) if self.char_string_arrays.contains(name));
-                    let has_payload_or_string_buffer = expr(ExprKind::Binary {
-                        op: BinOp::Or,
-                        left: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Gt,
-                            left: Box::new(member(formatted_expr.clone(), "length")),
-                            right: Box::new(int_lit(0)),
-                        })),
-                        right: Box::new(expr(ExprKind::Lit(Literal::Bool(
-                            write_empty_string_buffer,
-                        )))),
-                    });
                     let should_write = expr(ExprKind::Binary {
-                        op: BinOp::And,
-                        left: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Gt,
-                            left: Box::new(size_val),
-                            right: Box::new(int_lit(0)),
-                        })),
-                        right: Box::new(has_payload_or_string_buffer),
+                        op: BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W64),
+                        left: Box::new(capacity),
+                        right: Box::new(int_lit(0)),
                     });
-                    return expr(ExprKind::Call {
+                    return c_int_cast_expr(expr(ExprKind::Call {
                         callee: Box::new(expr(ExprKind::Lambda {
-                            params: vec![Param {
-                                name: formatted_name.clone(),
+                            params: [formatted_name.clone(),
+                                "__c_snprintf_destination".into(),
+                                "__c_snprintf_capacity".into()]
+                                .into_iter().map(|name| Param {
+                                name,
                                 type_hint: None,
                                 default: None,
                                 pass_by: PassBy::Value,
@@ -30228,18 +34265,25 @@ impl Walker {
                                 is_kwargs: false,
                                 is_optional: false,
                                 is_nullable: false,
-                            }],
+                            }).collect(),
                             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
                                 expr(ExprKind::Ternary {
                                     cond: Box::new(should_write),
                                     then: Box::new(expr(ExprKind::Ternary {
-                                        cond: Box::new(pointers::is_carray_ptr_kind(buf.clone())),
+                                        cond: Box::new(binary_expr(
+                                            BinOp::Or,
+                                            expr(ExprKind::IsType {
+                                                expr: Box::new(destination.clone()),
+                                                type_name: "number".into(),
+                                            }),
+                                            pointers::is_carray_ptr_kind(destination.clone()),
+                                        )),
                                         then: Box::new(call_expr(
                                             ident("__c_write_carray_string"),
-                                            vec![buf.clone(), sliced.clone()],
+                                            vec![destination, sliced.clone()],
                                         )),
                                         else_: Box::new(expr(ExprKind::Assign {
-                                            target: Box::new(buf),
+                                            target: Box::new(buf.clone()),
                                             value: Box::new(sliced),
                                         })),
                                     })),
@@ -30250,9 +34294,10 @@ impl Walker {
                             is_async: false,
                             captures: vec![],
                         })),
-                        args: vec![Argument::positional(sprintf_call)],
+                        args: vec![Argument::positional(sprintf_call),
+                            Argument::positional(buf), Argument::positional(size_val)],
                         optional: false,
-                    });
+                    }));
                 }
                 // vprintf(fmt, ap)
                 "vprintf" => {
@@ -30288,15 +34333,27 @@ impl Walker {
                                 is_kwargs: false,
                                 is_optional: false,
                                 is_nullable: false,
+                            }, Param {
+                                name: "__c_vfprintf_stream".into(),
+                                type_hint: None,
+                                default: None,
+                                pass_by: PassBy::Value,
+                                is_rest: false,
+                                is_kwargs: false,
+                                is_optional: false,
+                                is_nullable: false,
                             }],
                             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
-                                vfprintf_write_expr(file, formatted_expr.clone()),
+                                vfprintf_write_expr(ident("__c_vfprintf_stream"), formatted_expr.clone()),
                                 member(formatted_expr, "length"),
                             ])))),
                             is_async: false,
                             captures: vec![],
                         })),
-                        args: vec![Argument::positional(rendered)],
+                        args: vec![
+                            Argument::positional(rendered),
+                            Argument::positional(c_cell_unwrap_expr(file)),
+                        ],
                         optional: false,
                     });
                 }
@@ -30353,63 +34410,10 @@ impl Walker {
                     let fmt = self.c_printf_arg(inner_args.remove(0).value);
                     let ap = inner_args.remove(0).value;
                     let sprintf_call = va_list_sprintf_call(fmt, ap);
-                    let max_len = expr(ExprKind::Binary {
-                        op: BinOp::Sub,
-                        left: Box::new(size_val.clone()),
-                        right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
-                    });
-                    let formatted_name = "__c_vsnprintf_formatted".to_string();
-                    let formatted_expr = ident(&formatted_name);
-                    let sliced = call_expr(
-                        member(formatted_expr.clone(), "slice"),
-                        vec![int_lit(0), max_len],
+                    return call_expr(
+                        ident("__c_snprintf_write"),
+                        vec![buf, size_val, sprintf_call],
                     );
-                    let should_write = expr(ExprKind::Binary {
-                        op: BinOp::And,
-                        left: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Gt,
-                            left: Box::new(size_val),
-                            right: Box::new(int_lit(0)),
-                        })),
-                        right: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Gt,
-                            left: Box::new(member(formatted_expr.clone(), "length")),
-                            right: Box::new(int_lit(0)),
-                        })),
-                    });
-                    return expr(ExprKind::Call {
-                        callee: Box::new(expr(ExprKind::Lambda {
-                            params: vec![Param {
-                                name: formatted_name.clone(),
-                                type_hint: None,
-                                default: None,
-                                pass_by: PassBy::Value,
-                                is_rest: false,
-                                is_kwargs: false,
-                                is_optional: false,
-                                is_nullable: false,
-                            }],
-                            body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
-                                expr(ExprKind::Ternary {
-                                    cond: Box::new(should_write),
-                                    then: Box::new(expr(ExprKind::Ternary {
-                                        cond: Box::new(pointers::is_carray_ptr_kind(buf.clone())),
-                                        then: Box::new(call_expr(
-                                            ident("__c_write_carray_string"),
-                                            vec![buf.clone(), sliced.clone()],
-                                        )),
-                                        else_: Box::new(assign_expr(buf, sliced)),
-                                    })),
-                                    else_: Box::new(formatted_expr.clone()),
-                                }),
-                                member(formatted_expr, "length"),
-                            ])))),
-                            is_async: false,
-                            captures: vec![],
-                        })),
-                        args: vec![Argument::positional(sprintf_call)],
-                        optional: false,
-                    });
                 }
                 // vdprintf(fd, fmt, ap)
                 "vdprintf" => {
@@ -31493,44 +35497,47 @@ impl Walker {
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
 
-                // ── strchr/strstr — return suffix string or null ──────────────
-                // strchr(s, c) → find char (int code → putchar maps to str_from_char_code)
                 "strchr" => {
                     let mut it = args.into_iter();
                     if let (Some(s_arg), Some(c_arg)) = (it.next(), it.next()) {
-                        let s_value = s_arg.value;
-                        let c_value = c_arg.value;
-                        if let ExprKind::Ident(base_name) = &s_value.kind {
-                            if self.initialized_char_buffers.contains(base_name)
-                                || self.char_string_values.contains_key(base_name)
-                                || self.char_pointers.contains(base_name)
-                                || self.is_char_array_var(base_name)
-                            {
-                                let end_ptr = pointers::make_carray_ptr(
-                                    s_value.clone(),
-                                    member(s_value.clone(), "length"),
-                                );
-                                if matches!(c_value.kind, ExprKind::Lit(Literal::Int(0))) {
-                                    return end_ptr;
-                                }
-                                let idx = call_expr(
-                                    ident("__c_str_index_of"),
-                                    vec![s_value.clone(), char_needle_to_string(c_value.clone())],
-                                );
-                                let found_ptr = pointers::make_carray_ptr(s_value.clone(), idx.clone());
-                                let found = expr(ExprKind::Ternary {
-                                    cond: Box::new(binary_expr(BinOp::GtEq, idx, int_lit(0))),
-                                    then: Box::new(found_ptr),
-                                    else_: Box::new(null_lit()),
-                                });
-                                return expr(ExprKind::Ternary {
-                                    cond: Box::new(binary_expr(BinOp::Eq, c_value, int_lit(0))),
-                                    then: Box::new(end_ptr),
-                                    else_: Box::new(found),
-                                });
-                            }
+                        if let Some((address, _)) = self.linear_pointer_addr_and_stride(&s_arg.value) {
+                            return expr(ExprKind::Cast {
+                                expr: Box::new(call_expr(ident("__c_strchr_linear"), vec![address, c_arg.value])),
+                                type_name: "char *".into(),
+                            });
                         }
-                        return string_adapter::strchr_c(self.c_printf_arg(s_value), c_value);
+                        let id = self.tmp_counter;
+                        self.tmp_counter += 1;
+                        let source = ident(&format!("__c_strchr_source{id}"));
+                        let needle = ident(&format!("__c_strchr_needle{id}"));
+                        let index = ident(&format!("__c_strchr_index{id}"));
+                        let managed = expr(ExprKind::Sequence(vec![
+                            assign_expr(index.clone(), ternary_expr(
+                                binary_expr(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), needle.clone(), int_lit(0)),
+                                call_expr(ident("__libc_strlen_cstring"), vec![source.clone()]),
+                                call_expr(ident("__c_str_index_of"), vec![
+                                    call_expr(ident("__libc_char_to_str"), vec![source.clone()]),
+                                    char_needle_to_string(needle.clone()),
+                                ]),
+                            )),
+                            ternary_expr(
+                                binary_expr(BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64), index.clone(), int_lit(0)),
+                                call_expr(ident("__libc_char_ptr_add"), vec![source.clone(), index]),
+                                null_lit(),
+                            ),
+                        ]));
+                        return expr(ExprKind::Cast {
+                            expr: Box::new(expr(ExprKind::Sequence(vec![
+                                assign_expr(source.clone(), s_arg.value),
+                                assign_expr(needle.clone(), binary_expr(BinOp::Integer(vybe_ast::IntOp::And, vybe_ast::BitLane::W32), c_arg.value, int_lit(255))),
+                                ternary_expr(
+                                    binary_expr(BinOp::Eq, unary_expr(UnaryOp::Typeof, source.clone()), str_lit("number")),
+                                    call_expr(ident("__c_strchr_linear"), vec![source, needle]),
+                                    managed,
+                                ),
+                            ]))),
+                            type_name: "char *".into(),
+                        });
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -32237,11 +36244,22 @@ impl Walker {
                                 a_text.len().max(b_text.len()),
                             ));
                         }
+                        let left = strip_runtime_pointer_cast(a.value);
+                        let right = strip_runtime_pointer_cast(b.value);
+                        if !self.defined_function_names.contains("strcmp")
+                            && !self.defined_function_names.contains("__c_ptr_string_compare")
+                            && !self.var_types.contains_key("strcmp")
+                            && !self.var_types.contains_key("__c_ptr_string_compare")
+                            && self.is_linear_pointer_address_or_value_expr(&left)
+                            && self.is_linear_pointer_address_or_value_expr(&right)
+                        {
+                            return c_int_cast_expr(call_expr(ident("__c_ptr_string_compare"), vec![left, right]));
+                        }
                         return expr(ExprKind::Call {
                             callee: Box::new(ident("strcmp")),
                             args: vec![
-                                Argument::positional(strip_runtime_pointer_cast(a.value)),
-                                Argument::positional(strip_runtime_pointer_cast(b.value)),
+                                Argument::positional(left),
+                                Argument::positional(right),
                             ],
                             optional: false,
                         });
@@ -32258,11 +36276,22 @@ impl Walker {
                         ) {
                             return int_lit(strncmp_literal_value(&a_text, &b_text, count));
                         }
+                        let left = strip_runtime_pointer_cast(a.value);
+                        let right = strip_runtime_pointer_cast(b.value);
+                        if !self.defined_function_names.contains("strncmp")
+                            && !self.defined_function_names.contains("__c_ptr_string_ncompare")
+                            && !self.var_types.contains_key("strncmp")
+                            && !self.var_types.contains_key("__c_ptr_string_ncompare")
+                            && self.is_linear_pointer_address_or_value_expr(&left)
+                            && self.is_linear_pointer_address_or_value_expr(&right)
+                        {
+                            return c_int_cast_expr(call_expr(ident("__c_ptr_string_ncompare"), vec![left, right, n.value]));
+                        }
                         return call_expr(
                             ident("strncmp"),
                             vec![
-                                strip_runtime_pointer_cast(a.value),
-                                strip_runtime_pointer_cast(b.value),
+                                left,
+                                right,
                                 n.value,
                             ],
                         );
@@ -32331,7 +36360,7 @@ impl Walker {
                         let parse_call = expr(ExprKind::Call {
                             callee: Box::new(ident("parseInt")),
                             args: vec![
-                                Argument::positional(s_arg.value),
+                                Argument::positional(call_expr(ident("__libc_char_to_str"), vec![s_arg.value])),
                                 Argument::positional(expr(ExprKind::Lit(Literal::Int(10)))),
                             ],
                             optional: false,
@@ -32349,7 +36378,7 @@ impl Walker {
                         }
                         let parse_call = expr(ExprKind::Call {
                             callee: Box::new(ident("parseFloat")),
-                            args: vec![Argument::positional(s_arg.value)],
+                            args: vec![Argument::positional(call_expr(ident("__libc_char_to_str"), vec![s_arg.value]))],
                             optional: false,
                         });
                         return nan_to_default(
@@ -32361,7 +36390,16 @@ impl Walker {
                 }
                 "abs" | "labs" | "llabs" | "imaxabs" => {
                     if let Some(value) = args.into_iter().next() {
-                        return ecma_math_call("abs", value.value);
+                        let type_name = match name.as_str() {
+                            "labs" => "long",
+                            "llabs" => "long long",
+                            "imaxabs" => "intmax_t",
+                            _ => "int",
+                        };
+                        return expr(ExprKind::Cast {
+                            expr: Box::new(ecma_math_call("abs", value.value)),
+                            type_name: type_name.into(),
+                        });
                     }
                     return int_lit(0);
                 }
@@ -33268,10 +37306,21 @@ impl Walker {
                         .next()
                         .map(|arg| arg.value)
                         .unwrap_or_else(|| int_lit(0));
-                    return posix_adapter::exit_call(status, name != "exit");
+                    return call_expr(ident(crate::normalize_shutdown::TERMINATE), vec![status, int_lit(i64::from(name != "exit"))]);
                 }
-                "atexit" | "at_quick_exit" | "on_exit" => return int_lit(0),
-                "abort" | "quick_exit" => return int_lit(0),
+                "atexit" | "at_quick_exit" | "on_exit" => {
+                    return crate::normalize_shutdown::registration(name, args.into_iter().map(|arg| arg.value).collect());
+                }
+                "abort" => {
+                    return expr(ExprKind::Sequence(vec![
+                        posix_adapter::raise(int_lit(6)),
+                        call_expr(ident(crate::normalize_shutdown::TERMINATE), vec![int_lit(134), int_lit(1)]),
+                    ]));
+                }
+                "quick_exit" => {
+                    let status = args.into_iter().next().map(|arg| arg.value).unwrap_or_else(|| int_lit(0));
+                    return call_expr(ident(crate::normalize_shutdown::TERMINATE), vec![status, int_lit(2)]);
+                }
                 "fork" | "vfork" => return posix_adapter::fork(),
                 "wait" | "waitpid" | "wait3" | "wait4" => {
                     let mut it = args.into_iter();
@@ -34323,6 +38372,21 @@ impl Walker {
                 "strpbrk" => {
                     let mut it = args.into_iter();
                     if let (Some(s), Some(accept)) = (it.next(), it.next()) {
+                        if self.is_linear_pointer_address_or_value_expr(&s.value)
+                            && let Some(text)=literal_string_value(&accept.value)
+                        {
+                            let bytes=text.as_bytes().split(|b|*b==0).next().unwrap_or_default();
+                            let mut set=bytes.to_vec();set.sort_unstable();set.dedup();
+                            if set.len()>1 && set.len()<=8 && set.is_ascii() {
+                                return expr(ExprKind::Cast{expr:Box::new(call_expr(ident("__c_strpbrk_literal_set"),vec![s.value,accept.value])),type_name:"char *".into()});
+                            }
+                            if bytes.len()==1 {
+                                return expr(ExprKind::Cast {
+                                    expr:Box::new(call_expr(ident("__c_strpbrk_one_byte"),vec![s.value,int_lit(bytes[0] as i64)])),
+                                    type_name:"char *".into(),
+                                });
+                            }
+                        }
                         return call_expr(ident("__c_strpbrk_h"), vec![s.value, accept.value]);
                     }
                     return null_lit();
@@ -34330,6 +38394,18 @@ impl Walker {
                 "strspn" => {
                     let mut it = args.into_iter();
                     if let (Some(s), Some(accept)) = (it.next(), it.next()) {
+                        if self.is_linear_pointer_address_or_value_expr(&s.value)
+                            && let Some(text)=literal_string_value(&accept.value)
+                        {
+                            let bytes=text.as_bytes().split(|b|*b==0).next().unwrap_or_default();
+                            let mut set=bytes.to_vec();set.sort_unstable();set.dedup();
+                            if set.len()>1 && set.len()<=8 && set.is_ascii() {
+                                return call_expr(ident("__c_strspn_literal_set"),vec![s.value,accept.value]);
+                            }
+                            if bytes.len()==1 {
+                                return call_expr(ident("__c_strspn_one_byte"),vec![s.value,int_lit(bytes[0] as i64)]);
+                            }
+                        }
                         if let (Some(s_text), Some(accept_text)) = (
                             literal_string_value(&s.value),
                             literal_string_value(&accept.value),
@@ -34343,6 +38419,18 @@ impl Walker {
                 "strcspn" => {
                     let mut it = args.into_iter();
                     if let (Some(s), Some(reject)) = (it.next(), it.next()) {
+                        if self.is_linear_pointer_address_or_value_expr(&s.value)
+                            && let Some(text)=literal_string_value(&reject.value)
+                        {
+                            let bytes=text.as_bytes().split(|b|*b==0).next().unwrap_or_default();
+                            let mut set=bytes.to_vec();set.sort_unstable();set.dedup();
+                            if set.len()>1 && set.len()<=8 && set.is_ascii() {
+                                return call_expr(ident("__c_strcspn_literal_set"),vec![s.value,reject.value]);
+                            }
+                            if bytes.len()==1 {
+                                return call_expr(ident("__c_strcspn_one_byte"),vec![s.value,int_lit(bytes[0] as i64)]);
+                            }
+                        }
                         return call_expr(ident("__c_strcspn_h"), vec![s.value, reject.value]);
                     }
                     return int_lit(0);
@@ -34882,68 +38970,15 @@ impl Walker {
                     }
                     return int_lit(4096);
                 }
-                // Keep an existing backing store; a null pointer starts a
-                // linear allocation, matching typed pointer loads and stores.
+                // libc owns allocation sizes and preserves the old byte prefix.
                 "realloc" => {
                     let mut it = args.into_iter();
                     if let Some(first) = it.next() {
                         let p = first.value;
                         let size = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
-                        let size_name = format!("__c_realloc_size{}", self.tmp_counter);
-                        self.tmp_counter += 1;
-                        let checked_size = ident(&size_name);
-                        let within_address_space = binary_expr(
-                            BinOp::LtEq,
-                            checked_size.clone(),
-                            int_lit(u32::MAX as i64),
-                        );
-                        let guard_size = |result: Expression| {
-                            expr(ExprKind::Sequence(vec![
-                                assign_expr(checked_size.clone(), size.clone()),
-                                ternary_expr(within_address_space.clone(), result, null_lit()),
-                            ]))
-                        };
-                        if self.is_linear_pointer_address_or_value_expr(&p)
-                            || self.linear_pointer_addr_and_stride(&p).is_some()
-                        {
-                            let allocated = call_expr(
-                                ident("__c_ptr_linear_alloc"),
-                                vec![checked_size.clone()],
-                            );
-                            self.uses_linear_memory_heap = true;
-                            if is_zero_int_expr(&p)
-                                || matches!(p.kind, ExprKind::Lit(Literal::Null))
-                            {
-                                return guard_size(allocated);
-                            }
-                            return guard_size(expr(ExprKind::Ternary {
-                                cond: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::NotEq,
-                                    left: Box::new(p.clone()),
-                                    right: Box::new(expr(ExprKind::Lit(Literal::Null))),
-                                })),
-                                then: Box::new(p),
-                                else_: Box::new(allocated),
-                            }));
-                        }
-                        let pointer_name = format!("__c_realloc_ptr{}", self.tmp_counter);
-                        self.tmp_counter += 1;
-                        let pointer_once = ident(&pointer_name);
-                        let allocated =
-                            call_expr(ident("__c_ptr_linear_alloc"), vec![checked_size.clone()]);
                         self.uses_linear_memory_heap = true;
-                        return guard_size(expr(ExprKind::Sequence(vec![
-                            assign_expr(pointer_once.clone(), p),
-                            expr(ExprKind::Ternary {
-                                cond: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::NotEq,
-                                    left: Box::new(pointer_once.clone()),
-                                    right: Box::new(expr(ExprKind::Lit(Literal::Null))),
-                                })),
-                                then: Box::new(pointer_once),
-                                else_: Box::new(allocated),
-                            }),
-                        ])));
+                        return call_expr(ident("__c_ptr_linear_realloc"),
+                            vec![self.c_pointer_storage_value(p), size]);
                     }
                     return expr(ExprKind::Array(Vec::new()));
                 }
@@ -35016,10 +39051,14 @@ impl Walker {
                 "bzero" | "explicit_bzero" => {
                     let mut it = args.into_iter();
                     if let (Some(dst), Some(bytes)) = (it.next(), it.next()) {
-                        return call_expr(
-                            ident("__libc_memset"),
-                            vec![dst.value, int_lit(0), bytes.value],
-                        );
+                        let fill = self.rewrite_memset(dst.value, int_lit(0), bytes.value);
+                        return expr(ExprKind::Cast {
+                            expr: Box::new(expr(ExprKind::Sequence(vec![
+                                fill,
+                                expr(ExprKind::Lit(Literal::Undefined)),
+                            ]))),
+                            type_name: "void".into(),
+                        });
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -35038,22 +39077,7 @@ impl Walker {
                 "memchr" => {
                     let mut it = args.into_iter();
                     if let (Some(buf), Some(ch), Some(bytes)) = (it.next(), it.next(), it.next()) {
-                        let numeric_base = carray_base_expr(&buf.value).or_else(|| {
-                            if matches!(&buf.value.kind, ExprKind::Ident(name)
-                                if self.is_char_array_var(name)
-                                    || !self.initialized_char_buffers.contains(name)
-                                    && !self.char_string_arrays.contains(name))
-                            {
-                                Some(buf.value.clone())
-                            } else {
-                                None
-                            }
-                        });
-                        if let Some(base) = numeric_base {
-                            return memchr_array_expr(base, ch.value, bytes.value);
-                        }
-                        let needle = char_assignment_value_to_string(ch.value);
-                        return memchr_expr(buf.value, needle, bytes.value);
+                        return self.rewrite_memchr_bytes(buf.value, ch.value, bytes.value);
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -35104,6 +39128,49 @@ impl Walker {
                     if let (Some(a), Some(b), Some(bytes)) = (it.next(), it.next(), it.next()) {
                         let left = self.value_from_c_address_arg(a.value);
                         let right = self.value_from_c_address_arg(b.value);
+                        if !self.defined_function_names.contains("memcmp")
+                            && !self.var_types.contains_key("memcmp")
+                            && !self.current_function.is_empty()
+                        {
+                            let left_width = self.memcmp_scalar_array_width(&left);
+                            let right_width = self.memcmp_scalar_array_width(&right);
+                            if left_width.is_some() || right_width.is_some() {
+                                let id = self.tmp_counter;
+                                self.tmp_counter += 1;
+                                let left_name = format!("__c_memcmp_left{id}");
+                                let right_name = format!("__c_memcmp_right{id}");
+                                let count_name = format!("__c_memcmp_count{id}");
+                                self.register_generated_local(&left_name, "void *");
+                                self.register_generated_local(&right_name, "void *");
+                                self.register_generated_local(&count_name, "size_t");
+                                let saved_left = ident(&left_name);
+                                let saved_right = ident(&right_name);
+                                let count = ident(&count_name);
+                                // Keep the complete view evaluation in the capture;
+                                // only a proved zero-offset array view may be packed.
+                                let left_array = if carray_zero_base_expr(&left).is_some() {
+                                    member(saved_left.clone(), CARRAY_BASE_KEY)
+                                } else { saved_left.clone() };
+                                let right_array = if carray_zero_base_expr(&right).is_some() {
+                                    member(saved_right.clone(), CARRAY_BASE_KEY)
+                                } else { saved_right.clone() };
+                                let byte_left = left_width.map_or_else(|| saved_left.clone(), |width|
+                                    self.memcmp_scalar_array_bytes(left_array, count.clone(), width));
+                                let byte_right = right_width.map_or_else(|| saved_right.clone(), |width|
+                                    self.memcmp_scalar_array_bytes(right_array, count.clone(), width));
+                                // Read object bytes only after all call arguments have run.
+                                return expr(ExprKind::Sequence(vec![
+                                    assign_expr(saved_left, expr(ExprKind::Cast {
+                                        expr: Box::new(left), type_name: "void*".into(),
+                                    })),
+                                    assign_expr(saved_right, expr(ExprKind::Cast {
+                                        expr: Box::new(right), type_name: "void*".into(),
+                                    })),
+                                    assign_expr(count.clone(), bytes.value),
+                                    c_int_cast_expr(call_expr(ident("memcmp"), vec![byte_left, byte_right, count])),
+                                ]));
+                            }
+                        }
                         if self.is_struct_value_expr(&left) && self.is_struct_value_expr(&right) {
                             // Compare field-wise — the field list is known at
                             // compile time, and C's memcmp==0 on two structs of
@@ -35118,6 +39185,20 @@ impl Walker {
                                     else_: Box::new(int_lit(1)),
                                 });
                             }
+                        }
+                        // A pointer type alone does not prove its storage. Select the
+                        // explicit raw-byte directive only for two numeric addresses.
+                        // User definitions and function-pointer bindings retain normal calls.
+                        if !self.defined_function_names.contains("memcmp")
+                            && !self.defined_function_names.contains("__c_ptr_byte_compare")
+                            && !self.var_types.contains_key("memcmp")
+                            && !self.var_types.contains_key("__c_ptr_byte_compare")
+                            && self.is_linear_pointer_address_or_value_expr(&left)
+                            && self.is_linear_pointer_address_or_value_expr(&right)
+                        {
+                            return c_int_cast_expr(call_expr(
+                                ident("__c_ptr_byte_compare"), vec![left, right, bytes.value],
+                            ));
                         }
                         return call_expr(ident("memcmp"), vec![left, right, bytes.value]);
                     }
@@ -35166,6 +39247,10 @@ impl Walker {
                         expr(ExprKind::Lit(Literal::Int(0))),
                         callee,
                     ]));
+                    if let Some(region) = region {
+                        crate::frontend::record_direct_call_handoff();
+                        return region.finish(seq, normalized_call_args);
+                    }
                     return expr(ExprKind::Call {
                         callee: Box::new(seq),
                         args: normalized_call_args,
@@ -35194,11 +39279,16 @@ impl Walker {
                 mutable_arrays.push(base_name);
             }
         }
-        let call = expr(ExprKind::Call {
-            callee: Box::new(callee),
-            args: normalized_call_args,
-            optional: false,
-        });
+        let call = if let Some(region) = region {
+            crate::frontend::record_direct_call_handoff();
+            region.finish(callee, normalized_call_args)
+        } else {
+            expr(ExprKind::Call {
+                callee: Box::new(callee),
+                args: normalized_call_args,
+                optional: false,
+            })
+        };
         let call = if let Some(name) = callee_name {
             self.apply_c_function_return_type(&name, call)
         } else {
@@ -35228,6 +39318,9 @@ impl Walker {
     }
 
     fn apply_c_function_return_type(&self, callee: &str, call: Expression) -> Expression {
+        if self.call_has_object_binding(callee) {
+            return call;
+        }
         let Some(return_type) = self.function_return_types.get(callee) else {
             return call;
         };
@@ -35245,7 +39338,25 @@ impl Walker {
         })
     }
 
-    /// Normalize a printf/fprintf variadic argument. A char buffer printed with
+    fn shared_char_pointer_visible_value(&self, value: Expression) -> Expression {
+        if self.char_pointer_visible_helper.is_empty() {
+            return c_char_pointer_visible_value(value);
+        }
+        self.uses_char_pointer_visible_helper.set(true);
+        call_expr(ident(&self.char_pointer_visible_helper), vec![value])
+    }
+
+    /// String carriers must reach the formatter intact so precision can bound
+    /// their reads. Only scalar character reads need their C numeric value here.
+    fn c_format_variadic_arg(&self, value: Expression) -> Expression {
+        if self.is_char_index_read(&value) {
+            self.char_index_read_to_code(value)
+        } else {
+            value
+        }
+    }
+
+    /// Normalize a C string operand (including a format string). A char buffer printed with
     /// `%s` must stop at the C null terminator, so truncate char-pointer / carray
     /// args at the first `\0` (same visibility rule `puts` applies). Other args
     /// (ints, floats, single chars) are passed through unchanged.
@@ -35262,17 +39373,28 @@ impl Walker {
         if is_carray_object(&value)
             || matches!(&value.kind, ExprKind::Ident(n) if self.carray_ptr_vars.contains(n))
         {
-            if let Some(base_name) = carray_base_expr(&value)
+            let mut backing = &value;
+            while let ExprKind::Cast { expr, type_name } = &backing.kind {
+                if !type_name.contains("char") || type_name.matches('*').count() != 1
+                    || type_name.contains('[')
+                {
+                    break;
+                }
+                backing = expr;
+            }
+            if let Some(base_name) = carray_base_expr(backing)
                 .and_then(|base| base_ident_name(&base))
                 .filter(|name| self.is_char_array_var(name) || self.char_pointers.contains(name))
             {
+                if self.is_char_array_var(&base_name) {
+                    // Decode the array-backed view at its byte offset, not the
+                    // comma-separated string coercion of the array itself.
+                    return self.shared_char_pointer_visible_value(value);
+                }
                 let suffix = call_expr(
                     member(ident(&base_name), "substring"),
                     vec![member(value, CARRAY_IDX_KEY)],
                 );
-                if self.is_char_array_var(&base_name) {
-                    return c_string_visible(suffix);
-                }
                 return suffix;
             }
             if carray_base_ident(&value)
@@ -35343,13 +39465,13 @@ impl Walker {
         if matches!(&value.kind, ExprKind::Ident(n)
             if self.char_pointers.contains(n) || self.is_char_pointer_type_var(n))
         {
-            return c_char_pointer_visible_value(value);
+            return self.shared_char_pointer_visible_value(value);
         }
         if self
             .c_expr_type_text(&value)
             .is_some_and(|ty| ty.contains("char") && ty.contains('*') && !ty.contains('['))
         {
-            return c_char_pointer_visible_value(value);
+            return self.shared_char_pointer_visible_value(value);
         }
         // A string literal carrying an embedded NUL (`"hello\0world"`) prints only
         // up to the terminator under `%s`.
@@ -35972,7 +40094,44 @@ impl Walker {
         Some(self.walk_block(pair))
     }
 
+    fn take_direct_syntax(&mut self, pair: &Pair<Rule>) -> Option<Expression> {
+        #[cfg(test)]
+        if field_type_tests::USE_REFERENCE_DIRECT_SYNTAX.with(|flag| flag.get()) {
+            return None;
+        }
+        crate::frontend::take_syntax_expression(pair)
+            .map(|value| self.normalize_direct_syntax(value))
+    }
+
+    fn normalize_direct_syntax(&mut self, value: Expression) -> Expression {
+        match value.kind {
+            ExprKind::Ident(ref name) => self.normalize_primary_name(name).unwrap_or(value),
+            ExprKind::Unary { op: UnaryOp::Neg, expr } => {
+                let operand = self.normalize_direct_syntax(*expr);
+                self.apply_prefix("-", operand)
+            }
+            ExprKind::Unary { op: UnaryOp::BitNot, expr } => {
+                let operand = self.normalize_direct_syntax(*expr);
+                self.apply_prefix("~", operand)
+            }
+            ExprKind::Sequence(parts) => expr(ExprKind::Sequence(parts.into_iter()
+                .map(|value| self.normalize_direct_syntax(value)).collect())),
+            _ => value,
+        }
+    }
+
     fn walk_primary(&mut self, pair: Pair<Rule>) -> Expression {
+        let direct = true;
+        #[cfg(test)]
+        let direct = direct && !field_type_tests::USE_REFERENCE_DIRECT_PRIMARIES.with(|flag| flag.get());
+        if direct && let Some(value) = crate::frontend::take_primary_expression(&pair) {
+            if let ExprKind::Ident(name) = &value.kind
+                && let Some(normalized) = self.normalize_primary_name(name)
+            {
+                return normalized;
+            }
+            return value;
+        }
         match pair.as_rule() {
             Rule::primary_expression => {
                 let inner = pair.into_inner().next().unwrap();
@@ -35981,65 +40140,94 @@ impl Walker {
             Rule::literal => self.walk_literal(pair),
             Rule::ident_name => {
                 let name = pair.as_str();
-                // Static locals need NO remap here: `VarDeclKind::Static`
-                // makes the shared compiler resolve the name to its own
-                // storage at the binding layer.
-                if let Some(mangled) = self
-                    .block_renames
-                    .iter()
-                    .rev()
-                    .find_map(|scope| scope.get(name))
-                {
-                    ident(mangled)
-                } else if name == "__func__" {
-                    expr(ExprKind::Lit(Literal::Str(self.current_function.clone())))
-                } else if name == "NULL" {
-                    expr(ExprKind::Lit(Literal::Null))
-                } else if name == "ATOMIC_FLAG_INIT" {
-                    int_lit(0)
-                } else if name == "environ" {
-                    pointers::make_carray_ptr(
-                        expr(ExprKind::Array(vec![
-                            ArrayElement {
-                                key: None,
-                                value: str_lit("TEST_ENVIRON=1"),
-                                spread: false,
-                                by_ref: false,
-                            },
-                            ArrayElement {
-                                key: None,
-                                value: expr(ExprKind::Lit(Literal::Null)),
-                                spread: false,
-                                by_ref: false,
-                            },
-                        ])),
-                        int_lit(0),
-                    )
-                } else if matches!(name, "stdin" | "stdout" | "stderr") {
-                    expr(ExprKind::Cast {
-                        expr: Box::new(int_lit(match name {
-                            "stdin" => 0,
-                            "stdout" => 1,
-                            _ => 2,
-                        })),
-                        type_name: "FILE*".into(),
-                    })
-                } else if self.address_taken.contains(name) {
-                    expr(ExprKind::RefLoad(Box::new(ident(name))))
-                } else {
-                    ident(name)
-                }
+                self.normalize_primary_name(name).unwrap_or_else(|| ident(name))
             }
             Rule::expression => self.walk_expression(pair),
             _ => self.walk_expression(pair),
         }
     }
 
+    fn normalize_primary_name(&self, name: &str) -> Option<Expression> {
+        // Static locals need NO remap here: `VarDeclKind::Static`
+        // makes the shared compiler resolve the name to its own
+        // storage at the binding layer.
+        let value = if let Some(mangled) = self.block_renames.iter().rev()
+            .find_map(|scope| scope.get(name))
+        {
+            ident(mangled)
+        } else if name == "__func__" {
+            expr(ExprKind::Lit(Literal::Str(self.current_function.clone())))
+        } else if name == "NULL" {
+            expr(ExprKind::Lit(Literal::Null))
+        } else if name == "ATOMIC_FLAG_INIT" {
+            int_lit(0)
+        } else if name == "environ" {
+            pointers::make_carray_ptr(
+                expr(ExprKind::Array(vec![
+                    ArrayElement {
+                        key: None,
+                        value: str_lit("TEST_ENVIRON=1"),
+                        spread: false,
+                        by_ref: false,
+                    },
+                    ArrayElement {
+                        key: None,
+                        value: expr(ExprKind::Lit(Literal::Null)),
+                        spread: false,
+                        by_ref: false,
+                    },
+                ])),
+                int_lit(0),
+            )
+        } else if matches!(name, "stdin" | "stdout" | "stderr") {
+            expr(ExprKind::Cast {
+                expr: Box::new(int_lit(match name {
+                    "stdin" => 0,
+                    "stdout" => 1,
+                    _ => 2,
+                })),
+                type_name: "FILE*".into(),
+            })
+        } else {
+            return None;
+        };
+        Some(value)
+    }
+
     fn walk_literal(&mut self, pair: Pair<Rule>) -> Expression {
         let inner = pair.into_inner().next().unwrap();
-        match inner.as_rule() {
+        construct_literal(inner.as_rule(), inner.as_str())
+    }
+}
+
+/// Shared by capture lowering and grammar-boundary AST construction.
+pub(crate) fn construct_plain_parameter(name: String) -> Param {
+    Param {
+        name,
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+pub(crate) fn construct_numeric_prefix(op: &str, operand: Expression) -> Expression {
+    match op {
+        "+" => operand,
+        "-" => unary_expr(UnaryOp::Neg, operand),
+        "~" => unary_expr(UnaryOp::BitNot, operand),
+        _ => unreachable!("numeric prefix constructor requires +, - or ~"),
+    }
+}
+
+/// Shared by capture lowering and grammar-boundary AST construction.
+pub(crate) fn construct_literal(rule: Rule, text: &str) -> Expression {
+        match rule {
             Rule::int_literal => {
-                let full_raw = inner.as_str();
+                let full_raw = text;
                 let suffix = full_raw
                     .trim_start_matches(|ch: char| {
                         ch.is_ascii_hexdigit() || matches!(ch, 'x' | 'X' | 'b' | 'B')
@@ -36054,37 +40242,44 @@ impl Walker {
                 let raw = full_raw.trim_end_matches(['u', 'U', 'l', 'L']);
                 let v = parse_int_literal(raw);
                 let lit = expr(ExprKind::Lit(Literal::Int(v)));
-                if unsigned && !suffix.contains('l') {
+                if suffix.contains('l') {
+                    expr(ExprKind::Cast {
+                        expr: Box::new(lit),
+                        type_name: if unsigned { "uint64" } else { "int64" }.into(),
+                    })
+                } else if unsigned
+                    || (raw.starts_with('0')
+                        && (i32::MAX as i64 + 1..=u32::MAX as i64).contains(&v))
+                {
                     unsigned_u32_expr(lit)
                 } else {
                     lit
                 }
             }
             Rule::float_literal => {
-                let v = parse_float_literal(inner.as_str());
+                let v = parse_float_literal(text);
                 expr(ExprKind::Lit(Literal::Float(v)))
             }
             Rule::char_literal => {
-                let c = parse_char_literal(inner.as_str());
+                let c = parse_char_literal(text);
                 expr(ExprKind::Lit(Literal::Int(c as i64)))
             }
             Rule::utf8_char_literal => {
-                let raw = inner.as_str().strip_prefix("u8").unwrap_or(inner.as_str());
+                let raw = text.strip_prefix("u8").unwrap_or(text);
                 let c = parse_char_literal(raw);
                 expr(ExprKind::Lit(Literal::Int(c as i64)))
             }
             Rule::wide_char_literal => {
-                let raw = inner.as_str().strip_prefix('L').unwrap_or(inner.as_str());
+                let raw = text.strip_prefix('L').unwrap_or(text);
                 let c = parse_char_literal(raw);
                 expr(ExprKind::Lit(Literal::Int(c as i64)))
             }
             Rule::string_literal => {
-                let raw = strip_c_string_literal_prefixes(inner.as_str());
-                let s = parse_string_literal(&raw);
-                expr(ExprKind::Lit(Literal::Str(s)))
+                let raw = strip_c_string_literal_prefixes(text);
+                narrow_string_literal(&raw)
             }
             Rule::wide_string_literal => {
-                let raw_text = inner.as_str();
+                let raw_text = text;
                 let raw = strip_c_string_literal_prefixes(raw_text);
                 let s = parse_string_literal(&raw);
                 if first_c_string_literal_prefix(raw_text) == Some("u") {
@@ -36095,13 +40290,48 @@ impl Walker {
                     wchar_adapter::wide_string_literal(&s)
                 }
             }
-            Rule::bool_literal => expr(ExprKind::Lit(Literal::Bool(inner.as_str() == "true"))),
+            Rule::bool_literal => expr(ExprKind::Lit(Literal::Bool(text == "true"))),
             _ => expr(ExprKind::Lit(Literal::Null)),
         }
+}
+
+#[cfg(test)]
+thread_local! {
+    static UNLOWERED_GOTOS_FOR_TESTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_unlowered_gotos_for_tests<T>(action: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { UNLOWERED_GOTOS_FOR_TESTS.with(|flag| flag.set(self.0)); }
     }
+    let _restore = Restore(UNLOWERED_GOTOS_FOR_TESTS.with(|flag| flag.replace(true)));
+    action()
+}
+
+fn visible_parameter_names(params: &[Param], visible_types: &HashMap<String, String>) -> HashSet<String> {
+    params.iter().filter(|param| visible_types.contains_key(&param.name))
+        .map(|param| param.name.clone()).collect()
+}
+
+thread_local! {
+    static DEFER_FUNCTION_GOTOS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn with_deferred_function_gotos<T>(defer: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { DEFER_FUNCTION_GOTOS.with(|flag| flag.set(self.0)); }
+    }
+    let _restore = Restore(DEFER_FUNCTION_GOTOS.with(|flag| flag.replace(defer)));
+    action()
 }
 
 pub fn lower_c_gotos(body: Vec<Statement>) -> Vec<Statement> {
+    if DEFER_FUNCTION_GOTOS.with(|flag| flag.get()) { return body; }
+    #[cfg(test)]
+    if UNLOWERED_GOTOS_FOR_TESTS.with(|flag| flag.get()) { return body; }
     vybe_compiler::primitives::control_flow::lower_gotos(
         body,
         "__c_goto_pc",
@@ -36166,7 +40396,7 @@ fn zero_nd_array(bounds: &[Expression]) -> Option<Expression> {
     Some(expr(ExprKind::Array(elems)))
 }
 
-fn fold_binary(mut operands: Vec<Expression>, ops: Vec<String>) -> Expression {
+fn fold_binary(mut operands: Vec<Expression>, ops: Vec<(BinOp, u8)>) -> Expression {
     if operands.is_empty() {
         return Expression::new(ExprKind::Lit(Literal::Null));
     }
@@ -36215,8 +40445,7 @@ fn fold_binary(mut operands: Vec<Expression>, ops: Vec<String>) -> Expression {
         }));
     };
 
-    for op_str in ops {
-        let (op, prec) = bin_op(&op_str);
+    for (op, prec) in ops {
         while let Some(&(top_op, top_prec)) = op_stack.last() {
             if top_prec >= prec {
                 op_stack.pop();
@@ -36246,12 +40475,16 @@ fn parse_int_literal(raw: &str) -> i64 {
             .unwrap_or(0);
     }
     if let Some(bin) = raw.strip_prefix("0b").or_else(|| raw.strip_prefix("0B")) {
-        return i64::from_str_radix(bin, 2).unwrap_or(0);
+        return i64::from_str_radix(bin, 2)
+            .or_else(|_| u64::from_str_radix(bin, 2).map(|v| v as i64))
+            .unwrap_or(0);
     }
     if raw.len() > 1 && raw.starts_with('0') && raw.chars().all(|c| c.is_ascii_digit()) {
-        return i64::from_str_radix(&raw[1..], 8).unwrap_or(0);
+        return i64::from_str_radix(&raw[1..], 8)
+            .or_else(|_| u64::from_str_radix(&raw[1..], 8).map(|v| v as i64))
+            .unwrap_or(0);
     }
-    raw.parse::<i64>().unwrap_or(0)
+    raw.parse::<i64>().or_else(|_| raw.parse::<u64>().map(|v| v as i64)).unwrap_or(0)
 }
 
 fn mktemp_materialized_path(template: &str, suffix_len: usize) -> Option<String> {
@@ -36313,19 +40546,10 @@ fn signed_char_cast_expr(value: Expression) -> Expression {
         expr: Box::new(value),
         type_name: "uint8".to_string(),
     });
-    expr(ExprKind::Ternary {
-        cond: Box::new(expr(ExprKind::Binary {
-            op: BinOp::GtEq,
-            left: Box::new(wrapped.clone()),
-            right: Box::new(int_lit(128)),
-        })),
-        then: Box::new(expr(ExprKind::Binary {
-            op: BinOp::Sub,
-            left: Box::new(wrapped.clone()),
-            right: Box::new(int_lit(256)),
-        })),
-        else_: Box::new(wrapped),
-    })
+    // Sign-extend the wrapped byte without evaluating its operand twice.
+    binary_expr(BinOp::Integer(vybe_ast::IntOp::ShrS, vybe_ast::BitLane::W32),
+        binary_expr(BinOp::Integer(vybe_ast::IntOp::Shl, vybe_ast::BitLane::W32),
+            wrapped, int_lit(24)), int_lit(24))
 }
 
 fn unsigned_u32_expr(value: Expression) -> Expression {
@@ -36787,6 +41011,12 @@ fn apply_bitfield_mask(value: Expression, width: i64, signed: bool, is_bool: boo
     if width <= 0 || width >= 64 || (!signed && width >= 32) {
         return value;
     }
+    if signed && width <= 32 {
+        let shift = 32 - width;
+        return binary_expr(BinOp::Integer(vybe_ast::IntOp::ShrS, vybe_ast::BitLane::W32),
+            binary_expr(BinOp::Integer(vybe_ast::IntOp::Shl, vybe_ast::BitLane::W32),
+                value, int_lit(shift)), int_lit(shift));
+    }
     let mask = (1i64 << width) - 1;
     let masked = expr(ExprKind::Binary {
         op: BinOp::BitAnd,
@@ -36872,6 +41102,69 @@ fn parse_string_literal(raw: &str) -> String {
         // whitespace between adjacent literals is skipped
     }
     out
+}
+
+fn parse_narrow_string_bytes(raw: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '"' { continue; }
+        loop {
+            match chars.peek().copied() {
+                None => break,
+                Some('"') => { chars.next(); break; }
+                Some('\\') => {
+                    let mut escape = chars.clone();
+                    escape.next();
+                    let kind = escape.peek().copied();
+                    if kind.is_some_and(|c| matches!(c, '0'..='7')) {
+                        chars.next();
+                        let mut byte = 0u8;
+                        for _ in 0..3 {
+                            let Some(digit @ '0'..='7') = chars.peek().copied() else { break; };
+                            chars.next();
+                            byte = byte.wrapping_mul(8).wrapping_add(digit as u8 - b'0');
+                        }
+                        out.push(byte);
+                    } else if let Some(code) = parse_escape_char(&mut chars) {
+                        if matches!(kind, Some('u' | 'U')) {
+                            if let Some(ch) = char::from_u32(code) {
+                                out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
+                            }
+                        } else {
+                            out.push(code as u8);
+                        }
+                    }
+                }
+                Some(ch) => {
+                    chars.next();
+                    out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn narrow_string_literal(raw: &str) -> Expression {
+    let bytes = parse_narrow_string_bytes(raw);
+    match String::from_utf8(bytes) {
+        Ok(text) => str_lit(&text),
+        Err(error) => {
+            let mut bytes = error.into_bytes();
+            bytes.push(0);
+            expr(ExprKind::Lit(Literal::Bytes(bytes)))
+        }
+    }
+}
+
+fn c_string_literal_bytes(value: &Expression) -> Option<Vec<u8>> {
+    match &value.kind {
+        ExprKind::Lit(Literal::Str(text)) => Some(text.as_bytes().iter().copied()
+            .chain(std::iter::once(0)).collect()),
+        ExprKind::Lit(Literal::Bytes(bytes)) => Some(bytes.clone()),
+        _ => None,
+    }
 }
 
 fn strip_c_string_literal_prefixes(raw: &str) -> String {
@@ -37000,7 +41293,7 @@ fn sizeof_string_literal_text(raw: &str) -> Option<i64> {
     let elements = match prefix {
         Some("L") | Some("U") => text.chars().count() + 1,
         Some("u") => text.encode_utf16().count() + 1,
-        _ => text.len() + 1,
+        _ => parse_narrow_string_bytes(&normalized).len() + 1,
     };
     let width = match prefix {
         Some("L") | Some("U") => 4,
@@ -37016,27 +41309,30 @@ impl Walker {
     /// Compute size of a struct (sum of members) or union (max of members).
     /// `text` can be "struct Foo", "union Bar", or a bare typedef name.
     /// Returns 0 if not found (caller falls through to sizeof_from_type_text).
+    fn aggregate_layout_tag(&self, base_text: &str) -> Option<String> {
+        let resolved = self.resolve_typedef_scalar_aliases(base_text);
+        // Canonical record lookup also accepts pointee names; layout must not.
+        if resolved.contains('*') {
+            return None;
+        }
+        self.canonical_struct_base_from_type(&resolved)
+    }
+
     fn sizeof_struct_union(&self, text: &str) -> i64 {
         let (base_text, array_count, has_array) = split_array_type_text(text);
-        let tag = if let Some(t) = base_text.strip_prefix("struct ") {
-            t.trim()
-        } else if let Some(t) = base_text.strip_prefix("union ") {
-            t.trim()
-        } else {
-            base_text.trim()
-        };
-        let is_union = text.starts_with("union ") || self.union_tags.contains(tag);
-        let fields = match self.structs.get(tag) {
+        let Some(tag) = self.aggregate_layout_tag(base_text) else { return 0; };
+        let is_union = text.starts_with("union ") || self.union_tags.contains(&tag);
+        let fields = match self.structs.get(&tag) {
             Some(f) => f,
             None => return 0,
         };
         // Prefer real per-field sizes when we tracked field types.
-        if let Some(field_types) = self.struct_field_types.get(tag) {
-            if let Some(bitfields) = self.struct_bitfields.get(tag) {
+        if let Some(field_types) = self.struct_field_types.get(&tag) {
+            if let Some(bitfields) = self.struct_bitfields.get(&tag) {
                 if !bitfields.is_empty() && fields.iter().all(|f| bitfields.contains_key(f)) {
                     // Pack the DECLARED sequence (named + unnamed) into 32-bit
                     // allocation units; an unnamed `:0` closes the open unit.
-                    let size = if let Some(seq) = self.struct_bitfield_seq.get(tag) {
+                    let size = if let Some(seq) = self.struct_bitfield_seq.get(&tag) {
                         let mut units = 1i64;
                         let mut bits_in_unit = 0i64;
                         for (name, width) in seq {
@@ -37087,7 +41383,7 @@ impl Walker {
             // `alignas` on ANY member raises the whole aggregate's alignment,
             // which in turn rounds up its size. Without this a struct whose
             // member asked for 16 still reported align 4 / size 8.
-            let mut max_align = self.struct_alignments.get(tag).copied().unwrap_or(1).max(1);
+            let mut max_align = self.struct_alignments.get(&tag).copied().unwrap_or(1).max(1);
             for f in fields {
                 let ty = field_types.get(f).map(|s| s.as_str()).unwrap_or("int");
                 let align = self.alignof_type_text(ty);
@@ -37113,14 +41409,8 @@ impl Walker {
 
     fn alignof_struct_union(&self, text: &str) -> i64 {
         let (base_text, _, _) = split_array_type_text(text);
-        let tag = if let Some(t) = base_text.strip_prefix("struct ") {
-            t.trim()
-        } else if let Some(t) = base_text.strip_prefix("union ") {
-            t.trim()
-        } else {
-            base_text.trim()
-        };
-        let field_types = match self.struct_field_types.get(tag) {
+        let Some(tag) = self.aggregate_layout_tag(base_text) else { return 0; };
+        let field_types = match self.struct_field_types.get(&tag) {
             Some(field_types) => field_types,
             None => return 0,
         };
@@ -37131,7 +41421,7 @@ impl Walker {
             .unwrap_or(1)
             // A member's `alignas` sets a FLOOR on the aggregate's alignment,
             // above whatever its field types would require on their own.
-            .max(self.struct_alignments.get(tag).copied().unwrap_or(0))
+            .max(self.struct_alignments.get(&tag).copied().unwrap_or(0))
     }
 
     fn alignof_type_text(&self, text: &str) -> i64 {
@@ -37155,7 +41445,8 @@ impl Walker {
     }
 
     fn sizeof_type_text(&self, text: &str) -> i64 {
-        let storage_free = c_type_without_storage(text);
+        let resolved = self.resolve_typedef_scalar_aliases(text);
+        let storage_free = c_type_without_storage(&resolved);
         let text = storage_free.as_str();
         if self.is_function_pointer_type_text(text) {
             return sizeof_from_type_text("void*");
@@ -37179,22 +41470,16 @@ impl Walker {
     }
 
     fn offsetof_struct_field(&self, type_text: &str, field_name: &str) -> i64 {
-        let tag = if let Some(t) = type_text.strip_prefix("struct ") {
-            t.trim()
-        } else if let Some(t) = type_text.strip_prefix("union ") {
-            t.trim()
-        } else {
-            type_text.trim()
-        };
-        let fields = match self.structs.get(tag) {
+        let Some(tag) = self.aggregate_layout_tag(type_text) else { return 0; };
+        let fields = match self.structs.get(&tag) {
             Some(fields) => fields,
             None => return 0,
         };
-        let field_types = match self.struct_field_types.get(tag) {
+        let field_types = match self.struct_field_types.get(&tag) {
             Some(types) => types,
             None => return 0,
         };
-        if type_text.trim_start().starts_with("union ") || self.union_tags.contains(tag) {
+        if type_text.trim_start().starts_with("union ") || self.union_tags.contains(&tag) {
             return 0;
         }
         let mut offset = 0i64;
@@ -37214,15 +41499,9 @@ impl Walker {
     }
 
     fn struct_field_at_offset(&self, type_text: &str, offset: i64) -> Option<String> {
-        let tag = if let Some(t) = type_text.strip_prefix("struct ") {
-            t.trim()
-        } else if let Some(t) = type_text.strip_prefix("union ") {
-            t.trim()
-        } else {
-            type_text.trim()
-        };
-        let fields = self.structs.get(tag)?;
-        let field_types = self.struct_field_types.get(tag)?;
+        let tag = self.aggregate_layout_tag(type_text)?;
+        let fields = self.structs.get(&tag)?;
+        let field_types = self.struct_field_types.get(&tag)?;
         let mut current = 0i64;
         for field in fields {
             let field_type = field_types.get(field)?;
@@ -37326,11 +41605,19 @@ impl Walker {
     // Keep sizeof independent of runtime backing and preserve each pointer level.
     fn unevaluated_place_type(&self, pair: &Pair<Rule>) -> Option<String> {
         match pair.as_rule() {
+            Rule::cast_expression => {
+                let first = pair.clone().into_inner().next()?;
+                if first.as_rule() == Rule::type_name {
+                    Some(first.as_str().to_string())
+                } else {
+                    self.unevaluated_place_type(&first)
+                }
+            }
             Rule::ident_name => {
                 let name = pair.as_str();
                 let resolved = self.resolve_block_scoped_name(name);
                 self.var_types.get(resolved.as_deref().unwrap_or(name))
-                    .filter(|ty| !ty.contains('[')).cloned()
+                    .cloned()
             }
             Rule::unary_expression => {
                 let mut inner = pair.clone().into_inner();
@@ -37402,6 +41689,7 @@ impl Walker {
                     if first.as_rule() == Rule::type_name {
                         return self.sizeof_from_rule(&first);
                     }
+                    return self.sizeof_from_rule(&first);
                 }
                 sizeof_from_type_text(pair.as_str().trim())
             }
@@ -37419,7 +41707,7 @@ impl Walker {
                     return if su > 0 {
                         su
                     } else {
-                        sizeof_from_type_text(ty)
+                        self.sizeof_type_text(ty)
                     };
                 }
                 if let Some(sz) = self.sizeof_from_expr_text(text) {
@@ -37430,7 +41718,7 @@ impl Walker {
                 if sz > 0 {
                     return sz;
                 }
-                sizeof_from_type_text(text)
+                self.sizeof_type_text(text)
             }
             Rule::unary_expression
             | Rule::postfix_expression
@@ -37462,7 +41750,7 @@ impl Walker {
                     return if su > 0 {
                         su
                     } else {
-                        sizeof_from_type_text(ty)
+                        self.sizeof_type_text(ty)
                     };
                 }
                 if let Some(sz) = self.sizeof_from_expr_text(text) {
@@ -37597,6 +41885,16 @@ impl Walker {
             return self.sizeof_type_text(&pointee).max(1);
         }
         let ty = strip_internal_type_markers(ty);
+        if ty.contains('[') && ty.trim_end().ends_with('*') {
+            let mut element = ty.to_string();
+            for _ in 0..dims_used {
+                let Some(next) = self.c_subscript_result_type(&element) else {
+                    return self.sizeof_type_text(&element).max(1);
+                };
+                element = next;
+            }
+            return self.sizeof_type_text(&element).max(1);
+        }
         if ty.contains('*') && ty.contains('[') {
             let base_size = 8;
             let rank = self.array_rank_from_type(&ty);
@@ -37991,6 +42289,83 @@ impl Walker {
         })
     }
 
+    fn declared_callback_return_type(&self, ty: &str, inline_field: bool) -> Option<String> {
+        let ty = ty.trim();
+        if ty.starts_with("func(") && let Some((_, result)) = ty.split_once("->") {
+            return Some(result.trim().to_string());
+        }
+        if let Some(result) = self.typedef_function_return_types.get(&normalized_c_type_name(ty)) {
+            return Some(result.clone());
+        }
+        // Inline record callback metadata includes the function-pointer star
+        // in its stored type. Only its separate declaration flag permits us to
+        // remove that star; an ordinary pointer field is never a callable.
+        (inline_field && ty.contains('*') && !ty.contains('['))
+            .then(|| c_type_remove_one_pointer_level(ty))
+    }
+
+    fn unevaluated_callback_call_returns(&self, pair: Pair<Rule>) -> HashMap<usize, String> {
+        let mut returns = HashMap::new();
+        if !pair.clone().into_inner().any(|part| part.as_rule() == Rule::call_suffix) {
+            return returns;
+        }
+        let mut parts = pair.into_inner();
+        let Some(primary) = parts.next() else { return returns; };
+        let mut ty = self.unevaluated_place_type(&primary)
+            .or_else(|| self.unevaluated_postfix_type(primary.clone()));
+        let mut callable = ty.as_deref().and_then(|ty|
+            self.declared_callback_return_type(ty, false)).map(|ty| (ty, true));
+        if callable.is_none() {
+            let mut name = primary;
+            loop {
+                if name.as_rule() == Rule::ident_name {
+                    let resolved = self.resolve_block_scoped_name(name.as_str());
+                    let name = resolved.as_deref().unwrap_or(name.as_str());
+                    if !self.macros.contains_key(name) {
+                        callable = self.infer_function_return_type(&ident(name)).map(|ty| (ty, false));
+                    }
+                    break;
+                }
+                let mut children = name.into_inner();
+                let Some(child) = children.next() else { break; };
+                if children.next().is_some() { break; }
+                name = child;
+            }
+        }
+        for suffix in parts {
+            match suffix.as_rule() {
+                Rule::member_suffix | Rule::arrow_suffix => {
+                    callable = None;
+                    ty = ty.as_deref().and_then(|ty| self.canonical_struct_base_from_type(ty))
+                        .and_then(|record| {
+                            let field = suffix.into_inner().next()?;
+                            let field_ty = self.struct_field_types.get(&record)?.get(field.as_str())?;
+                            callable = self.declared_callback_return_type(field_ty,
+                                self.struct_field_is_function_pointer(&record, field.as_str(), field_ty))
+                                .map(|ty| (ty, true));
+                            Some(field_ty.clone())
+                        });
+                }
+                Rule::index_suffix => {
+                    ty = ty.as_deref().and_then(|ty| self.c_subscript_result_type(ty));
+                    callable = ty.as_deref().and_then(|ty|
+                        self.declared_callback_return_type(ty, false)).map(|ty| (ty, true));
+                }
+                Rule::call_suffix => {
+                    let result = callable.take();
+                    if let Some((result, true)) = &result {
+                        returns.insert(suffix.as_span().start(), result.clone());
+                    }
+                    ty = result.map(|(ty, _)| ty);
+                    callable = ty.as_deref().and_then(|ty|
+                        self.declared_callback_return_type(ty, false)).map(|ty| (ty, true));
+                }
+                _ => { ty = None; callable = None; }
+            }
+        }
+        returns
+    }
+
     // Inspect types only: subscripts and other unevaluated operands of sizeof
     // must not run through expression lowering and acquire side effects.
     fn unevaluated_postfix_type(&self, pair: Pair<Rule>) -> Option<String> {
@@ -38145,6 +42520,34 @@ impl Walker {
     }
 }
 
+#[cfg(test)]
+#[path = "scalar_typedef_cache_tests.rs"]
+mod scalar_typedef_cache_tests;
+
+#[cfg(test)]
+#[path = "callback_return_tests.rs"]
+mod callback_return_tests;
+
+#[cfg(test)]
+#[path = "thinker_pattern_tests.rs"]
+mod thinker_pattern_tests;
+
+#[cfg(test)]
+#[path = "place_constructor_tests.rs"]
+mod place_constructor_tests;
+
+#[cfg(test)]
+#[path = "function_constructor_tests.rs"]
+mod function_constructor_tests;
+
+#[cfg(test)]
+#[path = "return_constructor_tests.rs"]
+mod return_constructor_tests;
+
+#[cfg(test)]
+#[path = "parameter_scope_tests.rs"]
+mod parameter_scope_tests;
+
 fn sizeof_from_type_text(text: &str) -> i64 {
     // Strip qualifiers
     let cleaned = strip_internal_type_markers(text);
@@ -38160,7 +42563,7 @@ fn sizeof_from_type_text(text: &str) -> i64 {
     }
     let size = match t {
         "char" | "char8_t" | "int8_t" | "uint8_t" | "int8" | "uint8" | "_Bool" | "bool" => 1,
-        "short" | "int16_t" | "uint16_t" | "int16" | "uint16" | "char16_t" => 2,
+        "short" | "short int" | "int16_t" | "uint16_t" | "int16" | "uint16" | "char16_t" => 2,
         "int" | "signed" | "unsigned" | "integer" | "float" | "int32_t" | "uint32_t" | "int32"
         | "uint32" | "char32_t" | "wchar_t" => 4,
         "long" | "double" | "long long" | "int64_t" | "uint64_t" | "int64" | "uint64"
@@ -38311,7 +42714,7 @@ fn alignof_from_type_text(text: &str) -> i64 {
     }
     match t {
         "char" | "int8_t" | "uint8_t" | "_Bool" | "bool" => 1,
-        "short" | "int16_t" | "uint16_t" => 2,
+        "short" | "short int" | "int16_t" | "uint16_t" => 2,
         "int" | "float" | "int32_t" | "uint32_t" => 4,
         "long" | "double" | "long long" | "int64_t" | "uint64_t" | "size_t" | "ssize_t"
         | "ptrdiff_t" => 8,
@@ -38441,6 +42844,9 @@ fn c_scalar_typedef_target(type_text: &str) -> String {
         "unsigned char" => "uint8_t".to_string(),
         "signed char" => "int8_t".to_string(),
         "unsigned" | "unsigned int" => "uint32_t".to_string(),
+        "unsigned short" | "unsigned short int" => "uint16_t".to_string(),
+        "unsigned long" | "unsigned long int" => "unsigned long".to_string(),
+        "unsigned long long" | "unsigned long long int" => "uint64_t".to_string(),
         "signed" | "signed int" => "int".to_string(),
         _ => normalized_c_type_name(trimmed),
     }
@@ -38714,38 +43120,6 @@ fn remove_empty_va_args_comma(text: &str) -> String {
     out
 }
 
-#[allow(dead_code)]
-fn strchr_expr(s: Expression, needle: Expression) -> Expression {
-    if is_putchar_zero_call(&needle) {
-        return expr(ExprKind::Lit(Literal::Int(1)));
-    }
-    let idx_call = expr(ExprKind::Call {
-        callee: Box::new(expr(ExprKind::Member {
-            object: Box::new(s.clone()),
-            field: "indexOf".to_string(),
-            null_safe: false,
-        })),
-        args: vec![Argument::positional(needle)],
-        optional: false,
-    });
-    expr(ExprKind::Ternary {
-        cond: Box::new(expr(ExprKind::Binary {
-            op: BinOp::GtEq,
-            left: Box::new(idx_call.clone()),
-            right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))),
-        })),
-        then: Box::new(expr(ExprKind::Call {
-            callee: Box::new(expr(ExprKind::Member {
-                object: Box::new(s),
-                field: "slice".to_string(),
-                null_safe: false,
-            })),
-            args: vec![Argument::positional(idx_call)],
-            optional: false,
-        })),
-        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-    })
-}
 
 fn memchr_expr(s: Expression, needle: Expression, bytes: Expression) -> Expression {
     let needle = char_needle_to_string(needle);
@@ -38887,37 +43261,6 @@ fn char_needle_to_string(needle: Expression) -> Expression {
     }
 }
 
-fn memcmp_expr(a: Expression, b: Expression, bytes: Expression) -> Expression {
-    let left = expr(ExprKind::Call {
-        callee: Box::new(expr(ExprKind::Member {
-            object: Box::new(a),
-            field: "substring".to_string(),
-            null_safe: false,
-        })),
-        args: vec![
-            Argument::positional(int_lit(0)),
-            Argument::positional(bytes.clone()),
-        ],
-        optional: false,
-    });
-    let right = expr(ExprKind::Call {
-        callee: Box::new(expr(ExprKind::Member {
-            object: Box::new(b),
-            field: "substring".to_string(),
-            null_safe: false,
-        })),
-        args: vec![
-            Argument::positional(int_lit(0)),
-            Argument::positional(bytes),
-        ],
-        optional: false,
-    });
-    expr(ExprKind::Call {
-        callee: Box::new(ident("strcmp")),
-        args: vec![Argument::positional(left), Argument::positional(right)],
-        optional: false,
-    })
-}
 
 fn memmem_expr(
     haystack: Expression,
@@ -38982,7 +43325,7 @@ fn c_string_visible(s: Expression) -> Expression {
     let nul_idx = call_expr(ident("__c_str_index_of"), vec![s.clone(), nul]);
     let string_view = expr(ExprKind::Ternary {
         cond: Box::new(expr(ExprKind::Binary {
-            op: BinOp::GtEq,
+            op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
             left: Box::new(nul_idx.clone()),
             right: Box::new(int_lit(0)),
         })),
@@ -39000,6 +43343,10 @@ fn c_string_visible(s: Expression) -> Expression {
 }
 
 fn c_char_pointer_visible_value(value: Expression) -> Expression {
+    call_expr(c_char_pointer_visible_lambda(), vec![value])
+}
+
+fn c_char_pointer_visible_lambda() -> Expression {
     let tmp = "__c_charptr_string_value";
     let tmp_value = ident(tmp);
     let body = ternary_expr(
@@ -39059,8 +43406,7 @@ fn c_char_pointer_visible_value(value: Expression) -> Expression {
             ),
         ),
     );
-    call_expr(
-        expr(ExprKind::Lambda {
+    expr(ExprKind::Lambda {
             params: vec![Param {
                 name: tmp.to_string(),
                 type_hint: None,
@@ -39074,14 +43420,9 @@ fn c_char_pointer_visible_value(value: Expression) -> Expression {
             body: LambdaBody::Expr(Box::new(body)),
             is_async: false,
             captures: vec![],
-        }),
-        vec![value],
-    )
+        })
 }
 
-fn c_array_string_visible(s: Expression) -> Expression {
-    call_expr(ident("__libc_char_to_str"), vec![s])
-}
 
 fn strip_runtime_pointer_cast(value: Expression) -> Expression {
     match value.kind {
@@ -39265,11 +43606,15 @@ fn cstruct_pointer_byte_carray(e: &Expression) -> Option<Expression> {
     ))
 }
 
-fn carray_operand_expr(e: &Expression) -> Expression {
-    if let ExprKind::Cast { expr, .. } = &e.kind {
-        return carray_operand_expr(expr);
+fn carray_operand_ref(mut e: &Expression) -> &Expression {
+    while let ExprKind::Cast { expr, .. } = &e.kind {
+        e = expr;
     }
-    e.clone()
+    e
+}
+
+fn carray_operand_expr(e: &Expression) -> Expression {
+    carray_operand_ref(e).clone()
 }
 
 fn carray_base_ident(e: &Expression) -> Option<String> {
@@ -39355,27 +43700,6 @@ fn carray_idx_value_expr(e: &Expression) -> Expression {
     member(e, CARRAY_IDX_KEY)
 }
 
-fn c_assignment_value_parts(value: Expression) -> (Vec<Expression>, Expression) {
-    match value.kind {
-        ExprKind::Assign { target, value } => {
-            let result = *value;
-            let effect = expr(ExprKind::Assign {
-                target,
-                value: Box::new(result.clone()),
-            });
-            (vec![effect], result)
-        }
-        ExprKind::Sequence(mut parts) => {
-            let Some(last) = parts.pop() else {
-                return (Vec::new(), expr(ExprKind::Sequence(parts)));
-            };
-            let (nested_prefix, result) = c_assignment_value_parts(last);
-            parts.extend(nested_prefix);
-            (parts, result)
-        }
-        other => (Vec::new(), expr(other)),
-    }
-}
 
 fn is_carray_like_expr(e: &Expression) -> bool {
     if is_carray_object(e) {
@@ -39453,7 +43777,9 @@ fn pointer_ident_name(e: &Expression) -> Option<&str> {
             ExprKind::Ident(name) => Some(name.as_str()),
             _ => None,
         },
-        ExprKind::Cast { expr, .. } => pointer_ident_name(expr),
+        ExprKind::Cast { expr, type_name } if !c_int_family_type(type_name) => {
+            pointer_ident_name(expr)
+        }
         _ => None,
     }
 }
@@ -39469,6 +43795,7 @@ fn c_call_arg_should_preserve_lvalue(callee: &Expression, arg_index: usize) -> b
     matches!(
         leaf,
         "strcpy"
+            | "strchr"
             | "strncpy"
             | "strlcpy"
             | "strcat"
@@ -39760,30 +44087,28 @@ fn c_cell_unwrap_expr(value: Expression) -> Expression {
 }
 
 fn vfprintf_write_expr(file: Expression, text: Expression) -> Expression {
-    let stream = c_cell_unwrap_expr(file);
+    let stream = file;
     // stderr writes go through `__c_fputs_h`'s real-stderr arm — never
     // suppressed (the old shape discarded them, plus a literal-text hack).
-    let is_stderr = expr(ExprKind::Binary {
-        op: BinOp::Or,
-        left: Box::new(expr(ExprKind::Binary {
-            op: BinOp::Eq,
+    let is_stderr = expr(ExprKind::Ternary {
+        cond: Box::new(expr(ExprKind::IsType {
+            expr: Box::new(stream.clone()),
+            type_name: "number".into(),
+        })),
+        then: Box::new(expr(ExprKind::Binary {
+            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W64),
             left: Box::new(stream.clone()),
             right: Box::new(int_lit(2)),
         })),
-        right: Box::new(expr(ExprKind::Binary {
-            op: BinOp::Eq,
-            left: Box::new(index_expr(stream.clone(), int_lit(8))),
-            right: Box::new(str_lit("stderr")),
-        })),
+        else_: Box::new(call_expr(
+            ident("__c_tag_eq"),
+            vec![index_expr(stream.clone(), int_lit(8)), str_lit("stderr")],
+        )),
     });
-    let has_file_handle = expr(ExprKind::Binary {
-        op: BinOp::NotEq,
-        left: Box::new(expr(ExprKind::TypeOf(Box::new(index_expr(
-            ident("__c_file_content"),
-            stream.clone(),
-        ))))),
-        right: Box::new(str_lit("undefined")),
-    });
+    let has_file_handle = unary_expr(UnaryOp::Not, expr(ExprKind::IsType {
+        expr: Box::new(index_expr(ident("__c_file_content"), stream.clone())),
+        type_name: "undefined".into(),
+    }));
     expr(ExprKind::Ternary {
         cond: Box::new(is_stderr),
         then: Box::new(call_expr(
@@ -40008,16 +44333,6 @@ fn char_suffix_base_offset(value: &Expression) -> Option<(String, Expression)> {
     }
 }
 
-#[allow(dead_code)]
-fn is_putchar_zero_call(e: &Expression) -> bool {
-    let ExprKind::Call { callee, args, .. } = &e.kind else {
-        return false;
-    };
-    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "putchar") || args.len() != 1 {
-        return false;
-    }
-    matches!(args[0].value.kind, ExprKind::Lit(Literal::Int(0)))
-}
 
 fn strip_putchar_side_effect_value(value: Expression) -> Expression {
     match value.kind {
@@ -40545,6 +44860,7 @@ fn index_has_side_effects(e: &Expression) -> bool {
             index_has_side_effects(object) || index_has_side_effects(index)
         }
         ExprKind::Member { object, .. } => index_has_side_effects(object),
+        ExprKind::Cast { expr, .. } | ExprKind::RefLoad(expr) => index_has_side_effects(expr),
         // Postfix/prefix inc-dec desugars to a `Sequence([tmp = v, v = v+1, tmp])`,
         // so a bare `Sequence` in an index position carries the increment's side
         // effect. Without this arm the splice reads the index twice and fires the
@@ -40556,6 +44872,16 @@ fn index_has_side_effects(e: &Expression) -> bool {
 
 fn char_buffer_target_offset(value: &Expression) -> Option<(String, Expression)> {
     match &value.kind {
+        ExprKind::Cast { expr, type_name }
+            if type_name.trim_end().ends_with('*')
+                && !type_name.split_whitespace().any(|part| matches!(part, "struct" | "union" | "enum"))
+                && matches!(
+                    normalized_c_type_name(type_name.trim_end().strip_suffix('*').unwrap()).as_str(),
+                    "char" | "void" | "byte" | "int8_t" | "uint8_t" | "int8" | "uint8"
+                ) =>
+        {
+            char_buffer_target_offset(expr)
+        }
         ExprKind::Ident(name) => Some((name.clone(), expr(ExprKind::Lit(Literal::Int(0))))),
         ExprKind::Object(_) => {
             let base = carray_base_expr(value)?;
@@ -40674,139 +45000,6 @@ fn flush_stdout_buffer_expr() -> Expression {
         assign_expr(ident("__c_stdout_buffer"), str_lit("")),
         int_lit(0),
     ]))
-}
-
-fn finalize_c_main_body(
-    mut body: Vec<Statement>,
-    final_body: Vec<Statement>,
-    return_type: Option<&str>,
-    tmp_counter: &mut u32,
-) -> Vec<Statement> {
-    if final_body.is_empty() {
-        return body;
-    }
-    rewrite_c_main_returns(&mut body, &final_body, return_type, tmp_counter);
-    body.extend(final_body);
-    body
-}
-
-fn rewrite_c_main_returns(
-    body: &mut [Statement],
-    final_body: &[Statement],
-    return_type: Option<&str>,
-    tmp_counter: &mut u32,
-) {
-    for statement in body {
-        match &mut statement.kind {
-            StmtKind::Return(value) => {
-                let span = statement.span.clone();
-                let mut replacement = Vec::new();
-                let return_value = value.take().map(|expr_value| {
-                    let tmp = format!("__c_main_return_{}", *tmp_counter);
-                    *tmp_counter += 1;
-                    replacement.push(Statement {
-                        kind: StmtKind::VarDecl {
-                            declarations: vec![VarDeclarator {
-                                pattern: BindingPattern::Ident(tmp.clone()),
-                                type_hint: return_type.map(TypeHint::converting),
-                                init: Some(expr_value),
-                                array_bounds: None,
-                                with_events: false,
-                            }],
-                            kind: VarDeclKind::Let,
-                        },
-                        span: span.clone(),
-                    });
-                    ident(&tmp)
-                });
-                replacement.extend(final_body.iter().cloned());
-                replacement.push(Statement {
-                    kind: StmtKind::Return(return_value),
-                    span: span.clone(),
-                });
-                statement.kind = StmtKind::Block(replacement);
-            }
-            StmtKind::Block(stmts) => {
-                rewrite_c_main_returns(stmts, final_body, return_type, tmp_counter);
-            }
-            StmtKind::If {
-                then_body,
-                elifs,
-                else_body,
-                ..
-            } => {
-                rewrite_c_main_returns(then_body, final_body, return_type, tmp_counter);
-                for (_, elif_body) in elifs {
-                    rewrite_c_main_returns(elif_body, final_body, return_type, tmp_counter);
-                }
-                if let Some(else_body) = else_body {
-                    rewrite_c_main_returns(else_body, final_body, return_type, tmp_counter);
-                }
-            }
-            StmtKind::For { body, .. }
-            | StmtKind::ForIn { body, .. }
-            | StmtKind::While { body, .. }
-            | StmtKind::DoWhile { body, .. }
-            | StmtKind::With { body, .. }
-            | StmtKind::Using { body, .. }
-            | StmtKind::Lock { body, .. } => {
-                rewrite_c_main_returns(body, final_body, return_type, tmp_counter);
-            }
-            StmtKind::Switch { cases, default, .. } => {
-                for case in cases {
-                    rewrite_c_main_returns(&mut case.body, final_body, return_type, tmp_counter);
-                }
-                if let Some(default) = default {
-                    rewrite_c_main_returns(default, final_body, return_type, tmp_counter);
-                }
-            }
-            StmtKind::Select { arms, default } => {
-                for arm in arms {
-                    rewrite_c_main_returns(&mut arm.body, final_body, return_type, tmp_counter);
-                }
-                if let Some(default) = default {
-                    rewrite_c_main_returns(default, final_body, return_type, tmp_counter);
-                }
-            }
-            StmtKind::Try {
-                body,
-                catches,
-                else_body,
-                finally,
-            } => {
-                rewrite_c_main_returns(body, final_body, return_type, tmp_counter);
-                for catch in catches {
-                    rewrite_c_main_returns(&mut catch.body, final_body, return_type, tmp_counter);
-                }
-                if let Some(else_body) = else_body {
-                    rewrite_c_main_returns(else_body, final_body, return_type, tmp_counter);
-                }
-                if let Some(finally) = finally {
-                    rewrite_c_main_returns(finally, final_body, return_type, tmp_counter);
-                }
-            }
-            StmtKind::Labeled { body, .. } => {
-                rewrite_c_main_returns(
-                    std::slice::from_mut(body.as_mut()),
-                    final_body,
-                    return_type,
-                    tmp_counter,
-                );
-            }
-            StmtKind::MatchStatement { cases, .. } => {
-                for case in cases {
-                    rewrite_c_main_returns(&mut case.body, final_body, return_type, tmp_counter);
-                }
-            }
-            StmtKind::FunctionDecl { .. }
-            | StmtKind::ClassDecl { .. }
-            | StmtKind::StructDecl { .. }
-            | StmtKind::ModuleDecl { .. }
-            | StmtKind::InterfaceDecl { .. }
-            | StmtKind::EnumDecl { .. } => {}
-            _ => {}
-        }
-    }
 }
 
 fn normalize_parse_int_radix(radix: Expression, input: Expression) -> Expression {
@@ -41337,14 +45530,18 @@ fn compare_carray_to_array_start(ptr: Expression, array: Expression, op: BinOp) 
             array,
         ],
     );
-    let idx_eq = expr(ExprKind::Binary {
+    let idx_eq = binary_expr(BinOp::And,
+        expr(ExprKind::IsType {
+            expr: Box::new(member(ptr.clone(), CARRAY_IDX_KEY)),
+            type_name: "number".into(),
+        }), expr(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(expr(ExprKind::Cast {
             expr: Box::new(member(ptr, CARRAY_IDX_KEY)),
             type_name: "int".to_string(),
         })),
         right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))),
-    });
+    }));
     let eq = expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(base_eq),
@@ -41376,22 +45573,61 @@ fn carray_ptr_equality(left: Expression, right: Expression) -> Expression {
             }),
         ],
     );
-    let idx_eq = expr(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(expr(ExprKind::Cast {
-            expr: Box::new(member(left, CARRAY_IDX_KEY)),
-            type_name: "int".to_string(),
-        })),
-        right: Box::new(expr(ExprKind::Cast {
-            expr: Box::new(member(right, CARRAY_IDX_KEY)),
-            type_name: "int".to_string(),
-        })),
-    });
+    let idx_eq = carray_pointer_index_equality(
+        member(left, CARRAY_IDX_KEY), member(right, CARRAY_IDX_KEY),
+    );
     expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(base_eq),
         right: Box::new(idx_eq),
     })
+}
+
+fn carray_pointer_index_equality(left: Expression, right: Expression) -> Expression {
+    let both_are = |type_name: &str| binary_expr(BinOp::And,
+        expr(ExprKind::IsType { expr: Box::new(left.clone()), type_name: type_name.into() }),
+        expr(ExprKind::IsType { expr: Box::new(right.clone()), type_name: type_name.into() }),
+    );
+    // Array offsets are numeric, but managed record field references carry
+    // string keys. Never coerce a field name to an integer address offset.
+    let numeric_eq = expr(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(expr(ExprKind::Cast {
+            expr: Box::new(left.clone()),
+            type_name: "int".to_string(),
+        })),
+        right: Box::new(expr(ExprKind::Cast {
+            expr: Box::new(right.clone()),
+            type_name: "int".to_string(),
+        })),
+    });
+    ternary_expr(both_are("number"), numeric_eq,
+        ternary_expr(both_are("string"),
+            call_expr(ident("__c_tag_eq"), vec![left.clone(), right.clone()]),
+            expr(ExprKind::Lit(Literal::Bool(false))),
+        ),
+    )
+}
+
+fn c_value_once(value: Expression, name: &str, body: Expression) -> Expression {
+    call_expr(
+        expr(ExprKind::Lambda {
+            params: vec![Param {
+                name: name.into(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(body)),
+            is_async: false,
+            captures: vec![],
+        }),
+        vec![value],
+    )
 }
 
 fn c_pointer_backing_identity(left: Expression, right: Expression) -> Expression {
@@ -41415,7 +45651,19 @@ fn c_pointer_backing_identity(left: Expression, right: Expression) -> Expression
         binary_expr(BinOp::Eq, address(lhs.clone()), address(rhs.clone())),
         ternary_expr(
             binary_expr(BinOp::Or, numeric(lhs.clone()), numeric(rhs.clone())),
-            int_lit(0),
+            ternary_expr(
+                numeric(lhs.clone()),
+                binary_expr(
+                    BinOp::And,
+                    binary_expr(BinOp::Eq, address(lhs.clone()), int_lit(0)),
+                    call_expr(ident("__c_ref_eq"), vec![rhs.clone(), null_lit()]),
+                ),
+                binary_expr(
+                    BinOp::And,
+                    call_expr(ident("__c_ref_eq"), vec![lhs.clone(), null_lit()]),
+                    binary_expr(BinOp::Eq, address(rhs.clone()), int_lit(0)),
+                ),
+            ),
             call_expr(ident("__c_ref_eq"), vec![lhs, rhs]),
         ),
     );
@@ -41443,26 +45691,8 @@ fn c_pointer_backing_identity(left: Expression, right: Expression) -> Expression
 }
 
 fn mixed_c_pointer_equality(left: Expression, right: Expression) -> Expression {
-    let record_address = |value: Expression| {
-        let is_record_pointer = binary_expr(
-            BinOp::And,
-            binary_expr(
-                BinOp::Eq,
-                unary_expr(UnaryOp::Typeof, value.clone()),
-                str_lit("object"),
-            ),
-            binary_expr(
-                BinOp::Eq,
-                member(value.clone(), REF_KIND_KEY),
-                str_lit(C_STRUCT_PTR_KIND),
-            ),
-        );
-        ternary_expr(
-            is_record_pointer,
-            member(value.clone(), CARRAY_BASE_KEY),
-            value,
-        )
-    };
+    let record_address = |value: Expression|
+        call_expr(ident("__c_pointer_identity_base"), vec![value]);
     // Pass backing expressions directly: assigning a C record copies it,
     // whereas pointer equality must inspect the original object's identity.
     let args = vec![record_address(left), record_address(right)];
@@ -41526,7 +45756,23 @@ fn mixed_c_pointer_equality(left: Expression, right: Expression) -> Expression {
                 pointers::is_carray_ptr_kind(right.clone()),
             )),
             then: Box::new(carray_ptr_equality(left.clone(), right.clone())),
-            else_: Box::new(c_pointer_backing_identity(left, right)),
+            else_: Box::new(ternary_expr(
+                binary_expr(
+                    BinOp::And,
+                    pointers::is_carray_ptr_kind(left.clone()),
+                    right_is_object,
+                ),
+                compare_carray_to_array_start(left.clone(), right.clone(), BinOp::Eq),
+                ternary_expr(
+                    binary_expr(
+                        BinOp::And,
+                        pointers::is_carray_ptr_kind(right.clone()),
+                        left_is_object,
+                    ),
+                    compare_carray_to_array_start(right.clone(), left.clone(), BinOp::Eq),
+                    c_pointer_backing_identity(left, right),
+                ),
+            )),
         })),
     });
     call_expr(
@@ -41569,33 +45815,27 @@ fn carray_object_literal_idx(e: &Expression) -> Option<i64> {
     None
 }
 
+fn carray_index_relational(left: Expression, right: Expression, op: BinOp) -> Expression {
+    // Managed coordinates are signed offsets, not dynamically dispatched values.
+    // Reverse greater-than forms so ordering never needs an overflowing distance.
+    let (operation, left, right) = match op {
+        BinOp::Lt => (vybe_ast::IntOp::LtS, left, right),
+        BinOp::LtEq => (vybe_ast::IntOp::LeS, left, right),
+        BinOp::Gt => (vybe_ast::IntOp::LtS, right, left),
+        BinOp::GtEq => (vybe_ast::IntOp::LeS, right, left),
+        _ => unreachable!("pointer ordering requires a relational operator"),
+    };
+    binary_expr(BinOp::Integer(operation, vybe_ast::BitLane::W64), left, right)
+}
+
 fn carray_ptr_relational(left: Expression, right: Expression, op: BinOp) -> Expression {
-    let base_eq = expr(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(expr(ExprKind::Member {
-            object: Box::new(left.clone()),
-            field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
-        right: Box::new(expr(ExprKind::Member {
-            object: Box::new(right.clone()),
-            field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
-    });
-    let idx_cmp = expr(ExprKind::Binary {
-        op,
-        left: Box::new(expr(ExprKind::Member {
-            object: Box::new(left),
-            field: CARRAY_IDX_KEY.to_string(),
-            null_safe: false,
-        })),
-        right: Box::new(expr(ExprKind::Member {
-            object: Box::new(right),
-            field: CARRAY_IDX_KEY.to_string(),
-            null_safe: false,
-        })),
-    });
+    let base_eq = call_expr(
+        ident("__c_ref_eq"),
+        vec![member(left.clone(), CARRAY_BASE_KEY), member(right.clone(), CARRAY_BASE_KEY)],
+    );
+    let idx_cmp = carray_index_relational(
+        member(left, CARRAY_IDX_KEY), member(right, CARRAY_IDX_KEY), op,
+    );
     expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(base_eq),
@@ -41621,7 +45861,16 @@ fn mixed_c_pointer_relational(left: Expression, right: Expression, op: BinOp) ->
     };
     let body = ternary_expr(
         binary_expr(BinOp::And, numeric(lhs.clone()), numeric(rhs.clone())),
-        binary_expr(op, address(lhs.clone()), address(rhs.clone())),
+        binary_expr(
+            BinOp::Integer(match op {
+                BinOp::Lt => vybe_ast::IntOp::LtU,
+                BinOp::LtEq => vybe_ast::IntOp::LeU,
+                BinOp::Gt => vybe_ast::IntOp::GtU,
+                BinOp::GtEq => vybe_ast::IntOp::GeU,
+                _ => unreachable!("pointer ordering requires a relational operator"),
+            }, vybe_ast::BitLane::W32),
+            address(lhs.clone()), address(rhs.clone()),
+        ),
         carray_ptr_relational(
             pointers::ensure_carray_ptr(lhs),
             pointers::ensure_carray_ptr(rhs),
@@ -41658,15 +45907,10 @@ fn carray_ptr_relational_to_array_start(
     op: BinOp,
     ptr_is_left: bool,
 ) -> Expression {
-    let base_eq = expr(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(expr(ExprKind::Member {
-            object: Box::new(ptr.clone()),
-            field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
-        right: Box::new(array),
-    });
+    let base_eq = call_expr(
+        ident("__c_ref_eq"),
+        vec![member(ptr.clone(), CARRAY_BASE_KEY), array],
+    );
     let idx = expr(ExprKind::Member {
         object: Box::new(ptr),
         field: CARRAY_IDX_KEY.to_string(),
@@ -41674,17 +45918,9 @@ fn carray_ptr_relational_to_array_start(
     });
     let zero = expr(ExprKind::Lit(Literal::Int(0)));
     let idx_cmp = if ptr_is_left {
-        expr(ExprKind::Binary {
-            op,
-            left: Box::new(idx),
-            right: Box::new(zero),
-        })
+        carray_index_relational(idx, zero, op)
     } else {
-        expr(ExprKind::Binary {
-            op,
-            left: Box::new(zero),
-            right: Box::new(idx),
-        })
+        carray_index_relational(zero, idx, op)
     };
     expr(ExprKind::Binary {
         op: BinOp::And,
@@ -41709,42 +45945,71 @@ fn nan_to_default(value: Expression, default_value: Expression) -> Expression {
     call_expr(ident("__libc_nan_to_default"), vec![value, default_value])
 }
 
-/// Extract an integer value from an optional enum initializer expression.
-/// Handles plain integer literals and negated literals (e.g. `= -2`).
-/// Falls back to `default` for unsupported forms.
+/// Extract simple enum values when the constant evaluator cannot fold them.
 fn extract_enum_val(init: &Option<Expression>, default: i64) -> i64 {
     let Some(e) = init else { return default };
     match &e.kind {
         ExprKind::Lit(Literal::Int(i)) => *i,
-        ExprKind::Unary {
-            op: UnaryOp::Neg,
-            expr,
-        } => {
-            if let ExprKind::Lit(Literal::Int(i)) = &expr.kind {
-                -i
-            } else {
-                default
-            }
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => {
+            if let ExprKind::Lit(Literal::Int(i)) = &expr.kind { -i } else { default }
         }
         _ => default,
     }
 }
 
-/// Returns true if a statement list ends with a break or return (no fallthrough).
-fn ends_with_break(stmts: &[Statement]) -> bool {
-    match stmts.last() {
-        Some(s) => {
-            matches!(
-                s.kind,
-                StmtKind::Break(_)
-                    | StmtKind::Continue(_)
-                    | StmtKind::Return(_)
-                    | StmtKind::GoTo(_)
-            ) || matches!(&s.kind, StmtKind::Block(inner) if ends_with_break(inner))
-        }
-        None => false,
+/// Fold typed C integer lanes without Rust panics or Wasm's masked shift counts.
+fn fold_c_integer_constant(
+    op: vybe_ast::IntOp, lane: vybe_ast::BitLane, left: i64, right: i64, unsigned: bool,
+) -> Option<i64> {
+    use vybe_ast::{BitLane, IntOp};
+    let bits = match lane { BitLane::W32 => 32u32, BitLane::W64 => 64 };
+    let mask = (1u128 << bits) - 1;
+    let lu = (left as u64 as u128) & mask;
+    let ru = (right as u64 as u128) & mask;
+    let ls = if bits == 32 { i128::from(left as i32) } else { i128::from(left) };
+    let rs = if bits == 32 { i128::from(right as i32) } else { i128::from(right) };
+    let min = -(1i128 << (bits - 1));
+    let max = (1i128 << (bits - 1)) - 1;
+    let signed = |value: i128| (min..=max).contains(&value).then_some(value as i64);
+    let word = |value: u128| ((value & mask) as u64) as i64;
+    let bit_word = |value: u128| {
+        let value = word(value);
+        if bits == 32 && !unsigned { i64::from(value as i32) } else { value }
+    };
+    let shift = || u32::try_from(right).ok().filter(|count| *count < bits);
+    match op {
+        IntOp::Add if unsigned => Some(word(lu.wrapping_add(ru))),
+        IntOp::Sub if unsigned => Some(word(lu.wrapping_sub(ru))),
+        IntOp::Mul if unsigned => Some(word(lu.wrapping_mul(ru))),
+        IntOp::Add => signed(ls.checked_add(rs)?),
+        IntOp::Sub => signed(ls.checked_sub(rs)?),
+        IntOp::Mul => signed(ls.checked_mul(rs)?),
+        IntOp::DivS => signed(ls.checked_div(rs)?),
+        IntOp::RemS if !(ls == min && rs == -1) => signed(ls.checked_rem(rs)?),
+        IntOp::RemS => None,
+        IntOp::DivU => Some(word(lu.checked_div(ru)?)),
+        IntOp::RemU => Some(word(lu.checked_rem(ru)?)),
+        IntOp::Shl if unsigned => Some(word(lu << shift()?)),
+        IntOp::Shl if ls >= 0 => signed(ls.checked_shl(shift()?)?),
+        IntOp::Shl => None,
+        IntOp::ShrS => signed(ls >> shift()?),
+        IntOp::ShrU => Some(word(lu >> shift()?)),
+        IntOp::And => Some(bit_word(lu & ru)),
+        IntOp::Or => Some(bit_word(lu | ru)),
+        IntOp::Xor => Some(bit_word(lu ^ ru)),
+        IntOp::Eq => Some(i64::from(lu == ru)),
+        IntOp::Ne => Some(i64::from(lu != ru)),
+        IntOp::LtS => Some(i64::from(ls < rs)),
+        IntOp::LeS => Some(i64::from(ls <= rs)),
+        IntOp::GtS => Some(i64::from(ls > rs)),
+        IntOp::GeS => Some(i64::from(ls >= rs)),
+        IntOp::LtU => Some(i64::from(lu < ru)),
+        IntOp::LeU => Some(i64::from(lu <= ru)),
+        IntOp::GtU => Some(i64::from(lu > ru)),
+        IntOp::GeU => Some(i64::from(lu >= ru)),
     }
 }
+
 
 /// Convert an expression AST node back to a simple C source string for macro substitution.
 /// Only handles the common cases that appear in macro arguments.
@@ -41882,6 +46147,3274 @@ mod field_type_tests {
     use super::*;
 
     #[test]
+    fn pointer_ordering_helpers_keep_explicit_lanes_and_bind_operands_once() {
+        use vybe_ast::{BitLane, IntOp};
+        for (op, signed, unsigned, reversed) in [
+            (BinOp::Lt, IntOp::LtS, IntOp::LtU, false),
+            (BinOp::LtEq, IntOp::LeS, IntOp::LeU, false),
+            (BinOp::Gt, IntOp::LtS, IntOp::GtU, true),
+            (BinOp::GtEq, IntOp::LeS, IntOp::GeU, true),
+        ] {
+            let value = carray_index_relational(ident("left"), ident("right"), op);
+            let ExprKind::Binary { op: actual, left, right } = &value.kind else {
+                panic!("missing coordinate ordering");
+            };
+            assert_eq!(*actual, BinOp::Integer(signed, BitLane::W64));
+            assert!(matches!(&left.kind, ExprKind::Ident(name)
+                if name == if reversed { "right" } else { "left" }));
+            assert!(matches!(&right.kind, ExprKind::Ident(name)
+                if name == if reversed { "left" } else { "right" }));
+
+            let value = mixed_c_pointer_relational(
+                call_expr(ident("left_once"), vec![]),
+                call_expr(ident("right_once"), vec![]), op,
+            );
+            let ExprKind::Call { callee, args, .. } = &value.kind else {
+                panic!("missing operand binding");
+            };
+            assert_eq!(args.len(), 2);
+            let ExprKind::Lambda { params, body: LambdaBody::Expr(body), .. } = &callee.kind else {
+                panic!("missing operand-binding lambda");
+            };
+            assert_eq!(params.len(), 2);
+            let ExprKind::Ternary { then, else_, .. } = &body.kind else {
+                panic!("missing numeric and managed arms");
+            };
+            assert!(matches!(&then.kind, ExprKind::Binary { op, .. }
+                if *op == BinOp::Integer(unsigned, BitLane::W32)));
+            assert!(matches!(&else_.kind, ExprKind::Binary { op: BinOp::And, right, .. }
+                if matches!(&right.kind, ExprKind::Binary { op, .. }
+                    if *op == BinOp::Integer(signed, BitLane::W64))));
+            let mut calls = [0, 0];
+            value.walk_exprs(&mut |value| {
+                if let ExprKind::Call { callee, .. } = &value.kind
+                    && let ExprKind::Ident(name) = &callee.kind
+                {
+                    calls[0] += usize::from(name == "left_once");
+                    calls[1] += usize::from(name == "right_once");
+                }
+            });
+            assert_eq!(calls, [1, 1]);
+
+            for ptr_is_left in [false, true] {
+                let value = carray_ptr_relational_to_array_start(
+                    ident("pointer"), ident("array"), op, ptr_is_left,
+                );
+                assert!(matches!(&value.kind, ExprKind::Binary { right, .. }
+                    if matches!(&right.kind, ExprKind::Binary { op, .. }
+                        if *op == BinOp::Integer(signed, BitLane::W64))));
+            }
+        }
+    }
+
+    #[test]
+    fn inline_record_addresses_use_declared_layout_and_capture_owner_once() {
+        let mut walker = Walker::default();
+        walker.structs.insert("point".into(), vec!["x".into(), "y".into()]);
+        walker.struct_field_types.insert("point".into(), HashMap::from([
+            ("x".into(), "int".into()), ("y".into(), "int".into()),
+        ]));
+        walker.structs.insert("owner".into(), vec!["guard".into(), "point".into(), "link".into(), "points".into()]);
+        walker.struct_field_types.insert("owner".into(), HashMap::from([
+            ("guard".into(), "int".into()), ("point".into(), "point".into()),
+            ("link".into(), "point *".into()), ("points".into(), "point[2]".into()),
+        ]));
+        walker.var_types.insert("owner".into(), "owner *".into());
+        let offset = walker.offsetof_struct_field("owner", "point");
+        assert_eq!(offset, 4);
+        for owner in [ident("owner"), expr(ExprKind::Cast {
+            expr: Box::new(call_expr(ident("owner_once"), vec![])), type_name: "owner *".into(),
+        }), expr(ExprKind::Cast { expr: Box::new(int_lit(1024)), type_name: "owner *".into() })] {
+            let address = walker.byte_struct_member_address_expr(&member(owner.clone(), "point")).unwrap();
+            let ExprKind::Cast { expr, type_name } = &address.kind else { panic!("typed field address"); };
+            assert_eq!(type_name, "point *");
+            let ExprKind::Call { callee, args, .. } = &expr.kind else { panic!("single helper call"); };
+            assert!(matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_hybrid_embedded_record_ptr"));
+            assert_eq!(args.len(), 3);
+            assert_eq!(format!("{:?}", args[0].value), format!("{owner:?}"));
+            assert!(matches!(&args[1].value.kind, ExprKind::Lit(Literal::Str(field)) if field == "point"));
+            assert!(matches!(&args[2].value.kind, ExprKind::Lit(Literal::Int(value)) if *value == offset));
+            let mut effects = 0;
+            address.walk_exprs(&mut |node| {
+                effects += usize::from(matches!(&node.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "owner_once")));
+            });
+            assert_eq!(effects, usize::from(!matches!(&owner.kind, ExprKind::Ident(_))
+                && !matches!(&owner.kind, ExprKind::Cast { expr, .. } if matches!(&expr.kind, ExprKind::Lit(_)))));
+        }
+        for field in ["guard", "link", "points"] {
+            let address = walker.byte_struct_member_address_expr(&member(ident("owner"), field)).unwrap();
+            address.walk_exprs(&mut |node| {
+                assert!(!matches!(&node.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_hybrid_embedded_record_ptr")),
+                    "{field} is not an inline record");
+            });
+        }
+    }
+
+    #[test]
+    fn memset_plain_char_pointer_fills_backing_without_rebinding_parameter() {
+        for ty in ["char *", "signed char *", "unsigned char *", "void *"] {
+            let mut walker = Walker::default();
+            walker.var_types.insert("destination".into(), ty.into());
+            walker.char_pointers.insert("destination".into());
+            let lowered = walker.rewrite_memset(ident("destination"), int_lit(0), int_lit(8));
+            let mut fills = 0;
+            let mut rebindings = 0;
+            lowered.walk_exprs(&mut |node| match &node.kind {
+                ExprKind::Call { callee, args, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_byte_fill") => {
+                    fills += 1;
+                    assert_eq!(args.len(), 3);
+                    assert!(matches!(&args[0].value.kind,
+                        ExprKind::Ident(name) if name == "destination"));
+                }
+                ExprKind::Assign { target, .. }
+                    if matches!(&target.kind, ExprKind::Ident(name) if name == "destination") => {
+                    rebindings += 1;
+                }
+                _ => {},
+            });
+            assert_eq!(fills, 1, "{ty}");
+            assert_eq!(rebindings, 0, "{ty}");
+        }
+    }
+
+    #[test]
+    fn parsed_memset_char_parameter_preserves_alias_and_argument_evaluations() {
+        let source = r#"
+            #include <string.h>
+            static int count_once(void) { return 8; }
+            static int fill_once(void) { return 0; }
+            void clear(char *destination) {
+                memset(destination, fill_once(), count_once());
+            }
+        "#;
+        for parser in [crate::parse_with_peg, crate::parse_optimized] {
+            let module = parser(source).unwrap();
+            let body = module.body.iter().find_map(|statement| match &statement.kind {
+                StmtKind::FunctionDecl { name, body, .. } if name == "clear" => Some(body),
+                _ => None,
+            }).unwrap();
+            let mut fills = 0;
+            let mut fill_calls = 0;
+            let mut count_calls = 0;
+            let mut rebindings = 0;
+            for statement in body {
+                statement.walk_exprs(&mut |node| match &node.kind {
+                    ExprKind::Call { callee, .. } => {
+                        if let ExprKind::Ident(name) = &callee.kind {
+                            fills += usize::from(name == "__c_byte_fill");
+                            fill_calls += usize::from(name == "fill_once");
+                            count_calls += usize::from(name == "count_once");
+                        }
+                    }
+                    ExprKind::Assign { target, .. }
+                        if matches!(&target.kind, ExprKind::Ident(name) if name == "destination") => {
+                        rebindings += 1;
+                    }
+                    _ => {},
+                });
+            }
+            assert_eq!((fills, fill_calls, count_calls, rebindings), (1, 1, 1, 0));
+        }
+    }
+
+    #[test]
+    fn formatted_variadic_carriers_reach_libc_without_eager_string_reads() {
+        let mut walker = Walker::default();
+        walker.included_namespaces.push("libc.stdio".into());
+        walker.var_types.insert("bytes".into(), "char[8]".into());
+        walker.var_types.insert("pointer".into(), "char *".into());
+        walker.linear_pointer_vars.insert("pointer".into());
+        walker.char_pointer_visible_helper = "visible_once".into();
+        let carriers = [
+            ident("bytes"),
+            ident("pointer"),
+            pointers::make_carray_ptr(ident("bytes"), call_expr(ident("offset_once"), vec![])),
+            expr(ExprKind::Cast {
+                expr: Box::new(call_expr(ident("pointer_once"), vec![])),
+                type_name: "char *".into(),
+            }),
+        ];
+        for name in ["printf", "snprintf", "fprintf", "sprintf"] {
+            for carrier in &carriers {
+                let mut values = match name {
+                    "snprintf" => vec![ident("out"), int_lit(32)],
+                    "sprintf" => vec![ident("out")],
+                    "fprintf" => vec![int_lit(1)],
+                    _ => vec![],
+                };
+                values.extend([str_lit("<%.4s>"), carrier.clone()]);
+                let lowered = walker.normalize_call(ident(name),
+                    values.into_iter().map(Argument::positional).collect());
+                let mut formatter_args = Vec::new();
+                let mut eager_reads = 0;
+                lowered.walk_exprs(&mut |node| {
+                    if let ExprKind::Call { callee, args, .. } = &node.kind
+                        && let ExprKind::Ident(name) = &callee.kind
+                    {
+                        if name == "__c_sprintf" {
+                            formatter_args.push(format!("{:?}", args[1].value));
+                        }
+                        eager_reads += usize::from(matches!(name.as_str(),
+                            "__libc_char_to_str" | "visible_once"));
+                    }
+                });
+                assert_eq!(formatter_args, vec![format!("{carrier:?}")], "{name}");
+                assert_eq!(eager_reads, 0, "{name}");
+            }
+        }
+        assert!(!walker.uses_char_pointer_visible_helper.get());
+    }
+
+    #[test]
+    fn formatted_variadic_character_reads_keep_numeric_character_values() {
+        let mut walker = Walker::default();
+        walker.included_namespaces.push("libc.stdio".into());
+        for name in ["printf", "snprintf"] {
+            for format in ["%c", "%d"] {
+                let character = expr(ExprKind::Index {
+                    object: Box::new(str_lit("A")), index: Box::new(int_lit(0)),
+                    null_safe: false,
+                });
+                let mut values = if name == "snprintf" {
+                    vec![ident("out"), int_lit(32)]
+                } else { vec![] };
+                values.extend([str_lit(format), character]);
+                let lowered = walker.normalize_call(ident(name),
+                    values.into_iter().map(Argument::positional).collect());
+                let mut codes = Vec::new();
+                lowered.walk_exprs(&mut |node| {
+                    if let ExprKind::Call { callee, args, .. } = &node.kind
+                        && matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_sprintf")
+                    {
+                        codes.push(matches!(args[1].value.kind, ExprKind::Lit(Literal::Int(65))));
+                    }
+                });
+                assert_eq!(codes, vec![true], "{name} {format}");
+            }
+        }
+    }
+
+    #[test]
+    fn printf_char_array_offset_decodes_the_view_once() {
+        for (shared, cast) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut walker = Walker::default();
+            walker.var_types.insert("bytes".into(), "char[10]".into());
+            if shared {
+                walker.char_pointer_visible_helper = "visible_once".into();
+            }
+            let mut view = pointers::make_carray_ptr(
+                ident("bytes"), call_expr(ident("offset_once"), vec![]),
+            );
+            if cast {
+                view = expr(ExprKind::Cast { expr: Box::new(view), type_name: "char *".into() });
+            }
+            let result = walker.c_printf_arg(view.clone());
+            let ExprKind::Call { callee, args, .. } = &result.kind else {
+                panic!("visibility adapter must capture the whole view");
+            };
+            assert_eq!(args.len(), 1);
+            assert_eq!(format!("{:?}", args[0].value), format!("{view:?}"));
+            if shared {
+                assert!(matches!(&callee.kind, ExprKind::Ident(name) if name == "visible_once"));
+                assert!(walker.uses_char_pointer_visible_helper.get());
+            } else {
+                assert!(matches!(callee.kind, ExprKind::Lambda { .. }));
+            }
+            let mut offset_calls = 0;
+            let mut raw_array_substrings = 0;
+            result.walk_exprs(&mut |node| {
+                if let ExprKind::Call { callee, .. } = &node.kind {
+                    offset_calls += usize::from(matches!(&callee.kind,
+                        ExprKind::Ident(name) if name == "offset_once"));
+                    raw_array_substrings += usize::from(matches!(&callee.kind,
+                        ExprKind::Member { object, field, .. }
+                        if field == "substring" && matches!(&object.kind,
+                            ExprKind::Ident(name) if name == "bytes")));
+                }
+            });
+            assert_eq!(offset_calls, 1);
+            assert_eq!(raw_array_substrings, 0);
+        }
+        let walker = Walker::default();
+        assert!(matches!(walker.c_printf_arg(int_lit(17)).kind,
+            ExprKind::Lit(Literal::Int(17))));
+        assert!(matches!(walker.c_printf_arg(str_lit("literal")).kind,
+            ExprKind::Lit(Literal::Str(value)) if value == "literal"));
+    }
+
+    #[test]
+    fn parsed_printf_char_array_offsets_evaluate_once() {
+        let source = r#"
+            #include <stdio.h>
+            static int offset_calls;
+            static int offset_once(void) { ++offset_calls; return 2; }
+            int main(void) {
+                char bytes[10] = {'x','x','P','H','A','S','E','2','-','M'};
+                char out[32];
+                snprintf(out, sizeof(out), "<%.8s>", bytes + offset_once());
+                printf("<%.8s>", bytes + offset_once());
+                return offset_calls != 2;
+            }
+        "#;
+        for parser in [crate::parse_with_peg, crate::parse_optimized] {
+            let module = parser(source).unwrap();
+            let main = module.body.iter().find_map(|statement| match &statement.kind {
+                StmtKind::FunctionDecl { name, body, .. } if name == "main" => Some(body),
+                _ => None,
+            }).unwrap();
+            let mut offset_calls = 0;
+            for statement in main {
+                statement.walk_exprs(&mut |value| {
+                    offset_calls += usize::from(matches!(&value.kind,
+                        ExprKind::Call { callee, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "offset_once")));
+                });
+            }
+            assert_eq!(offset_calls, 2, "one call per formatted array offset");
+        }
+    }
+
+    #[test]
+    fn fixed_record_array_reset_uses_one_typed_loop_in_both_storage_traversals() {
+        fn setup() -> Walker {
+            let mut walker = Walker::default();
+            walker.current_function = "reset_records".into();
+            walker.structs.insert("sprite".into(), vec!["state".into(), "tics".into()]);
+            walker.struct_field_types.insert("sprite".into(), HashMap::from([
+                ("state".into(), "void *".into()), ("tics".into(), "int".into()),
+            ]));
+            walker.structs.insert("player".into(), vec!["sprites".into()]);
+            walker.struct_field_types.insert("player".into(), HashMap::from([
+                ("sprites".into(), "sprite[2]".into()),
+            ]));
+            walker.enum_constants.insert("COUNT".into(), 2);
+            walker
+        }
+        for pointer_slots_only in [false, true] {
+            let mut sizes = Vec::new();
+            for bound in ["2", "2048", "COUNT"] {
+                let mut walker = setup();
+                let reset = walker.record_array_zero_in_place(
+                    call_expr(ident("owner_once"), vec![]), "player", "sprites",
+                    &format!("sprite[{bound}]"), "sprite", 0, pointer_slots_only,
+                ).unwrap();
+                let ExprKind::Call { callee, args, .. } = &reset.kind else { panic!("invoked loop"); };
+                assert_eq!(args.len(), 1);
+                let ExprKind::Lambda { body: LambdaBody::Block(body), .. } = &callee.kind else {
+                    panic!("frame-local reset loop");
+                };
+                let StmtKind::VarDecl { declarations, .. } = &body[0].kind else {
+                    panic!("loop captures declared in the invoked frame");
+                };
+                assert!(declarations.iter().any(|declaration|
+                    matches!(&declaration.pattern, BindingPattern::Ident(name) if name.starts_with("__c_record_zero_index"))
+                        && declaration.type_hint.as_deref() == Some("integer")));
+                assert!(declarations.iter().any(|declaration|
+                    matches!(&declaration.pattern, BindingPattern::Ident(name) if name.starts_with("__c_record_zero_element"))));
+                let StmtKind::For { cond: Some(cond), update: Some(update), .. } = &body[1].kind else {
+                    panic!("one bounded loop, never element unrolling");
+                };
+                assert!(matches!(cond.kind, ExprKind::Binary {
+                    op: BinOp::Integer(vybe_ast::IntOp::LtS, vybe_ast::BitLane::W32), .. }));
+                let ExprKind::Assign { value, .. } = &update.kind else { panic!("counter update"); };
+                assert!(matches!(value.kind, ExprKind::Binary {
+                    op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32), .. }));
+                let mut owners = 0;
+                let mut scalar_fields = 0;
+                let mut pointer_fields = 0;
+                reset.walk_exprs(&mut |value| match &value.kind {
+                    ExprKind::Call { callee, .. } if matches!(&callee.kind,
+                        ExprKind::Ident(name) if name == "owner_once") => owners += 1,
+                    ExprKind::Member { field, .. } if field == "tics" => scalar_fields += 1,
+                    ExprKind::Member { field, .. } if field == "state" => pointer_fields += 1,
+                    _ => {},
+                });
+                assert_eq!(owners, 1);
+                assert!(pointer_fields > 0, "linear post-fill traversal must clear pointer side slots too");
+                assert_eq!(scalar_fields == 0, pointer_slots_only);
+                sizes.push(format!("{reset:?}").len());
+            }
+            assert!(sizes[0].abs_diff(sizes[1]) < 16, "large record arrays must not expand the reset AST");
+            let mut walker = setup();
+            assert!(walker.record_zero_in_place(ident("p"), "player", 0, pointer_slots_only).is_some());
+        }
+        for dimensions in ["[2][2]", "[]", "[unknown]", "[0]", "[-1]", "[2147483647]"] {
+            let mut walker = setup();
+            assert!(walker.record_array_zero_in_place(ident("p"), "player", "sprites",
+                &format!("sprite{dimensions}"), "sprite", 0, false).is_none(), "{dimensions}");
+        }
+    }
+
+    #[test]
+    fn stdio_descriptor_adapters_preserve_casts_and_argument_effects_once() {
+        let mut walker = Walker::default();
+        walker.included_namespaces.extend(["libc.stdio".into(), "libc.unistd".into()]);
+        for name in ["fileno", "isatty"] {
+            let argument = call_expr(ident("argument_once"), vec![]);
+            let result = walker.normalize_call(ident(name), vec![Argument::positional(argument)]);
+            let mut effects = 0;
+            let mut adapters = 0;
+            result.walk_exprs(&mut |value| {
+                if let ExprKind::Call { callee, .. } = &value.kind
+                    && let ExprKind::Ident(callee) = &callee.kind
+                {
+                    effects += usize::from(callee == "argument_once");
+                    adapters += usize::from(callee == name);
+                }
+            });
+            assert_eq!(effects, 1, "{name}");
+            assert_eq!(adapters, 1, "{name}");
+            assert_eq!(walker.c_expr_type_text(&result).as_deref(), Some("integer"));
+        }
+        for fd in [0, 1, 2, 3, 4] {
+            let argument = expr(ExprKind::Cast { expr: Box::new(int_lit(fd)), type_name: "FILE *".into() });
+            let result = walker.normalize_call(ident("fileno"), vec![Argument::positional(argument.clone())]);
+            let mut operands = Vec::new();
+            result.walk_exprs(&mut |value| {
+                if let ExprKind::Call { callee, args, .. } = &value.kind
+                    && matches!(&callee.kind, ExprKind::Ident(name) if name == "fileno")
+                {
+                    operands.push(format!("{:?}", args[0].value));
+                }
+            });
+            assert_eq!(operands, vec![format!("{argument:?}")]);
+        }
+        assert!(walker.header_violations.is_empty());
+    }
+
+    #[test]
+    fn byte_buffer_pointer_cast_preserves_owner_and_offset_effects() {
+        let offset = call_expr(ident("offset_once"), vec![]);
+        let view = pointers::make_carray_ptr(ident("buffer"), offset.clone());
+        for type_name in ["char *", "const unsigned char *", "void*", "uint8_t *"] {
+            let wrapped = expr(ExprKind::Cast {
+                expr: Box::new(view.clone()),
+                type_name: type_name.into(),
+            });
+            let (owner, captured_offset) = char_buffer_target_offset(&wrapped).unwrap();
+            assert_eq!(owner, "buffer");
+            assert_eq!(format!("{captured_offset:?}"), format!("{offset:?}"));
+            let mut calls = 0;
+            captured_offset.walk_exprs(&mut |node| {
+                calls += usize::from(matches!(&node.kind,
+                    ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "offset_once")));
+            });
+            assert_eq!(calls, 1);
+        }
+        for type_name in ["integer", "uintptr_t", "double", "short *", "char **",
+            "struct byte *", "union uint8_t *", "enum byte *"] {
+            let wrapped = expr(ExprKind::Cast {
+                expr: Box::new(view.clone()),
+                type_name: type_name.into(),
+            });
+            assert!(char_buffer_target_offset(&wrapped).is_none(), "{type_name}");
+        }
+    }
+
+    std::thread_local! {
+        pub(super) static USE_REFERENCE_BINARY_REWRITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static BINARY_REWRITE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static USE_REFERENCE_PREDECLARATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_INITIALIZER_PREDECLARATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_STATEMENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_PRIMARIES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_SYNTAX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_DECLARATORS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_BINARIES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_PARAMETERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_IF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_LOOPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_SWITCHES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DIRECT_CALLS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static PREDECLARATOR_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static USE_OWNED_CLASSIFIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static USE_REFERENCE_DECLARATION_REPLAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[test]
+    fn pointer_backing_probe_lookahead_matches_captured_children() {
+        fn reference(mut pair: Pair<Rule>, providers: &[String]) -> bool {
+            loop {
+                if matches!(pair.as_str().trim(), "0" | "NULL") { return true; }
+                let parts = pair.clone().into_inner().collect::<Vec<_>>();
+                if pair.as_rule() == Rule::postfix_expression && parts.len() == 2 {
+                    return parts[1].as_rule() == Rule::call_suffix
+                        && providers.iter().any(|provider| parts[0].as_str().trim() == provider);
+                }
+                if pair.as_rule() == Rule::cast_expression && parts.len() == 2 {
+                    pair = parts[1].clone();
+                } else if parts.len() == 1 {
+                    pair = parts[0].clone();
+                } else { return false; }
+            }
+        }
+        let providers = vec!["malloc".into(), "calloc".into(), "allocator".into()];
+        for source in ["0", "NULL", "malloc(4)", "calloc(2,4)", "allocator()",
+            "(void *)malloc(4)", "(int *)(void *)allocator()", "((malloc(4)))",
+            "malloc(4)+1", "other(4)", "p[1]", "p->field", "&p", "*p",
+            "flag?malloc(4):0", "(malloc(4),0)", "f(1,2,3)", "(int *)0"] {
+            for backend in [crate::frontend::Backend::Peg, crate::frontend::Backend::Native] {
+                crate::frontend::with_backend(backend, || {
+                    let pair = CParser::parse(Rule::assignment_expression, source)
+                        .unwrap().next().unwrap();
+                    assert_eq!(c_parsed_linear_pointer_value(pair.clone(), &providers),
+                        reference(pair, &providers), "{backend:?}: {source}");
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_snapshot_preserves_statement_ast() {
+        let path = std::env::temp_dir().join(format!(
+            "vybe-c-walker-timings-{}.log", std::process::id()));
+        let run = |debug_timings| {
+            let mut walker = Walker { debug_timings, ..Walker::default() };
+            let mut body = Vec::new();
+            let pair = CParser::parse(Rule::statement, "x = f(x + 1);")
+                .unwrap().next().unwrap();
+            walker.walk_statement(pair, &mut body);
+            body
+        };
+        let expected = run(None);
+        let actual = run(Some(std::sync::Arc::from(path.to_str().unwrap())));
+        assert_eq!(format!("{expected:?}"), format!("{actual:?}"));
+        let log = std::fs::read_to_string(&path).unwrap();
+        assert!(log.contains("walk_statement_start"));
+        assert!(log.contains("walk_postfix_suffix_start"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn initializer_predeclaration_preserves_owned_ast_without_replay() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_INITIALIZER_PREDECLARATION.with(|flag| flag.set(self.0));
+            }
+        }
+        let mut saved_handoffs = 0;
+        for source in [
+            "const int a[4] = {1, 2, 3, 4}; int main(void) { return a[2]; }",
+            "const int a[4]; const int a[4] = {-1, +2, ~3};",
+            "enum { N=3 }; const int a[N] = {1,2,3}; enum { M=4 }; const int b[M] = {4,5};",
+            "int x; const int a[2] = {1, x}; const int b[2] = {7,8};",
+            "const int a[3] = {[1]=7}; const int b[2] = {1,2};",
+            "typedef unsigned short T; const T a[3] = {1,2,65535};",
+        ] {
+            for parse in [crate::parse_with_peg, crate::parse_optimized] {
+                let run = |reference| {
+                    let _restore = Restore(USE_REFERENCE_INITIALIZER_PREDECLARATION
+                        .with(|flag| flag.replace(reference)));
+                    let (result, profile) = crate::frontend::profile_construction(|| parse(source));
+                    assert!(result.is_ok(), "{source}: {result:?}");
+                    (format!("{result:?}"), profile.direct_initializer_handoffs)
+                };
+                let (reference, before) = run(true);
+                let (candidate, after) = run(false);
+                assert_eq!(reference, candidate, "{source}");
+                assert!(after <= before, "{source}: {before} -> {after}");
+                saved_handoffs += before - after;
+            }
+        }
+        assert!(saved_handoffs > 0, "native predeclaration must preserve an owned initializer");
+    }
+
+    #[test]
+    fn direct_body_and_control_statements_preserve_contextual_scopes_and_spans() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_DIRECT_STATEMENTS.with(|flag| flag.set(self.0));
+            }
+        }
+        let mut bodies = 0;
+        let mut statements = 0;
+        for source in [
+            "void f(int n) {\n while(n--) { if(n==3) continue; if(n==1) break; }\n return;\n}",
+            "void f(void) { goto done; { int x=2; } done: return; }",
+            "void f(void) { ; {} { return; } }",
+            "int f(int n) { if(n) return n+1; return 0; }",
+            "void f(void) { for(;;) { switch(1) { case 1: break; default: continue; } } }",
+            "typedef int T; void f(void) { T x=1; { int x=2; if(x) return; } x++; }",
+            "int g(int); int f(int x) { { int y=g(x++); if(y) return g(y); } return x; }",
+        ] {
+            for parse in [crate::parse_with_peg, crate::parse_optimized] {
+                let run = |reference| {
+                    let _restore = Restore(USE_REFERENCE_DIRECT_STATEMENTS
+                        .with(|flag| flag.replace(reference)));
+                    let (module, counts) = crate::frontend::profile_construction(|| parse(source));
+                    (format!("{:?}", module.unwrap()), counts)
+                };
+                let (reference, _) = run(true);
+                let (candidate, counts) = run(false);
+                assert_eq!(reference, candidate, "{source}");
+                bodies += counts.direct_body_handoffs;
+                statements += counts.direct_statement_handoffs;
+            }
+        }
+        assert!(bodies > 0, "native bodies must consume grammar-built sequences");
+        assert!(statements > 0, "native controls must consume grammar-built statements");
+    }
+
+    #[test]
+    fn direct_primary_expressions_keep_name_normalization_and_literal_policy() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_DIRECT_PRIMARIES.with(|flag| flag.set(self.0));
+            }
+        }
+        let mut handoffs = 0;
+        for source in [
+            "unsigned long f(unsigned x) { return 0xffffffffu+x+0x100000000ULL; }",
+            "double f(void) { return 0x1.8p+2 + .5f; }",
+            "int f(void) { return 'a'+u8'\\x41'+L'\\u00ff'; }",
+            "char *f(void) { return __func__; }",
+            "int f(void) { int x=1; { int x=2; x++; } return x; }",
+            "int f(void) { return (stdin!=NULL)+(stdout!=NULL)+(stderr!=NULL); }",
+            "char **f(void) { return environ; }",
+            "int f(void) { return ATOMIC_FLAG_INIT; }",
+            "int f(int x) { return (x+2)*3; }",
+            "struct S { int x,y; }; int f(struct S *p) { return p->x+p->y; }",
+            "int f(void) { return L\"hi\"[1] + \"a\" \"b\"[0]; }",
+        ] {
+            for parse in [crate::parse_with_peg, crate::parse_optimized] {
+                let run = |reference| {
+                    let _restore = Restore(USE_REFERENCE_DIRECT_PRIMARIES
+                        .with(|flag| flag.replace(reference)));
+                    let (module, counts) = crate::frontend::profile_construction(|| parse(source));
+                    (format!("{:?}", module.unwrap()), counts)
+                };
+                let (reference, _) = run(true);
+                let (candidate, counts) = run(false);
+                assert_eq!(reference, candidate, "{source}");
+                handoffs += counts.direct_primary_handoffs;
+            }
+        }
+        assert!(handoffs > 0, "Native must consume grammar-built primary ASTs");
+    }
+
+    #[test]
+    fn direct_numeric_and_comma_syntax_keeps_typed_normalization_and_fallbacks() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_DIRECT_SYNTAX.with(|flag| flag.set(self.0));
+            }
+        }
+        let mut handoffs = 0;
+        for source in [
+            "int f(int x,int y) { return (-x,~y,+x); }",
+            "unsigned f(unsigned x) { return -~x; }",
+            "long f(long x) { return -x; }",
+            "int f(void) { int x=1; { int x=2; x=-~x; } return -x; }",
+            "char *f(void) { return (\"left\",__func__); }",
+            "int f(void) { return (NULL,ATOMIC_FLAG_INIT,3); }",
+            "int f(void) { return ('a',L'\\x41'); }",
+            "int g(int); int f(void) { return (g(1),2); }",
+            "int f(int *p) { return (*p,++*p); }",
+            "int f(void) { return sizeof(int),1; }",
+        ] {
+            for parse in [crate::parse_with_peg, crate::parse_optimized] {
+                let run = |reference| {
+                    let _restore = Restore(USE_REFERENCE_DIRECT_SYNTAX
+                        .with(|flag| flag.replace(reference)));
+                    let (module, counts) = crate::frontend::profile_construction(|| parse(source));
+                    (format!("{:?}", module.unwrap()), counts)
+                };
+                let (reference, _) = run(true);
+                let (candidate, counts) = run(false);
+                assert_eq!(reference, candidate, "{source}");
+                handoffs += counts.direct_syntax_handoffs;
+            }
+        }
+        assert!(handoffs > 0, "Native must consume grammar-built numeric/comma ASTs");
+    }
+
+    #[test]
+    fn direct_call_regions_preserve_adapters_bindings_and_argument_context() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) { USE_REFERENCE_DIRECT_CALLS.with(|flag| flag.set(self.0)); }
+        }
+        let mut handoffs = 0;
+        for source in [
+            "int f(void){return 3;}int main(void){return f();}",
+            "int f(int x){return x;}int g(int a,int b){return a+b;}int main(void){int x=0;return g(f(++x),(x=3,x+1));}",
+            "int f(int x){return x;}int g(int (*p)(int)){return p(3);}",
+            "struct C{int (*f)(int);};int g(struct C c,struct C *p){return c.f(2)+p->f(3);}",
+            "#include <string.h>\nint f(void){char a[8];strcpy(a,\"abc\");return strlen(a);}",
+            "#include <string.h>\nstruct C{char *p;};int f(struct C *c){strcpy(c->p,\"abc\");return strlen(c->p);}",
+            "int read(int x){return x+1;}int f(void){return read(3);}",
+            "#define INC(x) ((x)+1)\nint f(int x){return INC(x);}",
+            "int f(int x,...){return x;}int g(void){return f(3,4,5);}",
+            "int f(int a[2]){return a[1];}int g(void){int a[2]={3,4};return f(a);}",
+        ] {
+            let expected = format!("{:?}", crate::parse_with_peg(source).unwrap());
+            let run = |reference| {
+                let _restore = Restore(USE_REFERENCE_DIRECT_CALLS.with(|flag| flag.replace(reference)));
+                let (module, counts) = crate::frontend::profile_construction(|| crate::parse_optimized(source));
+                (format!("{:?}", module.unwrap()), counts)
+            };
+            let (reference, reference_counts) = run(true);
+            let (actual, counts) = run(false);
+            assert_eq!(reference_counts.direct_call_handoffs, 0);
+            assert_eq!(reference, expected, "reference: {source}");
+            assert_eq!(actual, expected, "direct: {source}");
+            handoffs += counts.direct_call_handoffs;
+        }
+        assert!(handoffs > 0, "Native must consume grammar-built source calls");
+    }
+
+    #[test]
+    fn direct_switch_regions_preserve_promotions_labels_and_scopes() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) { USE_REFERENCE_DIRECT_SWITCHES.with(|flag| flag.set(self.0)); }
+        }
+        let mut handoffs = 0;
+        for source in [
+            "int f(int n){switch(n){case 1:return 3;default:return 4;}}",
+            "int f(int n){int s=0;switch(n){case 1:case 2:s++;default:s+=2;case 4:s++;}return s;}",
+            "int f(unsigned int n){switch(n){case -1:return 3;default:return 4;}}",
+            "int f(unsigned long long n){switch(n){case 4294967296ULL:return 3;default:return 4;}}",
+            "int f(int n){switch(n++)case 0:return n;return 0;}",
+            "int f(int n){switch(n){case 1:{int n=3;return n;}default:break;}return n;}",
+            "int f(int n){while(n){switch(n){case 2:n--;continue;default:break;}n--;}return n;}",
+            "int f(int n){switch(n){case 1:switch(n+1){case 2:return 3;default:break;}default:return 4;}}",
+        ] {
+            let expected = format!("{:?}", crate::parse_with_peg(source).unwrap());
+            let run = |reference| {
+                let _restore = Restore(USE_REFERENCE_DIRECT_SWITCHES.with(|flag| flag.replace(reference)));
+                let (module, counts) = crate::frontend::profile_construction(|| crate::parse_optimized(source));
+                (format!("{:?}", module.unwrap()), counts)
+            };
+            let (reference, reference_counts) = run(true);
+            let (actual, counts) = run(false);
+            assert_eq!(reference_counts.direct_switch_handoffs, 0);
+            assert_eq!(reference, expected, "reference: {source}");
+            assert_eq!(actual, expected, "direct: {source}");
+            handoffs += counts.direct_switch_handoffs;
+        }
+        assert!(handoffs > 0, "Native must consume grammar-built switch statements");
+    }
+
+    #[test]
+    fn direct_loop_regions_preserve_evaluation_order_and_constant_rewrites() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) { USE_REFERENCE_DIRECT_LOOPS.with(|flag| flag.set(self.0)); }
+        }
+        let mut handoffs = 0;
+        for source in [
+            "int f(int n){int i=0;while(i<n)i++;return i;}",
+            "int f(int n){int i=0;do{i++;}while(i<n);return i;}",
+            "int f(void){while(1);return 0;}",
+            "int f(void){int n=0;do{n++;continue;n++;}while(0);return n;}",
+            "int f(int n){int i=0;while(i++<n){int n=3;if(i==n)continue;if(i>5)break;}return i;}",
+            "int f(int n){int i=0;do{int n=2;i+=n;}while(--n);return i;}",
+            "int f(char *p){int n=0;while(*p++){n++;}return n;}",
+            "int f(int n){int i=0;do{while(i<n){i++;continue;}if(i>4)break;}while(i++<n);return i;}",
+            "int f(int n){int s=0;for(int i=0;i<n;i++){if(i==2)continue;s+=i;}return s;}",
+            "int f(void){int i=0;for(;;){if(i++>3)break;}return i;}",
+            "int f(int n){int i=0;for(i=1;i<n;)i++;return i;}",
+            "int f(int n){for(;n--;n+=0){int n=3;if(n)break;}return n;}",
+        ] {
+            let expected = format!("{:?}", crate::parse_with_peg(source).unwrap());
+            let run = |reference| {
+                let _restore = Restore(USE_REFERENCE_DIRECT_LOOPS.with(|flag| flag.replace(reference)));
+                let (module, counts) = crate::frontend::profile_construction(|| crate::parse_optimized(source));
+                (format!("{:?}", module.unwrap()), counts)
+            };
+            let (reference, reference_counts) = run(true);
+            let (actual, counts) = run(false);
+            assert_eq!(reference_counts.direct_loop_handoffs, 0);
+            assert_eq!(reference, expected, "reference: {source}");
+            assert_eq!(actual, expected, "direct: {source}");
+            handoffs += counts.direct_loop_handoffs;
+        }
+        assert!(handoffs > 0, "Native must consume grammar-built loop statements");
+    }
+
+    #[test]
+    fn direct_if_regions_preserve_conditions_scopes_and_branch_backing_joins() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) { USE_REFERENCE_DIRECT_IF.with(|flag| flag.set(self.0)); }
+        }
+        let mut handoffs = 0;
+        for source in [
+            "int f(int x){if(x)return 1;return 2;}",
+            "int f(int x,int y){if(x)if(y)return 1;else return 2;return 3;}",
+            "int f(int x){if(x){int x=3;return x;}else{int x=4;return x;}}",
+            "int f(int x){if((x+=1)&&x<4)x++;else x--;return x;}",
+            "int f(const char *p){if(p&&*p)return *p;else return 0;}",
+            "int f(int x){int a[2]={1,2},b[2]={3,4};int *p;if(x)p=a;else p=b;return p[1];}",
+            "struct S{int x;}; int f(int x,struct S *a,struct S *b){struct S *p;if(x)p=a;else p=b;return p->x;}",
+            "int f(int n){int i=0;while(i<n){i++;if(i==2)continue;if(i==4)break;}return i;}",
+            "int f(int x,int y){if(x?x:y)return x;else if(y)return y;return 0;}",
+            "int f(int x){if(x);else{}return x;}",
+            "int f(int x){if(x)goto done;else x=3;done:return x;}",
+            "int fork(void);void _exit(int);int f(void){int x=0;if(fork()==0){x=1;_exit(0);}else{x=2;}return x;}",
+        ] {
+            let expected = format!("{:?}", crate::parse_with_peg(source).unwrap());
+            let run = |reference| {
+                let _restore = Restore(USE_REFERENCE_DIRECT_IF.with(|flag| flag.replace(reference)));
+                let (module, counts) = crate::frontend::profile_construction(|| crate::parse_optimized(source));
+                (format!("{:?}", module.unwrap()), counts)
+            };
+            let (reference, reference_counts) = run(true);
+            let (actual, counts) = run(false);
+            assert_eq!(reference_counts.direct_if_handoffs, 0);
+            assert_eq!(reference, expected, "reference: {source}");
+            assert_eq!(actual, expected, "direct: {source}");
+            handoffs += counts.direct_if_handoffs;
+        }
+        assert!(handoffs > 0, "Native must consume grammar-built if statements");
+    }
+
+    #[test]
+    fn direct_plain_parameters_preserve_type_policy_and_contextual_fallback() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_DIRECT_PARAMETERS.with(|flag| flag.set(self.0));
+            }
+        }
+        let mut handoffs = 0;
+        for source in [
+            "int f(int x,unsigned short y,double z){return x+y+(int)z;}",
+            "typedef unsigned short Word; int f(Word x){return x;}",
+            "int f(const int x,volatile long y){return x+y;}",
+            "enum E{A=1}; int f(enum E x){return x;}",
+            "typedef int T; int f(int T){return T;}",
+            "int f(int x); int f(int x){return x;}",
+            "typedef int *P; int f(P p){return *p;}",
+            "typedef int A[3]; int f(A a){return a[0];}",
+            "typedef int (*F)(int); int f(F cb){return cb(2);}",
+            "typedef int F(int); int f(F cb){return cb(2);}",
+            "int f(int *p,int a[3],int (*row)[3]){return *p+a[0]+row[0][0];}",
+            "int f(int n,int a[n++]){return n+a[0];}",
+            "struct S{int x;}; int f(struct S s){return s.x;}",
+            "int f(int, double); int empty(void); int variadic(int first,...);",
+            "int f(int (*callbacks[2])(int)){return callbacks[0](1);}",
+        ] {
+            let expected = format!("{:?}", crate::parse_with_peg(source).unwrap());
+            let run = |reference| {
+                let _restore = Restore(USE_REFERENCE_DIRECT_PARAMETERS
+                    .with(|flag| flag.replace(reference)));
+                let (module, counts) = crate::frontend::profile_construction(|| crate::parse_optimized(source));
+                (format!("{:?}", module.unwrap()), counts)
+            };
+            let (reference, reference_counts) = run(true);
+            let (actual, counts) = run(false);
+            assert_eq!(reference_counts.direct_parameter_handoffs, 0);
+            assert_eq!(reference, expected, "reference: {source}");
+            assert_eq!(actual, expected, "direct: {source}");
+            handoffs += counts.direct_parameter_handoffs;
+        }
+        assert!(handoffs > 0, "Native must consume grammar-built scalar parameters");
+        for source in [
+            "typedef int *P; int f(P p);",
+            "typedef int A[3]; int f(A a);",
+            "typedef int (*F)(int); int f(F cb);",
+            "typedef int F(int); int f(F cb);",
+            "int f(int *p); int g(int a[3]); int h(int (*p)[3]);",
+            "int f(int); int g(void);",
+        ] {
+            let (_, counts) = crate::frontend::profile_construction(|| crate::parse_optimized(source).unwrap());
+            assert_eq!(counts.direct_parameter_handoffs, 0, "{source}");
+        }
+    }
+
+    #[test]
+    fn direct_binary_regions_preserve_typed_operands_and_rewrite_boundaries() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_DIRECT_BINARIES.with(|flag| flag.set(self.0));
+            }
+        }
+        let mut handoffs = 0;
+        for source in [
+            "int f(int a,int b,int c){return a+b*c-a/b%c;}",
+            "unsigned f(unsigned a,unsigned b){return a>>2|b<<3;}",
+            "int f(int a,int b){return a==b||a<b&&a!=0;}",
+            "int f(int a,int b){return -a+~b*3;}",
+            "int f(int a,int b){return (a+b)*3+(a,b);}",
+            "int f(void){return 1+2*3-4/2;}",
+            "double f(double x){return x+1.5*2.0;}",
+            "typedef unsigned short W; int f(W a,W b){return a+b*2;}",
+            "int f(int *p,int *q){return p+1==q;}",
+            "int f(void){int x=1;{int x=2,y=3; x=x+y;}return x;}",
+            "struct S{unsigned short x;}; int f(struct S *p,int x){return p->x+x;}",
+            "int f(int *p,int x){return *p+x+p[x];}",
+            "int g(int); int f(int x){return g(x)+x++;}",
+            "int f(int x){return (x=3)+x;}",
+            "int f(int x,int y){return (int)x+y;}",
+        ] {
+            let expected = format!("{:?}", crate::parse_with_peg(source).unwrap());
+            let run = |reference| {
+                let _restore = Restore(USE_REFERENCE_DIRECT_BINARIES
+                    .with(|flag| flag.replace(reference)));
+                let (module, counts) = crate::frontend::profile_construction(|| crate::parse_optimized(source));
+                (format!("{:?}", module.unwrap()), counts)
+            };
+            let (reference, reference_counts) = run(true);
+            let (candidate, counts) = run(false);
+            assert_eq!(reference_counts.direct_binary_handoffs, 0);
+            assert_eq!(reference, expected, "reference: {source}");
+            assert_eq!(candidate, expected, "direct: {source}");
+            handoffs += counts.direct_binary_handoffs;
+        }
+        assert!(handoffs > 0, "Native must consume grammar-built binary regions");
+    }
+
+    #[test]
+    fn direct_plain_declarators_preserve_ordered_binding_and_storage_policy() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_DIRECT_DECLARATORS.with(|flag| flag.set(self.0));
+            }
+        }
+        let mut handoffs = 0;
+        for source in [
+            "int a; int b=3; int c=-2;",
+            "int f(void) { int a=2,b=a,c=~b; return a+b+c; }",
+            "int f(void) { int x=1; { int x=2,y=x; x=-y; } return x; }",
+            "typedef unsigned short Word; Word a=65537; unsigned b=0xffffffffu; long c=1LL;",
+            "int f(void) { static int x=2; const int y=3; volatile int z=y; return x+y+z; }",
+            "typedef int *P; P p=0; typedef int A[2]; A a;",
+            "int f(int x) { return x; } typedef int (*F)(int); F callback=f;",
+            "struct S { int x; }; struct S s={1}; int values[2]={2,3};",
+            "int g(int); int f(void) { int x=g(2),y=(x++,x); return y; }",
+        ] {
+            for parse in [crate::parse_with_peg, crate::parse_optimized] {
+                let run = |reference| {
+                    let _restore = Restore(USE_REFERENCE_DIRECT_DECLARATORS
+                        .with(|flag| flag.replace(reference)));
+                    let (module, counts) = crate::frontend::profile_construction(|| parse(source));
+                    (format!("{:?}", module.unwrap()), counts)
+                };
+                let (reference, _) = run(true);
+                let (candidate, counts) = run(false);
+                assert_eq!(reference, candidate, "{source}");
+                handoffs += counts.direct_declaration_handoffs;
+            }
+        }
+        assert!(handoffs > 0, "Native must consume grammar-built scalar declarators");
+        for source in [
+            "typedef int *P; P p=0;",
+            "typedef int A[2]; A a;",
+            "int f(int x) { return x; } typedef int (*F)(int); F callback=f;",
+            "int *p=0;",
+            "int (*p)[3];",
+            "int a[3];",
+            "int f(int);",
+            "int (*callback)(int);",
+            "int * const p=0;",
+        ] {
+            let expected = crate::parse_with_peg(source).unwrap();
+            let (actual, counts) = crate::frontend::profile_construction(|| crate::parse_optimized(source).unwrap());
+            assert_eq!(format!("{expected:?}"), format!("{actual:?}"), "{source}");
+            assert_eq!(counts.direct_declaration_handoffs, 0, "type admission must retain fallback: {source}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "alternating full-frontend initializer ownership CPU benchmark"]
+    fn measure_initializer_predeclaration_reuse() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_INITIALIZER_PREDECLARATION.with(|flag| flag.set(self.0));
+            }
+        }
+        fn cpu_ns() -> u128 {
+            let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) }, 0);
+            time.tv_sec as u128 * 1_000_000_000 + time.tv_nsec as u128
+        }
+        let source = std::env::var("VYBE_C_FRONTEND_PREPROCESSED")
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .unwrap_or_else(|_| {
+                let mut source = String::new();
+                for table in 0..12 {
+                    source.push_str(&format!("const int table{table}[1024] = {{"));
+                    for value in 0..1024 {
+                        source.push_str(&format!("{},", value - 512));
+                    }
+                    source.push_str("};\n");
+                }
+                source
+            });
+        let parse = |reference| {
+            let _restore = Restore(USE_REFERENCE_INITIALIZER_PREDECLARATION
+                .with(|flag| flag.replace(reference)));
+            crate::parse_optimized(&source).unwrap()
+        };
+        assert_eq!(format!("{:?}", parse(true)), format!("{:?}", parse(false)));
+        for round in 0..6 {
+            for reference in if round % 2 == 0 { [true, false] } else { [false, true] } {
+                let cpu = cpu_ns();
+                let wall = Instant::now();
+                drop(std::hint::black_box(parse(reference)));
+                eprintln!("initializer_reuse round={round} reference={reference} cpu_ns={} wall_ns={}",
+                    cpu_ns() - cpu, wall.elapsed().as_nanos());
+            }
+        }
+    }
+
+    #[test]
+    fn predeclaration_reuses_decoded_signature_without_ast_changes() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_PREDECLARATION.with(|flag| flag.set(self.0));
+            }
+        }
+        for source in [
+            "int g; int f(int x, unsigned y) { return x+y+g; }",
+            "typedef int T; int f(T x); int (*callback)(T); int f(T x) { return x; }",
+            "int f(int n, int a[n][3]) { return a[0][0]; }",
+            "int f(int (*p)(int), int x) { return p(x); }",
+            "int f(int x, ...); int main(void) { return f(1, 2); }",
+            "struct S { int x; }; int f(struct S *p) { return p->x; }",
+            "int (*factory(int x))(int); int values[3];",
+            "int f(int n, int a[n++]) { return n; }",
+            "int f(int x) { return ; broken + ; }",
+        ] {
+            for parse in [crate::parse_with_peg, crate::parse_optimized] {
+                let run = |reference| {
+                    let _restore = Restore(USE_REFERENCE_PREDECLARATION.with(|flag| flag.replace(reference)));
+                    PREDECLARATOR_DECODES.with(|count| count.set(0));
+                    let result = parse(source);
+                    (format!("{result:?}"), PREDECLARATOR_DECODES.with(|count| count.get()))
+                };
+                let (reference, before) = run(true);
+                let (candidate, after) = run(false);
+                assert_eq!(reference, candidate, "{source}");
+                assert!(after <= before, "{source}: {before} -> {after}");
+                if candidate.starts_with("Ok(") {
+                    assert!(after < before, "{source}: no decoding removed");
+                }
+                eprintln!("predeclaration decodes {before} -> {after}: {source}");
+            }
+        }
+    }
+
+    #[test]
+    fn completed_binary_nodes_skip_identity_passes_without_ast_changes() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_BINARY_REWRITES.with(|flag| flag.set(self.0));
+            }
+        }
+        let mut totals = (0, 0);
+        for source in [
+            "int f(void){return 3;}",
+            "long long f(long long x){return (x*3LL)>>2;}",
+            "unsigned f(unsigned a,unsigned b){return (a+b)*3u/(b|1u);}",
+            "int f(int a,int b){return (a+b)*3/(b|1);}",
+            "int f(int a,int b){return (a&&b)||(a==b);}",
+            "double f(double x){return (x*0.5)/3.0;}",
+            "int f(char *p,int n){return p[n]+p[0];}",
+            "int f(int *p,int *q){return p<q || p==0;}",
+            "long f(int *p,int *q){return (p+2)-q;}",
+            "struct S{int x;}; int f(struct S *p){return p->x+3;}",
+            "int f(int x){int a[]={1,2,3}; return a[x]+a[0];}",
+            "int f(void){return \"abc\"[1]+(1<<3);}",
+            "unsigned long long f(unsigned long long x){return x+0xffffffffffffffffULL;}",
+        ] {
+            for parse in [crate::parse_with_peg, crate::parse_optimized, crate::parse_contextual_pratt] {
+                let run = |reference| {
+                    let _restore = Restore(USE_REFERENCE_BINARY_REWRITES.with(|flag| flag.replace(reference)));
+                    BINARY_REWRITE_CALLS.with(|count| count.set(0));
+                    let result = parse(source).unwrap();
+                    (format!("{result:?}"), BINARY_REWRITE_CALLS.with(|count| count.get()))
+                };
+                let (reference, before) = run(true);
+                let (candidate, after) = run(false);
+                assert_eq!(reference, candidate, "{source}");
+                assert!(after <= before, "extra rewrite calls: {before} -> {after}: {source}");
+                totals.0 += before;
+                totals.1 += after;
+                eprintln!("binary rewrite calls {before} -> {after}: {source}");
+            }
+        }
+        assert!(totals.1 < totals.0, "no identity passes removed: {totals:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "paired complete frontend CPU for binary rewrite completion"]
+    fn measure_completed_binary_rewrites() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_BINARY_REWRITES.with(|flag| flag.set(self.0));
+            }
+        }
+        fn cpu_ns() -> u128 {
+            let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) }, 0);
+            time.tv_sec as u128 * 1_000_000_000 + time.tv_nsec as u128
+        }
+        let name = std::env::var("VYBE_C_FRONTEND_SOURCE")
+            .unwrap_or_else(|_| "tests/c/doom_startup/frontend_initializer_handoffs.c".into());
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(&name);
+        let source = std::fs::read_to_string(&path).unwrap();
+        let source = expand_source(&path, &source).unwrap();
+        let parse = |reference| {
+            let _restore = Restore(USE_REFERENCE_BINARY_REWRITES.with(|flag| flag.replace(reference)));
+            crate::parse_optimized(&source).unwrap()
+        };
+        assert_eq!(format!("{:?}", parse(true)), format!("{:?}", parse(false)));
+        for round in 0..6 {
+            for reference in if round % 2 == 0 { [true, false] } else { [false, true] } {
+                let cpu = cpu_ns();
+                let wall = Instant::now();
+                drop(std::hint::black_box(parse(reference)));
+                eprintln!("binary_rewrite_completion input={name} round={round} reference={reference} cpu_ns={} wall_ns={}",
+                    cpu_ns() - cpu, wall.elapsed().as_nanos());
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "alternating full-frontend predeclaration CPU benchmark"]
+    fn measure_predeclaration_signature_reuse() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_PREDECLARATION.with(|flag| flag.set(self.0));
+            }
+        }
+        fn cpu_ns() -> u128 {
+            let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) }, 0);
+            time.tv_sec as u128 * 1_000_000_000 + time.tv_nsec as u128
+        }
+        let mut source = String::from("typedef unsigned int U;\n");
+        for index in 0..300 {
+            source.push_str(&format!("int f{index}(int x, U y, int (*cb)(int), const char *s);\n"));
+        }
+        let parse = |reference| {
+            let _restore = Restore(USE_REFERENCE_PREDECLARATION.with(|flag| flag.replace(reference)));
+            crate::parse_optimized(&source).unwrap()
+        };
+        assert_eq!(format!("{:?}", parse(true)), format!("{:?}", parse(false)));
+        for round in 0..6 {
+            for reference in if round % 2 == 0 { [true, false] } else { [false, true] } {
+                let cpu = cpu_ns();
+                let wall = Instant::now();
+                drop(std::hint::black_box(parse(reference)));
+                eprintln!("signature_reuse round={round} reference={reference} cpu_ns={} wall_ns={}",
+                    cpu_ns() - cpu, wall.elapsed().as_nanos());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "complete saved C translation-unit signature-reuse AST parity"]
+    fn predeclaration_signature_reuse_full_module_ast_parity() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_PREDECLARATION.with(|flag| flag.set(self.0));
+            }
+        }
+        let path = std::env::var("VYBE_C_FRONTEND_PREPROCESSED")
+            .expect("provide saved preprocessed C source");
+        let source = std::fs::read_to_string(path).unwrap();
+        let parse = |reference| {
+            let _restore = Restore(USE_REFERENCE_PREDECLARATION.with(|flag| flag.replace(reference)));
+            crate::parse_optimized(&source).unwrap()
+        };
+        let reference = format!("{:?}", parse(true));
+        let candidate = format!("{:?}", parse(false));
+        assert!(reference == candidate, "AST differs at byte {:?}",
+            reference.bytes().zip(candidate.bytes()).position(|(left, right)| left != right));
+        eprintln!("signature reuse full-module parity: source_bytes={} ast_bytes={}",
+            source.len(), candidate.len());
+    }
+
+    fn with_reference_declaration_replay<T>(action: impl FnOnce() -> T) -> T {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_REFERENCE_DECLARATION_REPLAY.with(|flag| flag.set(self.0));
+            }
+        }
+        let _restore = Restore(USE_REFERENCE_DECLARATION_REPLAY.with(|flag| flag.replace(true)));
+        action()
+    }
+
+    #[test]
+    fn captured_declaration_guard_preserves_ast_and_skips_fragment_matching() {
+        let sources = [
+            "typedef int T; int f(void) { int x=0; x=1; x++; x+=2; return x; }",
+            "typedef int T; int f(void) { T *p; p=0; T value; value=3; return value; }",
+            "typedef int T; int f(void) { int T=2; T*=3; return T; }",
+            "typedef int T; void sink(int); int f(void) { int x=0; sink(x); ++x; (x)+=2; return x; }",
+            "typedef int T; struct P { int x; }; int f(struct P *p) { p->x=1; /* gap */ p->x++; return p->x; }",
+            "typedef int T; int f(void) { T /* gap */ *p; p=0; return p!=0; }",
+            "int f(void) { return 1 + ; }",
+        ];
+        let mut before = 0;
+        let mut after = 0;
+        for source in sources {
+            let (reference, reference_counts) = crate::frontend::profile_matching(|| {
+                with_reference_declaration_replay(|| crate::parse_with_peg(source))
+            });
+            let (candidate, candidate_counts) = crate::frontend::profile_matching(|| {
+                crate::parse_with_peg(source)
+            });
+            assert_eq!(format!("{reference:?}"), format!("{candidate:?}"), "{source}");
+            let count = |profile: &crate::frontend::MatchingProfile| profile.rules.iter()
+                .filter(|row| matches!(row.rule.as_str(), "declaration" | "ident_name"))
+                .map(|row| row.totals.calls).sum::<usize>();
+            before += count(&reference_counts);
+            after += count(&candidate_counts);
+        }
+        eprintln!("declaration recovery fragment matches: {before} -> {after}");
+        assert!(after < before);
+    }
+
+    #[test]
+    #[ignore = "complete saved-Doom declaration-replay AST parity"]
+    fn captured_declaration_guard_full_doom_ast_parity() {
+        let path = std::env::var("VYBE_C_FRONTEND_PREPROCESSED")
+            .expect("provide saved preprocessed Doom source");
+        let source = std::fs::read_to_string(path).unwrap();
+        let reference = with_reference_declaration_replay(|| crate::parse_with_peg(&source)).unwrap();
+        let candidate = crate::parse_with_peg(&source).unwrap();
+        let reference = format!("{reference:?}");
+        let candidate = format!("{candidate:?}");
+        assert!(reference == candidate, "AST differs at byte {:?}",
+            reference.bytes().zip(candidate.bytes()).position(|(left, right)| left != right));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "paired complete C frontend CPU measurement"]
+    fn measure_captured_declaration_replay_guard() {
+        fn cpu_ns() -> u128 {
+            let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) }, 0);
+            time.tv_sec as u128 * 1_000_000_000 + time.tv_nsec as u128
+        }
+        assert!(std::env::var_os("VYBE_C_DEBUG_TIMINGS").is_none());
+        let path = std::env::var("VYBE_C_FRONTEND_PREPROCESSED").unwrap();
+        let source = std::fs::read_to_string(&path).unwrap();
+        let samples = std::env::var("VYBE_C_FRONTEND_SAMPLES").ok()
+            .and_then(|value| value.parse::<usize>().ok()).unwrap_or(3);
+        assert!(samples >= 3);
+        let mut times = [Vec::new(), Vec::new()];
+        for sample in 0..samples {
+            for index in if sample % 2 == 0 { [0, 1] } else { [1, 0] } {
+                let cpu = cpu_ns();
+                let wall = Instant::now();
+                let module = if index == 0 {
+                    with_reference_declaration_replay(|| crate::parse_with_peg(&source))
+                } else {
+                    crate::parse_with_peg(&source)
+                }.unwrap();
+                drop(std::hint::black_box(module));
+                let cpu = cpu_ns() - cpu;
+                times[index].push(cpu);
+                eprintln!("declaration_replay_sample reference={} sample={sample} cpu_ns={cpu} wall_ns={}",
+                    index == 0, wall.elapsed().as_nanos());
+            }
+        }
+        for (index, times) in times.iter_mut().enumerate() {
+            times.sort_unstable();
+            eprintln!("declaration_replay_median reference={} input={path} samples={samples} cpu_ns={}",
+                index == 0, times[samples / 2]);
+        }
+    }
+
+    // Retain the pre-optimization classifier as an independent AST parity oracle.
+    pub(super) fn owned_carray_classifier(walker: &Walker, value: &Expression) -> bool {
+        fn operand(value: &Expression) -> Expression {
+            match &value.kind {
+                ExprKind::Cast { expr, .. } => operand(expr),
+                _ => value.clone(),
+            }
+        }
+        let value_operand = operand(value);
+        if is_carray_like_expr(&value_operand) {
+            return true;
+        }
+        let backing = walker.struct_backing_pointer_or_value(value.clone());
+        let backing_operand = operand(&backing);
+        if is_carray_like_expr(&backing_operand) {
+            return true;
+        }
+        if let ExprKind::Sequence(parts) = &backing_operand.kind {
+            if parts.last().map(|last| is_carray_like_expr(&operand(last))).unwrap_or(false) {
+                return true;
+            }
+            if let Some(ExprKind::Ident(result_name)) = parts.last().map(|last| &last.kind) {
+                if parts.iter().rev().any(|part| {
+                    let ExprKind::Assign { target, value } = &part.kind else { return false; };
+                    matches!(&target.kind, ExprKind::Ident(name) if name == result_name)
+                        && is_carray_like_expr(&operand(value))
+                }) {
+                    return true;
+                }
+            }
+        }
+        let ExprKind::Sequence(parts) = &value_operand.kind else { return false; };
+        let Some(last) = parts.last() else { return false; };
+        if is_carray_like_expr(last) {
+            return true;
+        }
+        let ExprKind::Ident(result_name) = &last.kind else { return false; };
+        parts.iter().rev().any(|part| {
+            let ExprKind::Assign { target, value } = &part.kind else { return false; };
+            matches!(&target.kind, ExprKind::Ident(name) if name == result_name)
+                && is_carray_like_expr(&operand(value))
+        })
+    }
+
+    fn parse_with_owned_classifier(source: &str) -> vybe_ast::Module {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                USE_OWNED_CLASSIFIER.with(|mode| mode.set(self.0));
+            }
+        }
+        let _restore = Restore(USE_OWNED_CLASSIFIER.with(|mode| mode.replace(true)));
+        crate::parse_with_peg(source).unwrap()
+    }
+
+    #[test]
+    fn borrowed_classifier_preserves_complete_fixture_asts() {
+        for source in [
+            include_str!("../../../tests/c/doom_startup/pointer_branch_join_backings.c"),
+            include_str!("../../../tests/c/doom_startup/pointer_arithmetic_chains.c"),
+            include_str!("../../../tests/c/doom_startup/reentrant_pointer_field_assignment.c"),
+        ] {
+            let reference = format!("{:?}", parse_with_owned_classifier(source));
+            let actual = format!("{:?}", crate::parse_with_peg(source).unwrap());
+            assert!(reference == actual, "complete classifier AST parity failed");
+        }
+    }
+
+    #[test]
+    #[ignore = "complete saved preprocessed-Doom AST parity; provide VYBE_C_FRONTEND_PREPROCESSED"]
+    fn borrowed_classifier_preserves_complete_preprocessed_ast() {
+        let path = std::env::var("VYBE_C_FRONTEND_PREPROCESSED").unwrap();
+        let source = std::fs::read_to_string(path).unwrap();
+        let reference = format!("{:?}", parse_with_owned_classifier(&source));
+        let actual = format!("{:?}", crate::parse_with_peg(&source).unwrap());
+        assert!(reference == actual, "complete classifier AST differs at byte {:?}; reference={} actual={}",
+            reference.bytes().zip(actual.bytes()).position(|(a, b)| a != b),
+            reference.len(), actual.len());
+    }
+
+    #[test]
+    fn pointer_index_equality_guards_numeric_and_field_key_lanes() {
+        let comparison = carray_pointer_index_equality(ident("left"), ident("right"));
+        let ExprKind::Ternary { cond, then, else_ } = &comparison.kind else {
+            panic!("numeric index guard");
+        };
+        let both_are = |type_name: &str| binary_expr(BinOp::And,
+            expr(ExprKind::IsType { expr: Box::new(ident("left")), type_name: type_name.into() }),
+            expr(ExprKind::IsType { expr: Box::new(ident("right")), type_name: type_name.into() }),
+        );
+        assert_eq!(format!("{cond:?}"), format!("{:?}", both_are("number")));
+        assert!(matches!(&then.kind, ExprKind::Binary { op: BinOp::Eq, left, right }
+            if matches!(&left.kind, ExprKind::Cast { type_name, .. } if type_name == "int")
+                && matches!(&right.kind, ExprKind::Cast { type_name, .. } if type_name == "int")));
+        let ExprKind::Ternary { cond, then, else_ } = &else_.kind else {
+            panic!("field key guard");
+        };
+        assert_eq!(format!("{cond:?}"), format!("{:?}", both_are("string")));
+        assert_eq!(format!("{then:?}"), format!("{:?}",
+            call_expr(ident("__c_tag_eq"), vec![ident("left"), ident("right")])));
+        assert!(matches!(&else_.kind, ExprKind::Lit(Literal::Bool(false))));
+
+        let start = compare_carray_to_array_start(ident("pointer"), ident("base"), BinOp::Eq);
+        let ExprKind::Binary { op: BinOp::And, right, .. } = &start.kind else {
+            panic!("base and index equality");
+        };
+        assert!(matches!(&right.kind, ExprKind::Binary { op: BinOp::And, left, .. }
+            if matches!(&left.kind, ExprKind::IsType { type_name, .. } if type_name == "number")));
+    }
+
+    #[test]
+    fn field_address_uses_declared_layout_without_byte_view_classification() {
+        let mut walker = Walker::default();
+        walker.structs.insert("Owner".into(), vec!["guard".into(), "cache".into(), "tail".into()]);
+        walker.struct_field_types.insert("Owner".into(), [
+            ("guard".into(), "int".into()), ("cache".into(), "void *".into()),
+            ("tail".into(), "int".into()),
+        ].into_iter().collect());
+        walker.var_types.insert("owner".into(), "Owner *".into());
+        assert!(!walker.byte_struct_pointer_vars.contains_key("owner"));
+        let place = member(ident("owner"), "cache");
+        let address = walker.byte_struct_member_address_expr(&place).expect("declared record layout");
+        let ExprKind::Cast { expr: address, type_name } = &address.kind else { panic!("typed field address"); };
+        assert_eq!(type_name, "void * *");
+        let ExprKind::Ternary { cond, then, else_ } = &address.kind else { panic!("runtime backing guard"); };
+        assert!(matches!(&cond.kind, ExprKind::IsType { type_name, .. } if type_name == "number"));
+        let offset = walker.offsetof_struct_field("Owner", "cache");
+        assert_eq!(offset, 8);
+        assert_eq!(format!("{then:?}"), format!("{:?}", walker.linear_field_addr(ident("owner"), offset)));
+        let ExprKind::Ternary { cond, then, else_ } = &else_.kind else {
+            panic!("managed carrier normalization");
+        };
+        let carrier_guard = call_expr(ident("__c_tag_eq"), vec![
+            member(ident("owner"), REF_KIND_KEY), str_lit(C_STRUCT_PTR_KIND),
+        ]);
+        assert_eq!(format!("{cond:?}"), format!("{carrier_guard:?}"));
+        let managed_field = member(call_expr(ident("__c_record_pointer_value"), vec![
+            member(ident("owner"), CARRAY_BASE_KEY),
+        ]), "cache");
+        assert_eq!(format!("{then:?}"), format!("{:?}", unary_expr(UnaryOp::AddrOf, managed_field)));
+        let managed_owner_field = member(call_expr(ident("__c_record_pointer_value"),
+            vec![ident("owner")]), "cache");
+        assert_eq!(format!("{else_:?}"), format!("{:?}",
+            unary_expr(UnaryOp::AddrOf, managed_owner_field)));
+    }
+
+    #[test]
+    fn byte_classified_cell_field_address_keeps_named_identity_and_guards_byte_offsets() {
+        let mut walker = Walker::default();
+        walker.structs.insert("owner".into(), vec!["guard".into(), "cache".into()]);
+        walker.struct_field_types.insert("owner".into(), HashMap::from([
+            ("guard".into(), "int".into()), ("cache".into(), "void *".into()),
+        ]));
+        walker.var_types.insert("source".into(), "owner *".into());
+        walker.byte_struct_pointer_vars.insert("source".into(), "owner".into());
+        let original_pointer = walker.struct_backing_pointer_or_value(ident("source"));
+        let address = walker.byte_struct_member_address_expr(&member(ident("source"), "cache"))
+            .expect("byte classification must not erase a CELL record's field identity");
+        let (address, pointer) = if let ExprKind::Call { callee, args, .. } = &address.kind {
+            let ExprKind::Lambda { params, body: LambdaBody::Expr(body), .. } = &callee.kind
+                else { panic!("computed owner needs a lexical capture") };
+            assert_eq!(params.len(), 1);
+            assert_eq!(args.len(), 1);
+            assert_eq!(format!("{:?}", args[0].value), format!("{original_pointer:?}"));
+            (body.as_ref(), ident(&params[0].name))
+        } else {
+            (&address, original_pointer)
+        };
+        let ExprKind::Ternary { cond, then: numeric, else_: managed } = &address.kind
+            else { panic!("numeric and managed address dispatch") };
+        let expected_numeric_guard = expr(ExprKind::IsType {
+            expr: Box::new(pointer.clone()), type_name: "number".into(),
+        });
+        assert_eq!(format!("{cond:?}"), format!("{expected_numeric_guard:?}"));
+        let offset = walker.offsetof_struct_field("owner", "cache");
+        assert_eq!(offset, 8);
+        let expected_numeric = expr(ExprKind::Cast {
+            expr: Box::new(walker.linear_field_addr(pointer.clone(), offset)),
+            type_name: "void * *".into(),
+        });
+        assert_eq!(format!("{numeric:?}"), format!("{expected_numeric:?}"));
+        let ExprKind::Ternary { cond, then: bytes, else_: record } = &managed.kind
+            else { panic!("only a tagged CARRAY may use byte indices") };
+        let carray_guard = call_expr(ident("__c_tag_eq"), vec![
+            member(pointer.clone(), REF_KIND_KEY), str_lit(CARRAY_KIND),
+        ]);
+        assert_eq!(format!("{cond:?}"), format!("{carray_guard:?}"));
+        let byte_address = pointers::make_carray_ptr(
+            member(pointer.clone(), CARRAY_BASE_KEY),
+            binary_expr(BinOp::Add, member(pointer.clone(), CARRAY_IDX_KEY), int_lit(offset)),
+        );
+        assert_eq!(format!("{bytes:?}"), format!("{byte_address:?}"));
+        let owner = ternary_expr(
+            call_expr(ident("__c_tag_eq"), vec![
+                member(pointer.clone(), REF_KIND_KEY), str_lit(C_STRUCT_PTR_KIND),
+            ]),
+            member(pointer.clone(), CARRAY_BASE_KEY), pointer,
+        );
+        let named_address = unary_expr(UnaryOp::AddrOf, member(
+            call_expr(ident("__c_record_pointer_value"), vec![owner]), "cache",
+        ));
+        assert_eq!(format!("{record:?}"), format!("{named_address:?}"));
+        let mut unguarded_byte_indices = 0;
+        record.walk_exprs(&mut |value| {
+            unguarded_byte_indices += usize::from(matches!(&value.kind,
+                ExprKind::Member { field, .. } if field == CARRAY_IDX_KEY));
+        });
+        assert_eq!(unguarded_byte_indices, 0,
+            "CELL/cstruct/raw record address must not read an absent __idx");
+    }
+
+    #[test]
+    fn backed_view_field_address_captures_its_owner_producer_once() {
+        let mut walker = Walker::default();
+        walker.structs.insert("owner".into(), vec!["guard".into(), "cache".into()]);
+        walker.struct_field_types.insert("owner".into(), HashMap::from([
+            ("guard".into(), "int".into()), ("cache".into(), "void *".into()),
+        ]));
+        let view = walker.struct_view_object_with_pointer_backing(
+            "owner", &["guard".into(), "cache".into()],
+            call_expr(ident("backing_once"), vec![]),
+        );
+        let owner = expr(ExprKind::Cast { expr: Box::new(view), type_name: "owner *".into() });
+        let address = walker.byte_struct_member_address_expr(&member(owner, "cache")).unwrap();
+        let ExprKind::Call { callee, args, .. } = &address.kind
+            else { panic!("effectful owner must be captured before representation checks") };
+        let ExprKind::Lambda { params, body: LambdaBody::Expr(body), captures, .. } = &callee.kind
+            else { panic!("invocation-local field-address capture") };
+        assert_eq!(params.len(), 1);
+        assert!(captures.is_empty());
+        assert_eq!(args.len(), 1);
+        assert!(matches!(&args[0].value.kind, ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "backing_once")));
+        let mut producers = 0;
+        address.walk_exprs(&mut |value| {
+            producers += usize::from(matches!(&value.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "backing_once")));
+        });
+        assert_eq!(producers, 1);
+        let mut owner_uses = 0;
+        body.walk_exprs(&mut |value| {
+            assert!(!matches!(&value.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "backing_once")),
+                "dispatch must reuse its parameter rather than replaying the producer");
+            owner_uses += usize::from(matches!(&value.kind,
+                ExprKind::Ident(name) if name == &params[0].name));
+        });
+        assert!(owner_uses > 1, "all dynamic representation checks reuse one captured owner");
+        assert!(walker.generated_local_declarations.is_empty(),
+            "the capture must be lexical, not an implicit global temporary");
+    }
+
+    #[test]
+    fn borrowed_carray_classification_matches_owned_cast_stripping() {
+        fn legacy_operand(value: &Expression) -> Expression {
+            match &value.kind {
+                ExprKind::Cast { expr, .. } => legacy_operand(expr),
+                _ => value.clone(),
+            }
+        }
+        let pointer = pointers::make_carray_ptr(ident("storage"), int_lit(0));
+        let cases = vec![
+            ident("unknown"), int_lit(1024), null_lit(), pointer.clone(),
+            ternary_expr(ident("condition"), pointer.clone(), null_lit()),
+            ternary_expr(ident("condition"), null_lit(), pointer.clone()),
+            expr(ExprKind::Sequence(vec![call_expr(ident("effect"), vec![]), pointer])),
+            call_expr(ident("unknown_call"), vec![]),
+        ];
+        let walker = Walker::default();
+        for value in cases {
+            let mut wrapped = value;
+            for depth in 0..4 {
+                let before = format!("{wrapped:?}");
+                let borrowed = carray_operand_ref(&wrapped);
+                assert_eq!(format!("{borrowed:?}"), format!("{:?}", legacy_operand(&wrapped)));
+                assert!(std::ptr::eq(borrowed, carray_operand_ref(borrowed)));
+                if depth == 0 {
+                    assert!(std::ptr::eq(borrowed, &wrapped));
+                }
+                // The removed second predicate was identical even through casts.
+                assert_eq!(is_carray_like_expr(&wrapped),
+                    is_carray_like_expr(&legacy_operand(&wrapped)));
+                assert_eq!(walker.expr_yields_carray_pointer(&wrapped),
+                    owned_carray_classifier(&walker, &wrapped));
+                assert_eq!(before, format!("{wrapped:?}"));
+                wrapped = expr(ExprKind::Cast {
+                    expr: Box::new(wrapped), type_name: "short *".into(),
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_backing_classification_preserves_sequence_and_linear_paths() {
+        let pointer = pointers::make_carray_ptr(ident("storage"), int_lit(0));
+        let cast_pointer = expr(ExprKind::Cast {
+            expr: Box::new(pointer.clone()), type_name: "short *".into(),
+        });
+        let result_sequence = expr(ExprKind::Sequence(vec![
+            assign_expr(ident("result"), cast_pointer.clone()), ident("result"),
+        ]));
+        let backed = expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
+            key: str_lit(C_STRUCT_BACKING_POINTER_KEY), value: result_sequence.clone(),
+        }]));
+        let walker = Walker::default();
+        for value in [pointer, cast_pointer, result_sequence, backed] {
+            assert!(walker.expr_yields_carray_pointer(&value), "{value:?}");
+            assert_eq!(walker.expr_yields_carray_pointer(&value),
+                owned_carray_classifier(&walker, &value));
+        }
+        let linear = call_expr(ident("__c_ptr_linear_alloc"), vec![int_lit(16)]);
+        assert!(walker.is_linear_pointer_address_or_value_expr(&linear));
+        let managed = pointers::make_carray_ptr(ident("storage"), int_lit(0));
+        assert!(!walker.is_linear_pointer_address_or_value_expr(&managed));
+        assert!(!walker.is_linear_pointer_address_expr(&managed));
+        assert!(!walker.expr_yields_carray_pointer(&call_expr(ident("unknown_call"), vec![])));
+    }
+
+    #[test]
+    fn borrowed_backing_projection_matches_materialized_subtree_and_old_classifier() {
+        fn view(backing: Expression) -> Expression {
+            expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: str_lit(C_STRUCT_BACKING_POINTER_KEY), value: backing,
+            }]))
+        }
+        let pointer = pointers::make_carray_ptr(ident("storage"), int_lit(1));
+        let sequence = expr(ExprKind::Sequence(vec![
+            assign_expr(ident("result"), pointer.clone()),
+            assign_expr(ident("result"), int_lit(0)),
+            ident("result"),
+        ]));
+        let walker = Walker::default();
+        for backing in [pointer, sequence, int_lit(1024), null_lit(),
+            call_expr(ident("effect"), vec![]), view(int_lit(2048))] {
+            let object = view(backing);
+            let ExprKind::Object(props) = &object.kind else { unreachable!() };
+            let ObjectProperty::KeyValue { value: expected, .. } = &props[0] else { unreachable!() };
+            assert!(std::ptr::eq(walker.borrowed_struct_backing_projection(&object).unwrap(), expected));
+            let indexed = expr(ExprKind::Index {
+                object: Box::new(call_expr(ident("owner"), vec![])),
+                index: Box::new(call_expr(ident("index"), vec![])), null_safe: false,
+            });
+            let collapsed = ternary_expr(call_expr(ident("condition"), vec![]), indexed, object.clone());
+            for value in [object, collapsed] {
+                let before = format!("{value:?}");
+                let borrowed = walker.borrowed_struct_backing_projection(&value).unwrap();
+                let materialized = walker.struct_backing_pointer_or_value(value.clone());
+                assert_eq!(format!("{borrowed:?}"), format!("{materialized:?}"));
+                assert_eq!(walker.expr_yields_carray_pointer(&value),
+                    owned_carray_classifier(&walker, &value));
+                assert_eq!(before, format!("{value:?}"));
+            }
+        }
+        let duplicate = expr(ExprKind::Object(vec![
+            ObjectProperty::KeyValue { key: str_lit(C_STRUCT_BACKING_POINTER_KEY), value: int_lit(1) },
+            ObjectProperty::KeyValue { key: str_lit(C_STRUCT_BACKING_POINTER_KEY), value: int_lit(2) },
+        ]));
+        assert_eq!(format!("{:?}", walker.borrowed_struct_backing_projection(&duplicate).unwrap()),
+            format!("{:?}", int_lit(1)));
+    }
+
+    #[test]
+    fn borrowed_backing_projection_keeps_unsupported_shapes_on_materializing_path() {
+        let view = expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
+            key: str_lit(C_STRUCT_BACKING_POINTER_KEY),
+            value: pointers::make_carray_ptr(ident("storage"), int_lit(0)),
+        }]));
+        let cstruct = expr(ExprKind::Object(vec![
+            ObjectProperty::KeyValue { key: str_lit(REF_KIND_KEY), value: str_lit(C_STRUCT_PTR_KIND) },
+            ObjectProperty::KeyValue { key: str_lit(C_STRUCT_BACKING_POINTER_KEY), value: view.clone() },
+        ]));
+        let walker = Walker::default();
+        for value in [
+            cstruct,
+            expr(ExprKind::Cast { expr: Box::new(view.clone()), type_name: "struct Item *".into() }),
+            expr(ExprKind::Sequence(vec![call_expr(ident("prefix"), vec![]), view.clone()])),
+            ternary_expr(ident("condition"), ident("not_indexed"), view.clone()),
+            expr(ExprKind::NullCoalesce { left: Box::new(view), right: Box::new(null_lit()) }),
+            ident("owner"),
+        ] {
+            assert!(walker.borrowed_struct_backing_projection(&value).is_none());
+            assert_eq!(walker.expr_yields_carray_pointer(&value),
+                owned_carray_classifier(&walker, &value));
+        }
+    }
+
+    #[test]
+    fn enum_integral_division_keeps_dependent_values_and_bounds() {
+        for prefix in ["enum", "typedef enum"] {
+            let suffix = if prefix.starts_with("typedef") { " Dimensions" } else { "" };
+            let source = format!("{prefix} {{ WIDTH=16, HEIGHT=20, COLUMNS=WIDTH/2,
+                WORDS=COLUMNS*HEIGHT, NEXT, NEG=-5/2, REM=-5%2 }}{suffix};
+                short pixels[WORDS]; int bytes=sizeof(pixels);");
+            let module = crate::parse_with_peg(&source).unwrap();
+            for (name, expected) in [("WIDTH",16), ("HEIGHT",20), ("COLUMNS",8),
+                ("WORDS",160), ("NEXT",161), ("NEG",-2), ("REM",-1), ("bytes",320)] {
+                let value = module.body.iter().find_map(|statement| {
+                    let StmtKind::VarDecl { declarations, .. } = &statement.kind else { return None; };
+                    declarations.iter().find_map(|declaration| {
+                        if !matches!(&declaration.pattern, BindingPattern::Ident(binding) if binding == name) {
+                            return None;
+                        }
+                        declaration.init.as_ref().and_then(|value| Walker::default().eval_int_expr(value))
+                    })
+                });
+                assert_eq!(value, Some(expected), "{prefix}: {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn typed_enum_integer_folding_obeys_lane_signedness_and_invalid_operations() {
+        use vybe_ast::{BitLane::{W32, W64}, IntOp::*};
+        for (op, lane, left, right, unsigned, expected) in [
+            (DivS,W32,16,2,false,Some(8)), (DivS,W32,-5,2,false,Some(-2)),
+            (RemS,W32,-5,2,false,Some(-1)), (DivU,W32,-1,2,true,Some(2147483647)),
+            (ShrU,W32,-1,31,true,Some(1)), (ShrS,W32,-2,1,false,Some(-1)),
+            (Add,W32,2147483647,1,false,None), (Add,W32,4294967295,1,true,Some(0)),
+            (Add,W64,i64::MAX,1,false,None), (Mul,W64,i64::MAX,2,false,None),
+            (DivS,W32,i64::from(i32::MIN),-1,false,None),
+            (RemS,W64,i64::MIN,-1,false,None), (DivU,W64,-1,2,true,Some(i64::MAX)),
+            (DivS,W32,1,0,false,None), (RemU,W64,1,0,true,None),
+            (Shl,W32,1,32,false,None), (ShrU,W64,1,64,true,None),
+            (Shl,W32,1,-1,false,None), (Shl,W32,1,31,false,None),
+            (Shl,W32,1,31,true,Some(2147483648)), (And,W32,-1,-1,false,Some(-1)),
+            (LtU,W32,-1,1,true,Some(0)), (LtS,W32,-1,1,false,Some(1)),
+        ] {
+            assert_eq!(fold_c_integer_constant(op,lane,left,right,unsigned), expected,
+                "{op:?} {lane:?} {left} {right}");
+        }
+    }
+
+    #[test]
+    fn initialized_record_array_byte_leaves_use_typed_linear_storage() {
+        let mut walker = Walker::default();
+        let fields = vec!["plain".to_string(), "signed".into(), "unsigned".into()];
+        walker.structs.insert("byte_record".into(), fields.clone());
+        walker.struct_field_types.insert("byte_record".into(), [
+            ("plain".into(), "char[2]".into()),
+            ("signed".into(), "signed char[2]".into()),
+            ("unsigned".into(), "unsigned char[2]".into()),
+        ].into_iter().collect());
+        let element = expr(ExprKind::Object(fields.iter().map(|field|
+            ObjectProperty::KeyValue { key: str_lit(field), value: expr(ExprKind::Array(vec![
+                ArrayElement { key: None, value: int_lit(129), spread: false, by_ref: false },
+                ArrayElement { key: None, value: int_lit(255), spread: false, by_ref: false },
+            ])) }).collect()));
+        let initializer = expr(ExprKind::Array(vec![ArrayElement {
+            key: None, value: element.clone(), spread: false, by_ref: false,
+        }]));
+        let result = walker.initialized_linear_record_array("byte_record", 2, &initializer)
+            .expect("byte-character fields must not reject the whole array");
+        let mut stores = 0;
+        result.walk_exprs(&mut |value| {
+            stores += usize::from(matches!(&value.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_ptr_i32_store8")));
+        });
+        assert_eq!(stores, 6);
+        walker.struct_field_types.get_mut("byte_record").unwrap()
+            .insert("unsigned".into(), "void *".into());
+        let counter = walker.tmp_counter;
+        let declarations = walker.generated_local_declarations.len();
+        assert!(walker.initialized_linear_record_array("byte_record", 2, &initializer).is_none());
+        assert_eq!(walker.tmp_counter, counter);
+        assert_eq!(walker.generated_local_declarations.len(), declarations);
+    }
+
+    #[test]
+    fn stdint_constant_macros_expand_at_header_boundary_and_keep_suffixes() {
+        for header in ["stdint.h", "inttypes.h"] {
+            let source = format!("#include <{header}>\n\
+                #if !defined(UINT32_C) || UINT32_C(7) != 7\n\
+                int wrong_branch;\n#endif\n\
+                int a=INT8_C(127), b=UINT8_C(255), c=INT16_C(32767), d=UINT16_C(65535);\n\
+                int e=INT32_C(2147483647); unsigned f=UINT32_C(2166136261);\n\
+                long long g=INT64_C(9223372036854775807);\n\
+                unsigned long long h=UINT64_C(18446744073709551615);\n\
+                long i=INTMAX_C(9223372036854775807); unsigned long j=UINTMAX_C(18446744073709551615);\n\
+                const char *text=\"UINT32_C(1)\";\n\
+                #undef UINT32_C\n#define UINT32_C(value) ((value)+1)\n\
+                int overridden=UINT32_C(7);\n");
+            let (expanded, _) = preprocess_c_source(&source);
+            assert!(!expanded.contains("wrong_branch"));
+            for token in ["(127)", "(255)", "(32767)", "(65535)", "(2147483647)",
+                "(2166136261U)", "(9223372036854775807LL)", "(18446744073709551615ULL)",
+                "(9223372036854775807L)", "(18446744073709551615UL)",
+                "\"UINT32_C(1)\"", "((7)+1)"] {
+                assert!(expanded.contains(token), "missing {token}: {expanded}");
+            }
+            let module = crate::parse_with_peg(&source).unwrap();
+            for statement in &module.body {
+                statement.walk_exprs(&mut |value| {
+                    assert!(!matches!(&value.kind, ExprKind::Call { callee, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name)
+                            if name.starts_with("INT") && name.ends_with("_C")
+                                || name.starts_with("UINT") && name.ends_with("_C"))));
+                });
+            }
+        }
+        let (without_header, _) = preprocess_c_source("int x=UINT32_C(7);");
+        assert!(without_header.contains("UINT32_C(7)"));
+        assert_eq!(parse_int_literal("18446744073709551615"), -1);
+        assert_eq!(parse_int_literal("01777777777777777777777"), -1);
+        assert_eq!(parse_int_literal("0xffffffffffffffff"), -1);
+    }
+
+    #[test]
+    fn short_integer_spellings_keep_width_alignment_and_pointer_load() {
+        let walker = Walker::default();
+        for spelling in ["short", "short int", "signed short", "signed short int",
+            "unsigned short", "unsigned short int"] {
+            assert!(c_int_family_type(spelling), "{spelling}");
+            assert_eq!(walker.sizeof_type_text(spelling), 2, "{spelling}");
+            assert_eq!(alignof_from_type_text(spelling), 2, "{spelling}");
+            assert_eq!(sizeof_from_type_text(&format!("{spelling}[3]")), 6);
+            assert_eq!(walker.c_pointer_index_stride_from_type(&format!("{spelling} *")), 2);
+            let load = walker.linear_integer_load_expr(int_lit(1024), spelling);
+            let ExprKind::Call { callee, .. } = load.kind else { panic!("integer load: {spelling}"); };
+            let expected = if spelling.starts_with("unsigned") { "__c_ptr_i32_load16_u" } else { "__c_ptr_i32_load16_s" };
+            assert!(matches!(callee.kind, ExprKind::Ident(ref name) if name == expected), "{spelling}");
+        }
+    }
+
+    #[test]
+    fn chained_hybrid_pointer_offsets_capture_once_and_keep_element_type() {
+        let mut walker = Walker::default();
+        for (spelling, stride) in [("short *", 2), ("int *", 4)] {
+            let pointer = expr(ExprKind::Cast { type_name: spelling.into(),
+                expr: Box::new(call_expr(ident("pointer_once"), vec![])) });
+            let result = walker.typed_hybrid_pointer_offset(
+                pointer, call_expr(ident("offset_once"), vec![]), false);
+            assert_eq!(walker.c_expr_type_text(&result).as_deref(), Some(spelling));
+            let mut captures = 0;
+            stmt(StmtKind::Expr(result.clone())).walk_exprs(&mut |value| {
+                if matches!(&value.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "pointer_once")) { captures += 1; }
+            });
+            assert_eq!(captures, 1);
+            let mut offsets = 0;
+            stmt(StmtKind::Expr(result.clone())).walk_exprs(&mut |value| {
+                if matches!(&value.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "offset_once")) { offsets += 1; }
+            });
+            assert_eq!(offsets, 1);
+            let ExprKind::Cast { expr, .. } = result.kind else { panic!("typed result"); };
+            let ExprKind::Sequence(parts) = expr.kind else { panic!("captured result"); };
+            assert_eq!(parts.len(), 3);
+            let ExprKind::Ternary { then, .. } = &parts[2].kind else { panic!("backing guard"); };
+            let ExprKind::Binary { op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32), right, .. } = &then.kind else { panic!("numeric offset"); };
+            assert!(matches!(&right.kind, ExprKind::Binary { op: BinOp::Integer(vybe_ast::IntOp::Mul, vybe_ast::BitLane::W32), right, .. }
+                if matches!(right.kind, ExprKind::Lit(Literal::Int(n)) if n == stride)));
+        }
+    }
+
+    #[test]
+    fn pointer_to_fixed_array_binding_retains_row_type_and_sizeof() {
+        for (source, expected) in [
+            ("(*p)[3]", true), ("(*p)[2][2]", true),
+            ("((*p))[3]", true), ("(((*p)))[2][2]", true),
+            ("*p[3]", false), ("(*p[2])[3]", false), ("(*p)(int)", false),
+            ("((*p[2]))[3]", false), ("(((*p[2])))[3]", false),
+            ("((*p))(int)", false), ("(*(*p)(int))[3]", false),
+            ("(*(*p[2])(int))[3]", false), ("((*(*p)(int)))[3]", false),
+            ("((*p))[3](int)", false), ("((*p))(int)[3]", false),
+        ] {
+            let declaration = CParser::parse(Rule::declarator, source).unwrap().next().unwrap();
+            assert_eq!(declaration.as_str(), source, "partial declarator parse: {source}");
+            assert_eq!(declarator_binds_pointer_before_array(&declaration), expected, "{source}");
+        }
+        for (bounds, words) in [("[3]", 3), ("[2][2]", 4)] {
+            let source = format!("int size(void) {{ int a[2]{bounds}; int (*p){bounds}=a; return sizeof(*p); }}");
+            for parser in [crate::parse_with_peg, crate::parse_optimized] {
+                let module = parser(&source).unwrap();
+                let size = module.body.iter().find_map(|statement| match &statement.kind {
+                    StmtKind::FunctionDecl { name, body, .. } if name == "size" => body.iter().find_map(|statement|
+                        match &statement.kind {
+                            StmtKind::Return(Some(value)) => Walker::default().eval_int_expr(value),
+                            _ => None,
+                        }),
+                    _ => None,
+                });
+                assert_eq!(size, Some(words * 4), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn sizeof_row_pointer_text_path_preserves_whole_row_before_decay() {
+        let mut walker = Walker::default();
+        for (ty, sizes) in [("int[3] *", vec![8, 12, 4]),
+                            ("int[2][2] *", vec![8, 16, 8, 4])] {
+            walker.var_types.insert("p".into(), ty.into());
+            walker.var_sizes.insert("p".into(), 8);
+            for (depth, expected) in sizes.into_iter().enumerate() {
+                let source = format!("p{}", "[0]".repeat(depth));
+                assert_eq!(walker.sizeof_from_expr_text(&source), Some(expected), "{ty}: {source}");
+                if depth == 1 {
+                    assert_eq!(walker.sizeof_from_expr_text("*p"), Some(expected), "{ty}");
+                }
+            }
+        }
+        walker.var_types.insert("table".into(), "int*[3]".into());
+        walker.var_sizes.insert("table".into(), 24);
+        assert_eq!(walker.sizeof_from_expr_text("table"), Some(24));
+        assert_eq!(walker.sizeof_from_expr_text("*table"), Some(8));
+    }
+
+    #[test]
+    fn row_dereference_decays_without_scalar_load_and_captures_once() {
+        let mut walker = Walker::default();
+        walker.current_function = "row_read".into();
+        for (pointer_type, decayed, stride) in [("int[3] *", "int *", 12), ("int[2][2] *", "int[2] *", 16)] {
+            assert_eq!(walker.c_pointer_index_stride_from_type(pointer_type), stride);
+            walker.function_return_types.insert("row_once".into(), pointer_type.into());
+            let result = walker.apply_prefix("*", call_expr(ident("row_once"), vec![]));
+            assert_eq!(walker.c_expr_type_text(&result).as_deref(), Some(decayed));
+            let mut owners = 0;
+            let mut scalar_loads = 0;
+            let mut row_reads = 0;
+            result.walk_exprs(&mut |value| {
+                if let ExprKind::Call { callee, .. } = &value.kind
+                    && let ExprKind::Ident(name) = &callee.kind
+                {
+                    owners += usize::from(name == "row_once");
+                    scalar_loads += usize::from(name.starts_with("__c_ptr_i32_load"));
+                    row_reads += usize::from(name == "__c_array_get");
+                }
+            });
+            assert_eq!(owners, 1);
+            assert_eq!(scalar_loads, 0);
+            assert_eq!(row_reads, 1);
+        }
+    }
+
+    #[test]
+    fn pointer_arithmetic_passes_keep_identifier_member_and_array_result_types() {
+        let mut walker = Walker::default();
+        walker.current_function = "pointer_arithmetic_test".into();
+        walker.var_types.insert("p".into(), "short *".into());
+        walker.hybrid_carray_ptr_vars.insert("p".into());
+        for operation in [BinOp::Add, BinOp::Sub] {
+            for displacement in [ident("b"), call_expr(ident("offset_once"), vec![])] {
+            let original = binary_expr(operation,
+                binary_expr(BinOp::Add, ident("p"), ident("a")), displacement.clone());
+            let result = walker.rewrite_char_ptr_arith(original);
+            let result = walker.rewrite_carray_ptr_arith(result);
+            assert_eq!(walker.c_expr_type_text(&result).as_deref(), Some("short *"));
+            let ExprKind::Cast { expr, .. } = &result.kind else { panic!("typed pointer result"); };
+            let ExprKind::Sequence(parts) = &expr.kind else { panic!("captured operands"); };
+            let [pointer, offset, choice] = parts.as_slice() else { panic!("two captures before selection"); };
+            let ExprKind::Assign { target: pointer_target, .. } = &pointer.kind else { panic!("pointer capture"); };
+            let ExprKind::Assign { target: offset_target, value } = &offset.kind else { panic!("offset capture"); };
+            assert_eq!(format!("{value:?}"), format!("{displacement:?}"));
+            for target in [pointer_target, offset_target] {
+                let ExprKind::Ident(name) = &target.kind else { panic!("local capture name"); };
+                assert!(walker.function_local_var_names["pointer_arithmetic_test"].contains(name));
+                assert_eq!(walker.generated_local_declarations.iter().filter(|declaration|
+                    matches!(&declaration.pattern, BindingPattern::Ident(binding) if binding == name)).count(), 1);
+            }
+            let ExprKind::Ternary { then, .. } = &choice.kind else { panic!("backing selection"); };
+            let ExprKind::Binary { op, left, right } = &then.kind else { panic!("numeric pointer arithmetic"); };
+            let expected_op = if operation == BinOp::Add { vybe_ast::IntOp::Add } else { vybe_ast::IntOp::Sub };
+            assert_eq!(*op, BinOp::Integer(expected_op, vybe_ast::BitLane::W32));
+            assert_eq!(format!("{left:?}"), format!("{pointer_target:?}"));
+            let ExprKind::Binary {
+                op: BinOp::Integer(vybe_ast::IntOp::Mul, vybe_ast::BitLane::W32), left, right,
+            } = &right.kind else { panic!("element-scaled captured displacement"); };
+            assert_eq!(format!("{left:?}"), format!("{offset_target:?}"));
+            assert!(matches!(right.kind, ExprKind::Lit(Literal::Int(2))));
+            let mut evaluations = 0;
+            result.walk_exprs(&mut |value| {
+                evaluations += usize::from(format!("{value:?}") == format!("{displacement:?}"));
+            });
+            assert_eq!(evaluations, 1, "second displacement must be evaluated once");
+            }
+        }
+        walker.var_types.insert("array".into(), "short[8]".into());
+        for expression in [
+            binary_expr(BinOp::Add, ident("array"), int_lit(2)),
+            binary_expr(BinOp::Add, int_lit(2), ident("array")),
+        ] {
+            assert_eq!(walker.pointer_arithmetic_result_type(&expression).as_deref(), Some("short *"));
+            let lowered = walker.rewrite_char_ptr_arith(expression);
+            let lowered = walker.rewrite_carray_ptr_arith(lowered);
+            assert_eq!(walker.c_expr_type_text(&lowered).as_deref(), Some("short *"));
+            assert!(!matches!(lowered.kind, ExprKind::Binary { op: BinOp::Add, .. }),
+                "array arithmetic must be lowered, not only classified");
+        }
+        walker.structs.insert("holder".into(), vec!["words".into()]);
+        walker.struct_field_types.insert("holder".into(), HashMap::from([
+            ("words".into(), "short *".into()),
+        ]));
+        walker.var_types.insert("holder".into(), "struct holder".into());
+        let original = binary_expr(BinOp::Add, member(ident("holder"), "words"), int_lit(1));
+        let lowered = walker.rewrite_char_ptr_arith(original);
+        let lowered = walker.rewrite_carray_ptr_arith(lowered);
+        assert_eq!(walker.c_expr_type_text(&lowered).as_deref(), Some("short *"));
+        let difference = binary_expr(BinOp::Sub, ident("p"), ident("p"));
+        assert_eq!(walker.pointer_arithmetic_result_type(&difference), None);
+    }
+
+    #[test]
+    fn array_comparisons_keep_backing_aware_equality_until_pointer_lowering() {
+        for array_type in ["int[3]", "int[3][3]", "int[2][2][2]"] {
+            let mut walker = Walker::default();
+            walker.current_function = "row_equality".into();
+            walker.var_types.insert("rows".into(), array_type.into());
+            walker.array_ptr_vars.insert("rows".into());
+            for operation in [BinOp::Eq, BinOp::NotEq] {
+                let comparison = binary_expr(operation,
+                    binary_expr(BinOp::Add, int_lit(1), ident("rows")),
+                    binary_expr(BinOp::Add, ident("rows"), int_lit(1)));
+                let result = walker.rewrite_unsigned_relational(comparison);
+                assert!(matches!(&result.kind, ExprKind::Binary { op, .. } if *op == operation),
+                    "pointer comparison must not acquire a scalar Integer opcode");
+                let result = walker.rewrite_char_ptr_arith(result);
+                let result = walker.rewrite_carray_ptr_arith(result);
+                result.walk_exprs(&mut |value| {
+                    if let ExprKind::Binary { op: BinOp::Integer(_, _), left, right } = &value.kind {
+                        for operand in [left, right] {
+                            assert!(!walker.c_expr_type_text(operand).is_some_and(|ty|
+                                ty.contains('*') || ty.contains('[')),
+                                "managed pointer must not be converted into a scalar integer: {value:?}");
+                        }
+                    }
+                });
+                assert!(!matches!(result.kind, ExprKind::Binary { op: BinOp::Eq | BinOp::NotEq, .. }),
+                    "pointer equality must be lowered, not left to dynamic equality");
+            }
+            walker.var_types.insert("x".into(), "int".into());
+            walker.var_types.insert("y".into(), "int".into());
+            let scalar = walker.rewrite_unsigned_relational(binary_expr(BinOp::Eq, ident("x"), ident("y")));
+            assert!(matches!(scalar.kind, ExprKind::Binary {
+                op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), .. }));
+        }
+    }
+
+    #[test]
+    fn array_offset_decays_one_dimension_without_changing_array_places() {
+        let mut walker = Walker::default();
+        walker.current_function = "array_decay".into();
+        for (input, expected, stride) in [
+            ("short[8]", "short *", 2),
+            ("int[4][3]", "int[3] *", 12),
+            ("int[4][2][3]", "int[2][3] *", 24),
+            ("int*[4]", "int* *", 8),
+            ("int[3] *", "int[3] *", 12),
+        ] {
+            walker.var_types.insert("rows".into(), input.into());
+            for subtract in [false, true] {
+                let result = walker.typed_hybrid_pointer_offset(ident("rows"), int_lit(1), subtract);
+                assert_eq!(walker.c_expr_type_text(&result).as_deref(), Some(expected), "{input}");
+                assert_eq!(walker.c_pointer_index_stride_from_type(expected), stride, "{input}");
+                assert_eq!(walker.var_types["rows"], input);
+            }
+        }
+        for (bounds, row_bytes) in [("[4][3]", 12), ("[4][2][3]", 24)] {
+            for (operand, expected) in [("rows + 1", 8), ("1 + rows", 8),
+                                        ("rows - 1", 8), ("rows[0]", row_bytes)] {
+                let source = format!("int size(void) {{ int rows{bounds}; return sizeof({operand}); }}");
+                let mut baseline = None;
+                for parser in [crate::parse_with_peg, crate::parse_optimized] {
+                    let module = parser(&source).unwrap();
+                    let size = module.body.iter().find_map(|statement| match &statement.kind {
+                        StmtKind::FunctionDecl { name, body, .. } if name == "size" => body.iter().find_map(|statement|
+                            match &statement.kind {
+                                StmtKind::Return(Some(value)) => Walker::default().eval_int_expr(value),
+                                _ => None,
+                            }),
+                        _ => None,
+                    });
+                    assert_eq!(size, Some(expected), "{source}");
+                    let ast = format!("{module:?}");
+                    if let Some(previous) = &baseline { assert_eq!(&ast, previous); }
+                    baseline = Some(ast);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nested_compound_field_captures_owner_and_rhs_once() {
+        let source = "struct leaf { int value; }; struct root { struct leaf *leaf; }; \
+            struct root *owner_once(void); int rhs_once(void); \
+            int f(void) { return owner_once()->leaf->value += rhs_once(); }";
+        let module = crate::parse_with_peg(source).unwrap();
+        let mut owner_calls = 0;
+        let mut rhs_calls = 0;
+        let mut captures = 0;
+        let mut linear_stores = 0;
+        let mut managed_stores = 0;
+        for statement in &module.body {
+            statement.walk_exprs(&mut |value| {
+                if let ExprKind::Call { callee, .. } = &value.kind {
+                    if let ExprKind::Ident(name) = &callee.kind {
+                        owner_calls += usize::from(name == "owner_once");
+                        rhs_calls += usize::from(name == "rhs_once");
+                        linear_stores += usize::from(name == "__c_ptr_i32_store");
+                        managed_stores += usize::from(name == "__c_array_set");
+                    }
+                }
+                captures += usize::from(matches!(&value.kind,
+                    ExprKind::Assign { target, .. } if matches!(&target.kind,
+                        ExprKind::Ident(name) if name.starts_with("__c_field_owner"))));
+            });
+        }
+        assert_eq!(owner_calls, 1);
+        assert_eq!(rhs_calls, 1);
+        assert!(captures > 0);
+        assert!(linear_stores > 0);
+        assert!(managed_stores > 0);
+    }
+
+    #[test]
+    fn complex_struct_field_read_captures_before_backing_fanout() {
+        let mut walker = Walker::default();
+        walker.current_function = "read_field".into();
+        walker.structs.insert("leaf".into(), vec!["value".into()]);
+        walker.struct_field_types.insert("leaf".into(),
+            [("value".into(), "int".into())].into_iter().collect());
+        let read = walker.carray_struct_field_read(
+            call_expr(ident("owner_once"), vec![]), "leaf", "value",
+        ).unwrap();
+        let ExprKind::Sequence(parts) = &read.kind else {
+            panic!("complex owner must be captured before field dispatch");
+        };
+        assert!(matches!(&parts[0].kind, ExprKind::Assign { value, .. }
+            if matches!(&value.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "owner_once"))));
+        let mut calls = 0;
+        let mut lambdas = 0;
+        read.walk_exprs(&mut |value| {
+            calls += usize::from(matches!(&value.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "owner_once")));
+            lambdas += usize::from(matches!(&value.kind, ExprKind::Lambda { .. }));
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(lambdas, 0);
+        assert!(walker.hybrid_linear_struct_pointer_vars.iter()
+            .any(|name| name.starts_with("__c_field_owner")),
+            "captured views must retain their linear backing dispatch");
+        assert_eq!(walker.generated_local_declarations.len(), 2);
+        assert!(walker.generated_local_declarations.iter().all(|declaration|
+            matches!(&declaration.pattern, BindingPattern::Ident(name)
+                if name.starts_with("__c_field_owner")
+                    || name.starts_with("__c_field_read_backing"))));
+    }
+
+    #[test]
+    fn nested_logical_conditions_normalize_each_pointer_operand() {
+        let mut walker = Walker::default();
+        walker.current_function = "conditions".into();
+        walker.var_types.insert("table".into(), "int **".into());
+        walker.hybrid_carray_ptr_vars.insert("table".into());
+        for op in [BinOp::And, BinOp::Or] {
+            let value = binary_expr(op,
+                binary_expr(op, int_lit(1), ident("table")),
+                call_expr(ident("once"), vec![]));
+            let lowered = walker.rewrite_logical_bool(value);
+            let mut null_tests = 0;
+            let mut calls = 0;
+            lowered.walk_exprs(&mut |value| {
+                if let ExprKind::Call { callee, .. } = &value.kind
+                    && let ExprKind::Ident(name) = &callee.kind
+                {
+                    null_tests += usize::from(name == "__libc_is_null_ptr");
+                    calls += usize::from(name == "once");
+                }
+            });
+            assert_eq!(null_tests, 1);
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn indexed_record_zero_address_preserves_tagged_record_singletons() {
+        let mut walker = Walker::default();
+        walker.structs.insert("record".into(), vec!["value".into()]);
+        walker.struct_field_types.insert("record".into(),
+            [("value".into(), "int".into())].into_iter().collect());
+        let address = walker.indexed_record_pointer_address(
+            call_expr(ident("owner_once"), vec![]),
+            call_expr(ident("index_once"), vec![]), "record *",
+        );
+        let mut tags = 0;
+        let mut owners = 0;
+        let mut indices = 0;
+        address.walk_exprs(&mut |value| {
+            tags += usize::from(matches!(&value.kind,
+                ExprKind::Member { field, .. } if field == C_STRUCT_TYPE_KEY));
+            if let ExprKind::Call { callee, .. } = &value.kind
+                && let ExprKind::Ident(name) = &callee.kind
+            {
+                owners += usize::from(name == "owner_once");
+                indices += usize::from(name == "index_once");
+            }
+        });
+        assert_eq!(tags, 2, "both CELL payloads and bare records need singleton recognition");
+        assert_eq!(owners, 1);
+        assert_eq!(indices, 1);
+    }
+
+    #[test]
+    fn hybrid_field_reads_normalize_backing_once_per_read() {
+        for (field_type, load) in [("int", "__c_hybrid_struct_field_load"),
+            ("int *", "__c_hybrid_struct_field_read_ptr")] {
+            let mut walker = Walker::default();
+            walker.current_function = "read_field".into();
+            walker.structs.insert("holder".into(), vec!["field".into()]);
+            walker.struct_field_types.insert("holder".into(),
+                [("field".into(), field_type.into())].into_iter().collect());
+            walker.var_types.insert("p".into(), "holder *".into());
+            walker.byte_struct_pointer_vars.insert("p".into(), "holder".into());
+            walker.hybrid_linear_struct_pointer_vars.insert("p".into());
+            let expected = walker.struct_backing_pointer_or_value(ident("p"));
+            let mut previous = String::new();
+            for _ in 0..2 {
+                let read = walker.carray_struct_field_read(ident("p"), "holder", "field").unwrap();
+                let ExprKind::Sequence(parts) = &read.kind else {
+                    panic!("backing normalization must precede field dispatch");
+                };
+                let ExprKind::Assign { target, value } = &parts[0].kind else {
+                    panic!("normalization must assign a function-local capture");
+                };
+                assert_eq!(format!("{value:?}"), format!("{expected:?}"));
+                let ExprKind::Ident(name) = &target.kind else { unreachable!() };
+                assert!(name.starts_with("__c_field_read_backing"));
+                assert_ne!(name, &previous, "separate reads cannot share cached backing");
+                previous = name.clone();
+                assert!(walker.function_local_var_names["read_field"].contains(name));
+                let mut expected_backing_reads = 0;
+                expected.walk_exprs(&mut |value| {
+                    expected_backing_reads += usize::from(matches!(&value.kind,
+                        ExprKind::Member { field, .. } if field == C_STRUCT_BACKING_POINTER_KEY));
+                });
+                let mut backing_reads = 0;
+                let mut managed_reads = 0;
+                let mut numeric_reads = 0;
+                read.walk_exprs(&mut |value| {
+                    backing_reads += usize::from(matches!(&value.kind,
+                        ExprKind::Member { field, .. } if field == C_STRUCT_BACKING_POINTER_KEY));
+                    if let ExprKind::Call { callee, .. } = &value.kind
+                        && let ExprKind::Ident(name) = &callee.kind
+                    {
+                        managed_reads += usize::from(name == load);
+                        numeric_reads += usize::from(name == "__c_ptr_i32_load");
+                    }
+                });
+                assert!(expected_backing_reads > 0);
+                assert_eq!(backing_reads, expected_backing_reads);
+                assert_eq!(managed_reads, 1);
+                assert!(numeric_reads > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn captured_pointer_field_read_retains_record_view_backing() {
+        let mut walker = Walker::default();
+        walker.current_function = "read_pointer".into();
+        walker.structs.insert("holder".into(), vec!["pointer".into()]);
+        walker.struct_field_types.insert("holder".into(),
+            [("pointer".into(), "int *".into())].into_iter().collect());
+        let read = walker.carray_struct_field_read(
+            call_expr(ident("owner_once"), vec![]), "holder", "pointer",
+        ).unwrap();
+        let mut owner_calls = 0;
+        let mut backing_reads = 0;
+        let mut linear_loads = 0;
+        read.walk_exprs(&mut |value| {
+            owner_calls += usize::from(matches!(&value.kind,
+                ExprKind::Call { callee, .. } if matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "owner_once")));
+            backing_reads += usize::from(matches!(&value.kind,
+                ExprKind::Member { field, .. } if field == C_STRUCT_BACKING_POINTER_KEY));
+            linear_loads += usize::from(matches!(&value.kind,
+                ExprKind::Call { callee, .. } if matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "__c_ptr_i32_load")));
+        });
+        assert_eq!(owner_calls, 1);
+        assert!(backing_reads > 0, "record views must unwrap their physical backing");
+        assert!(linear_loads > 0, "linear pointer fields must retain a raw load arm");
+    }
+
+    #[test]
+    fn compact_backed_view_pointer_field_read_bypasses_cached_zero_once() {
+        for cast_view in [false, true] {
+            let mut walker = Walker::default();
+            walker.current_function = "read_view_name".into();
+            walker.structs.insert("entry".into(), vec!["name".into()]);
+            walker.struct_field_types.insert("entry".into(),
+                [("name".into(), "const char *".into())].into_iter().collect());
+            let view = walker.struct_view_object_with_pointer_backing(
+                "entry", &["name".into()], call_expr(ident("backing_once"), vec![]),
+            );
+            let view = if cast_view {
+                expr(ExprKind::Cast { expr: Box::new(view), type_name: "entry *".into() })
+            } else { view };
+            let read = walker.compact_struct_pointer_expr_field_read(
+                view, "entry", "name",
+            ).expect("pointer field on a backed indexed record view");
+            let ExprKind::Sequence(parts) = &read.kind
+                else { panic!("capture normalized backing before reading the field") };
+            assert_eq!(parts.len(), 2);
+            let ExprKind::Assign { target, value } = &parts[0].kind
+                else { panic!("backing capture") };
+            assert!(matches!(&value.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "backing_once")),
+                "must project __c_pointer, not capture the view with its cached zero name");
+            let ExprKind::Ident(capture) = &target.kind else { unreachable!() };
+            assert!(walker.function_local_var_names["read_view_name"].contains(capture));
+            assert_eq!(walker.generated_local_declarations.iter().filter(|declaration|
+                matches!(&declaration.pattern, BindingPattern::Ident(name)
+                    if name == capture)).count(), 1);
+            let ExprKind::Ternary { else_: object_read, .. } = &parts[1].kind
+                else { panic!("preserve numeric and managed backing dispatch") };
+            let ExprKind::Ternary { cond, then: backed_read, .. } = &object_read.kind
+                else { panic!("backing metadata must take priority over cached fields") };
+            let mut metadata_guards = 0;
+            cond.walk_exprs(&mut |value| {
+                metadata_guards += usize::from(matches!(&value.kind,
+                    ExprKind::Member { field, .. } if field == C_STRUCT_BACKING_POINTER_KEY));
+            });
+            assert_eq!(metadata_guards, 1);
+            assert!(matches!(&backed_read.kind, ExprKind::Call { callee, args, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name)
+                    if name == "__c_hybrid_struct_field_read_ptr")
+                    && matches!(&args[0].value.kind, ExprKind::Ident(name) if name == capture)),
+                "a remaining view must defer to its backing, not its defined zero field");
+            let mut producers = 0;
+            read.walk_exprs(&mut |value| {
+                producers += usize::from(matches!(&value.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "backing_once")));
+            });
+            assert_eq!(producers, 1);
+        }
+    }
+
+    #[test]
+    fn backed_record_field_write_selects_backing_once_before_dispatch() {
+        let mut walker = Walker::default();
+        walker.current_function = "write_view".into();
+        walker.structs.insert("leaf".into(), vec!["value".into()]);
+        walker.struct_field_types.insert("leaf".into(),
+            [("value".into(), "int".into())].into_iter().collect());
+        let view = walker.struct_view_object_with_pointer_backing(
+            "leaf", &["value".into()], call_expr(ident("backing_once"), vec![]),
+        );
+        let write = walker.typed_struct_pointer_field_write(
+            view, "leaf", "value", call_expr(ident("rhs_once"), vec![]),
+        ).unwrap();
+        let ExprKind::Sequence(parts) = &write.kind else { panic!("capture before dispatch") };
+        assert_eq!(parts.len(), 3);
+        let ExprKind::Assign { target: source, value: view } = &parts[0].kind
+            else { panic!("capture the complete source view once") };
+        let ExprKind::Ident(source) = &source.kind else { unreachable!() };
+        assert!(source.starts_with("__c_field_write_source"));
+        assert!(matches!(&view.kind, ExprKind::Object(_)));
+        let ExprKind::Assign { target: backing, value: selection } = &parts[1].kind
+            else { panic!("select the physical backing before dispatch") };
+        let ExprKind::Ident(backing) = &backing.kind else { unreachable!() };
+        assert!(backing.starts_with("__c_field_write_backing"));
+        let ExprKind::Ternary { cond, then, else_ } = &selection.kind
+            else { panic!("guarded view backing selection") };
+        assert!(matches!(&then.kind, ExprKind::Member { object, field, .. }
+            if field == C_STRUCT_BACKING_POINTER_KEY
+                && matches!(&object.kind, ExprKind::Ident(name) if name == source)));
+        assert!(matches!(&else_.kind, ExprKind::Ident(name) if name == source));
+        let mut object_guard = 0;
+        cond.walk_exprs(&mut |value| {
+            object_guard += usize::from(matches!(&value.kind, ExprKind::IsType { expr, type_name }
+                if type_name == "object" && matches!(&expr.kind,
+                    ExprKind::Ident(name) if name == source)));
+        });
+        assert_eq!(object_guard, 1);
+        let mut backing_uses = 0;
+        parts[2].walk_exprs(&mut |value| {
+            assert!(!matches!(&value.kind, ExprKind::Ident(name) if name == source),
+                "store dispatch must not write cached view fields");
+            backing_uses += usize::from(matches!(&value.kind,
+                ExprKind::Ident(name) if name == backing));
+            if let ExprKind::Ident(name) = &value.kind
+                && name.starts_with("__c_struct_field_write")
+            {
+                assert!(walker.function_local_var_names["write_view"].contains(name),
+                    "byte-store capture must not become a global");
+            }
+        });
+        assert!(backing_uses > 0);
+        for producer in ["backing_once", "rhs_once"] {
+            let mut calls = 0;
+            write.walk_exprs(&mut |value| {
+                calls += usize::from(matches!(&value.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == producer)));
+            });
+            assert_eq!(calls, 1, "{producer}");
+        }
+    }
+
+    #[test]
+    fn scalar_field_write_captures_are_function_local_declarations() {
+        let mut walker = Walker::default();
+        walker.current_function = "write_field".into();
+        walker.structs.insert("leaf".into(), vec!["value".into()]);
+        walker.struct_field_types.insert("leaf".into(),
+            [("value".into(), "int".into())].into_iter().collect());
+        let write = walker.typed_struct_pointer_field_write(
+            call_expr(ident("owner_once"), vec![]), "leaf", "value",
+            call_expr(ident("rhs_once"), vec![]),
+        ).unwrap();
+        for prefix in ["__c_field_write_source", "__c_field_write_backing"] {
+            assert_eq!(walker.generated_local_declarations.iter().filter(|declaration|
+                matches!(&declaration.pattern, BindingPattern::Ident(name)
+                    if name.starts_with(prefix))).count(), 1);
+        }
+        assert!(walker.generated_local_declarations.iter().any(|declaration|
+            matches!(&declaration.pattern, BindingPattern::Ident(name)
+                if name.starts_with("__c_scalar_field_value"))));
+        let byte_captures: Vec<_> = walker.generated_local_declarations.iter().filter_map(|declaration|
+            match &declaration.pattern {
+                BindingPattern::Ident(name) if name.starts_with("__c_struct_field_write") =>
+                    Some(name),
+                _ => None,
+            }).collect();
+        assert!(!byte_captures.is_empty(), "byte-backed store needs local RHS captures");
+        let mut declared = HashSet::new();
+        for declaration in &walker.generated_local_declarations {
+            let BindingPattern::Ident(name) = &declaration.pattern else { unreachable!() };
+            assert!(declared.insert(name.clone()), "duplicate capture declaration: {name}");
+            assert!(walker.function_local_var_names["write_field"].contains(name));
+        }
+        let mut capture_references = HashMap::<String, usize>::new();
+        let mut owner_calls = 0;
+        let mut rhs_calls = 0;
+        write.walk_exprs(&mut |value| {
+            if let ExprKind::Ident(name) = &value.kind
+                && name.starts_with("__c_struct_field_write")
+            {
+                assert!(declared.contains(name), "implicit global store capture: {name}");
+                *capture_references.entry(name.clone()).or_default() += 1;
+            }
+            if let ExprKind::Call { callee, .. } = &value.kind
+                && let ExprKind::Ident(name) = &callee.kind
+            {
+                owner_calls += usize::from(name == "owner_once");
+                rhs_calls += usize::from(name == "rhs_once");
+            }
+        });
+        // One assignment, four byte extractions, and the assignment result.
+        for capture in byte_captures {
+            assert_eq!(capture_references.get(capture), Some(&6));
+        }
+        assert_eq!(owner_calls, 1);
+        assert_eq!(rhs_calls, 1);
+    }
+
+    #[test]
+    fn record_pointer_read_owner_capture_is_function_local() {
+        let mut walker = Walker::default();
+        walker.current_function = "read_pointer".into();
+        walker.structs.insert("holder".into(), vec!["pointer".into()]);
+        walker.struct_field_types.insert("holder".into(),
+            [("pointer".into(), "int *".into())].into_iter().collect());
+        let read = walker.struct_pointer_field_read_backings(
+            call_expr(ident("owner_once"), vec![]), "holder", "pointer",
+        ).unwrap();
+        let declaration = walker.generated_local_declarations.iter().find(|declaration|
+            matches!(&declaration.pattern, BindingPattern::Ident(name)
+                if name.starts_with("__c_record_read_owner")))
+            .expect("record pointer owner needs a function-local declaration");
+        let BindingPattern::Ident(name) = &declaration.pattern else { unreachable!() };
+        assert!(walker.function_local_var_names["read_pointer"].contains(name));
+        assert!(walker.hybrid_linear_struct_pointer_vars.contains(name));
+        let mut owner_calls = 0;
+        read.walk_exprs(&mut |value| {
+            owner_calls += usize::from(matches!(&value.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "owner_once")));
+        });
+        assert_eq!(owner_calls, 1);
+    }
+
+    #[test]
+    fn pointer_field_and_numeric_store_captures_are_function_local_declarations() {
+        let mut walker = Walker::default();
+        walker.current_function = "write_pointer".into();
+        walker.structs.insert("holder".into(), vec!["pointer".into()]);
+        walker.struct_field_types.insert("holder".into(),
+            [("pointer".into(), "int *".into())].into_iter().collect());
+        walker.typed_struct_pointer_field_write(
+            call_expr(ident("owner_once"), vec![]), "holder", "pointer",
+            call_expr(ident("rhs_once"), vec![]),
+        ).unwrap();
+        walker.linear_numeric_pointer_store_expr(int_lit(1024), int_lit(2048));
+        for prefix in ["__c_field_write_source", "__c_field_write_backing",
+            "__c_numeric_ptr_store_addr", "__c_numeric_ptr_store_value"] {
+            let declaration = walker.generated_local_declarations.iter().find(|declaration|
+                matches!(&declaration.pattern, BindingPattern::Ident(name)
+                    if name.starts_with(prefix)))
+                .unwrap_or_else(|| panic!("missing function-local declaration for {prefix}"));
+            let BindingPattern::Ident(name) = &declaration.pattern else { unreachable!() };
+            assert!(walker.function_local_var_names["write_pointer"].contains(name));
+            assert!(declaration.init.is_none());
+        }
+    }
+
+    #[test]
+    fn computed_integer_dereference_store_captures_operands_and_selects_width() {
+        for (type_text, store) in [("short", "__c_ptr_i32_store16"),
+            ("int", "__c_ptr_i32_store")] {
+            let source = format!("{type_text} *pointer_once(void); int rhs_once(void); \
+                int f(void) {{ return *(pointer_once()+2+1)=rhs_once(); }}");
+            let module = crate::parse_with_peg(&source).unwrap();
+            let mut pointer_calls = 0;
+            let mut rhs_calls = 0;
+            let mut sized_stores = 0;
+            let mut managed_stores = 0;
+            for statement in &module.body {
+                statement.walk_exprs(&mut |value| {
+                    if let ExprKind::Call { callee, .. } = &value.kind {
+                        pointer_calls += usize::from(matches!(&callee.kind,
+                            ExprKind::Ident(name) if name == "pointer_once"));
+                        rhs_calls += usize::from(matches!(&callee.kind,
+                            ExprKind::Ident(name) if name == "rhs_once"));
+                        sized_stores += usize::from(matches!(&callee.kind,
+                            ExprKind::Ident(name) if name == store));
+                        managed_stores += usize::from(matches!(&callee.kind,
+                            ExprKind::Ident(name) if name == "__c_array_set"));
+                    }
+                });
+            }
+            assert_eq!(pointer_calls, 1, "{source}");
+            assert_eq!(rhs_calls, 1, "{source}");
+            assert!(sized_stores > 0, "{source}");
+            assert!(managed_stores > 0, "{source}");
+        }
+    }
+
+    #[test]
+    fn declared_pointer_member_offsets_capture_once_before_scalar_emission() {
+        let source = "struct holder { short *words; }; \
+            struct holder *holder_once(struct holder *h) { return h; } \
+            int offset_once(void); \
+            int f(short *p) { struct holder h; h.words=p; \
+                return holder_once(&h)->words + offset_once() + 1 - p == 3; }";
+        let module = crate::parse_with_peg(source).unwrap();
+        let mut holder_calls = 0;
+        let mut offset_calls = 0;
+        let mut pointer_captures = 0;
+        let mut raw_member_adds = 0;
+        for statement in &module.body {
+            statement.walk_exprs(&mut |value| {
+                if let ExprKind::Call { callee, .. } = &value.kind {
+                    holder_calls += usize::from(matches!(&callee.kind,
+                        ExprKind::Ident(name) if name == "holder_once"));
+                    offset_calls += usize::from(matches!(&callee.kind,
+                        ExprKind::Ident(name) if name == "offset_once"));
+                }
+                if matches!(&value.kind, ExprKind::Assign { target, .. }
+                    if matches!(&target.kind, ExprKind::Ident(name)
+                        if name.starts_with("__c_pointer_offset"))) {
+                    pointer_captures += 1;
+                }
+                if matches!(&value.kind, ExprKind::Binary { op: BinOp::Add, left, .. }
+                    if matches!(&left.kind, ExprKind::Member { field, .. } if field == "words")) {
+                    raw_member_adds += 1;
+                }
+            });
+        }
+        assert_eq!(holder_calls, 1, "field owner must be evaluated once");
+        // Backing arms may repeat the offset AST; only the selected arm executes.
+        assert!(offset_calls > 0);
+        assert!(pointer_captures > 0, "declared field must select backing-aware arithmetic");
+        assert_eq!(raw_member_adds, 0);
+
+        let mut walker = Walker::default();
+        walker.structs.insert("holder".into(), vec!["words".into(), "rows".into(),
+            "array".into(), "callback".into()]);
+        walker.struct_field_types.insert("holder".into(), HashMap::from([
+            ("words".into(), "short *".into()),
+            ("rows".into(), "short[3] *".into()),
+            ("array".into(), "short[3]".into()),
+            ("callback".into(), "int (*)(int)".into()),
+        ]));
+        walker.var_types.insert("h".into(), "struct holder".into());
+        assert!(walker.is_unclassified_nonidentifier_object_pointer(&member(ident("h"), "words")));
+        assert!(walker.is_unclassified_nonidentifier_object_pointer(&member(ident("h"), "rows")));
+        assert!(!walker.is_unclassified_nonidentifier_object_pointer(&member(ident("h"), "array")));
+        assert!(!walker.is_unclassified_nonidentifier_object_pointer(&member(ident("h"), "callback")));
+        let linear = expr(ExprKind::Cast { type_name: "short *".into(),
+            expr: Box::new(call_expr(ident("__c_ptr_i32_load"), vec![int_lit(1024)])) });
+        assert!(!walker.is_unclassified_nonidentifier_object_pointer(&linear));
+    }
+
+    #[test]
+    fn array_pointer_distance_lowers_offsets_before_capturing_operands() {
+        for (declaration, array_type, pointer_type, stride) in [
+            ("short local[16];", "short[16]", "short *", 2),
+            ("int local[16];", "int[16]", "int *", 4),
+            ("short local[4][3];", "short[4][3]", "short[3] *", 6),
+        ] {
+            let mut walker = Walker::default();
+            walker.current_function = "main".into();
+            let declaration = CParser::parse(Rule::declaration, declaration)
+                .unwrap().next().unwrap();
+            walker.walk_declaration(declaration, &mut Vec::new());
+            assert_eq!(walker.c_expr_type_text(&ident("local")).as_deref(), Some(array_type));
+            let original = binary_expr(BinOp::Sub,
+                binary_expr(BinOp::Add,
+                    binary_expr(BinOp::Add,
+                        binary_expr(BinOp::Add, ident("local"), int_lit(1)), int_lit(1)),
+                    int_lit(1)),
+                ident("local"));
+            let pending = walker.rewrite_char_ptr_arith(original);
+            assert!(matches!(pending.kind, ExprKind::Binary { op: BinOp::Sub, .. }),
+                "array offsets must remain visible to the carray pass");
+            let lowered = walker.rewrite_carray_ptr_arith(pending);
+            let ExprKind::Sequence(parts) = &lowered.kind else { panic!("distance capture"); };
+            let ExprKind::Assign { value, .. } = &parts[0].kind else { panic!("left capture"); };
+            assert_eq!(walker.c_expr_type_text(value).as_deref(), Some(pointer_type));
+            assert_eq!(walker.c_pointer_index_stride_from_type(pointer_type), stride);
+            let mut raw_array_adds = 0;
+            stmt(StmtKind::Expr(lowered)).walk_exprs(&mut |value| {
+                if matches!(&value.kind, ExprKind::Binary { op: BinOp::Add, left, .. }
+                    if matches!(&left.kind, ExprKind::Ident(name) if name == "local")) {
+                    raw_array_adds += 1;
+                }
+            });
+            assert_eq!(raw_array_adds, 0, "managed arrays must not reach scalar addition");
+        }
+    }
+
+    #[test]
+    fn linear_pointer_expression_carriers_keep_stride_without_tagging_differences() {
+        let mut walker = Walker::default();
+        for name in ["p", "q"] {
+            walker.var_types.insert(name.into(), "short *".into());
+            walker.linear_pointer_vars.insert(name.into());
+        }
+        let address = binary_expr(BinOp::Add, ident("p"), ident("n"));
+        let sequence = expr(ExprKind::Sequence(vec![
+            call_expr(ident("prefix_once"), vec![]), address.clone(),
+        ]));
+        let conditional = ternary_expr(ident("condition"), ident("p"), ident("q"));
+        for value in [address.clone(), sequence, conditional] {
+            let (retained, stride) = walker.linear_pointer_addr_and_stride(&value)
+                .expect("typed linear pointer expression");
+            assert_eq!(stride, 2);
+            assert_eq!(format!("{retained:?}"), format!("{value:?}"));
+        }
+        let bytes = expr(ExprKind::Cast { type_name: "unsigned char *".into(),
+            expr: Box::new(address) });
+        assert_eq!(walker.linear_pointer_addr_and_stride(&bytes).unwrap().1, 1);
+        for operation in [BinOp::Sub, BinOp::Integer(vybe_ast::IntOp::Sub, vybe_ast::BitLane::W32)] {
+            assert!(walker.linear_pointer_addr_and_stride(
+                &binary_expr(operation, ident("p"), ident("q"))).is_none());
+        }
+    }
+
+    #[test]
+    fn qualified_aggregate_layout_preserves_arrays_and_pointer_sizes() {
+        let mut walker = Walker::default();
+        walker.structs.insert("sector".into(), vec!["floor".into(), "ceiling".into(), "next".into()]);
+        walker.struct_field_types.insert("sector".into(), [
+            ("floor".into(), "int".into()), ("ceiling".into(), "int".into()),
+            ("next".into(), "void *".into()),
+        ].into_iter().collect());
+        walker.structs.insert("compact".into(), vec!["a".into(), "b".into()]);
+        walker.struct_field_types.insert("compact".into(), [
+            ("a".into(), "short".into()), ("b".into(), "short".into()),
+        ].into_iter().collect());
+        walker.structs.insert("payload".into(), vec!["word".into(), "byte".into()]);
+        walker.struct_field_types.insert("payload".into(), [
+            ("word".into(), "short".into()), ("byte".into(), "unsigned char".into()),
+        ].into_iter().collect());
+        walker.union_tags.insert("payload".into());
+        walker.var_types.insert("fixed".into(), "static const struct sector".into());
+        for (text, size, alignment) in [
+            ("static const struct sector", 16, 8),
+            ("volatile struct sector", 16, 8),
+            ("const volatile struct sector[3]", 48, 8),
+            ("static const struct compact", 4, 2),
+            ("static volatile union payload", 2, 2),
+            ("const union payload[3]", 6, 2),
+            ("const struct sector *", 8, 8),
+            ("const struct sector *[3]", 24, 8),
+        ] {
+            assert_eq!(walker.sizeof_type_text(text), size, "{text}");
+            assert_eq!(walker.alignof_type_text(text), alignment, "{text}");
+        }
+        for (source, expected) in [("sizeof(fixed)", 16),
+            ("sizeof(const struct sector)", 16),
+            ("sizeof(volatile struct sector[3])", 48),
+            ("sizeof(const struct sector *)", 8)] {
+            let pair = CParser::parse(Rule::sizeof_expression, source)
+                .unwrap().next().unwrap();
+            assert_eq!(walker.sizeof_from_rule(&pair), expected, "{source}");
+        }
+        let pair = CParser::parse(Rule::alignof_expression, "_Alignof(const struct compact)")
+            .unwrap().next().unwrap();
+        assert_eq!(walker.alignof_from_rule(&pair), 2);
+        assert_eq!(walker.offsetof_struct_field("const struct sector", "next"), 8);
+        assert_eq!(walker.offsetof_struct_field("volatile struct compact", "b"), 2);
+        assert_eq!(walker.offsetof_struct_field("const union payload", "byte"), 0);
+        assert_eq!(walker.struct_field_at_offset("const struct sector", 8), Some("next".into()));
+        assert_eq!(walker.struct_field_at_offset("volatile struct compact", 2), Some("b".into()));
+        assert_eq!(walker.struct_field_at_offset("const struct sector *", 8), None);
+        assert_eq!(walker.var_types["fixed"], "static const struct sector");
+    }
+
+    #[test]
+    fn qualified_static_record_size_cache_uses_aggregate_metadata() {
+        let source = "typedef struct { int floor; int ceiling; void *next; } sector_t; \
+            static const sector_t fixed = {7, 128, 0}; \
+            static volatile sector_t changing; static const volatile sector_t array[3];";
+        let program = CParser::parse(Rule::program, source).unwrap().next().unwrap();
+        let mut walker = Walker::default();
+        for item in program.clone().into_inner() { walker.predeclare_top_item(item); }
+        let mut body = Vec::new();
+        for item in program.into_inner() { walker.walk_top_item(item, &mut body); }
+        assert_eq!(walker.var_sizes["fixed"], 16);
+        assert_eq!(walker.var_sizes["changing"], 16);
+        assert_eq!(walker.var_sizes["array"], 48);
+        assert!(walker.var_types["fixed"].contains("const"));
+        assert!(walker.var_types["changing"].contains("volatile"));
+    }
+
+    #[test]
+    fn sizeof_indexed_pointer_dereference_preserves_record_size() {
+        let mut walker = Walker::default();
+        walker.var_types.insert("actors".into(), "struct actor *[3]".into());
+        walker.structs.insert("actor".into(), vec!["values".into()]);
+        walker.struct_field_types.insert("actor".into(),
+            [("values".into(), "int[20]".into())].into_iter().collect());
+        for (source, size) in [("sizeof(*actors[0])", 80),
+            ("sizeof(*(actors[1]))", 80), ("sizeof(actors[2])", 8),
+            ("sizeof(actors)", 24)] {
+            let pair = CParser::parse(Rule::sizeof_expression, source)
+                .unwrap().next().unwrap();
+            assert_eq!(walker.sizeof_from_rule(&pair), size, "{source}");
+        }
+    }
+
+    #[test]
+    fn sizeof_cast_dereference_uses_unevaluated_pointee_type() {
+        let mut walker = Walker::default();
+        walker.inject_header_types("SDL.h");
+        walker.var_types.insert("bytes".into(), "uint8_t *".into());
+        for (source, size) in [("sizeof(*((Uint32 *)bytes))", 4),
+            ("sizeof(*((Uint16 *)bytes))", 2),
+            ("sizeof(*((Uint32 **)bytes))", 8)] {
+            let pair = CParser::parse(Rule::sizeof_expression, source)
+                .unwrap().next().unwrap();
+            assert_eq!(walker.sizeof_from_rule(&pair), size, "{source}");
+        }
+    }
+
+    #[test]
+    fn sdl_scalar_aliases_retain_storage_width_and_pointer_stride() {
+        let mut walker = Walker::default();
+        walker.inject_header_types("SDL.h");
+        for (alias, width) in [("Uint8", 1), ("Sint8", 1), ("Uint16", 2),
+            ("Sint16", 2), ("Uint32", 4), ("Sint32", 4), ("Uint64", 8), ("Sint64", 8)] {
+            assert_eq!(walker.sizeof_type_text(alias), width, "{alias}");
+            assert_eq!(walker.c_pointer_index_stride_from_type(&format!("{alias} *")), width);
+        }
+    }
+
+    #[test]
+    fn pointer_storage_prepass_keeps_function_scopes_and_rejects_mixed_writes() {
+        let source = "char *global; char *allocate(void){return malloc(8);} char *forward(void){return allocate();} void linear(void){char *p; p=malloc(8); global=malloc(16);} void mixed(void){char local[4]; char *p; p=malloc(8); p=local;}";
+        let program = CParser::parse(Rule::program, source).unwrap().next().unwrap();
+        let mut walker = Walker::default();
+        for item in program.clone().into_inner() {
+            walker.predeclare_top_item(item);
+        }
+        walker.resolve_linear_pointer_return_functions();
+        walker.predeclare_linear_pointer_storage_vars(program.into_inner());
+        assert!(walker.linear_pointer_return_functions.contains("allocate"));
+        assert!(walker.linear_pointer_return_functions.contains("forward"));
+        assert!(std::rc::Rc::ptr_eq(
+            &walker.linear_pointer_return_candidates["allocate"],
+            &walker.function_source_texts["allocate"],
+        ));
+        assert!(walker.predeclared_linear_pointer_vars.contains(&c_pointer_scope_key("linear", "p")));
+        assert!(walker.predeclared_linear_pointer_vars.contains(&c_pointer_scope_key("", "global")));
+        assert!(!walker.predeclared_linear_pointer_vars.contains(&c_pointer_scope_key("mixed", "p")));
+    }
+
+    #[test]
+    fn loaded_linear_pointer_cast_retains_pointee_stride() {
+        let walker = Walker::default();
+        for (type_name, stride) in [("char *", 1), ("short *", 2), ("int *", 4)] {
+            let pointer = expr(ExprKind::Cast {
+                type_name: type_name.into(),
+                expr: Box::new(call_expr(ident("__c_ptr_usize_load"), vec![int_lit(0)])),
+            });
+            assert_eq!(walker.linear_pointer_addr_and_stride(&pointer).unwrap().1, stride);
+        }
+    }
+
+    #[test]
+    fn predeclared_linear_scalar_pointer_retains_pointee_stride() {
+        let mut walker = Walker::default();
+        for (type_name, stride) in [("char *", 1), ("short *", 2), ("int *", 4)] {
+            walker.var_types.insert("buffer".into(), type_name.into());
+            walker.predeclared_linear_pointer_vars.insert(c_pointer_scope_key("", "buffer"));
+            assert_eq!(walker.linear_pointer_addr_and_stride(&ident("buffer")).unwrap().1, stride);
+        }
+    }
+
+    #[test]
+    fn mixed_word_pointer_offsets_use_memory32_arithmetic() {
+        let mut walker = Walker::default();
+        walker.var_types.insert("cursor".into(), "int*".into());
+        for subtract in [false, true] {
+            let result = walker.mixed_pointer_offset_expr("cursor", int_lit(3), subtract)
+                .expect("integer pointer offset");
+            let ExprKind::Cast { expr, .. } = result.kind else { panic!("pointer cast"); };
+            let ExprKind::Ternary { then, else_, .. } = expr.kind else { panic!("backing guard"); };
+            let expected = if subtract { vybe_ast::IntOp::Sub } else { vybe_ast::IntOp::Add };
+            assert!(matches!(then.kind, ExprKind::Binary {
+                op: BinOp::Integer(operation, vybe_ast::BitLane::W32), ..
+            } if operation == expected));
+            assert!(matches!(else_.kind, ExprKind::Ternary { .. }));
+        }
+    }
+
+    #[test]
+    fn proven_pointer_assignment_preserves_cast_allocation_byte_count() {
+        let mut walker = Walker::default();
+        walker.var_types.insert("buffer".into(), "static char*".into());
+        walker.predeclared_linear_pointer_vars.insert(c_pointer_scope_key("", "buffer"));
+        let allocation = expr(ExprKind::Cast {
+            expr: Box::new(memory::heap_zeroed_array_sized(int_lit(8193))),
+            type_name: "char *".into(),
+        });
+        let result = walker.register_carray_pointer_assign(&ident("buffer"), allocation);
+        let ExprKind::Call { callee, args, .. } = result.kind else {
+            panic!("proven allocation must use linear backing");
+        };
+        assert!(matches!(callee.kind, ExprKind::Ident(ref name) if name == "__c_ptr_linear_alloc"));
+        assert!(matches!(args[0].value.kind, ExprKind::Lit(Literal::Int(8193))));
+        assert!(walker.uses_linear_memory_heap);
+    }
+
+    #[test]
+    fn long_literal_suffixes_preserve_declared_width() {
+        let mut walker = Walker::default();
+        for (source, expected) in [("3L", "int64"), ("3LL", "int64"),
+            ("3UL", "uint64"), ("3ULL", "uint64")] {
+            let literal = CParser::parse(Rule::literal, source).unwrap().next().unwrap();
+            let value = walker.walk_literal(literal);
+            assert_eq!(walker.c_expr_type_text(&value).as_deref(), Some(expected));
+            assert!(walker.has_wide_integer_operand(&value));
+        }
+    }
+
+    #[test]
+    fn nondecimal_literals_select_unsigned_word_before_wide_integer() {
+        let mut walker = Walker::default();
+        for source in ["0x80000000", "0XFFFFFFFF", "020000000000", "037777777777",
+            "0b10000000000000000000000000000000"] {
+            let literal = CParser::parse(Rule::literal, source).unwrap().next().unwrap();
+            let value = walker.walk_literal(literal);
+            assert_eq!(walker.c_expr_type_text(&value).as_deref(), Some("uint32"), "{source}");
+            assert!(walker.has_declared_narrow_integer_type(&value), "{source}");
+            assert!(!walker.has_wide_integer_operand(&value), "{source}");
+        }
+        for source in ["2147483648", "4294967295", "0x100000000"] {
+            let literal = CParser::parse(Rule::literal, source).unwrap().next().unwrap();
+            let value = walker.walk_literal(literal);
+            assert!(!walker.has_declared_narrow_integer_type(&value), "{source}");
+        }
+        for (source, expected) in [("0x80000000L", "int64"),
+            ("0xffffffffULL", "uint64")] {
+            let literal = CParser::parse(Rule::literal, source).unwrap().next().unwrap();
+            let value = walker.walk_literal(literal);
+            assert_eq!(walker.c_expr_type_text(&value).as_deref(), Some(expected));
+            assert!(walker.has_wide_integer_operand(&value));
+        }
+    }
+
+    #[test]
+    fn normalized_declared_numeric_calls_retain_width_signedness_and_single_evaluation() {
+        let mut walker = Walker::default();
+        for (name, ty, width, unsigned, wide) in [
+            ("short_result", "unsigned short", 2, true, false),
+            ("wide_result", "unsigned long long", 8, true, true),
+            ("signed_result", "long long", 8, false, true),
+            ("float_result", "double", 8, false, false),
+        ] {
+            walker.function_return_types.insert(name.into(), ty.into());
+            let value = walker.normalize_call(ident(name), vec![]);
+            let actual = walker.c_expr_type_text(&value).expect("declared numeric return type");
+            assert_eq!(walker.sizeof_type_text(&actual), width, "{name}");
+            assert_eq!(walker.is_unsigned_expr(&value), unsigned, "{name}");
+            assert_eq!(walker.has_wide_integer_operand(&value), wide, "{name}");
+            let mut calls = 0;
+            value.walk_exprs(&mut |value| {
+                calls += usize::from(matches!(&value.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(callee) if callee == name)));
+            });
+            assert_eq!(calls, 1, "{name}");
+        }
+        walker.function_return_types.insert("pointer_result".into(), "unsigned short *".into());
+        let value = walker.normalize_call(ident("pointer_result"), vec![]);
+        assert!(matches!(value.kind, ExprKind::Call { .. }),
+            "pointer calls must not acquire a numeric result conversion");
+    }
+
+    #[test]
+    fn memcmp_scalar_array_width_recognizes_decay_before_type_guard_normalization() {
+        let mut walker = Walker::default();
+        walker.array_ptr_vars.insert("values".into());
+        for (ty, width) in [("static short[4]", 2), ("static int[4]", 4), ("const short[4]", 2)] {
+            walker.var_types.insert("values".into(), ty.into());
+            let raw = walker.wrap_as_carray_init(ident("values"));
+            assert!(matches!(&raw.kind, ExprKind::Ternary { cond, .. }
+                if matches!(&cond.kind, ExprKind::Binary { op: BinOp::Eq, .. })));
+            assert_eq!(walker.memcmp_scalar_array_width(&raw), Some(width), "{ty}");
+            let normalized = ternary_expr(expr(ExprKind::IsType {
+                expr: Box::new(ident("values")), type_name: "number".into(),
+            }), ident("values"), pointers::make_carray_ptr(ident("values"), int_lit(0)));
+            assert_eq!(walker.memcmp_scalar_array_width(&normalized), Some(width), "{ty}");
+        }
+        walker.var_types.insert("values".into(), "static short[4]".into());
+        for (tested, numeric, base, offset) in [
+            ("other", "values", "values", 0),
+            ("values", "other", "values", 0),
+            ("values", "values", "other", 0),
+            ("values", "values", "values", 1),
+        ] {
+            let view = ternary_expr(binary_expr(BinOp::Eq,
+                unary_expr(UnaryOp::Typeof, ident(tested)), str_lit("number")),
+                ident(numeric), pointers::make_carray_ptr(ident(base), int_lit(offset)));
+            assert_eq!(walker.memcmp_scalar_array_width(&view), None);
+        }
+        for ty in ["volatile short[4]", "_Atomic int[4]", "short[2][2]", "short *"] {
+            walker.var_types.insert("values".into(), ty.into());
+            assert_eq!(walker.memcmp_scalar_array_width(&walker.wrap_as_carray_init(ident("values"))), None, "{ty}");
+        }
+        walker.var_types.insert("values".into(), "short[4]".into());
+        walker.linear_pointer_vars.insert("values".into());
+        assert_eq!(walker.memcmp_scalar_array_width(&ident("values")), None);
+    }
+
+    #[test]
+    fn memcmp_scalar_array_packing_follows_all_argument_captures() {
+        fn calls(value: &Expression, expected: &str) -> usize {
+            let mut count = 0;
+            value.walk_exprs(&mut |value| {
+                count += usize::from(matches!(&value.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == expected)));
+            });
+            count
+        }
+        let mut walker = Walker::default();
+        walker.current_function = "compare".into();
+        walker.var_types.insert("heap".into(), "short *".into());
+        walker.linear_pointer_vars.insert("heap".into());
+        walker.var_types.insert("values".into(), "static short[4]".into());
+        walker.array_ptr_vars.insert("values".into());
+        let arguments = [ident("heap"), ident("values"), call_expr(ident("count_once"), vec![])];
+        let result = walker.normalize_call(ident("memcmp"), arguments.into_iter().map(|value| Argument {
+            value, name: None, by_ref: false, spread: false,
+        }).collect());
+        let mut captures = Vec::new();
+        result.walk_exprs(&mut |value| {
+            if let ExprKind::Sequence(parts) = &value.kind
+                && parts.len() == 4
+                && matches!(&parts[0].kind, ExprKind::Assign { target, .. }
+                    if matches!(&target.kind, ExprKind::Ident(name) if name.starts_with("__c_memcmp_left")))
+            {
+                captures.push(parts.clone());
+            }
+        });
+        assert_eq!(captures.len(), 1);
+        let parts = &captures[0];
+        for part in &parts[..3] {
+            assert_eq!(calls(part, "__c_u8array_new"), 0, "packing must follow argument evaluation");
+        }
+        assert_eq!(calls(&parts[2], "count_once"), 1);
+        assert_eq!(calls(&parts[3], "__c_u8array_new"), 1);
+        assert_eq!(calls(&result, "count_once"), 1);
+    }
+
+    #[test]
+    fn unsigned_record_switch_promotes_selector_and_cases_to_uint64() {
+        let source = "struct record { unsigned long long token; }; \
+            int choose(struct record *p) { switch(p->token) { \
+            case 0x100000001ULL: return 1; case -1: return 2; default: return 3; } }";
+        let module = crate::parse_with_peg(source).unwrap();
+        let body = module.body.iter().find_map(|statement| match &statement.kind {
+            StmtKind::FunctionDecl { name, body, .. } if name == "choose" => Some(body),
+            _ => None,
+        }).unwrap();
+        let (selector, cases) = body.iter().find_map(|statement| match &statement.kind {
+            StmtKind::Switch { expr, cases, .. } => Some((expr, cases)),
+            _ => None,
+        }).unwrap();
+        assert!(matches!(&selector.kind, ExprKind::Cast { type_name, .. }
+            if type_name == "uint64"));
+        assert_eq!(cases.len(), 3, "two value cases followed by the ordered default");
+        assert_eq!(cases.iter().filter(|case| !case.conditions.is_empty()).count(), 2);
+        assert!(cases[2].conditions.is_empty(), "default retains its source position");
+        for (index, case) in cases.iter().enumerate() {
+            let returned = case.body.iter().find_map(|statement| match &statement.kind {
+                StmtKind::Return(Some(value)) => Walker::default().eval_int_expr(value),
+                _ => None,
+            });
+            assert_eq!(returned, Some(index as i64 + 1), "case body/order changed");
+        }
+        for case in &cases[..2] {
+            assert_eq!(case.conditions.len(), 1);
+            assert!(case.conditions.iter().all(|condition| matches!(condition,
+                CaseCondition::Value(Expression { kind: ExprKind::Cast { type_name, .. }, .. })
+                    if type_name == "uint64")));
+        }
+        let mut walker = Walker::default();
+        walker.typedef_scalar_alias_order.push(("token_t".into(), "unsigned long long".into()));
+        for type_name in ["unsigned short", "unsigned int", "unsigned long long", "token_t"] {
+            assert!(walker.is_unsigned_expr(&expr(ExprKind::Cast {
+                expr: Box::new(ident("value")), type_name: type_name.into(),
+            })), "{type_name}");
+        }
+    }
+
+    #[test]
+    fn indexed_record_inline_array_assignment_selects_sized_store_once() {
+        let mut walker = Walker::default();
+        walker.current_function = "write_lanes".into();
+        walker.structs.insert("row".into(), vec!["lanes".into(), "guard".into()]);
+        walker.struct_field_types.insert("row".into(), [
+            ("lanes".into(), "short[2]".into()), ("guard".into(), "int".into()),
+        ].into_iter().collect());
+        walker.function_return_types.insert("owner_once".into(), "row *".into());
+        let target = index_expr(member(index_expr(
+            call_expr(ident("owner_once"), vec![]),
+            call_expr(ident("row_once"), vec![])), "lanes"),
+            call_expr(ident("column_once"), vec![]));
+        let write = walker.rewrite_typed_struct_pointer_array_field_assignment(
+            &target, call_expr(ident("value_once"), vec![]),
+        ).expect("indexed record place must retain its inline array backing");
+        let mut calls = HashMap::<String, usize>::new();
+        write.walk_exprs(&mut |value| {
+            if let ExprKind::Call { callee, .. } = &value.kind
+                && let ExprKind::Ident(name) = &callee.kind
+            {
+                *calls.entry(name.clone()).or_default() += 1;
+            }
+        });
+        for name in ["owner_once", "row_once", "column_once", "value_once",
+            "__c_ptr_i32_store16", "__c_array_set"] {
+            assert_eq!(calls.get(name), Some(&1), "{name}");
+        }
+        // The layout-aware record address helper captures owner/index in its
+        // invocation parameters, not two additional enclosing-function locals.
+        let mut address_captures = 0;
+        write.walk_exprs(&mut |value| {
+            if let ExprKind::Call { callee, args, .. } = &value.kind
+                && let ExprKind::Lambda { params, .. } = &callee.kind
+                && params.first().is_some_and(|param|
+                    param.name.starts_with("__c_record_address_base"))
+            {
+                address_captures += 1;
+                assert_eq!(params.len(), 2);
+                assert!(params[1].name.starts_with("__c_record_address_index"));
+                assert_eq!(args.len(), 2);
+                for (argument, expected) in args.iter().zip(["owner_once", "row_once"]) {
+                    assert!(matches!(&argument.value.kind, ExprKind::Call { callee, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == expected)),
+                        "record owner/index must be captured once in source order");
+                }
+            }
+        });
+        assert_eq!(address_captures, 1);
+        assert_eq!(walker.generated_local_declarations.len(), 4);
+        assert!(walker.generated_local_declarations.iter().all(|declaration|
+            matches!(&declaration.pattern, BindingPattern::Ident(name)
+                if walker.function_local_var_names["write_lanes"].contains(name))));
+    }
+
+    #[test]
+    fn scalar_typedef_targets_preserve_unsigned_short_and_wide_types() {
+        let mut walker = Walker::default();
+        for (name, spelling, width) in [
+            ("half", "unsigned short", 2),
+            ("half_int", "unsigned short int", 2),
+            ("wide", "unsigned long long", 8),
+            ("wide_int", "unsigned long long int", 8),
+            ("word", "unsigned long", 8),
+        ] {
+            walker.insert_typedef_scalar_alias(name.into(), c_scalar_typedef_target(spelling));
+            let resolved = walker.resolve_typedef_scalar_aliases(name);
+            assert!(resolved.contains("unsigned") || resolved.contains("uint"), "{spelling}");
+            assert_eq!(walker.sizeof_type_text(name), width, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn unsigned_short_cast_spellings_keep_sixteen_bit_narrowing() {
+        for spelling in ["unsigned short", "unsigned short int", "half"] {
+            let source = format!("typedef unsigned short half; int once(void); \
+                unsigned f(void) {{ return ({spelling})once(); }}");
+            let module = crate::parse_with_peg(&source).unwrap();
+            let mut narrow_casts = 0;
+            let mut masks = 0;
+            let mut calls = 0;
+            for statement in &module.body {
+                statement.walk_exprs(&mut |value| {
+                    narrow_casts += usize::from(matches!(&value.kind,
+                        ExprKind::Cast { type_name, .. } if type_name == "uint16"));
+                    masks += usize::from(matches!(&value.kind,
+                        ExprKind::Binary { op: BinOp::BitAnd | BinOp::Integer(
+                            vybe_ast::IntOp::And, vybe_ast::BitLane::W32), right, .. }
+                            if matches!(&right.kind, ExprKind::Lit(Literal::Int(65535)))));
+                    calls += usize::from(matches!(&value.kind,
+                        ExprKind::Call { callee, .. }
+                            if matches!(&callee.kind, ExprKind::Ident(name) if name == "once")));
+                });
+            }
+            assert_eq!(narrow_casts, 1, "{spelling}");
+            assert_eq!(masks, 1, "{spelling}");
+            assert_eq!(calls, 1, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn cast_elision_resolves_source_typedef_width_and_float_kind() {
+        let mut walker = Walker::default();
+        walker.typedef_scalar_alias_order.push(("fixed_t".into(), "int".into()));
+        walker.typedef_scalar_alias_order.push(("real_t".into(), "double".into()));
+        walker.var_types.insert("center".into(), "fixed_t".into());
+        walker.var_types.insert("fraction".into(), "real_t".into());
+        for source in ["(long long)center", "(long long)fraction"] {
+            let cast = CParser::parse(Rule::cast_expression, source).unwrap().next().unwrap();
+            let value = walker.walk_cast(cast);
+            assert!(matches!(value.kind, ExprKind::Cast { .. }), "{source}");
+            assert!(walker.has_wide_integer_operand(&value), "{source}");
+        }
+        let cast = CParser::parse(Rule::cast_expression, "(int)center").unwrap().next().unwrap();
+        let value = walker.walk_cast(cast);
+        assert!(matches!(value.kind, ExprKind::Ident(ref name) if name == "center"));
+    }
+
+    #[test]
+    fn unsigned_arithmetic_declares_word_lane_and_preserves_unsigned_result_type() {
+        let mut walker = Walker::default();
+        walker.var_types.insert("word".into(), "unsigned int".into());
+        walker.var_types.insert("wide".into(), "unsigned long long".into());
+        walker.var_types.insert("pointer".into(), "unsigned int *".into());
+        walker.function_return_types.insert("__c_unsigned32_from_bits".into(), "uint32".into());
+        for (op, expected) in [(BinOp::Add, vybe_ast::IntOp::Add),
+            (BinOp::Sub, vybe_ast::IntOp::Sub), (BinOp::Mul, vybe_ast::IntOp::Mul)] {
+            let result = walker.rewrite_unsigned_32_arithmetic_lanes(binary_expr(
+                op, ident("word"), expr(ExprKind::Cast {
+                    expr: Box::new(int_lit(3)), type_name: "uint32".into(),
+                }),
+            ));
+            assert_eq!(walker.c_expr_type_text(&result).as_deref(), Some("uint32"));
+            assert!(walker.is_integral_expr(&result));
+            let stored = walker.wrap_unsigned_32_assignment(&ident("word"), result.clone());
+            assert!(matches!(&stored.kind, ExprKind::Call { args, .. }
+                if matches!(&args[0].value.kind, ExprKind::Binary {
+                    op: BinOp::Integer(actual, vybe_ast::BitLane::W32), ..
+                } if *actual == expected)), "unsigned result narrowed twice");
+            let ExprKind::Call { callee, args, .. } = result.kind else {
+                panic!("unsigned result conversion missing")
+            };
+            assert!(matches!(callee.kind, ExprKind::Ident(name) if name == "__c_unsigned32_from_bits"));
+            assert!(matches!(args[0].value.kind, ExprKind::Binary {
+                op: BinOp::Integer(actual, vybe_ast::BitLane::W32), ..
+            } if actual == expected));
+            let literal_result = walker.rewrite_unsigned_32_arithmetic_lanes(binary_expr(
+                op, int_lit(1073741824), ident("word"),
+            ));
+            assert!(matches!(literal_result.kind, ExprKind::Call { .. }));
+            for operand in [int_lit(2147483648), ident("wide"), ident("pointer"), expr(ExprKind::Cast {
+                expr: Box::new(int_lit(3)), type_name: "int64".into(),
+            }), expr(ExprKind::Cast {
+                expr: Box::new(int_lit(1)), type_name: "double".into(),
+            })] {
+                let result = walker.rewrite_unsigned_32_arithmetic_lanes(binary_expr(
+                    op, ident("word"), operand,
+                ));
+                assert!(matches!(result.kind, ExprKind::Binary { op: actual, .. } if actual == op));
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_pointer_result_storage_preserves_linear_branch() {
+        let walker = Walker::default();
+        let value = call_expr(
+            expr(ExprKind::Lambda {
+                params: vec![],
+                body: LambdaBody::Expr(Box::new(expr(ExprKind::Cast {
+                    type_name: "Sector *".into(),
+                    expr: Box::new(ternary_expr(
+                        ident("linear"),
+                        int_lit(1024),
+                        pointers::make_carray_ptr(ident("managed"), int_lit(2)),
+                    )),
+                }))),
+                is_async: false,
+                captures: vec![],
+            }),
+            vec![],
+        );
+        let stored = walker.c_pointer_storage_value(value);
+        let ExprKind::Call { callee, args, .. } = stored.kind else {
+            panic!("storage must retain the single call");
+        };
+        assert!(args.is_empty());
+        let ExprKind::Lambda { body: LambdaBody::Expr(body), .. } = callee.kind else {
+            panic!("expected address producer");
+        };
+        let ExprKind::Ternary { then, else_, .. } = body.kind else {
+            panic!("expected backing-specific branches");
+        };
+        assert!(matches!(then.kind, ExprKind::Lit(Literal::Int(1024))));
+        assert!(matches!(else_.kind, ExprKind::Member { ref field, .. }
+            if field == CARRAY_IDX_KEY));
+    }
+
+    #[test]
+    fn generated_json_literals_are_bounded_and_preserve_utf8() {
+        let json = format!("[\"{}\"]", "\u{e9}".repeat(70_000));
+        let value = c_static_json_initializer(&json);
+        let ExprKind::Call { args, .. } = value.kind else { panic!("expected JSON helper"); };
+        fn collect(value: &Expression, output: &mut String) {
+            match &value.kind {
+                ExprKind::Lit(Literal::Str(text)) => {
+                    assert!(text.len() <= 32_768);
+                    output.push_str(text);
+                }
+                ExprKind::Binary { op: BinOp::Concat, left, right } => {
+                    collect(left, output);
+                    collect(right, output);
+                }
+                _ => panic!("unexpected initializer carrier"),
+            }
+        }
+        let mut restored = String::new();
+        collect(&args[0].value, &mut restored);
+        assert_eq!(restored, json);
+    }
+
+    #[test]
+    fn integer_equality_declares_lane_without_changing_other_comparisons() {
+        let mut walker = Walker::default();
+        walker.var_types.insert("word".into(), "int".into());
+        walker.var_types.insert("wide".into(), "long long".into());
+        walker.var_types.insert("pointer".into(), "int *".into());
+        for (op, expected) in [(BinOp::Eq, vybe_ast::IntOp::Eq),
+            (BinOp::NotEq, vybe_ast::IntOp::Ne)] {
+            let predicate = binary_expr(BinOp::Integer(
+                vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32), ident("word"), int_lit(0));
+            let result = walker.rewrite_unsigned_relational(binary_expr(op, ident("word"), predicate));
+            assert!(matches!(result.kind, ExprKind::Binary {
+                op: BinOp::Integer(actual, vybe_ast::BitLane::W32), ..
+            } if actual == expected));
+            for operand in [ident("wide"), ident("pointer"), expr(ExprKind::Cast {
+                expr: Box::new(int_lit(1)), type_name: "double".into(),
+            })] {
+                let result = walker.rewrite_unsigned_relational(binary_expr(op, operand, int_lit(0)));
+                assert!(matches!(result.kind, ExprKind::Binary { op: actual, .. } if actual == op));
+            }
+        }
+    }
+
+    #[test]
     fn wide_offsets_do_not_change_pointer_operations_into_integer_operations() {
         let mut walker = Walker::default();
         walker.var_types.insert("pointer".into(), "unsigned char *".into());
@@ -41910,6 +49443,662 @@ mod field_type_tests {
     }
 
     #[test]
+    fn memchr_index_comparisons_retain_full_wasm32_index_range() {
+        let mut walker = Walker::default();
+        let value = walker.rewrite_memchr_bytes(ident("buffer"), int_lit(255), ident("count"));
+        let mut numeric_checks = 0;
+        value.walk_exprs(&mut |expression| {
+            if let ExprKind::Binary { op: BinOp::Eq | BinOp::GtEq, left, right } = &expression.kind
+                && matches!(&right.kind, ExprKind::Lit(Literal::Int(0)))
+                && matches!(&left.kind, ExprKind::Cast { expr: inner, type_name }
+                    if type_name == "double" && matches!(&inner.kind, ExprKind::Ident(name)
+                        if name.starts_with("__c_memchr_index")))
+            {
+                numeric_checks += 1;
+            }
+        });
+        assert_eq!(numeric_checks, 2);
+        assert_eq!((-1_i64) as f64, -1.0);
+        assert_eq!(u32::MAX as f64 as u64, u64::from(u32::MAX));
+    }
+
+    #[test]
+    fn tagged_aggregate_type_text_excludes_body_and_retains_qualifiers() {
+        let mut walker = Walker::default();
+        for (source, expected) in [
+            ("const struct local { unsigned char bytes[7]; }", "const struct local"),
+            ("volatile union local { int value; unsigned char bytes[4]; }", "volatile union local"),
+            ("struct local", "struct local"),
+        ] {
+            let specs = CParser::parse(Rule::declaration_specifiers, source).unwrap().next().unwrap();
+            assert_eq!(walker.type_text(specs), expected);
+        }
+        let specs = CParser::parse(Rule::declaration_specifiers,
+            "struct { unsigned char bytes[2]; }").unwrap().next().unwrap();
+        assert!(walker.type_text(specs).contains('{'));
+    }
+
+    #[test]
+    fn pointer_slot_addresses_are_evaluated_once() {
+        let mut walker = Walker::default();
+        walker.current_function = "recursive_pointer_table".into();
+        let address = call_expr(ident("next_slot_address"), vec![]);
+        let load = walker.linear_pointer_slot_load_expr(address.clone());
+        let store = walker.linear_pointer_slot_store_expr(address, ident("pointer_value"));
+        for operation in [load, store] {
+            assert_eq!(format!("{operation:?}").matches("\"next_slot_address\"").count(), 1);
+            let ExprKind::Sequence(parts) = operation.kind else {
+                panic!("pointer slot operation lost address capture");
+            };
+            assert!(matches!(&parts[0].kind, ExprKind::Assign { value, .. }
+                if matches!(&value.kind, ExprKind::Cast { type_name, .. }
+                    if type_name == "uintptr_t")));
+        }
+        assert_eq!(walker.generated_local_declarations.len(), 4);
+    }
+
+    #[test]
+    fn pointer_store_captures_preserve_scalar_address_identity() {
+        let mut walker = Walker::default();
+        let address = unary_expr(UnaryOp::AddrOf, ident("scalar"));
+        let raw = walker.linear_raw_pointer_store_expr(ident("field_address"), address.clone());
+        let slot = walker.linear_pointer_slot_store_expr(ident("field_address"), address);
+        for store in [raw, slot] {
+            let ExprKind::Sequence(parts) = &store.kind else { panic!("store lost evaluation order"); };
+            let value = parts.iter().find_map(|part| match &part.kind {
+                ExprKind::Assign { value, .. } if matches!(&value.kind,
+                    ExprKind::Cast { type_name, .. } if type_name == "void*") => Some(value),
+                _ => None,
+            }).expect("store lost value capture");
+            assert!(matches!(&value.kind, ExprKind::Cast { expr: inner, type_name }
+                if type_name == "void*" && matches!(&inner.kind,
+                    ExprKind::Unary { op: UnaryOp::AddrOf, .. })));
+            assert_eq!(format!("{store:?}").matches("\"scalar\"").count(), 1);
+        }
+    }
+
+    #[test]
+    fn indexed_record_owner_loads_pointer_slot_once() {
+        let mut walker = Walker::default();
+        walker.current_function = "table_owner".into();
+        walker.structs.insert("node".into(), vec!["value".into()]);
+        walker.var_types.insert("table".into(), "struct node **".into());
+        let value = walker.materialize_indexed_record_pointer(index_expr(
+            ident("table"), call_expr(ident("index_once"), vec![]),
+        ));
+        assert!(matches!(&value.kind, ExprKind::Cast { type_name, .. }
+            if walker.c_struct_pointer_pointee_from_type_text(type_name).as_deref() == Some("node")));
+        let mut index_calls = 0;
+        let mut raw_indexes = 0;
+        let mut slot_reads = 0;
+        value.walk_exprs(&mut |value| {
+            if let ExprKind::Call { callee, args, .. } = &value.kind {
+                index_calls += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "index_once"));
+                slot_reads += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "__c_array_get")
+                    && args.first().is_some_and(|arg| matches!(&arg.value.kind,
+                        ExprKind::Ident(name) if name == "__c_linear_ptr_slots")));
+            }
+            raw_indexes += usize::from(matches!(&value.kind,
+                ExprKind::Index { object, .. }
+                    if matches!(&object.kind, ExprKind::Ident(name) if name == "table")));
+        });
+        assert_eq!(index_calls, 1);
+        assert_eq!(raw_indexes, 0);
+        assert_eq!(slot_reads, 1);
+        assert_eq!(walker.generated_local_declarations.len(), 4);
+        walker.var_types.insert("integers".into(), "int *".into());
+        let scalar = walker.materialize_indexed_record_pointer(index_expr(
+            ident("integers"), int_lit(0),
+        ));
+        assert!(matches!(scalar.kind, ExprKind::Index { .. }));
+    }
+
+    #[test]
+    fn pointer_field_rhs_capture_preserves_owner_order_and_nested_assignment_result() {
+        for linear in [false, true] {
+            let mut walker = Walker::default();
+            walker.current_function = "assign_link".into();
+            walker.structs.insert("node".into(), vec!["next".into()]);
+            walker.struct_field_types.insert("node".into(), HashMap::from([
+                ("next".into(), "struct node *".into()),
+            ]));
+            walker.var_types.insert("owner".into(), "struct node *".into());
+            walker.var_types.insert("saved".into(), "struct node *".into());
+            if linear { walker.linear_pointer_vars.insert("owner".into()); }
+            let rhs = assign_expr(ident("saved"), call_expr(ident("value_once"), vec![]));
+            let write = walker.typed_struct_pointer_field_write_backing(
+                ident("owner"), "node", "next", rhs.clone(),
+            ).unwrap();
+            let ExprKind::Sequence(parts) = &write.kind else { panic!("capture before dispatch"); };
+            assert_eq!(parts.len(), 3);
+            let ExprKind::Assign { target: owner_target, value: owner_value } = &parts[0].kind
+                else { panic!("owner capture first"); };
+            assert!(matches!(&owner_target.kind, ExprKind::Ident(name)
+                if name.starts_with("__c_struct_field_target")));
+            assert!(matches!(&owner_value.kind, ExprKind::Cast { expr, type_name }
+                if type_name == "void*" && matches!(&expr.kind, ExprKind::Ident(name) if name == "owner")));
+            let ExprKind::Assign { target: value_target, value: captured_rhs } = &parts[1].kind
+                else { panic!("complete RHS capture second"); };
+            assert!(matches!(&value_target.kind, ExprKind::Ident(name)
+                if name.starts_with("__c_struct_field_value")));
+            let ExprKind::Cast { expr: inner, type_name } = &captured_rhs.kind
+                else { panic!("preserve pointer representation"); };
+            assert_eq!(type_name, "void*");
+            assert_eq!(format!("{inner:?}"), format!("{rhs:?}"));
+            let mut effects = 0;
+            let mut assignments = 0;
+            write.walk_exprs(&mut |node| match &node.kind {
+                ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "value_once") => effects += 1,
+                ExprKind::Assign { target, .. }
+                    if matches!(&target.kind, ExprKind::Ident(name) if name == "saved") => assignments += 1,
+                _ => {},
+            });
+            assert_eq!((effects, assignments), (1, 1));
+            for target in [owner_target, value_target] {
+                let ExprKind::Ident(name) = &target.kind else { unreachable!() };
+                assert!(walker.generated_local_declarations.iter().any(|declaration|
+                    matches!(&declaration.pattern, BindingPattern::Ident(local) if local == name)));
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_record_write_receiver_loads_slot_and_captures_once() {
+        let mut walker = Walker::default();
+        walker.current_function = "table_write".into();
+        walker.structs.insert("node".into(), vec!["next".into()]);
+        walker.struct_field_types.entry("node".into()).or_default()
+            .insert("next".into(), "struct node *".into());
+        walker.var_types.insert("table".into(), "struct node **".into());
+        let write = walker.typed_struct_pointer_field_write(
+            index_expr(ident("table"), call_expr(ident("index_once"), vec![])),
+            "node", "next", call_expr(ident("value_once"), vec![]),
+        ).unwrap();
+        let mut indices = 0;
+        let mut values = 0;
+        let mut raw_table_reads = 0;
+        write.walk_exprs(&mut |value| {
+            if let ExprKind::Call { callee, .. } = &value.kind {
+                indices += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "index_once"));
+                values += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "value_once"));
+            }
+            raw_table_reads += usize::from(matches!(&value.kind,
+                ExprKind::Index { object, .. }
+                    if matches!(&object.kind, ExprKind::Ident(name) if name == "table")));
+        });
+        assert_eq!(indices, 1);
+        assert_eq!(values, 1);
+        assert_eq!(raw_table_reads, 0);
+    }
+
+    #[test]
+    fn dereferenced_record_slot_receiver_loads_numeric_and_preserves_managed_fallback() {
+        let mut walker = Walker::default();
+        walker.current_function = "slot_write".into();
+        walker.structs.insert("node".into(), vec!["prev".into()]);
+        walker.struct_field_types.entry("node".into()).or_default()
+            .insert("prev".into(), "struct node *".into());
+        walker.function_return_types.insert("slot_once".into(), "struct node **".into());
+        let write = walker.typed_struct_pointer_field_write(
+            unary_expr(UnaryOp::Deref, call_expr(ident("slot_once"), vec![])),
+            "node", "prev", call_expr(ident("value_once"), vec![]),
+        ).unwrap();
+        let mut slots = 0;
+        let mut values = 0;
+        let mut numeric_loads = 0;
+        let mut producer_derefs = 0;
+        write.walk_exprs(&mut |value| {
+            if let ExprKind::Call { callee, .. } = &value.kind {
+                slots += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "slot_once"));
+                values += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "value_once"));
+                numeric_loads += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "__c_ptr_i32_load"));
+            }
+            producer_derefs += usize::from(matches!(&value.kind,
+                ExprKind::Unary { op: UnaryOp::Deref, expr: pointer }
+                    if matches!(&pointer.kind, ExprKind::Call { .. })));
+        });
+        assert_eq!(slots, 1);
+        assert_eq!(values, 1);
+        assert_eq!(numeric_loads, 1);
+        assert_eq!(producer_derefs, 0);
+        walker.var_types.insert("ordinary".into(), "struct node *".into());
+        let ordinary = walker.materialize_indexed_record_pointer(
+            unary_expr(UnaryOp::Deref, ident("ordinary")),
+        );
+        assert!(matches!(ordinary.kind, ExprKind::Unary { op: UnaryOp::Deref, .. }));
+    }
+
+    #[test]
+    fn erased_first_member_recovery_captures_once_and_checks_owner_type() {
+        let mut walker = Walker::default();
+        walker.current_function = "recover".into();
+        let recovery = walker.guarded_erased_first_member_value(
+            call_expr(ident("source_once"), vec![]), "owner_t");
+        assert_eq!(walker.generated_local_declarations.len(), 3);
+        assert!(walker.var_types.iter().filter(|(name, _)|
+            name.starts_with("__c_erased_member_")).all(|(_, ty)| ty == "void*"));
+        let mut producers = 0;
+        let mut guards = 0;
+        let mut cell_reads = 0;
+        let mut preserved_carriers = 0;
+        recovery.walk_exprs(&mut |value| {
+            if let ExprKind::Call { callee, args, .. } = &value.kind {
+                producers += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "source_once"));
+                guards += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "__c_tag_eq")
+                    && args.get(1).is_some_and(|arg| matches!(&arg.value.kind,
+                        ExprKind::Lit(Literal::Str(tag)) if tag == "owner_t")));
+                cell_reads += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "__c_record_pointer_value"));
+            }
+            if let ExprKind::Ternary { cond, then, .. } = &value.kind {
+                let mut target_guard = false;
+                cond.walk_exprs(&mut |condition| {
+                    if let ExprKind::Call { callee, args, .. } = &condition.kind {
+                        target_guard |= matches!(&callee.kind,
+                            ExprKind::Ident(name) if name == "__c_tag_eq")
+                            && args.get(1).is_some_and(|arg| matches!(&arg.value.kind,
+                                ExprKind::Lit(Literal::Str(tag)) if tag == "owner_t"));
+                    }
+                });
+                preserved_carriers += usize::from(target_guard
+                    && matches!(&then.kind, ExprKind::Ident(name)
+                        if name.starts_with("__c_erased_member_container")));
+            }
+        });
+        assert_eq!(producers, 1);
+        assert_eq!(guards, 1);
+        assert_eq!(cell_reads, 1);
+        assert_eq!(preserved_carriers, 1);
+    }
+
+    #[test]
+    fn owner_cast_selects_actual_first_record_member_and_captures_once() {
+        let mut walker = Walker::default();
+        walker.current_function = "first_cast".into();
+        walker.structs.insert("thinker".into(), vec!["marker".into()]);
+        walker.struct_field_types.entry("thinker".into()).or_default()
+            .insert("marker".into(), "int".into());
+        walker.structs.insert("actor".into(), vec!["thinker".into(), "health".into()]);
+        walker.struct_field_types.entry("actor".into()).or_default()
+            .insert("thinker".into(), "struct thinker".into());
+        walker.function_return_types.insert("owner_once".into(), "struct actor *".into());
+        let cast = walker.owner_pointer_to_first_record_member(
+            call_expr(ident("owner_once"), vec![]), "thinker",
+        ).unwrap();
+        let mut owners = 0;
+        let mut members = 0;
+        let mut deferred_members = 0;
+        let mut writers = 0;
+        let is_member_projection = |value: &Expression| {
+            matches!(&value.kind, ExprKind::Call { callee, args, .. }
+                if matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "__c_hybrid_embedded_record_ptr")
+                && args.get(1).is_some_and(|arg| matches!(&arg.value.kind,
+                    ExprKind::Lit(Literal::Str(field)) if field == "thinker")))
+        };
+        cast.walk_exprs(&mut |value| {
+            if let ExprKind::Call { callee, args, .. } = &value.kind {
+                owners += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "owner_once"));
+                if is_member_projection(value) {
+                    members += 1;
+                    assert!(matches!(&args[0].value.kind, ExprKind::Ident(name)
+                        if name.starts_with("__c_first_record_owner")));
+                    assert!(matches!(&args[2].value.kind, ExprKind::Lit(Literal::Int(0))));
+                }
+            }
+            if matches!(&value.kind, ExprKind::Lambda { .. }) {
+                writers += 1;
+                value.walk_exprs(&mut |nested| {
+                    deferred_members += usize::from(is_member_projection(nested));
+                });
+            }
+        });
+        assert_eq!(owners, 1);
+        // The deferred serialization writer projects from the captured owner too.
+        assert_eq!(writers, 1);
+        assert_eq!(deferred_members, 1);
+        assert_eq!(members - deferred_members, 1);
+        let ExprKind::Sequence(sequence) = &cast.kind else {
+            panic!("owner capture sequence missing");
+        };
+        assert!(matches!(&sequence[0].kind, ExprKind::Assign { value, .. }
+            if matches!(&value.kind, ExprKind::Cast { type_name, .. } if type_name == "void*")));
+        assert!(matches!(&sequence[1].kind, ExprKind::Ternary { cond, then, .. }
+            if matches!(&cond.kind, ExprKind::IsType { type_name, .. } if type_name == "number")
+            && matches!(&then.kind, ExprKind::Ident(name)
+                if name.starts_with("__c_first_record_owner"))));
+        assert!(walker.owner_pointer_to_first_record_member(
+            call_expr(ident("owner_once"), vec![]), "actor",
+        ).is_none());
+    }
+
+    #[test]
+    fn typed_first_member_callback_parameter_has_guarded_entry_recovery() {
+        let mut walker = Walker::default();
+        walker.structs.insert("prefix".into(), vec!["marker".into()]);
+        walker.structs.insert("owner".into(), vec!["first".into(), "value".into()]);
+        walker.struct_field_types.entry("owner".into()).or_default()
+            .insert("first".into(), "struct prefix".into());
+        for (source, expected) in [
+            ("void callback(struct owner *pointer) {}", true),
+            ("void plain(struct prefix *pointer) {}", false),
+        ] {
+            let function = CParser::parse(Rule::function_definition, source)
+                .unwrap().next().unwrap();
+            let statement = walker.walk_function(function).unwrap();
+            let StmtKind::FunctionDecl { body, .. } = statement.kind else {
+                panic!("function declaration missing");
+            };
+            let recovery = body.iter().find_map(|statement| {
+                let StmtKind::Expr(value) = &statement.kind else { return None; };
+                let ExprKind::Assign { target, value } = &value.kind else { return None; };
+                matches!(&target.kind, ExprKind::Ident(name) if name == "pointer")
+                    .then_some(value)
+            });
+            assert_eq!(recovery.is_some(), expected, "{source}");
+            if let Some(recovery) = recovery {
+                assert!(matches!(&recovery.kind, ExprKind::Cast { type_name, .. }
+                    if type_name == "owner *"));
+                assert!(format!("{recovery:?}").contains("__c_record_pointer_value"));
+                assert!(matches!(&body[0].kind, StmtKind::VarDecl { declarations, .. }
+                    if declarations.len() == 3));
+            }
+        }
+    }
+
+    #[test]
+    fn complete_record_zero_fill_requires_zero_byte_and_exact_size() {
+        let mut walker = Walker::default();
+        walker.structs.insert("reset".into(), vec!["health".into(), "pointer".into()]);
+        walker.struct_field_types.entry("reset".into()).or_default()
+            .extend([("health".into(), "int".into()), ("pointer".into(), "int *".into())]);
+        walker.var_types.insert("p".into(), "struct reset *".into());
+        let bytes = walker.sizeof_type_text("reset");
+        assert!(walker.rewrite_record_zero_fill(&ident("p"), &int_lit(1), &int_lit(bytes)).is_none());
+        assert!(walker.rewrite_record_zero_fill(&ident("p"), &int_lit(0), &int_lit(bytes - 1)).is_none());
+        let reset = walker.rewrite_record_zero_fill(&ident("p"), &int_lit(256), &int_lit(bytes)).unwrap();
+        let text = format!("{reset:?}");
+        assert_eq!(text.matches("\"p\"").count(), 1);
+        assert!(text.contains("__c_byte_fill"));
+        assert!(text.contains("\"health\""));
+        assert!(text.contains("Null"));
+        let fill = walker.rewrite_memset(ident("untyped"), int_lit(1), int_lit(3));
+        assert!(matches!(&fill.kind, ExprKind::Cast { type_name, .. } if type_name == "void*"));
+    }
+
+    #[test]
+    fn scalar_integer_update_places_preserve_parameter_cells_and_named_dereferences() {
+        let mut walker = Walker::default();
+        walker.var_types.insert("global".into(), "int *".into());
+        walker.var_types.insert("cell".into(), "int *".into());
+        walker.scalar_ref_pointer_vars.insert("cell".into());
+        let global = unary_expr(UnaryOp::Deref, ident("global"));
+        let cell = expr(ExprKind::RefLoad(Box::new(ident("cell"))));
+        assert_eq!(walker.scalar_reference_integer_place(&global), Some(("global".into(), "int".into(), false)));
+        assert_eq!(walker.scalar_reference_integer_place(&cell), Some(("cell".into(), "int".into(), true)));
+        assert!(walker.scalar_reference_integer_place(&expr(ExprKind::RefLoad(Box::new(ident("global"))))).is_none());
+        let updated = walker.scalar_reference_integer_update(&global, int_lit(2), BinOp::Sub, true).unwrap();
+        let ExprKind::Cast { expr: update, .. } = &updated.kind else { panic!("update lost integer type"); };
+        let ExprKind::Sequence(parts) = &update.kind else { panic!("update lost evaluation order"); };
+        assert!(matches!(&parts[0].kind, ExprKind::Assign { value, .. }
+            if matches!(&value.kind, ExprKind::Ident(name) if name == "global")));
+        let text = format!("{updated:?}");
+        assert!(text.contains("__c_ptr_i32_load"));
+        assert!(text.contains("__c_ptr_i32_store"));
+        assert!(text.contains("__base"));
+        walker.var_types.insert("global".into(), "int **".into());
+        assert!(walker.scalar_reference_integer_place(&global).is_none());
+    }
+
+    #[test]
+    fn integer_record_array_update_decays_before_typed_read_and_write() {
+        let mut walker = Walker::default();
+        walker.var_types.insert("player".into(), "struct player *".into());
+        walker.structs.insert("player".into(), vec!["ammo".into()]);
+        walker.struct_field_types.entry("player".into()).or_default()
+            .insert("ammo".into(), "int[4]".into());
+        let target = expr(ExprKind::Index {
+            object: Box::new(member(ident("player"), "ammo")),
+            index: Box::new(call_expr(ident("next_index"), vec![])), null_safe: false,
+        });
+        let update = walker.integer_pointer_index_update(&target,
+            call_expr(ident("amount"), vec![]), BinOp::Sub, false).unwrap();
+        let text = format!("{update:?}");
+        assert!(text.contains("__c_ptr_i32_load"));
+        assert!(text.contains("__c_ptr_i32_store"));
+        assert_eq!(text.matches("\"next_index\"").count(), 1);
+        assert_eq!(text.matches("\"amount\"").count(), 3); // Numeric, carrier, or plain-array write.
+    }
+
+    #[test]
+    fn decoded_binary_operators_preserve_precedence_order_spans_and_folds() {
+        let operators = ["||", "&&", "|", "^", "&", "==", "!=", "<", "<=",
+            ">", ">=", "<<", ">>", "+", "-", "*", "/", "%"];
+        let mut left = ident("left");
+        left.span.start_line = 3;
+        left.span.start_col = 2;
+        let mut middle = ident("middle");
+        middle.span.start_line = 3;
+        middle.span.start_col = 9;
+        let mut right = ident("right");
+        right.span.start_line = 3;
+        right.span.start_col = 18;
+        for first in operators {
+            for second in operators {
+                let (first_op, first_precedence) = bin_op(first);
+                let (second_op, second_precedence) = bin_op(second);
+                let actual = fold_binary(
+                    vec![left.clone(), middle.clone(), right.clone()],
+                    vec![(first_op, first_precedence), (second_op, second_precedence)],
+                );
+                let expected = if first_precedence >= second_precedence {
+                    binary_expr(second_op,
+                        binary_expr(first_op, left.clone(), middle.clone()), right.clone())
+                } else {
+                    binary_expr(first_op, left.clone(),
+                        binary_expr(second_op, middle.clone(), right.clone()))
+                };
+                assert_eq!(format!("{actual:?}"), format!("{expected:?}"),
+                    "left {first} middle {second} right");
+            }
+        }
+        assert_eq!(format!("{:?}", fold_binary(vec![left.clone()], vec![])),
+            format!("{left:?}"));
+        for (operator, lhs, rhs, expected) in [
+            ("==", 7, 7, 1), ("!=", 7, 7, 0),
+            ("<<", 1, 40, 1i64 << 40), (">>", 1i64 << 40, 40, 1),
+        ] {
+            let actual = fold_binary(vec![int_lit(lhs), int_lit(rhs)],
+                vec![bin_op(operator)]);
+            assert!(matches!(actual.kind, ExprKind::Lit(Literal::Int(value))
+                if value == expected), "{operator}");
+        }
+    }
+
+    #[test]
+    fn branch_allocations_do_not_prove_record_pointer_backing_after_join() {
+        for source in ["if (flag) p = malloc(16);",
+                       "if (flag) p = malloc(16); else p = &local;"] {
+            let mut walker = Walker::default();
+            walker.structs.insert("record".into(), vec!["value".into()]);
+            walker.struct_field_types.entry("record".into()).or_default()
+                .insert("value".into(), "int".into());
+            walker.var_types.insert("p".into(), "struct record *".into());
+            walker.var_types.insert("local".into(), "struct record".into());
+            walker.var_types.insert("flag".into(), "int".into());
+            walker.pointer_vars.insert("p".into());
+            walker.direct_object_pointer_vars.insert("p".into());
+            walker.pointer_address_aliases.insert("p".into(), "local".into());
+            let pair = CParser::parse(Rule::if_statement, source).unwrap().next().unwrap();
+            walker.walk_if(pair);
+            assert!(!walker.linear_pointer_vars.contains("p"), "{source}");
+            assert!(!walker.linear_struct_pointer_vars.contains("p"), "{source}");
+            assert!(!walker.direct_object_pointer_vars.contains("p"), "{source}");
+            assert!(walker.hybrid_linear_struct_pointer_vars.contains("p"), "{source}");
+            assert!(walker.linear_pointer_addr_and_stride(&ident("p")).is_none(), "{source}");
+        }
+    }
+
+    #[test]
+    fn reverse_branch_join_overrides_predeclared_linear_field_write() {
+        let mut walker = Walker::default();
+        walker.current_function = "reverse".into();
+        walker.structs.insert("record".into(), vec!["value".into()]);
+        walker.struct_field_types.entry("record".into()).or_default()
+            .insert("value".into(), "int".into());
+        walker.var_types.insert("p".into(), "struct record *".into());
+        walker.var_types.insert("local".into(), "struct record".into());
+        walker.var_types.insert("flag".into(), "int".into());
+        walker.pointer_vars.insert("p".into());
+        walker.linear_pointer_vars.insert("p".into());
+        walker.linear_struct_pointer_vars.insert("p".into());
+        walker.byte_struct_pointer_vars.insert("p".into(), "record".into());
+        walker.predeclared_linear_pointer_vars.insert(c_pointer_scope_key("reverse", "p"));
+        let pair = CParser::parse(Rule::if_statement, "if (flag) p = &local;")
+            .unwrap().next().unwrap();
+        walker.walk_if(pair);
+        assert!(walker.hybrid_linear_struct_pointer_vars.contains("p"));
+        assert!(walker.linear_pointer_addr_and_stride(&ident("p")).is_none());
+        let write = walker.typed_struct_pointer_field_write(
+            ident("p"), "record", "value", call_expr(ident("updated_once"), vec![]),
+        ).unwrap();
+        let ExprKind::Sequence(captures) = &write.kind else {
+            panic!("hybrid owner must be captured before backing dispatch");
+        };
+        assert!(matches!(&captures[0].kind, ExprKind::Assign { value, .. }
+            if matches!(&value.kind, ExprKind::Ident(name) if name == "p")));
+        let mut dispatch = &write;
+        let mut capture_names = Vec::new();
+        while let ExprKind::Sequence(parts) = &dispatch.kind {
+            assert!(!parts.is_empty(), "capture sequence must yield the write");
+            for capture in &parts[..parts.len() - 1] {
+                let ExprKind::Assign { target, .. } = &capture.kind else {
+                    panic!("dispatch prefix must capture into locals");
+                };
+                let ExprKind::Ident(name) = &target.kind else { panic!("local capture"); };
+                capture_names.push(name);
+            }
+            dispatch = parts.last().expect("capture sequence must yield the write");
+        }
+        for name in capture_names {
+            assert!(walker.generated_local_declarations.iter().any(|declaration|
+                matches!(&declaration.pattern, BindingPattern::Ident(local) if local == name)),
+                "capture {name} must be function-local");
+        }
+        let ExprKind::Ternary { cond, then, else_ } = &dispatch.kind else {
+            panic!("joined pointer must retain numeric and managed storage dispatch");
+        };
+        assert!(matches!(&cond.kind, ExprKind::Binary { op: BinOp::Eq, left, right }
+            if matches!(&left.kind, ExprKind::Unary { op: UnaryOp::Typeof, expr }
+                if matches!(&expr.kind, ExprKind::Ident(name) if name.starts_with("__c_field_write_backing")))
+                && matches!(&right.kind, ExprKind::Lit(Literal::Str(kind)) if kind == "number")),
+            "dispatch must test numeric captured backing, not stale predeclared facts");
+        let mut numeric_stores = 0;
+        then.walk_exprs(&mut |node| {
+            numeric_stores += usize::from(matches!(&node.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_ptr_i32_store")));
+        });
+        assert!(numeric_stores > 0);
+        let mut managed_writes = 0;
+        let mut managed_unwraps = 0;
+        else_.walk_exprs(&mut |node| match &node.kind {
+            ExprKind::Assign { target, .. }
+                if matches!(&target.kind, ExprKind::Member { field, .. } if field == "value") => {
+                managed_writes += 1;
+            }
+            ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_record_pointer_value") => {
+                managed_unwraps += 1;
+            }
+            _ => {},
+        });
+        assert!(managed_writes > 0 && managed_unwraps > 0);
+        let mut owners = 0;
+        let mut updates = 0;
+        write.walk_exprs(&mut |node| {
+            owners += usize::from(matches!(&node.kind, ExprKind::Ident(name) if name == "p"));
+            updates += usize::from(matches!(&node.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "updated_once")));
+        });
+        assert_eq!((owners, updates), (1, 1));
+    }
+
+    #[test]
+    fn mixed_global_pointer_facts_precede_readers_and_exclude_numeric_only_storage() {
+        let source = "extern short *mixed; short *pure; int scalar; \
+            int read(void) { return mixed[0]; } short *mixed; \
+            void write(short *words) { mixed=words; pure=malloc(20); scalar=1; }";
+        let program = CParser::parse(Rule::program, source).unwrap().next().unwrap();
+        let mut walker = Walker::default();
+        for item in program.clone().into_inner() { walker.predeclare_top_item(item); }
+        walker.resolve_linear_pointer_return_functions();
+        walker.predeclare_linear_pointer_storage_vars(program.clone().into_inner());
+        walker.predeclare_mixed_global_pointer_storage(program.into_inner());
+        assert!(walker.hybrid_carray_ptr_vars.contains("mixed"));
+        assert!(!walker.hybrid_carray_ptr_vars.contains("pure"));
+        assert!(!walker.hybrid_carray_ptr_vars.contains("scalar"));
+        assert!(!walker.is_predeclared_linear_pointer_var("mixed"));
+        assert!(walker.is_predeclared_linear_pointer_var("pure"));
+    }
+
+    #[test]
+    fn mixed_short_byte_view_selects_coordinates_without_repeating_source() {
+        let mut walker = Walker::default();
+        walker.var_types.insert("mixed".into(), "short *".into());
+        walker.hybrid_carray_ptr_vars.insert("mixed".into());
+        let view = walker.carray_byte_pointer_view(&ident("mixed")).unwrap();
+        let ExprKind::Call { callee, args, .. } = &view.kind else { panic!("single-evaluation view missing"); };
+        assert_eq!(args.len(), 1);
+        assert!(matches!(&args[0].value.kind, ExprKind::Ident(name) if name == "mixed"));
+        let ExprKind::Lambda { body: LambdaBody::Expr(body), .. } = &callee.kind else { panic!("view scope missing"); };
+        assert!(matches!(&body.kind, ExprKind::Ternary { then, .. }
+            if matches!(&then.kind, ExprKind::Ident(name) if name == "__c_byte_view_pointer")));
+        let text = format!("{body:?}");
+        assert!(text.contains("__c_is_buffer_view"));
+        assert!(text.contains("Int(2)"));
+        walker.byte_cast_pointer_vars.insert("mixed".into(), 2);
+        let packed = walker.carray_byte_pointer_view(&ident("mixed")).unwrap();
+        assert!(!format!("{packed:?}").contains("__c_is_buffer_view"));
+        walker.linear_pointer_vars.insert("mixed".into());
+        let numeric = walker.carray_byte_pointer_view(&ident("mixed")).unwrap();
+        assert!(matches!(&numeric.kind, ExprKind::Ident(name) if name == "mixed"));
+    }
+
+    #[test]
+    fn mixed_byte_pointer_equality_does_not_project_managed_fields_unconditionally() {
+        for hybrid in ["left", "right"] {
+            let mut walker = Walker::default();
+            for name in ["left", "right"] {
+                walker.var_types.insert(name.into(), "unsigned char *".into());
+                walker.carray_ptr_vars.insert(name.into());
+                walker.pointer_vars.insert(name.into());
+            }
+            walker.hybrid_carray_ptr_vars.insert(hybrid.into());
+            let result = walker.rewrite_carray_ptr_arith(binary_expr(
+                BinOp::Eq, ident("left"), ident("right"),
+            ));
+            assert!(matches!(result.kind, ExprKind::Call { .. }));
+            let result = walker.rewrite_carray_ptr_arith(binary_expr(
+                BinOp::NotEq, ident("left"), ident("right"),
+            ));
+            assert!(matches!(result.kind, ExprKind::Unary {
+                op: UnaryOp::Not, expr,
+            } if matches!(expr.kind, ExprKind::Call { .. })));
+        }
+    }
+
+    #[test]
     fn initialized_record_pointer_preserves_nested_field_type() {
         let fixture = include_str!("../../../tests/c/doom_startup/static_gameplay_comparisons.c");
         let prefix = fixture.split("static void idle").next().unwrap();
@@ -41921,7 +50110,7 @@ mod field_type_tests {
         let mut body = Vec::new();
         for item in program.clone().into_inner() { walker.predeclare_top_item(item); }
         walker.resolve_linear_pointer_return_functions();
-        walker.predeclare_linear_pointer_storage_vars(program.clone());
+        walker.predeclare_linear_pointer_storage_vars(program.clone().into_inner());
         for item in program.clone().into_inner() { walker.predeclare_metadata_top_item(item); }
         for item in program.into_inner() {
             if item.as_rule() != Rule::EOI {
@@ -41947,7 +50136,9 @@ mod field_type_tests {
         let comparison = CParser::parse(Rule::expression, "p->cmd.forwardmove == 0")
             .unwrap().next().unwrap();
         let comparison = walker.walk_expression(comparison);
-        let ExprKind::Binary { op: BinOp::Eq, left, .. } = &comparison.kind else {
+        let ExprKind::Binary {
+            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), left, ..
+        } = &comparison.kind else {
             panic!("scalar comparison changed kind: {:?}", std::mem::discriminant(&comparison.kind));
         };
         assert_eq!(walker.c_expr_type_text(left).as_deref(), Some("int8"));
@@ -41956,5 +50147,263 @@ mod field_type_tests {
         let ExprKind::Binary { left, .. } = &cond.kind else { panic!("missing logical condition") };
         let ExprKind::Binary { left, .. } = &left.kind else { panic!("missing field comparison") };
         assert_eq!(walker.c_expr_type_text(left).as_deref(), Some("int8"));
+    }
+}
+
+#[cfg(test)]
+mod record_copy_backing_tests {
+    use super::*;
+
+    fn inline_array_copy_walker() -> Walker {
+        let mut walker = Walker::default();
+        walker.current_function = "copy_fields".into();
+        walker.structs.insert("row".into(), vec!["guard".into(), "words".into()]);
+        walker.struct_field_types.insert("row".into(), HashMap::from([
+            ("guard".into(), "int".into()), ("words".into(), "int[4]".into()),
+        ]));
+        for owner in ["destination_once", "source_once"] {
+            walker.function_return_types.insert(owner.into(), "row *".into());
+        }
+        walker
+    }
+
+    fn assert_direct_linear_address(value: &Expression) {
+        let mut calls = HashMap::<String, usize>::new();
+        value.walk_exprs(&mut |value| {
+            assert!(!matches!(&value.kind, ExprKind::Lambda { .. }),
+                "proven linear addresses must not allocate an address lambda");
+            if let ExprKind::Call { callee, .. } = &value.kind
+                && let ExprKind::Ident(name) = &callee.kind
+            { *calls.entry(name.clone()).or_default() += 1; }
+        });
+        for producer in ["__c_ptr_linear_alloc", "size_once", "index_once"] {
+            assert_eq!(calls.get(producer), Some(&1), "{producer}");
+        }
+        for helper in ["__c_hybrid_struct_field_ptr", "__c_is_array", "__c_record_pointer_value"] {
+            assert!(!calls.contains_key(helper), "unnecessary backing dispatch: {helper}");
+        }
+    }
+
+    fn effectful_linear_row_pointer() -> Expression {
+        expr(ExprKind::Cast {
+            expr: Box::new(call_expr(ident("__c_ptr_linear_alloc"),
+                vec![call_expr(ident("size_once"), vec![])])),
+            type_name: "row *".into(),
+        })
+    }
+
+    #[test]
+    fn proven_linear_record_index_emits_only_sized_address_arithmetic() {
+        let mut walker = inline_array_copy_walker();
+        let pointer = effectful_linear_row_pointer();
+        let index = call_expr(ident("index_once"), vec![]);
+        let before = walker.tmp_counter;
+        let address = walker.indexed_record_pointer_address(pointer.clone(), index.clone(), "row *");
+        let expected = expr(ExprKind::Cast {
+            expr: Box::new(pointers::linear_index_addr(pointer, index,
+                walker.sizeof_type_text("row"))),
+            type_name: "row *".into(),
+        });
+        assert_eq!(format!("{address:?}"), format!("{expected:?}"));
+        assert_direct_linear_address(&address);
+        assert_eq!(walker.tmp_counter, before);
+        assert!(walker.generated_local_declarations.is_empty());
+    }
+
+    #[test]
+    fn proven_linear_inline_array_field_decays_without_backing_dispatch() {
+        let mut walker = inline_array_copy_walker();
+        let before = walker.tmp_counter;
+        let address = walker.struct_pointer_array_field_decay_read(
+            index_expr(effectful_linear_row_pointer(), call_expr(ident("index_once"), vec![])),
+            "row", "words", "int[4]",
+        );
+        assert!(matches!(&address.kind, ExprKind::Cast { type_name, .. }
+            if type_name.replace(' ', "") == "int*"));
+        assert_direct_linear_address(&address);
+        let mut record_strides = 0;
+        let mut field_offsets = 0;
+        address.walk_exprs(&mut |value| {
+            if let ExprKind::Binary { op, right, .. } = &value.kind {
+                record_strides += usize::from(matches!(op,
+                    BinOp::Integer(vybe_ast::IntOp::Mul, vybe_ast::BitLane::W32))
+                    && matches!(&right.kind, ExprKind::Lit(Literal::Int(20))));
+                field_offsets += usize::from(matches!(op,
+                    BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32))
+                    && matches!(&right.kind, ExprKind::Lit(Literal::Int(4))));
+            }
+        });
+        assert_eq!(record_strides, 1);
+        assert_eq!(field_offsets, 1);
+        assert_eq!(walker.tmp_counter, before);
+        assert!(walker.generated_local_declarations.is_empty());
+    }
+
+    #[test]
+    fn unknown_record_index_and_inline_array_keep_managed_backing_fallback() {
+        let mut walker = inline_array_copy_walker();
+        let address = walker.indexed_record_pointer_address(
+            call_expr(ident("source_once"), vec![]),
+            call_expr(ident("index_once"), vec![]), "row *",
+        );
+        let mut lambdas = 0;
+        address.walk_exprs(&mut |value| {
+            lambdas += usize::from(matches!(&value.kind, ExprKind::Lambda { .. }));
+        });
+        assert_eq!(lambdas, 1, "a return type alone does not prove a linear address");
+        let field = walker.struct_pointer_array_field_decay_read(
+            index_expr(call_expr(ident("source_once"), vec![]),
+                call_expr(ident("index_once"), vec![])), "row", "words", "int[4]",
+        );
+        let mut calls = HashMap::<String, usize>::new();
+        field.walk_exprs(&mut |value| {
+            if let ExprKind::Call { callee, .. } = &value.kind
+                && let ExprKind::Ident(name) = &callee.kind
+            { *calls.entry(name.clone()).or_default() += 1; }
+        });
+        for producer in ["source_once", "index_once", "__c_hybrid_struct_field_ptr"] {
+            assert_eq!(calls.get(producer), Some(&1), "{producer}");
+        }
+        assert!(!walker.generated_local_declarations.is_empty());
+    }
+
+    #[test]
+    fn memcpy_inline_array_operands_decay_both_owners_and_indices_once() {
+        let field = |owner: &str, index: &str| member(index_expr(
+            call_expr(ident(owner), vec![]), call_expr(ident(index), vec![])), "words");
+        let mut walker = inline_array_copy_walker();
+        for (owner, index) in [("destination_once", "destination_index_once"),
+            ("source_once", "source_index_once")]
+        {
+            let decayed = walker.decay_memory_array_field_operand(field(owner, index));
+            assert!(matches!(&decayed.kind, ExprKind::Cast { type_name, .. }
+                if type_name.replace(' ', "") == "int*"));
+            let mut calls = HashMap::<String, usize>::new();
+            decayed.walk_exprs(&mut |value| {
+                if let ExprKind::Call { callee, .. } = &value.kind
+                    && let ExprKind::Ident(name) = &callee.kind
+                { *calls.entry(name.clone()).or_default() += 1; }
+            });
+            assert_eq!(calls.get(owner), Some(&1));
+            assert_eq!(calls.get(index), Some(&1));
+            assert_eq!(calls.get("__c_hybrid_struct_field_ptr"), Some(&1));
+        }
+        let copy = walker.rewrite_memcpy_value(
+            field("destination_once", "destination_index_once"),
+            field("source_once", "source_index_once"), int_lit(16),
+        );
+        let mut calls = HashMap::<String, usize>::new();
+        copy.walk_exprs(&mut |value| {
+            if let ExprKind::Call { callee, .. } = &value.kind
+                && let ExprKind::Ident(name) = &callee.kind
+            { *calls.entry(name.clone()).or_default() += 1; }
+        });
+        for producer in ["destination_once", "destination_index_once",
+            "source_once", "source_index_once"]
+        { assert_eq!(calls.get(producer), Some(&1), "{producer}"); }
+    }
+
+    #[test]
+    fn memcpy_linear_fixed_array_storage_is_never_rebound_to_managed_slices() {
+        let mut walker = inline_array_copy_walker();
+        walker.var_types.insert("saved".into(), "int[4]".into());
+        walker.array_ptr_vars.insert("saved".into());
+        walker.linear_pointer_vars.insert("saved".into());
+        walker.var_types.insert("source".into(), "int *".into());
+        // Leave the source backing unknown so the early both-linear path
+        // cannot hide the fixed-array slice/rebinding regression.
+        assert!(walker.is_fixed_array_var("saved"));
+        let copy = walker.rewrite_memcpy_value(ident("saved"), ident("source"), int_lit(16));
+        let mut memory_copies = 0;
+        copy.walk_exprs(&mut |value| {
+            assert!(!matches!(&value.kind, ExprKind::Assign { target, .. }
+                if matches!(&target.kind, ExprKind::Ident(name) if name == "saved")),
+                "memcpy must mutate the array's storage, not replace its address");
+            if let ExprKind::Call { callee, .. } = &value.kind {
+                assert!(!matches!(&callee.kind, ExprKind::Member { field, .. }
+                    if field == "slice" || field == "concat"));
+                memory_copies += usize::from(matches!(&callee.kind,
+                    ExprKind::Ident(name) if name == "__c_ptr_memory_copy"));
+            }
+        });
+        assert_eq!(memory_copies, 1);
+    }
+
+    #[test]
+    fn advancing_record_destination_and_carray_source_keep_copy_backing() {
+        let mut walker = Walker::default();
+        walker.structs.insert("clip_range".into(), vec!["first".into(), "last".into()]);
+        walker.struct_field_types.insert("clip_range".into(), HashMap::from([
+            ("first".into(), "int".into()),
+            ("last".into(), "int".into()),
+        ]));
+        for name in ["dst", "src"] {
+            walker.var_types.insert(name.into(), "clip_range *".into());
+            walker.carray_ptr_vars.insert(name.into());
+        }
+        let source = "*++dst = *src";
+        let _line_index = vybe_ast::line_index::LineIndex::install(source);
+        let parsed = CParser::parse(Rule::expression, source).unwrap().next().unwrap();
+        let copy = walker.walk_expression(parsed);
+        let ExprKind::Sequence(parts) = &copy.kind else {
+            panic!("record copy must retain its backing branches");
+        };
+        let ExprKind::Assign { value, .. } = &parts[0].kind else {
+            panic!("destination must be evaluated once");
+        };
+        assert!(matches!(value.kind, ExprKind::Sequence(_)));
+        let ExprKind::Assign { value, .. } = &parts[1].kind else {
+            panic!("source pointer must be evaluated once");
+        };
+        assert!(matches!(&value.kind, ExprKind::Ident(name) if name == "src"));
+        let ExprKind::Ternary { then, .. } = &parts[2].kind else {
+            panic!("missing guarded numeric copy");
+        };
+        let ExprKind::Sequence(linear) = &then.kind else {
+            panic!("missing numeric copy body");
+        };
+        assert!(matches!(&linear[0].kind, ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_ptr_memory_copy")));
+    }
+
+    #[test]
+    fn scalar_record_copy_reads_view_backing_not_placeholder_fields() {
+        let mut walker = Walker::default();
+        let fields = vec!["first".to_string(), "last".to_string()];
+        walker.structs.insert("clip_range".into(), fields.clone());
+        walker.struct_field_types.insert("clip_range".into(), HashMap::from([
+            ("first".into(), "int".into()),
+            ("last".into(), "int".into()),
+        ]));
+        let view = walker.struct_view_object_with_pointer_backing(
+            "clip_range", &fields, int_lit(1024),
+        );
+        let copy = walker.linear_scalar_record_copy(int_lit(2048), &view, "clip_range")
+            .expect("backed record copy");
+        let ExprKind::Call { callee, args, .. } = &copy.kind else {
+            panic!("copy must evaluate its operands once");
+        };
+        assert!(matches!(args[1].value.kind, ExprKind::Object(_)));
+        let ExprKind::Lambda { body: LambdaBody::Expr(body), .. } = &callee.kind else {
+            panic!("missing copy body");
+        };
+        let ExprKind::Sequence(parts) = &body.kind else {
+            panic!("source backing must be projected after evaluation");
+        };
+        assert!(matches!(parts[0].kind, ExprKind::Assign { .. }));
+        assert!(matches!(parts[1].kind, ExprKind::Ternary { .. }),
+            "backed source must retain the numeric memory-copy branch");
+
+        let object = walker.zero_struct(Some("clip_range"), &fields);
+        let copy = walker.linear_scalar_record_copy(int_lit(2048), &object, "clip_range")
+            .expect("plain managed record copy");
+        let ExprKind::Call { callee, args, .. } = &copy.kind else {
+            panic!("missing managed copy");
+        };
+        assert!(matches!(args[1].value.kind, ExprKind::Object(_)));
+        let ExprKind::Lambda { body: LambdaBody::Expr(body), .. } = &callee.kind else {
+            panic!("missing managed copy body");
+        };
+        assert!(matches!(body.kind, ExprKind::Sequence(_)));
     }
 }

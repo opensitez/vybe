@@ -5,6 +5,23 @@ use vybe_ast::{BinOp, ExprKind, Expression, Literal, ObjectProperty};
 
 use super::build::{call_expr, expr, ident, str_lit};
 
+/// SDL2 message-box enum values, shared by umbrella and standalone headers.
+pub const MESSAGEBOX_CONSTANTS: &[(&str, i64)] = &[
+    ("SDL_MESSAGEBOX_ERROR", 0x10),
+    ("SDL_MESSAGEBOX_WARNING", 0x20),
+    ("SDL_MESSAGEBOX_INFORMATION", 0x40),
+    ("SDL_MESSAGEBOX_BUTTONS_LEFT_TO_RIGHT", 0x80),
+    ("SDL_MESSAGEBOX_BUTTONS_RIGHT_TO_LEFT", 0x100),
+    ("SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT", 1),
+    ("SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT", 2),
+    ("SDL_MESSAGEBOX_COLOR_BACKGROUND", 0),
+    ("SDL_MESSAGEBOX_COLOR_TEXT", 1),
+    ("SDL_MESSAGEBOX_COLOR_BUTTON_BORDER", 2),
+    ("SDL_MESSAGEBOX_COLOR_BUTTON_BACKGROUND", 3),
+    ("SDL_MESSAGEBOX_COLOR_BUTTON_SELECTED", 4),
+    ("SDL_MESSAGEBOX_COLOR_MAX", 5),
+];
+
 fn kv(key: &str, value: Expression) -> ObjectProperty {
     ObjectProperty::KeyValue {
         key: str_lit(key),
@@ -307,8 +324,7 @@ fn emit_store_field(
     line: u32,
 ) {
     emit_set_local(chunks, current, tmp, line);
-    // The NAME-KEYED `struct.set` (typeidx 0) pushes the value back — unlike
-    // the spec's indexed form, which yields nothing. Hence the DROP.
+    // Both keyed and indexed field stores consume the object and value.
     vybe_compiler::primitives::class_slots::emit_class_set(
         &mut chunks[current],
         vybe_compiler::primitives::class_slots::ObjSource::Local(target),
@@ -566,15 +582,30 @@ fn emit_deref_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     emit_deref_record_arg(chunks, current, slot, true, line);
 }
 
-fn emit_deref_record_arg(
-    chunks: &mut [Chunk], current: usize, slot: u16, resolve_array: bool, line: u32,
-) {
+// By-name field access becomes ecma:object.get in WASM, so do not rely on
+// legacy STRUCT_GET accepting NULL. Unwrapping can change the carrier at each
+// phase (CELL -> NULL/number, or cstruct -> NULL/number).
+fn emit_if_record_metadata_available(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_get_local(chunks, current, slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_get_local(chunks, current, slot, line);
+    vybe_compiler::primitives::instructions::host::emit(
+        &mut chunks[current], "wasm:js-undefined", "test", 1, line,
+    );
+    chunks[current].emit_op(Op::I32_OR, line);
     emit_get_local(chunks, current, slot, line);
     vybe_compiler::primitives::instructions::host::emit(
         &mut chunks[current], "wasm:js-number", "test", 1, line,
     );
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
+}
+
+fn emit_deref_record_arg(
+    chunks: &mut [Chunk], current: usize, slot: u16, resolve_array: bool, line: u32,
+) {
+    emit_if_record_metadata_available(chunks, current, slot, line);
     emit_get_local(chunks, current, slot, line);
     emit_stack_field(chunks, current, "__ref_kind", line);
     let kind = chunks[current].alloc_scratch(1);
@@ -592,7 +623,9 @@ fn emit_deref_record_arg(
     emit_get_local(chunks, current, slot, line);
     chunks[current].emit_end(line);
     emit_set_local(chunks, current, slot, line);
+    chunks[current].emit_end(line);
 
+    emit_if_record_metadata_available(chunks, current, slot, line);
     emit_get_local(chunks, current, slot, line);
     emit_stack_field(chunks, current, "__ref_kind", line);
     emit_set_local(chunks, current, kind, line);
@@ -609,8 +642,10 @@ fn emit_deref_record_arg(
     emit_get_local(chunks, current, slot, line);
     chunks[current].emit_end(line);
     emit_set_local(chunks, current, slot, line);
+    chunks[current].emit_end(line);
 
     if resolve_array {
+        emit_if_record_metadata_available(chunks, current, slot, line);
         emit_get_local(chunks, current, slot, line);
         emit_stack_field(chunks, current, "__ref_kind", line);
         emit_set_local(chunks, current, kind, line);
@@ -625,12 +660,38 @@ fn emit_deref_record_arg(
         vybe_compiler::primitives::collections::emit_get(chunks, current, line);
         emit_set_local(chunks, current, slot, line);
         chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
     }
-    chunks[current].emit_end(line);
 }
 
 fn emit_zero_i32(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(0, line);
+}
+
+#[cfg(test)]
+mod record_metadata_guard_tests {
+    use super::*;
+
+    #[test]
+    fn each_record_unwrap_phase_guards_nil_and_numeric_carriers() {
+        for resolve_array in [false, true] {
+            let mut chunks = vec![Chunk::new("<SDL-record-unwrap-guards>")];
+            let pointer = chunks[0].alloc_scratch(1);
+            emit_deref_record_arg(&mut chunks, 0, pointer, resolve_array, 0);
+            let dump = vybe_runtime::debug::disassemble(&chunks[0]);
+            let phases: Vec<_> = dump.split("(__ref_kind)").collect();
+            assert_eq!(phases.len() - 1, if resolve_array { 3 } else { 2 }, "{dump}");
+            for phase in phases.iter().take(phases.len() - 1) {
+                // Each new metadata read must have a fresh guard, not merely
+                // an outer guard on the carrier before CELL/cstruct unwrap.
+                let null = phase.rfind("ref.is_null").expect("NULL guard before metadata");
+                let undefined = phase.rfind("wasm:js-undefined").expect("undefined guard");
+                let number = phase.rfind("wasm:js-number").expect("numeric carrier guard");
+                let branch = phase.rfind("if").expect("guarded metadata branch");
+                assert!(null < undefined && undefined < number && number < branch, "{phase}");
+            }
+        }
+    }
 }
 
 fn emit_object_new(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -729,6 +790,11 @@ fn emit_sdl_present_image_data(
         emit_set_local(chunks, current, source_canvas, line);
         emit_get_local(chunks, current, source_canvas, line);
         chunks[current].emit_op(Op::REF_IS_NULL, line);
+        emit_get_local(chunks, current, source_canvas, line);
+        vybe_compiler::primitives::instructions::host::emit(
+            &mut chunks[current], "wasm:js-undefined", "test", 1, line,
+        );
+        chunks[current].emit_op(Op::I32_OR, line);
         chunks[current].emit_if(line);
     }
     emit_document(chunks, current, line);
@@ -813,27 +879,6 @@ fn emit_sdl_rect_components(
     }
 }
 
-fn emit_sdl_put_rgba_image_data(
-    chunks: &mut [Chunk],
-    current: usize,
-    surface: u16,
-    pixels: u16,
-    w: u16,
-    h: u16,
-    dst_w: u16,
-    dst_h: u16,
-    line: u32,
-) {
-    let image_data = chunks[current].alloc_scratch(1);
-    emit_get_local(chunks, current, pixels, line);
-    emit_get_local(chunks, current, w, line);
-    emit_get_local(chunks, current, h, line);
-    emit_libc_sdl_call(chunks, current, "rgbaImageData", 3, line);
-    emit_set_local(chunks, current, image_data, line);
-    emit_sdl_present_image_data(
-        chunks, current, surface, image_data, w, h, dst_w, dst_h, None, None, line,
-    );
-}
 
 fn emit_sdl_put_paletted_image_data(
     chunks: &mut [Chunk],
@@ -868,9 +913,8 @@ fn emit_cstring_to_text(
     _byte_slot: u16,
     line: u32,
 ) {
-    // In Vybe C, string literals are passed directly as Vybe String values.
-    // For now, assume it's a string literal and just copy it over.
     emit_get_local(chunks, current, ptr_slot, line);
+    super::string_memory::emit_read(chunks, current, true, line);
     emit_set_local(chunks, current, out_slot, line);
 }
 
@@ -1393,7 +1437,7 @@ pub fn emit_sdl_get_performance_frequency(
 // Input listeners enqueue browser events; the adapter translates the queue
 // entries into the guest's backing-aware SDL records.
 
-/// `SDL_PollEvent(SDL_Event *e)` → 1 if an event was dequeued, else 0.
+/// `SDL_PollEvent(SDL_Event *e)` → availability; NULL peeks without consuming.
 ///
 /// Translate an event delivered by the document's input listeners into SDL's
 /// struct view. The queue is owned by the SDL guest, not by a browser host.
@@ -1402,16 +1446,35 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     let ev = chunks[current].alloc_scratch(1);
 
     emit_set_local(chunks, current, ptr, line);
+    // Normalize a pointer-variable CELL before deciding whether this is a
+    // peek. The shared record-argument normalizer already accepts NULL/zero.
     emit_deref_cell(chunks, current, ptr, line);
-
     vybe_compiler::primitives::globals::emit_read(
         &mut chunks[current],
         super::sdl_app::INPUT_QUEUE,
         line,
     );
     vybe_compiler::primitives::collections::emit_len(chunks, current, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_GT, line);
     chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, ptr, line);
+    vybe_compiler::primitives::instructions::host::emit(
+        &mut chunks[current], "wasm:js-number", "test", 1, line,
+    );
+    chunks[current].emit_if_i32(line);
+    emit_get_local(chunks, current, ptr, line);
+    vybe_compiler::primitives::instructions::host::emit(
+        &mut chunks[current], "wasm:js-number", "toF64", 1, line,
+    );
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, ptr, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
     vybe_compiler::primitives::globals::emit_read(
         &mut chunks[current],
         super::sdl_app::INPUT_QUEUE,
@@ -1420,13 +1483,51 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     vybe_compiler::primitives::collections::emit_shift(chunks, current, line);
     emit_set_local(chunks, current, ev, line);
     emit_sdl_write_input_event(chunks, current, ptr, ev, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_else(line);
     emit_zero_i32(chunks, current, line);
     chunks[current].emit_end(line);
 }
 
+/// Wait without a browser-specific event API. NULL retains PollEvent's peek
+/// contract; the existing WASI-backed delay yields between empty polls.
+pub fn emit_sdl_wait_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let ptr = chunks[current].alloc_scratch(1);
+    let result = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, ptr, line);
+    let done = chunks[current].emit_block(line);
+    let (again, _) = chunks[current].emit_loop_s(line);
+    emit_get_local(chunks, current, ptr, line);
+    emit_sdl_poll_event(chunks, current, 1, line);
+    emit_set_local(chunks, current, result, line);
+    emit_get_local(chunks, current, result, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_i32_const(1, line);
+    emit_sdl_delay(chunks, current, 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(again);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(done);
+    emit_get_local(chunks, current, result, line);
+}
+
 fn emit_sdl_input_kind(chunks: &mut [Chunk], current: usize, ev: u16, line: u32) {
+    // Only SDL_PushEvent writes this private queue metadata. DOM events retain
+    // their normal string translation; unknown SDL payloads are not synthesized.
+    let pushed_type = chunks[current].alloc_scratch(1);
+    emit_dom_field(chunks, current, ev, "__sdl_pushed_type", line);
+    emit_set_local(chunks, current, pushed_type, line);
+    emit_get_local(chunks, current, pushed_type, line);
+    vybe_compiler::primitives::instructions::host::emit(
+        &mut chunks[current], "wasm:js-number", "test", 1, line,
+    );
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, pushed_type, line);
+    emit_sdl_i32(chunks, current, line);
+    chunks[current].emit_else(line);
     // SDL event type from the DOM `type` string.
     emit_dom_kind_is(chunks, current, ev, "keydown", line);
     chunks[current].emit_if_value(line);
@@ -1449,6 +1550,7 @@ fn emit_sdl_input_kind(chunks: &mut [Chunk], current: usize, ev: u16, line: u32)
     chunks[current].emit_i32_const(0x400, line);
     chunks[current].emit_else(line);
     chunks[current].emit_i32_const(0x403, line); // wheel
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -1689,6 +1791,16 @@ fn emit_sdl_write_input_event(
 }
 
 /// `SDL_PushEvent(SDL_Event *e)` → 1. Inject into SDL's own event queue.
+fn emit_if_sdl_push_kind(chunks: &mut [Chunk], current: usize, ty: u16, kinds: &[i32], line: u32) {
+    for (index, &kind) in kinds.iter().enumerate() {
+        emit_get_local(chunks, current, ty, line);
+        chunks[current].emit_f64_const(kind as f64, line);
+        chunks[current].emit_op(Op::F64_EQ, line);
+        if index != 0 { chunks[current].emit_op(Op::I32_OR, line); }
+    }
+    chunks[current].emit_if(line);
+}
+
 pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let store_tmp = chunks[current].alloc_scratch(1);
     let ptr = chunks[current].alloc_scratch(1);
@@ -1700,6 +1812,9 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // The SDL type decides the DOM `type` string.
     emit_get_local(chunks, current, ptr, line);
     emit_event_field(chunks, current, "SDL_Event", "type", line);
+    vybe_compiler::primitives::instructions::host::emit(
+        &mut chunks[current], "wasm:js-number", "toF64", 1, line,
+    );
     emit_set_local(chunks, current, ty, line);
 
     emit_get_local(chunks, current, ty, line);
@@ -1737,7 +1852,12 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_set_local(chunks, current, dom, line);
     emit_get_local(chunks, current, kind, line);
     emit_store_field(chunks, current, dom, "type", store_tmp, line);
+    emit_get_local(chunks, current, ty, line);
+    emit_store_field(chunks, current, dom, "__sdl_pushed_type", store_tmp, line);
 
+    // A union's inactive payload need not exist in a managed representation.
+    // QUIT and unknown types carry only their discriminant in this adapter.
+    emit_if_sdl_push_kind(chunks, current, ty, &[0x300, 0x301], line);
     let keysym = chunks[current].alloc_scratch(1);
     emit_get_local(chunks, current, ptr, line);
     emit_event_field(chunks, current, "SDL_Event", "key", line);
@@ -1818,7 +1938,9 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
         chunks[current].emit_op(Op::I32_AND, line);
         emit_store_field(chunks, current, dom, field, store_tmp, line);
     }
+    chunks[current].emit_end(line);
 
+    emit_if_sdl_push_kind(chunks, current, ty, &[0x401, 0x402], line);
     emit_get_local(chunks, current, ptr, line);
     emit_event_field(chunks, current, "SDL_Event", "button", line);
     emit_event_field(chunks, current, "SDL_MouseButtonEvent", "button", line);
@@ -1866,6 +1988,25 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_event_field(chunks, current, "SDL_Event", "button", line);
     emit_event_field(chunks, current, "SDL_MouseButtonEvent", "y", line);
     emit_store_field(chunks, current, dom, "clientY", store_tmp, line);
+    chunks[current].emit_end(line);
+
+    emit_if_sdl_push_kind(chunks, current, ty, &[0x400], line);
+    for (field, target) in [("x", "clientX"), ("y", "clientY")] {
+        emit_get_local(chunks, current, ptr, line);
+        emit_event_field(chunks, current, "SDL_Event", "motion", line);
+        emit_event_field(chunks, current, "SDL_MouseMotionEvent", field, line);
+        emit_store_field(chunks, current, dom, target, store_tmp, line);
+    }
+    chunks[current].emit_end(line);
+
+    emit_if_sdl_push_kind(chunks, current, ty, &[0x403], line);
+    chunks[current].emit_f64_const(0.0, line);
+    emit_get_local(chunks, current, ptr, line);
+    emit_event_field(chunks, current, "SDL_Event", "wheel", line);
+    emit_event_field(chunks, current, "SDL_MouseWheelEvent", "y", line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    emit_store_field(chunks, current, dom, "deltaY", store_tmp, line);
+    chunks[current].emit_end(line);
 
     vybe_compiler::primitives::globals::emit_read(
         &mut chunks[current],
@@ -2142,6 +2283,12 @@ pub fn emit_sdl_show_simple_message_box(
     emit_set_local(chunks, current, text, line);
     emit_set_local(chunks, current, title, line);
     emit_set_local(chunks, current, _flags, line);
+
+    for slot in [title, text] {
+        emit_get_local(chunks, current, slot, line);
+        super::string_memory::emit_read(chunks, current, true, line);
+        emit_set_local(chunks, current, slot, line);
+    }
 
     // `window.alert` takes ONE string — the browser dialog has no title bar of
     // its own. SDL's two fields become the two paragraphs of that one message,
@@ -2482,6 +2629,42 @@ fn emit_renderer_backbuffer(chunks: &mut [Chunk], current: usize, renderer: u16,
     emit_get_local(chunks, current, canvas, line);
 }
 
+pub fn emit_sdl_render_fill_rect(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let renderer = chunks[current].alloc_scratch(1);
+    let rect = chunks[current].alloc_scratch(1);
+    let ctx = chunks[current].alloc_scratch(1);
+    let backbuffer = chunks[current].alloc_scratch(1);
+    let width = chunks[current].alloc_scratch(1);
+    let height = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, rect, line);
+    emit_set_local(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, rect, line);
+
+    emit_renderer_backbuffer(chunks, current, renderer, line);
+    emit_set_local(chunks, current, backbuffer, line);
+    emit_get_local(chunks, current, backbuffer, line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_set_local(chunks, current, ctx, line);
+    emit_load_f64_from_struct(chunks, current, backbuffer, "width", line);
+    emit_set_local(chunks, current, width, line);
+    emit_load_f64_from_struct(chunks, current, backbuffer, "height", line);
+    emit_set_local(chunks, current, height, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    for field in ["r", "g", "b", "a"] {
+        emit_load_f64_from_struct(chunks, current, renderer, field, line);
+    }
+    emit_canvas_call(chunks, current, "setFillStyle", 5, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_get_local(chunks, current, ctx, line);
+    emit_sdl_rect_components(chunks, current, rect, width, height, line);
+    emit_canvas_call(chunks, current, "fillRect", 5, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_zero_i32(chunks, current, line);
+}
+
 pub fn emit_sdl_render_clear(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let renderer = chunks[current].alloc_scratch(1);
     let ctx = chunks[current].alloc_scratch(1);
@@ -2606,8 +2789,7 @@ pub fn emit_sdl_render_present(chunks: &mut [Chunk], current: usize, _argc: u8, 
     emit_set_local(chunks, current, backbuffer, line);
     emit_get_local(chunks, current, renderer, line);
     emit_stack_field(chunks, current, "window", line);
-    chunks[current].emit_string_const("2d", line);
-    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_stack_field(chunks, current, "__sdl_ctx", line);
     emit_set_local(chunks, current, ctx, line);
     emit_get_local(chunks, current, ctx, line);
     chunks[current].emit_string_const("copy", line);
@@ -2624,6 +2806,138 @@ pub fn emit_sdl_render_present(chunks: &mut [Chunk], current: usize, _argc: u8, 
     emit_canvas_call(chunks, current, "setGlobalCompositeOperation", 2, line);
     chunks[current].emit_op(Op::DROP, line);
     emit_zero_i32(chunks, current, line);
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    #[test]
+    fn presentation_reuses_the_windows_context() {
+        let mut chunks = vec![Chunk::new("present")];
+        emit_sdl_render_present(&mut chunks, 0, 1, 0);
+        assert!(!chunks[0].imports.iter().any(|import| {
+            import.module == "web:canvas" && import.name == "getContext"
+        }));
+        assert!(chunks[0].imports.iter().any(|import| {
+            import.module == "web:canvas" && import.name == "drawImage"
+        }));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod bulk_blit_emission_tests {
+    use super::*;
+    use vybe_runtime::{heap, value::Object, Value, VM};
+
+    fn object(fields: &[(&str, Value)]) -> Value {
+        let mut object = Object::new();
+        object.properties.extend(fields.iter().map(|(name, value)| ((*name).into(), value.clone())));
+        Value::Object(heap::alloc(object))
+    }
+
+    pub fn workload(bulk: bool, width: i32, height: i32, repeats: i32) -> Vec<Chunk> {
+        let mut chunks = vec![Chunk::new("<script>")];
+        chunks[0].emit_i32_const(9, 0);
+        chunks[0].emit_op_idx(Op::MEMORY_GROW, 0u32, 0);
+        chunks[0].emit_op(Op::DROP, 0);
+        chunks[0].emit_i32_const(16, 0);
+        chunks[0].emit_i32_const(129, 0);
+        chunks[0].emit_i32_const(width * height * 4, 0);
+        chunks[0].emit_op_idx(Op::MEMORY_FILL, 0u32, 0);
+        let remaining = chunks[0].alloc_scratch(1);
+        chunks[0].emit_i32_const(repeats, 0);
+        emit_set_local(&mut chunks, 0, remaining, 0);
+        let (repeat, _) = chunks[0].emit_loop_s(0);
+        for name in ["source", "dest"] {
+            let idx = chunks[0].add_import("probe:sdl", name);
+            chunks[0].emit_call(idx, 0, 0);
+            emit_zero_i32(&mut chunks, 0, 0);
+        }
+        if bulk {
+            emit_sdl_lower_blit(&mut chunks, 0, 4, 0);
+        } else {
+            // Frozen pre-bulk adapter emission, including its dereference ABI.
+            let first = chunks[0].alloc_scratch(4);
+            for slot in (first..first + 4).rev() {
+                emit_set_local(&mut chunks, 0, slot, 0);
+            }
+            for slot in first..first + 4 {
+                emit_deref_cell(&mut chunks, 0, slot, 0);
+            }
+            for slot in first..first + 4 {
+                emit_get_local(&mut chunks, 0, slot, 0);
+            }
+            emit_zero_i32(&mut chunks, 0, 0);
+            emit_libc_sdl_call(&mut chunks, 0, "convertBlit", 5, 0);
+        }
+        chunks[0].emit_op(Op::DROP, 0);
+        emit_get_local(&mut chunks, 0, remaining, 0);
+        chunks[0].emit_i32_const(1, 0);
+        chunks[0].emit_op(Op::I32_SUB, 0);
+        chunks[0].emit_op_u16(Op::LOCAL_TEE, remaining, 0);
+        chunks[0].emit_br_if(0, 0);
+        chunks[0].emit_end(0);
+        chunks[0].patch_loop(repeat);
+        emit_zero_i32(&mut chunks, 0, 0);
+        chunks[0].emit_op(Op::RETURN, 0);
+        chunks
+    }
+
+    pub fn vm(width: i32, height: i32) -> VM {
+        let format = object(&[("BitsPerPixel", Value::I32(32)),
+            ("Rmask", Value::I64(255)), ("Gmask", Value::I64(65280)),
+            ("Bmask", Value::I64(16711680)), ("Amask", Value::I64(4278190080))]);
+        let mut vm = VM::new();
+        vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        super::super::sdl_runtime::register(&mut vm);
+        for (name, address) in [("source", 16), ("dest", 262160)] {
+            let surface = object(&[("format", format.clone()), ("w", Value::I32(width)),
+                ("h", Value::I32(height)), ("pitch", Value::I32(width * 4)),
+                ("pixels", Value::I32(address))]);
+            vm.register_host_fn("probe:sdl", name, Box::new(move |_, _| surface.clone()));
+        }
+        vm
+    }
+
+    #[test]
+    fn debug_bulk_blit_micro_workload_matches_previous_conversion() {
+        use std::sync::atomic::Ordering;
+        use vybe_runtime::{DebugCommand, DebugRequest};
+        for bulk in [false, true] {
+            let mut vm = vm(320, 200);
+            let (commands, rx) = std::sync::mpsc::channel();
+            let (events, _rx) = std::sync::mpsc::channel();
+            vm.attach_debugger(rx, events, true);
+            for command in [DebugCommand::ExceptionBreak { on_throw: true, on_uncaught: true },
+                DebugCommand::Continue] {
+                let (reply, _response) = std::sync::mpsc::channel();
+                commands.send(DebugRequest { command, reply }).unwrap();
+            }
+            let report = vm.debug_report().unwrap();
+            if bulk {
+                vm.register_host_fn("libc:sdl", "convertBlit", Box::new(|_, _| {
+                    panic!("eligible full byte-channel blit unexpectedly used conversion")
+                }));
+            }
+            assert_eq!(vm.run(workload(bulk, 320, 200, 1)).unwrap().as_i32(), 0);
+            let count = report.lock().unwrap().live.instructions.load(Ordering::Relaxed);
+            eprintln!("SDL 320x200 debug guest instructions: bulk={bulk}, count={count}");
+            vm.memory.with_buffer(|memory| {
+                assert!(memory[262160..262160 + 256000].iter().all(|byte| *byte == 129));
+            });
+            let mut times = Vec::new();
+            for _ in 0..5 {
+                let mut vm = self::vm(320, 200);
+                let chunks = workload(bulk, 320, 200, 20);
+                let start = std::time::Instant::now();
+                vm.run(chunks).unwrap();
+                times.push(start.elapsed());
+            }
+            times.sort();
+            eprintln!("SDL debug 20-blit VM workload median (5 runs): bulk={bulk}, {:?}", times[2]);
+        }
+    }
 }
 
 pub fn emit_sdl_set_render_target(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -2764,11 +3078,110 @@ fn emit_sdl_copy_surface_region(chunks: &mut [Chunk], current: usize, scaled: bo
     emit_deref_cell(chunks, current, src_rect, line);
     emit_deref_cell(chunks, current, dst_rect, line);
 
+    // The adapter proves byte-format equivalence and complete memory32 spans.
+    // No palette expansion, padding, partial rectangle, or scaling is bypassed.
+    let length = chunks[current].alloc_scratch(1);
+    for slot in [src, src_rect, dst, dst_rect] {
+        emit_get_local(chunks, current, slot, line);
+    }
+    chunks[current].emit_i32_const(i32::from(scaled), line);
+    emit_libc_sdl_call(chunks, current, "bulkBlitLength", 5, line);
+    chunks[current].emit_op(Op::I64_TRUNC_F64_S, line);
+    chunks[current].emit_op(Op::I32_WRAP_I64, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, length, line);
+    let bulk = chunks[current].emit_if_value(line);
+    for slot in [dst, src] {
+        emit_get_local(chunks, current, slot, line);
+        emit_stack_field(chunks, current, "pixels", line);
+        chunks[current].emit_op(Op::I64_TRUNC_F64_S, line);
+        chunks[current].emit_op(Op::I32_WRAP_I64, line);
+    }
+    emit_get_local(chunks, current, length, line);
+    chunks[current].emit_op_idx(Op::MEMORY_COPY, 0u32, line);
+    chunks[current].emit_leb_u32(0u32, line);
+    emit_zero_i32(chunks, current, line);
+    chunks[current].emit_else(line);
+    emit_sdl_pitched_bulk_blit(chunks, current, src, src_rect, dst, dst_rect, scaled, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(bulk);
+}
+
+fn emit_sdl_pitched_bulk_blit(
+    chunks: &mut [Chunk], current: usize, src: u16, src_rect: u16,
+    dst: u16, dst_rect: u16, scaled: bool, line: u32,
+) {
+    let first = chunks[current].alloc_scratch(7);
+    let (bytes, source, destination, pitch, remaining, offset, reverse) =
+        (first, first + 1, first + 2, first + 3, first + 4, first + 5, first + 6);
+    for slot in [src, src_rect, dst, dst_rect] {
+        emit_get_local(chunks, current, slot, line);
+    }
+    chunks[current].emit_i32_const(i32::from(scaled), line);
+    emit_libc_sdl_call(chunks, current, "bulkBlitRowBytes", 5, line);
+    chunks[current].emit_op(Op::I64_TRUNC_F64_S, line);
+    chunks[current].emit_op(Op::I32_WRAP_I64, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, bytes, line);
+    let bulk = chunks[current].emit_if_value(line);
+    for (object, field, local) in [(src, "pixels", source), (dst, "pixels", destination),
+        (src, "pitch", pitch), (src, "h", remaining)] {
+        emit_get_local(chunks, current, object, line);
+        emit_stack_field(chunks, current, field, line);
+        chunks[current].emit_op(Op::I64_TRUNC_F64_S, line);
+        chunks[current].emit_op(Op::I32_WRAP_I64, line);
+        emit_set_local(chunks, current, local, line);
+    }
+    emit_get_local(chunks, current, destination, line);
+    emit_get_local(chunks, current, source, line);
+    chunks[current].emit_op(Op::I32_GT_U, line);
+    emit_set_local(chunks, current, reverse, line);
+    chunks[current].emit_i32_const(0, line);
+    emit_set_local(chunks, current, offset, line);
+    // Equal pitches give a constant displacement. Select the starting row
+    // and signed step once; descending copies still protect unread sources.
+    emit_get_local(chunks, current, reverse, line);
+    let backwards = chunks[current].emit_if(line);
+    emit_get_local(chunks, current, remaining, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    emit_get_local(chunks, current, pitch, line);
+    chunks[current].emit_op(Op::I32_MUL, line);
+    emit_set_local(chunks, current, offset, line);
+    chunks[current].emit_i32_const(0, line);
+    emit_get_local(chunks, current, pitch, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    emit_set_local(chunks, current, pitch, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(backwards);
+    let (repeat, _) = chunks[current].emit_loop_s(line);
+    emit_get_local(chunks, current, remaining, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    emit_set_local(chunks, current, remaining, line);
+    for address in [destination, source] {
+        emit_get_local(chunks, current, address, line);
+        emit_get_local(chunks, current, offset, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+    }
+    emit_get_local(chunks, current, bytes, line);
+    chunks[current].emit_op_idx(Op::MEMORY_COPY, 0u32, line);
+    chunks[current].emit_leb_u32(0u32, line);
+    emit_get_local(chunks, current, offset, line);
+    emit_get_local(chunks, current, pitch, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    emit_set_local(chunks, current, offset, line);
+    emit_get_local(chunks, current, remaining, line);
+    chunks[current].emit_br_if(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(repeat);
+    emit_zero_i32(chunks, current, line);
+    chunks[current].emit_else(line);
     for slot in [src, src_rect, dst, dst_rect] {
         emit_get_local(chunks, current, slot, line);
     }
     chunks[current].emit_i32_const(i32::from(scaled), line);
     emit_libc_sdl_call(chunks, current, "convertBlit", 5, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(bulk);
 }
 
 pub fn emit_sdl_blit_surface(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -2967,7 +3380,6 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
                 | "SDL_CondWait"
                 | "SDL_CondSignal"
                 | "SDL_WaitThread"
-                | "SDL_WaitEvent"
                 | "SDL_UpdateWindowSurfaceRects"
         )
     {
@@ -3009,6 +3421,10 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
         }
         "sdl.SDL_PollEvent" | "libc.sdl.SDL_PollEvent" => {
             emit_sdl_poll_event(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_WaitEvent" | "libc.sdl.SDL_WaitEvent" => {
+            emit_sdl_wait_event(chunks, current, argc, line);
             true
         }
         "sdl.SDL_PushEvent" | "libc.sdl.SDL_PushEvent" => {
@@ -3196,6 +3612,10 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
         }
         "sdl.SDL_RenderClear" | "libc.sdl.SDL_RenderClear" => {
             emit_sdl_render_clear(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_RenderFillRect" | "libc.sdl.SDL_RenderFillRect" => {
+            emit_sdl_render_fill_rect(chunks, current, argc, line);
             true
         }
         "sdl.SDL_RenderCopy" | "libc.sdl.SDL_RenderCopy" => {

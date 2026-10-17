@@ -1,3 +1,17 @@
+// @grameo optimize native_choices native_rule_heads
+// @grameo choice_heads top_level_item statement type_specifier_strict type_specifier
+// @grameo owned_capture_boundary initializer_list
+// @grameo pratt binary_expression atom=unary_expression trailing=preserve
+// @grameo operator binary_expression c_or_op precedence=1 fixity=infix_left
+// @grameo operator binary_expression c_and_op precedence=2 fixity=infix_left
+// @grameo operator binary_expression c_eq_op precedence=6 fixity=infix_left
+// @grameo operator binary_expression c_shift_op precedence=8 fixity=infix_left
+// @grameo operator binary_expression c_rel_op precedence=7 fixity=infix_left
+// @grameo operator binary_expression c_add_op precedence=9 fixity=infix_left
+// @grameo operator binary_expression c_mul_op precedence=10 fixity=infix_left
+// @grameo operator binary_expression c_bit_or_op precedence=3 fixity=infix_left
+// @grameo operator binary_expression c_xor_op precedence=4 fixity=infix_left
+// @grameo operator binary_expression c_bit_and_op precedence=5 fixity=infix_left
 // C Grammar for pest parser.
 //
 // Covers C99 core: preprocessor (#include/#define/#ifdef…), declarations
@@ -310,6 +324,18 @@ binary_op = @{
     | "*" | "/" | "%"
     | "|" | "^" | "&"
 }
+// Source Pratt keeps the same atomic binary_op anchor as ordinary PEG. The
+// guard selects a precedence group; binary_op retains longest-choice behavior.
+c_or_op = _{ &("||") ~ binary_op }
+c_and_op = _{ &("&&") ~ binary_op }
+c_eq_op = _{ &("==" | "!=") ~ binary_op }
+c_shift_op = _{ &("<<" | ">>") ~ binary_op }
+c_rel_op = _{ &("<=" | ">=" | "<" | ">") ~ binary_op }
+c_add_op = _{ &("+" | "-") ~ binary_op }
+c_mul_op = _{ &("*" | "/" | "%") ~ binary_op }
+c_bit_or_op = _{ &("|") ~ binary_op }
+c_xor_op = _{ &("^") ~ binary_op }
+c_bit_and_op = _{ &("&") ~ binary_op }
 
 unary_expression = {
     va_arg_expression
@@ -462,3 +488,8 @@ keyword = _{
     | "static" | "extern" | "auto" | "inline" | "restrict" | "true" | "false")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
+
+// Absolute-offset entries preserve full-source spans between committed units.
+frontend_unit = { frontend_trivia ~ top_level_item ~ frontend_trivia }
+frontend_end = { frontend_trivia ~ EOI }
+frontend_trivia = @{ (WHITESPACE | COMMENT)* }

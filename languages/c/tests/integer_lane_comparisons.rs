@@ -10,6 +10,40 @@ fn runtime() -> VM {
 }
 
 #[test]
+fn stdout_buffer_length_uses_a_static_integer_comparison() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/stdout_buffer_length_helper.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let chunk = chunks.iter().find(|chunk| chunk.name == "__c_stdout_has_buffered").unwrap();
+    let dump = vybe_runtime::debug::disassemble(chunk);
+    assert!(dump.contains("i32.gt_u"), "{dump}");
+    assert!(!dump.contains("dyngt"), "{dump}");
+    assert!(!dump.contains("__vybe_slot_"), "{dump}");
+    let mut vm = runtime();
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn native_word_cast_does_not_recoerce_the_result() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/native_word_cast.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    for name in ["cast_or", "cast_and"] {
+        let dump = vybe_runtime::debug::disassemble(
+            chunks.iter().find(|chunk| chunk.name == name).unwrap(),
+        );
+        assert!(!dump.contains("f64.div"), "{name}: {dump}");
+        assert!(!dump.contains("ecma:number:Number"), "{name}: {dump}");
+    }
+    let mut vm = runtime();
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
 fn wide_c_comparisons_are_static_without_truncating_to_i32() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/c/doom_startup/static_wide_comparisons.c");
@@ -22,6 +56,7 @@ fn wide_c_comparisons_are_static_without_truncating_to_i32() {
         ("equal_sizes", "i64.eq"),
         ("nonzero_size", "i64.ne"),
         ("last_item", "i64.eq"),
+        ("last_read_item", "i64.eq"),
         ("signed_less", "i64.gt_s"),
         ("promoted_less", "i64.gt_s"),
         ("ordered_sizes", "i64.gt_u"),

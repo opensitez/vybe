@@ -20,6 +20,16 @@ fn ident(name: &str) -> Expression {
     e(ExprKind::Ident(name.to_string()))
 }
 
+/// Preserve the stream/descriptor operand once; the registered libc emitter
+/// owns numeric FILE handles and the terminal capability query.
+pub fn descriptor_call(name: &str, value: Expression) -> Expression {
+    debug_assert!(matches!(name, "fileno" | "isatty"));
+    e(ExprKind::Cast {
+        expr: Box::new(call(ident(name), vec![value])),
+        type_name: "integer".into(),
+    })
+}
+
 /// Stdio indicators are numeric flags. Unset standard-stream flags are clear.
 pub fn file_status(handle: Expression, error: bool) -> Expression {
     let flags = if error { "__c_file_error" } else { "__c_file_eof" };
@@ -1508,10 +1518,13 @@ pub fn scanf(fmt: &str, targets: Vec<Expression>, tmp_id: u32) -> Expression {
         ));
         let converted = scan_conversion(*spec, ident(&tok_var));
         seq.push(ternary(
-            bin(BinOp::Gt, member(ident(&tok_var), "length"), lit_int(0)),
+            bin(BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W32),
+                member(ident(&tok_var), "length"), lit_int(0)),
             e(ExprKind::Sequence(vec![
                 assign_expr(target, converted),
-                assign_expr(ident(&n_var), bin(BinOp::Add, ident(&n_var), lit_int(1))),
+                assign_expr(ident(&n_var), bin(
+                    BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
+                    ident(&n_var), lit_int(1))),
             ])),
             assign_expr(ident(&ok_var), lit_int(0)),
         ));
@@ -1558,7 +1571,7 @@ pub fn fscanf(fmt: &str, handle: Expression, targets: Vec<Expression>, tmp_id: u
     let handle_var = format!("__fsc_h{tmp_id}");
 
     let remaining = bin(
-        BinOp::Sub,
+        BinOp::Integer(vybe_ast::IntOp::Sub, vybe_ast::BitLane::W64),
         member(
             index_expr(ident("__c_file_content"), ident(&handle_var)),
             "length",
@@ -1594,7 +1607,8 @@ pub fn fscanf(fmt: &str, handle: Expression, targets: Vec<Expression>, tmp_id: u
             seq.push(assign_expr(
                 ident(&tok_var),
                 ternary(
-                    bin(BinOp::Lt, ident(&sp_var), lit_int(0)),
+                    bin(BinOp::Integer(vybe_ast::IntOp::LtS, vybe_ast::BitLane::W32),
+                        ident(&sp_var), lit_int(0)),
                     ident(&src_var),
                     call_member(
                         ident(&src_var),
@@ -1606,13 +1620,16 @@ pub fn fscanf(fmt: &str, handle: Expression, targets: Vec<Expression>, tmp_id: u
             seq.push(assign_expr(
                 ident(&src_var),
                 ternary(
-                    bin(BinOp::Lt, ident(&sp_var), lit_int(0)),
+                    bin(BinOp::Integer(vybe_ast::IntOp::LtS, vybe_ast::BitLane::W32),
+                        ident(&sp_var), lit_int(0)),
                     lit_str(""),
                     call_member(
                         call_member(
                             ident(&src_var),
                             "substring",
-                            vec![bin(BinOp::Add, ident(&sp_var), lit_int(1))],
+                            vec![bin(
+                                BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
+                                ident(&sp_var), lit_int(1))],
                         ),
                         "trim",
                         vec![],
@@ -1629,11 +1646,14 @@ pub fn fscanf(fmt: &str, handle: Expression, targets: Vec<Expression>, tmp_id: u
             bin(
                 BinOp::And,
                 ident(&ok_var),
-                bin(BinOp::Gt, member(ident(&tok_var), "length"), lit_int(0)),
+                bin(BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W32),
+                    member(ident(&tok_var), "length"), lit_int(0)),
             ),
             e(ExprKind::Sequence(vec![
                 assign_expr(target, converted),
-                assign_expr(ident(&n_var), bin(BinOp::Add, ident(&n_var), lit_int(1))),
+                assign_expr(ident(&n_var), bin(
+                    BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
+                    ident(&n_var), lit_int(1))),
             ])),
             assign_expr(ident(&ok_var), lit_int(0)),
         ));

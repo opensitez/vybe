@@ -61,18 +61,6 @@ fn assign(target: Expression, value: Expression) -> Expression {
     })
 }
 
-fn var_decl(name: &str, init: Expression) -> Statement {
-    s(StmtKind::VarDecl {
-        declarations: vec![VarDeclarator {
-            pattern: BindingPattern::Ident(name.to_string()),
-            type_hint: None,
-            init: Some(init),
-            array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Var,
-    })
-}
 
 fn numeric_var_decl(name: &str, init: Expression) -> Statement {
     s(StmtKind::VarDecl {
@@ -347,10 +335,15 @@ pub fn fenv_binary(op: BinOp, left: Expression, right: Expression) -> Expression
         BinOp::Mul => 2,
         _ => 0,
     };
-    call(
-        ident("__c_fenv_binary"),
-        vec![lit_int(op_code), left, right],
-    )
+    // Preserve the arithmetic result lane when an enclosing C expression is
+    // lowered before generated helper declarations are registered.
+    e(ExprKind::Cast {
+        expr: Box::new(call(
+            ident("__c_fenv_binary"),
+            vec![lit_int(op_code), left, right],
+        )),
+        type_name: "double".into(),
+    })
 }
 
 /// C `round(x)` uses half-away-from-zero, not banker's rounding.

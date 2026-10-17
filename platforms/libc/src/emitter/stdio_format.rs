@@ -27,69 +27,24 @@ const CHUNK_NAME: &str = "__libc_fmt_sprintf";
 /// Because sprintf is variadic, we first collect args 1..N into an array,
 /// then call the helper chunk that takes (fmt, args_array).
 pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    // Ensure the helper chunk is in the chunk list.
-    let helper_idx = ensure_chunk(chunks);
-
-    // The helper expects (fmt, args_array).  The compiler pushed the args
-    // on the stack in order: [fmt, arg0, arg1, ...].
-    // We need to pack args 1..N into an array first.
-    let push_idx = chunks[current].add_import("ecma:array", "push");
-
-    // Allocate a local to hold the args array being built.
-    let arr_slot = chunks[current].local_count;
-    chunks[current].alloc_scratch(1);
-    // Allocate a local to hold the format string.
-    let fmt_slot = chunks[current].local_count;
-    chunks[current].alloc_scratch(1);
-
-    let nargs = argc as i32; // total args including fmt
-    let nrest = nargs - 1; // args after fmt
-
-    // Pop args in reverse, store in temporaries, then rebuild.
-    // Simpler: all args are already on the stack in forward order.
-    // Strategy:
-    //   1. Store all args into locals (right-to-left to keep stack sane).
-    //   2. Build the args array from the stored locals.
-    //   3. GLOBAL_GET the sprintf fn, call(fmt, args_array).
-
-    // Allocate temp locals for the variadic args.
-    let first_arg_slot = chunks[current].alloc_scratch(nrest.max(0) as u16);
-
-    // Store variadic args (they are on top of stack, in order arg0..argN-1).
-    // Stack order: ... fmt arg0 arg1 ... argN-1  (argN-1 on top)
-    // Store from top to bottom.
-    for k in (0..nrest).rev() {
-        let slot = first_arg_slot + k as u16;
-        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
-    }
-    // Now fmt is on top — store it.
-    chunks[current].emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
-
-    // Build args array: []
-    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-
-    // Push each variadic arg into the array.
-    for k in 0..nrest {
-        let slot = first_arg_slot + k as u16;
-        chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-        chunks[current].emit_call(push_idx, 2, line);
-        chunks[current].emit_op(Op::DROP, line);
-    }
-
-    // Call the helper directly by function reference.
-    chunks[current].emit_op_u16(Op::REF_FUNC, helper_idx as u16, line);
-    chunks[current].emit(0u8, line); // upvalue count
-    chunks[current].emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    // Arguments have already been evaluated left-to-right. Consume only the
+    // variadic values, preserving their order and reference identity; fmt
+    // remains beneath the resulting array. No per-argument locals or pushes.
+    vybe_compiler::primitives::collections::emit_array_new(
+        chunks, current, u16::from(argc.saturating_sub(1)), line,
+    );
+    emit_sprintf_from_array(chunks, current, line);
 }
 
 /// Emit a direct sprintf helper call when the caller already has
 /// `(fmt, args_array)` on the stack.
 pub fn emit_sprintf_from_array(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let helper_idx = ensure_chunk(chunks);
+    if vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+        chunks, current, helper_idx, 2, line,
+    ) {
+        return;
+    }
 
     // CALL_REF expects [callee, arg0, arg1]. The caller currently has
     // [fmt, args_array], so stash and rebuild in the expected order.
@@ -141,6 +96,11 @@ pub fn emit_sscanf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)
     }
 
     let helper_idx = ensure_sscanf_chunk(chunks);
+    if vybe_compiler::primitives::functions::try_emit_direct_helper_call(
+        chunks, current, helper_idx, 2, line,
+    ) {
+        return;
+    }
 
     // CALL_REF expects [callee, input, fmt]; caller has [input, fmt].
     let fmt_slot = chunks[current].local_count;
@@ -336,7 +296,6 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     let str_ccat = c.add_import("wasm:js-string", "charCodeAt");
     let str_chat = c.add_import("ecma:string", "charAt");
     let str_slice = c.add_import("ecma:string", "slice");
-    let str_tostr = c.add_import("ecma:string", "String");
     let str_test = c.add_import("wasm:js-string", "test");
     let str_indexof = c.add_import("ecma:string", "indexOf");
     let str_fcc = c.add_import("ecma:string", "fromCharCode");
@@ -943,8 +902,8 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     }
 
     // conversions
-    conv_s(&mut c, str_tostr, str_slice, str_test, str_indexof);
-    conv_d(&mut c, math_trunc, math_abs, num_radix, str_cat);
+    conv_s(&mut c, str_slice, str_test, str_indexof);
+    conv_d(&mut c, math_trunc, math_abs, num_radix, str_cat, str_test);
     conv_u(&mut c, num_radix);
     conv_f(&mut c, num_fixed, str_cat, math_pow, math_round);
     conv_e(&mut c, num_exp, str_upper, str_cat, str_slice);
@@ -1159,12 +1118,19 @@ fn flag_arm(c: &mut Chunk, ch: u16, code: i32, flag: u16) {
     c.patch_block(b);
 }
 
-fn conv_s(c: &mut Chunk, str_tostr: u16, str_slice: u16, str_test: u16, str_indexof: u16) {
+fn conv_s(c: &mut Chunk, str_slice: u16, str_test: u16, str_indexof: u16) {
     let b = c.emit_block(0);
     lg(c, CONV);
     ci(c, 115);
     c.emit_op(Op::I32_NE, 0);
     c.emit_br_if(0, 0);
+    // Precision zero must not inspect even the first byte or a managed value.
+    lg(c, PREC);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_if(0);
+    cs(c, "");
+    ls(c, RAW);
+    c.emit_else(0);
     lg(c, ARG);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     c.emit_op(Op::REF_EQ, 0);
@@ -1180,9 +1146,20 @@ fn conv_s(c: &mut Chunk, str_tostr: u16, str_slice: u16, str_test: u16, str_inde
     cs(c, "(null)");
     ls(c, RAW);
     c.emit_else(0);
+    // Variadic arguments retain C pointer backing; `%s` reads that storage.
+    lg(c, PREC);
+    ci(c, 0);
+    c.emit_op(Op::I32_GE_S, 0);
+    c.emit_if(0);
     lg(c, ARG);
-    hc(c, str_tostr, 1);
+    super::string_memory::emit_read_bounded(std::slice::from_mut(c), 0, true, PREC, 0);
     ls(c, RAW);
+    c.emit_else(0);
+    lg(c, ARG);
+    super::string_memory::emit_read(std::slice::from_mut(c), 0, true, 0);
+    ls(c, RAW);
+    c.emit_end(0);
+    c.emit_end(0);
     c.emit_end(0);
     // `%s` stops at the NUL terminator. A fixed C buffer keeps its padding —
     // `strncpy(e,"xy",5)` leaves `"xy\0\0\0"` — and substituting the whole
@@ -1228,7 +1205,159 @@ fn conv_s(c: &mut Chunk, str_tostr: u16, str_slice: u16, str_test: u16, str_inde
     c.patch_block(b);
 }
 
-fn conv_d(c: &mut Chunk, math_trunc: u16, math_abs: u16, num_radix: u16, str_cat: u16) {
+#[cfg(test)]
+mod helper_call_emission_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use vybe_runtime::{ReceiverAbi, Value, VM, heap, value::{Object, ObjectKind}};
+
+    fn observation_helper() -> Chunk {
+        let mut helper = Chunk::new(CHUNK_NAME);
+        helper.arity = 2;
+        helper.local_count = 2;
+        helper.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        helper.emit_op_u16(Op::LOCAL_GET, 1, 0);
+        let observe = helper.add_import("test:formatter", "observe");
+        helper.emit_call(observe, 2, 0);
+        helper.emit_op(Op::RETURN, 0);
+        helper
+    }
+
+    #[test]
+    fn variadic_packing_preserves_order_identity_and_evaluation_count() {
+        for abi in [ReceiverAbi::Ambient, ReceiverAbi::Parameter] {
+            for count in 0..=8usize {
+                let pointer = Value::Object(heap::alloc(Object::new()));
+                let values: Vec<_> = (0..count).map(|i| match i % 4 {
+                    0 => Value::F64(i as f64 + 11.0),
+                    1 => Value::Null,
+                    2 => Value::Undefined,
+                    _ => pointer.clone(),
+                }).collect();
+                let input_values = values.clone();
+                let evaluated = Arc::new(Mutex::new(0usize));
+                let input_index = evaluated.clone();
+                let observed = Arc::new(Mutex::new(0usize));
+                let observation_count = observed.clone();
+                let mut vm = VM::new();
+                vybe_runtime::js_builtins::register(&mut vm);
+                vm.register_free_fn("test:formatter", "argument", Box::new(move |_, _| {
+                    let mut index = input_index.lock().unwrap();
+                    let value = input_values[*index].clone();
+                    *index += 1;
+                    value
+                }));
+                vm.register_free_fn("test:formatter", "observe", Box::new(move |_, args| {
+                    assert_eq!(args.len(), 2);
+                    assert_eq!(args[0], Value::String("format".into()));
+                    let Value::Object(array) = &args[1] else { panic!("expected argument array") };
+                    let array = array.lock().unwrap();
+                    let ObjectKind::Array(elements) = &array.kind else { panic!("expected array backing") };
+                    assert_eq!(elements.len(), values.len());
+                    for (actual, expected) in elements.iter().zip(&values) {
+                        match (actual, expected) {
+                            (Value::Object(a), Value::Object(b)) => assert!(Arc::ptr_eq(a, b)),
+                            _ => assert_eq!(actual, expected),
+                        }
+                    }
+                    *observation_count.lock().unwrap() += 1;
+                    Value::I32(77)
+                }));
+                let mut root = Chunk::new("formatter-packing");
+                root.module_receiver_abi = abi;
+                root.emit_string_const("format", 0);
+                let argument = root.add_import("test:formatter", "argument");
+                for _ in 0..count { root.emit_call(argument, 0, 0); }
+                let mut chunks = vec![root, observation_helper()];
+                emit_sprintf(&mut chunks, 0, (count + 1) as u8, 0);
+                assert_eq!(chunks.len(), 2);
+                assert_eq!(chunks[0].local_count, 0);
+                assert_eq!(chunks[0].direct_defined_calls.len(), 1);
+                assert!(!chunks[0].imports.iter().any(|i| i.module == "ecma:array" && i.name == "push"));
+                chunks[0].emit_op(Op::RETURN, 0);
+                vybe_compiler::primitives::globals::normalize_global_table(&mut chunks);
+                assert_eq!(vm.run(chunks).unwrap(), Value::I32(77));
+                assert_eq!(*evaluated.lock().unwrap(), count);
+                assert_eq!(*observed.lock().unwrap(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn array_call_reuses_helper_without_scratch_or_closure_dispatch() {
+        let mut chunks = vec![Chunk::new("formatter-calls")];
+        emit_sprintf_from_array(&mut chunks, 0, 0);
+        emit_sprintf_from_array(&mut chunks, 0, 0);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].local_count, 0);
+        assert_eq!(chunks[0].direct_defined_calls.len(), 2);
+        assert_eq!(chunks[0].code.len(), 14);
+    }
+
+    #[test]
+    fn non_source_helper_retains_existing_indirect_fallback() {
+        let mut helper = observation_helper();
+        helper.func_sig = Some(("externref,externref".into(), "externref".into()));
+        let mut chunks = vec![Chunk::new("formatter-fallback"), helper];
+        emit_sprintf_from_array(&mut chunks, 0, 0);
+        assert!(chunks[0].direct_defined_calls.is_empty());
+        assert_eq!(chunks[0].local_count, 2);
+        let listing = vybe_runtime::debug::disassemble(&chunks[0]);
+        assert!(listing.contains("call_ref 2 1"));
+    }
+}
+
+#[cfg(test)]
+mod string_precision_tests {
+    use super::*;
+
+    #[test]
+    fn zero_string_precision_sets_empty_raw_before_argument_reads() {
+        let mut chunk = Chunk::new("string-conversion");
+        chunk.local_count = NLOCALS;
+        let slice = chunk.add_import("ecma:string", "slice");
+        let test = chunk.add_import("wasm:js-string", "test");
+        let index_of = chunk.add_import("ecma:string", "indexOf");
+        conv_s(&mut chunk, slice, test, index_of);
+        let mut instructions = Vec::new();
+        let mut offsets = Vec::new();
+        let mut offset = 0;
+        while offset < chunk.code.len() {
+            let (instruction, next) = vybe_runtime::debug::disassemble_instruction(&chunk, offset);
+            assert!(next > offset);
+            offsets.push(offset);
+            instructions.push(instruction);
+            offset = next;
+        }
+        let zero = instructions.iter().position(|op| op == "i32.eqz").unwrap();
+        assert_eq!(instructions[zero - 1], format!("local.get {PREC}"));
+        assert!(instructions[zero + 1].starts_with("if "));
+        let otherwise = instructions.iter().enumerate().skip(zero + 2)
+            .find(|(_, op)| op.as_str() == "else").map(|(index, _)| index).unwrap();
+        let empty_branch = &instructions[zero + 2..otherwise];
+        assert!(empty_branch.iter().any(|op| op == &format!("local.set {RAW}")));
+        let empty_key = vybe_runtime::chunk::imported_global_key(
+            vybe_runtime::chunk::STRING_CONSTANTS_MODULE, "",
+        );
+        assert!((zero + 2..otherwise).any(|index| {
+            let offset = offsets[index];
+            Op::decode(chunk.read_u16(offset), chunk.read_u16(offset + 2)) == Some(Op::GLOBAL_GET)
+                && matches!(chunk.constants.get(chunk.read_u32(offset + 4) as usize),
+                    Some(vybe_runtime::Value::String(key)) if key.as_ref() == empty_key)
+        }), "zero precision must assign the actual imported empty string constant");
+        assert!(empty_branch.iter().all(|op|
+            !op.starts_with("local.get ") && !op.contains("load")
+                && !op.contains("CallHost") && !op.contains("call")),
+            "zero precision must bypass NULL checks and every pointer/string adapter");
+        assert_eq!(instructions[otherwise + 1], format!("local.get {ARG}"));
+        assert!(instructions.iter().any(|op| op == "i32.ge_s"),
+            "negative precision must retain the old unbounded read branch");
+        assert!(instructions.iter().any(|op| op == "i32.ge_u"),
+            "nonnegative precision must pass its limit to the bounded scanner");
+    }
+}
+
+fn conv_d(c: &mut Chunk, math_trunc: u16, math_abs: u16, num_radix: u16, str_cat: u16, str_test: u16) {
     let b = c.emit_block(0);
     lg(c, CONV);
     ci(c, 100);
@@ -1251,7 +1380,8 @@ fn conv_d(c: &mut Chunk, math_trunc: u16, math_abs: u16, num_radix: u16, str_cat
         );
         ls(c, RAW);
         lg(c, RAW);
-        c.emit_op(Op::REF_IS_NULL, 0);
+        hc(c, str_test, 1);
+        c.emit_op(Op::I32_EQZ, 0);
         c.emit_br_if(0, 0);
         c.emit_br(1, 0);
         c.emit_end(0);

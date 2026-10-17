@@ -1,5 +1,1217 @@
 use std::path::Path;
 
+fn assert_no_dynamic_equality(chunks: &[vybe_runtime::Chunk]) {
+    use vybe_runtime::opcode::Op;
+    for chunk in chunks {
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        if dump.contains("dyneq") {
+            let lines: Vec<_> = dump.lines().collect();
+            let at = lines.iter().position(|line| line.contains("dyneq")).unwrap();
+            panic!("dynamic equality helper in {}:\n{}", chunk.name,
+                lines[at.saturating_sub(8)..(at + 8).min(lines.len())].join("\n"));
+        }
+        let imports = if chunk.imports.is_empty() {
+            &chunks[0].imports
+        } else {
+            &chunk.imports
+        };
+        let mut offset = 0;
+        while offset + 4 <= chunk.code.len() {
+            let op = Op::decode(chunk.read_u16(offset), chunk.read_u16(offset + 2)).unwrap();
+            if op == Op::CALL {
+                let index = chunk.read_u16(offset + 4) as usize;
+                if let Some(import) = imports.get(index) {
+                    assert!(import.module != "ecma:value"
+                        || !matches!(import.name.as_str(), "abstractEq" | "abstractNe"),
+                        "dynamic equality host call in {} at {offset}: {}:{}",
+                        chunk.name, import.module, import.name);
+                }
+            }
+            let (_, next) = vybe_runtime::debug::disassemble_instruction(chunk, offset);
+            assert!(next > offset, "decoder did not advance in {}", chunk.name);
+            offset = next;
+        }
+    }
+}
+
+#[test]
+fn glow_nested_record_fields_match_native_and_emit_valid_static_wasm() {
+    assert_native_static_record_fixture("doom_glow_kernel.c", Some("T_Glow"));
+}
+
+#[test]
+fn nested_record_captures_preserve_owner_across_recursive_rhs() {
+    assert_native_static_record_fixture("nested_record_capture_reentrant.c", None);
+}
+
+#[test]
+fn pointer_field_captures_preserve_target_across_recursive_rhs() {
+    assert_native_static_record_fixture("reentrant_pointer_field_assignment.c", None);
+}
+
+#[test]
+fn sky_planes_draw_expected_pixels_through_real_column_callback() {
+    assert_native_static_record_fixture("doom_sky_plane_pixels.c", None);
+}
+
+#[test]
+fn real_wall_clipping_matches_per_column_visibility() {
+    assert_native_static_record_fixture("doom_wall_clip_visibility.c", None);
+}
+
+#[test]
+fn indexed_sector_pointers_transfer_through_real_doom_record_layouts() {
+    assert_native_static_record_fixture("indexed_sector_pointer_transfer.c", None);
+}
+
+#[test]
+fn real_map_loaders_preserve_sector_links_in_zone_allocated_records() {
+    assert_native_static_record_fixture("doom_map_sector_links.c", None);
+}
+
+#[test]
+fn real_map_loaders_preserve_sector_links_on_guest_worker() {
+    assert_native_static_record_fixture_with_flags(
+        "doom_map_sector_links_threaded.c", None, &["-pthread"],
+    );
+}
+
+#[test]
+fn real_wad_cache_hits_and_mapped_lumps_preserve_tags_and_aliases() {
+    assert_native_static_record_fixture("doom_wad_cache_paths.c", Some("W_CacheLumpNum"));
+}
+
+#[test]
+fn record_reads_preserve_direct_view_and_linear_aliases_after_mutation() {
+    assert_native_static_record_fixture("record_read_backing_once.c", None);
+}
+
+#[test]
+fn embedded_record_zero_index_preserves_singleton_alias() {
+    assert_native_static_record_fixture("embedded_record_zero_index.c", None);
+}
+
+#[test]
+fn nested_pointer_conditions_preserve_c_truth_and_short_circuiting() {
+    assert_native_static_record_fixture("nested_pointer_boolean_conditions.c", None);
+}
+
+#[test]
+fn unsigned_record_switch_selectors_preserve_all_sixty_four_bits() {
+    assert_native_static_record_fixture("unsigned_record_switch_selector.c", None);
+}
+
+#[test]
+fn initialized_header_pointers_preserve_backing_and_single_evaluation() {
+    assert_native_static_record_fixture("initialized_header_pointer_backing.c", None);
+}
+
+#[test]
+fn signed_field_word_extensions_preserve_values_and_single_evaluation() {
+    assert_native_static_record_fixture("signed_field_word_extension.c", None);
+}
+
+#[test]
+fn scalar_array_memcmp_preserves_byte_layout_and_argument_effects() {
+    assert_native_static_record_fixture("memcmp_scalar_array_layout.c", None);
+}
+
+#[test]
+fn comparison_views_preserve_offsets_nuls_mutations_and_argument_effects() {
+    assert_native_static_record_fixture("string_compare_views.c", None);
+}
+
+#[test]
+fn real_zone_cache_purge_release_and_level_restart_clear_owners() {
+    assert_native_static_record_fixture("doom_zone_cache_pressure.c", None);
+}
+
+#[test]
+fn real_melt_columns_match_pixels_and_cursor_state_each_frame() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/doom_melt_pixels.c");
+    vybe_language_c::register();
+    let module = vybe_compiler::projects::load(&path).unwrap().prepared_module().unwrap();
+    let body = module.body.iter().find_map(|statement| match &statement.kind {
+        vybe_ast::StmtKind::FunctionDecl { name, body, .. } if name == "wipe_doMelt" => Some(body),
+        _ => None,
+    }).unwrap();
+    let mut transfers = 0;
+    for statement in body {
+        statement.walk_exprs(&mut |value| {
+            if let vybe_ast::ExprKind::Call { callee, .. } = &value.kind {
+                transfers += usize::from(matches!(&callee.kind,
+                    vybe_ast::ExprKind::Ident(name) if name == "__c_ptr_copy_column16"));
+            }
+        });
+    }
+    assert_eq!(transfers, 2, "both real column loops must retain guarded word transfers");
+    assert_native_static_record_fixture("doom_melt_pixels.c", Some("wipe_doMelt"));
+}
+
+fn assert_native_static_record_fixture(filename: &str, report_body: Option<&str>) {
+    assert_native_static_record_fixture_with_flags(filename, report_body, &[]);
+}
+
+#[test]
+fn directory_stream_read_and_drop_keep_declared_entry_type() {
+    assert_native_static_record_fixture("directory_typed_stream_drop.c", None);
+}
+
+#[test]
+fn directory_close_comparisons_are_static_and_evaluate_arguments_once() {
+    assert_native_static_record_fixture("directory_close_static_comparison.c", None);
+}
+
+fn assert_native_static_record_fixture_with_flags(
+    filename: &str, report_body: Option<&str>, native_flags: &[&str],
+) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup").join(filename);
+    assert_native_map_fixture_with_flags(&source, native_flags);
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&source).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    if let Some(name) = report_body {
+        let chunk = compiled.chunks.iter().find(|chunk| chunk.name == name).unwrap();
+        eprintln!("{name} bytecode baseline: {} bytes", chunk.code.len());
+    }
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn endoom_links_the_real_sdl_textscreen_functions() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/endoom_textscreen_link.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    for name in ["TXT_Init", "TXT_GetScreenData", "TXT_UpdateScreen", "TXT_GetChar",
+        "TXT_Sleep", "TXT_Shutdown", "I_Endoom"] {
+        assert!(compiled.chunks.iter().any(|chunk| chunk.name == name),
+            "missing textscreen implementation: {name}");
+    }
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    let callable = vm.global("check_textscreen_link").expect("textscreen link check").clone();
+    assert_eq!(vm.invoke(&callable, &[]).unwrap().as_i32(), 73);
+}
+
+#[test]
+fn doom_collision_sides_match_integer_cross_products() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/doom_collision_sides.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn sdl_tick_comparison_uses_declared_unsigned_word_type() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/sdl_tick_comparison.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn doom_visplanes_preserve_inline_array_fill_after_pointer_reassignment() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/doom_visplane_reuse.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn record_array_memset_preserves_backing_and_evaluates_owner_once() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/record_array_memset.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn header_scalar_and_signal_guards_do_not_use_dynamic_equality() {
+    for fixture in ["sdl_modifier_comparison", "signal_handler_guard"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/c/doom_startup/{fixture}.c"));
+        vybe_language_c::register();
+        let mut vm = vybe_runtime::VM::new();
+        vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .compile_path(&path).unwrap();
+        assert_no_dynamic_equality(&compiled.chunks);
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false,
+                include_name_section: true,
+            });
+        validate_wasm_with_context(&bytes, &compiled.chunks);
+        vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .run_compiled(compiled).unwrap();
+        assert_eq!(vm.pending_exit_code, 0);
+    }
+}
+
+#[test]
+fn doom_projection_preserves_unsigned_angles_and_wall_scales() {
+    for fixture in ["unsigned_angle_wrap", "doom_projection_math"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/c/doom_startup/{fixture}.c"));
+        vybe_language_c::register();
+        let mut vm = vybe_runtime::VM::new();
+        vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .compile_path(&path).unwrap();
+        assert_no_dynamic_equality(&compiled.chunks);
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false,
+                include_name_section: true,
+            });
+        validate_wasm_with_context(&bytes, &compiled.chunks);
+        vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .run_compiled(compiled).unwrap();
+        assert_eq!(vm.pending_exit_code, 0);
+    }
+}
+
+#[test]
+fn floating_array_pointer_reads_keep_static_comparisons_and_places() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/floating_array_pointer_reads.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn pointer_strides_preserve_local_and_linear_backing_semantics() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/pointer_stride_matrix.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn doom_hud_nested_lines_preserve_dirty_counter_and_border_erases() {
+    for fixture in ["record_array_member_updates", "doom_hud_erase"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/c/doom_startup/{fixture}.c"));
+        vybe_language_c::register();
+        let mut vm = vybe_runtime::VM::new();
+        vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .compile_path(&path).unwrap();
+        assert_no_dynamic_equality(&compiled.chunks);
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false,
+                include_name_section: true,
+            });
+        validate_wasm_with_context(&bytes, &compiled.chunks);
+        vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .run_compiled(compiled).unwrap();
+        assert_eq!(vm.pending_exit_code, 0);
+    }
+}
+
+#[test]
+fn doom_draw_kernels_preserve_near_wall_mapping_and_guards() {
+    for fixture in ["doom_draw_kernel_edges", "doom_draw_kernel_heap"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/c/doom_startup/{fixture}.c"));
+        assert_native_map_fixture(&path);
+        vybe_language_c::register();
+        let mut vm = vybe_runtime::VM::new();
+        vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .compile_path(&path).unwrap();
+        assert_no_dynamic_equality(&compiled.chunks);
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false,
+                include_name_section: true,
+            });
+        validate_wasm_with_context(&bytes, &compiled.chunks);
+        vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .run_compiled(compiled).unwrap();
+        assert_eq!(vm.pending_exit_code, 0);
+    }
+}
+
+#[test]
+fn pickup_blocklist_traversal_preserves_links_during_removal() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source = root.join("tests/c/doom_startup/doom_pickup_blocklist.c");
+    assert_native_map_fixture(&source);
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&source).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+fn assert_native_map_fixture(source: &Path) {
+    assert_native_map_fixture_with_flags(source, &[]);
+}
+
+fn assert_native_map_fixture_with_flags(source: &Path, flags: &[&str]) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    struct NativeArtifact(std::path::PathBuf);
+    impl Drop for NativeArtifact {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    }
+    let reference = NativeArtifact(std::env::temp_dir().join(format!(
+        "vybe-map-reference-{}-{}", std::process::id(),
+        source.file_stem().unwrap().to_string_lossy())));
+    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let output = std::process::Command::new(compiler)
+        .args(["-std=gnu11", "-O0", "-ffunction-sections", "-fdata-sections"])
+        .args(flags)
+        .arg("-idirafter").arg(root.join("tools/compat"))
+        .arg(format!("-I{}", root.join("examples/chocolate-doom/src").display()))
+        .arg(format!("-I{}", root.join("examples/chocolate-doom/src/doom").display()))
+        .arg(&source)
+        .arg(if cfg!(target_os = "macos") { "-Wl,-dead_strip" } else { "-Wl,--gc-sections" })
+        .arg("-o").arg(&reference.0).output().unwrap();
+    assert!(output.status.success(), "native compilation: {}", String::from_utf8_lossy(&output.stderr));
+    let output = std::process::Command::new(&reference.0).output().unwrap();
+    assert!(output.status.success(), "native map assertions for {}: {}\n{}", source.display(),
+        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn momentum_wall_sliding_matches_native_position_and_links() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/doom_momentum_wall.c");
+    assert_native_map_fixture(&source);
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&source).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+fn check_transition_fixture(fixture: &str) {
+    check_transition_fixture_with_flags(fixture, &[]);
+}
+
+fn check_transition_fixture_with_flags(fixture: &str, flags: &[&str]) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../tests/c/doom_startup/{fixture}.c"));
+    assert_native_map_fixture_with_flags(&source, flags);
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&source).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0, "{fixture}: C assertions");
+}
+
+#[test]
+fn door_plane_transitions_match_native() {
+    check_transition_fixture("doom_door_plane_transitions");
+}
+
+#[test]
+fn door_use_trace_matches_native() {
+    check_transition_fixture("doom_use_door_trace");
+}
+
+#[test]
+fn bounded_string_formatting_preserves_byte_offsets_and_single_evaluation() {
+    check_transition_fixture("printf_string_precision_bytes");
+}
+
+#[test]
+fn bounded_string_precision_never_reads_beyond_linear_memory() {
+    check_transition_fixture_with_flags("printf_precision_memory_end",
+        &["-DNATIVE_GUARD_PAGE", "-D_DARWIN_C_SOURCE", "-D_DEFAULT_SOURCE"]);
+}
+
+#[test]
+fn doom_file_base_extraction_preserves_caller_storage_and_guards() {
+    check_transition_fixture("doom_extract_file_base_precision");
+}
+
+#[test]
+fn string_backed_pointer_views_preserve_lengths_offsets_and_formatting() {
+    check_transition_fixture("string_backed_pointer_offsets");
+}
+
+#[test]
+fn byte_lookup_views_preserve_live_storage_and_descriptor_mutations() {
+    check_transition_fixture("byte_lookup_view_stability");
+}
+
+#[test]
+fn sector_height_propagation_matches_native() {
+    check_transition_fixture("doom_sector_height_change");
+}
+
+#[test]
+fn pickup_effects_and_deferred_removal_match_native() {
+    check_transition_fixture("doom_pickup_effects");
+}
+
+#[test]
+fn pickup_blocklink_insert_matches_native() {
+    check_transition_fixture("doom_pickup_blocklink_insert");
+}
+
+#[test]
+fn zero_tic_actor_state_transitions_match_native() {
+    check_transition_fixture("doom_state_transitions");
+}
+
+#[test]
+fn doom_keyboard_release_updates_gameplay_commands_match_native() {
+    check_transition_fixture("doom_keyboard_command_release");
+}
+
+#[test]
+fn doom_event_ring_boundaries_match_native_queue_hazard() {
+    check_transition_fixture("doom_event_ring_boundaries");
+}
+
+#[test]
+fn enemy_player_search_termination_matches_native() {
+    check_transition_fixture("doom_enemy_player_search");
+}
+
+#[test]
+fn platform_removal_preserves_sector_and_thinker_identity() {
+    check_transition_fixture("doom_platform_removal");
+}
+
+#[test]
+fn embedded_record_addresses_preserve_identity_layout_and_evaluation() {
+    check_transition_fixture("embedded_record_address_identity");
+}
+
+#[test]
+fn pointer_field_rhs_evaluates_once_and_returns_assigned_pointer() {
+    check_transition_fixture("record_pointer_field_rhs_once");
+}
+
+#[test]
+fn repeated_blocklist_moves_preserve_links_and_terminate() {
+    check_transition_fixture("doom_blocklist_moves");
+}
+
+#[test]
+fn indexed_record_addresses_preserve_singleton_and_array_aliases() {
+    for fixture in ["single_record_index_address", "doom_blockmap_wall", "doom_trymove_wall"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/c/doom_startup/{fixture}.c"));
+        assert_native_map_fixture(&path);
+        vybe_language_c::register();
+        let mut vm = vybe_runtime::VM::new();
+        vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .compile_path(&path).unwrap();
+        assert_no_dynamic_equality(&compiled.chunks);
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false,
+                include_name_section: true,
+            });
+        validate_wasm_with_context(&bytes, &compiled.chunks);
+        vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+            .run_compiled(compiled).unwrap();
+        assert_eq!(vm.pending_exit_code, 0);
+    }
+}
+
+fn canvas_import_signatures(bytes: &[u8]) -> Vec<(u32, String, usize, usize)> {
+        let mut canvas = Vec::new();
+        let mut signatures = Vec::new();
+        let mut import_index = 0;
+        for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+            match payload.unwrap() {
+                wasmparser::Payload::TypeSection(section) => {
+                    for group in section {
+                        for ty in group.unwrap().into_types() {
+                            signatures.push(match ty.composite_type.inner {
+                                wasmparser::CompositeInnerType::Func(f) =>
+                                    Some((f.params().len(), f.results().len())),
+                                _ => None,
+                            });
+                        }
+                    }
+                }
+                wasmparser::Payload::ImportSection(section) => {
+                    for import in section.into_imports() {
+                        let import = import.unwrap();
+                        if let wasmparser::TypeRef::Func(ty) | wasmparser::TypeRef::FuncExact(ty) = import.ty {
+                            if import.module == "web:canvas" {
+                                let (params, results) = signatures[ty as usize].unwrap();
+                                canvas.push((import_index, import.name.to_string(), params, results));
+                            }
+                            import_index += 1;
+                        }
+                    }
+                }
+                _ => {},
+            }
+        }
+        canvas
+}
+
+fn validate_wasm_with_context(bytes: &[u8], chunks: &[vybe_runtime::Chunk]) {
+    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(bytes)
+    {
+        for (index, name, params, results) in canvas_import_signatures(bytes) {
+            eprintln!("canvas import {index}: {name} ({params}, {results})");
+        }
+        let mut body_index = 0;
+        for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                if body.range().contains(&error.offset()) {
+                    let mut reader = body.get_operators_reader().unwrap();
+                    let mut nearby = Vec::new();
+                    while !reader.eof() {
+                        let offset = reader.original_position();
+                        let operation = reader.read().unwrap();
+                        if offset + 40 >= error.offset() && offset <= error.offset() + 8 {
+                            nearby.push(format!("{offset}: {operation:?}"));
+                        }
+                    }
+                    let chunk = chunks.get(body_index);
+                    panic!("{error}; body {body_index}, chunk {:?}, signature {:?}, i64 locals {:?}, names {:?}: {}",
+                        chunk.map(|chunk| &chunk.name),
+                        chunk.map(|chunk| &chunk.func_sig),
+                        chunk.map(|chunk| &chunk.i64_locals),
+                        chunk.map(|chunk| &chunk.local_names), nearby.join("\n"));
+                }
+                body_index += 1;
+            }
+        }
+        panic!("{error}");
+    }
+    let mut abstract_imports = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        match payload.unwrap() {
+            wasmparser::Payload::ImportSection(section) => {
+                for import in section.into_imports() {
+                    let import = import.unwrap();
+                    if matches!(import.ty,
+                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_))
+                    {
+                        abstract_imports.push(import.module == "ecma:value"
+                            && matches!(import.name, "abstractEq" | "abstractNe"));
+                    }
+                }
+            }
+            wasmparser::Payload::CodeSectionEntry(body) => {
+                let mut reader = body.get_operators_reader().unwrap();
+                while !reader.eof() {
+                    let offset = reader.original_position();
+                    if let wasmparser::Operator::Call { function_index }
+                        | wasmparser::Operator::ReturnCall { function_index }
+                        | wasmparser::Operator::RefFunc { function_index } = reader.read().unwrap()
+                    {
+                        assert_ne!(abstract_imports.get(function_index as usize), Some(&true),
+                            "emitted WASM references abstract equality at byte {offset}, function {function_index}");
+                    }
+                }
+            }
+            wasmparser::Payload::CustomSection(section) => {
+                if let wasmparser::KnownCustom::Name(reader) = section.as_known() {
+                    for subsection in reader {
+                        subsection.expect("emitted debug name subsections must be well formed");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn computed_record_store_uses_emitted_typedef_type() {
+    let module = vybe_language_c::parse(
+        "typedef struct LinkTag { struct LinkTag *next; } Link;\n\
+         Link head; void attach(Link *node) { head.next->next = node; }\n\
+         int main(void) { return 0; }",
+    ).unwrap();
+    let body = module.body.iter().find_map(|statement| match &statement.kind {
+        vybe_ast::StmtKind::FunctionDecl { name, body, .. } if name == "attach" => Some(body),
+        _ => None,
+    }).unwrap();
+    let mut tag_stores = 0;
+    let mut declared_stores = 0;
+    for statement in body {
+        statement.walk_exprs(&mut |expression| {
+            if let vybe_ast::ExprKind::Assign { target, .. } = &expression.kind
+                && let vybe_ast::ExprKind::Member { object, field, .. } = &target.kind
+                && field == "next"
+                && let vybe_ast::ExprKind::Cast { type_name, .. } = &object.kind {
+                tag_stores += usize::from(type_name == "LinkTag");
+                declared_stores += usize::from(type_name == "Link");
+            }
+        });
+    }
+    assert_eq!(tag_stores, 0, "store names a tag with no emitted record class");
+    assert!(declared_stores > 0, "store must retain the emitted concrete type");
+}
+
+#[test]
+fn function_scope_global_record_address_keeps_its_place() {
+    let module = vybe_language_c::parse(
+        "struct link { struct link *next; }; struct link head;\n\
+         void initialize(void) { head.next = &head; }\n\
+         int main(void) { initialize(); return 0; }",
+    ).unwrap();
+    let body = module.body.iter().find_map(|statement| match &statement.kind {
+        vybe_ast::StmtKind::FunctionDecl { name, body, .. } if name == "initialize" => Some(body),
+        _ => None,
+    }).unwrap();
+    let mut keeps_place = false;
+    for statement in body {
+        statement.walk_exprs(&mut |expression| {
+            if let vybe_ast::ExprKind::Unary { op: vybe_ast::UnaryOp::AddrOf, expr } = &expression.kind {
+                keeps_place |= matches!(&expr.kind, vybe_ast::ExprKind::Ident(name) if name == "head");
+            }
+        });
+    }
+    assert!(keeps_place, "global record address was lowered to a value-backed wrapper");
+}
+
+#[test]
+fn threaded_thinker_head_keeps_managed_storage() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/threaded_thinker_head.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn sdl_boolean_constants_use_integer_values() {
+    vybe_language_c::register();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/sdl_boolean_constants.c");
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    let main = compiled.chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+    assert!(!vybe_runtime::debug::disassemble(main).contains("dyneq"));
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn mixed_pointer_result_field_transfer_preserves_linear_address() {
+    vybe_language_c::register();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/mixed_pointer_result_field_transfer.c");
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn large_static_zero_initializer_exports_bounded_string_constants() {
+    vybe_language_c::register();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/large_static_zero_initializer.c");
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm(&chunks);
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+}
+
+#[test]
+fn character_array_initializers_and_copies_preserve_byte_storage() {
+    vybe_language_c::register();
+    for name in ["char_array_numeric_initializer_copy.c", "cheat_sequence.c",
+        "record_char_array_initializer.c", "texture_hash_table_high_bucket.c",
+        "unsigned_division_return.c"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/c/doom_startup").join(name);
+        eprintln!("byte-storage fixture: {name}");
+        let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+        if name == "unsigned_division_return.c" {
+            for (function, opcode) in [("word_div", "i32.div_u"), ("word_rem", "i32.rem_u")] {
+                let chunk = chunks.iter().find(|chunk| chunk.name == function).unwrap();
+                let dump = vybe_runtime::debug::disassemble(chunk);
+                assert!(dump.contains(opcode), "{function}: {dump}");
+                assert!(!dump.contains("f64.div"), "{function}: {dump}");
+            }
+        }
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false,
+                include_name_section: true,
+            });
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let mut vm = vybe_runtime::VM::new();
+        vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        vm.run(chunks.clone()).unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(vm.pending_exit_code, 0, "{name}");
+        assert_no_dynamic_equality(&chunks);
+    }
+}
+
+#[test]
+fn sprite_frame_addresses_use_record_byte_stride() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/sprite_frame_table.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn allocator_first_member_preserves_callback_table() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/struct_pointer_from_void_allocator_nested_function_table.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn file_registry_helpers_use_static_comparisons() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/static_file_registry.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    assert_no_dynamic_equality(&chunks);
+    for name in [
+        "__c_fs_is_file", "__c_path_present", "__c_remove_h", "__c_rename_h",
+        "__c_fopen_h", "__c_fsync_h", "__c_ungetc_h", "__c_ftell_h", "__c_srand_h",
+        "__c_fwrite_h",
+    ] {
+        let chunk = chunks.iter().find(|chunk| chunk.name == name)
+            .unwrap_or_else(|| panic!("fixture must exercise {name}"));
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "dynamic equality remains in {name}: {dump}");
+    }
+    for chunk in chunks.iter().filter(|chunk| chunk.name == "<lambda>") {
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "dynamic equality in generated file adapter: {dump}");
+    }
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn variadic_record_pointer_conditions_validate() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/multi_glob_conditions.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    assert_no_dynamic_equality(&chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let result = vm.run(chunks);
+    let stage = vm.globals_by_name().into_iter()
+        .find(|(name, _)| name == "glob_stage");
+    assert!(result.is_ok(), "glob stage {stage:?}: {result:?}");
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn sector_line_tables_survive_zone_level_restarts() {
+    vybe_language_c::register();
+    for fixture in ["sector_line_tables.c", "zone_sector_line_tables.c"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/c/doom_startup").join(fixture);
+        let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+        assert_no_dynamic_equality(&chunks);
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false,
+                include_name_section: true,
+            });
+        validate_wasm_with_context(&bytes, &chunks);
+        let mut vm = vybe_runtime::VM::new();
+        vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        let table_dump = chunks.iter().find(|chunk| chunk.name == "group_lines")
+            .map(vybe_runtime::debug::disassemble).unwrap_or_default();
+        vm.run(chunks).unwrap_or_else(|error| panic!("{fixture}: {error:?}\n{table_dump}"));
+        assert_eq!(vm.pending_exit_code, 0, "{fixture}");
+    }
+}
+
+#[test]
+fn doom_cheat_size_fields_preserve_record_backing() {
+    vybe_language_c::register();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/doom_cheat_sequence.c");
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    assert_no_dynamic_equality(&chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn nested_widget_addresses_preserve_parent_storage() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/nested_widget_address.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    for chunk in chunks.iter().filter(|chunk| chunk.name == "main" || chunk.name == "<lambda>") {
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "dynamic equality in nested pointer comparison: {dump}");
+    }
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn sdl_texture_output_stores_export_with_balanced_stack() {
+    vybe_language_c::register();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/sdl_output_stack.c");
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    assert_no_dynamic_equality(&chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    let overloads: std::collections::BTreeSet<_> = canvas_import_signatures(&bytes)
+        .into_iter().filter(|(_, name, _, _)| name == "drawImage")
+        .map(|(_, _, params, results)| (params, results)).collect();
+    assert_eq!(overloads, [(4, 0), (10, 0)].into_iter().collect());
+}
+
+#[test]
+fn canvas_overloads_preserve_root_imports_in_leaf_chunks() {
+    use vybe_runtime::{Chunk, Op};
+    let mut root = Chunk::new("<canvas-overloads>");
+    let draw = root.add_import("web:canvas", "drawImage");
+    let put = root.add_import("web:canvas", "putImageData");
+    root.emit_i32_const(0, 0);
+    root.emit_op(Op::RETURN, 0);
+    let mut leaf = Chunk::new("canvas-overloads");
+    for (import, arity) in [(draw, 4), (draw, 6), (draw, 10), (put, 4), (put, 8)] {
+        for _ in 0..arity {
+            leaf.emit_i32_const(0, 0);
+        }
+        leaf.emit_call(import, arity, 0);
+        leaf.emit_op(Op::DROP, 0);
+    }
+    leaf.emit_i32_const(0, 0);
+    leaf.emit_op(Op::RETURN, 0);
+    let chunks = vec![root, leaf];
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    let signatures = canvas_import_signatures(&bytes);
+    for (name, expected) in [
+        ("drawImage", vec![(4, 0), (6, 0), (10, 0)]),
+        ("putImageData", vec![(4, 0), (8, 0)]),
+    ] {
+        let actual: std::collections::BTreeSet<_> = signatures.iter()
+            .filter(|(_, method, _, _)| method == name)
+            .map(|(_, _, params, results)| (*params, *results)).collect();
+        assert_eq!(actual, expected.into_iter().collect(), "{name}");
+    }
+}
+
+#[test]
+fn linear_pointer_slots_preserve_indexed_backing() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/linear_pointer_slot_index.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+    let dump = vybe_runtime::debug::disassemble(main);
+    assert!(!dump.contains("dyneq"), "dynamic pointer comparison: {dump}");
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap_or_else(|error| panic!("{error}\n{dump}"));
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn callback_parameter_prototypes_preserve_functions() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/callback_parameter_prototype.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn linear_character_search_emits_valid_wasm() {
+    use vybe_runtime::{Chunk, Op};
+    for (needle, expected) in [(58, 33), (0, 37), (122, 0), (-1, 32)] {
+        let mut chunk = Chunk::new("<script>");
+        chunk.memory_min_pages = vec![1];
+        for (offset, byte) in [255, 58, 98, 58, 99, 0].into_iter().enumerate() {
+            chunk.emit_i32_const(32 + offset as i32, 0);
+            chunk.emit_i32_const(byte, 0);
+            chunk.emit_op(Op::I32_STORE8, 0);
+        }
+        chunk.emit_i32_const(32, 0);
+        chunk.emit_i32_const(needle, 0);
+        let mut chunks = vec![chunk];
+        vybe_platform_libc::emitter::string_memory::emit_strchr_linear(&mut chunks, 0, 0);
+        chunks[0].emit_op(Op::RETURN, 0);
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false,
+                include_name_section: true,
+            });
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes).unwrap();
+        let mut vm = vybe_runtime::VM::new();
+        assert_eq!(vm.run(chunks).unwrap().as_i32(), expected);
+    }
+}
+
+#[test]
+fn linear_character_search_retains_addresses() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/linear_character_search.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let search = chunks.iter().find(|chunk| chunk.name == "first_match").unwrap();
+    let dump = vybe_runtime::debug::disassemble(search);
+    assert!(!dump.contains("dyneq"), "dynamic equality in character search: {dump}");
+    assert!(!dump.contains("__vybe_slot_"), "dynamic scalar dispatch in character search: {dump}");
+    assert!(dump.contains("i32.load8_u"), "linear character search lacks byte loads: {dump}");
+    let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+    let dump = vybe_runtime::debug::disassemble(main);
+    assert!(!dump.contains("dyneq"), "dynamic equality in pointer-returning calls: {dump}");
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn embedded_command_addresses_keep_record_storage() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/embedded_command_pointer.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let tick = chunks.iter().find(|chunk| chunk.name == "tick").unwrap();
+    let dump = vybe_runtime::debug::disassemble(tick);
+    assert!(!dump.contains("dyneq"), "dynamic equality in command reads: {dump}");
+    assert!(!dump.contains("__vybe_slot_"), "dynamic scalar dispatch in command reads: {dump}");
+    assert!(dump.contains("memory.copy"), "command copy lost its bulk-memory path: {dump}");
+    assert!(dump.contains("i32.load8_s"), "command byte reads lost sign extension: {dump}");
+    assert!(dump.contains("i32.load16_s"), "command word reads lost sign extension: {dump}");
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
 #[test]
 fn record_union_callback_copies_preserve_callable_fields() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -22,6 +1234,7 @@ fn scan_counts_and_stream_comparisons_keep_static_types() {
         let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(chunk);
         assert!(!dump.contains("dyneq"), "dynamic comparison in {name}: {dump}");
+        assert!(!dump.contains("__vybe_slot_"), "numeric comparison-slot dispatch in {name}: {dump}");
     }
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
@@ -199,7 +1412,21 @@ fn binary_read_transfer_uses_discarded_result_stores() {
         vybe_language_c::register();
         let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
         let helper = chunks.iter().find(|chunk| chunk.name == "__c_fread_into_linear_h").unwrap();
-        let code = &helper.code;
+        let copy_index = chunks.iter().position(|chunk| chunk.name == "primitive.byte_copy");
+        let mut ip = 0;
+        let mut calls_copy = false;
+        while ip < helper.code.len() {
+            let op = vybe_runtime::Op::from_code_at(&helper.code, ip);
+            if op == vybe_runtime::Op::REF_FUNC {
+                calls_copy |= copy_index == Some(helper.read_u16(ip + 4) as usize);
+            }
+            ip += 4 + op.operand_format().size_in(&helper.code, ip + 4);
+        }
+        let code = if calls_copy {
+            &chunks[copy_index.unwrap()].code
+        } else {
+            &helper.code
+        };
         let mut ip = 0;
         let mut stores = 0;
         while ip < code.len() {
@@ -218,6 +1445,29 @@ fn binary_read_transfer_uses_discarded_result_stores() {
         vm.run(chunks).unwrap();
         assert_eq!(vm.pending_exit_code, 0, "{fixture}");
     }
+}
+
+#[test]
+fn record_read_items_use_integer_guards() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/fread_record_items.c");
+    vybe_language_c::register();
+    let absolute = path.canonicalize().unwrap();
+    let mut bundle = vybe_compiler::projects::load(&path).unwrap();
+    bundle.sources[0].code = bundle.sources[0].code.replace(
+        "tests/c/doom_startup/fread_record_items.c", absolute.to_str().unwrap(),
+    );
+    let chunks = bundle.compile().unwrap();
+    let helper = chunks.iter().find(|chunk| chunk.name == "__c_fread_into_h").unwrap();
+    let dump = vybe_runtime::debug::disassemble(helper);
+    // The common emitter reverses operands for <= and emits >=.
+    assert!(dump.matches("i64.ge_u").count() >= 2, "missing integer size/count guards: {dump}");
+    assert!(dump.contains("i64.div_u"), "missing whole-item count: {dump}");
+    assert!(!dump.contains("__vybe_slot_"), "dynamic numeric dispatch in fread: {dump}");
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
 }
 
 #[test]
@@ -248,7 +1498,7 @@ fn pointer_address_lanes_emit_integer_arithmetic() {
             ip += 4 + op.operand_format().size_in(code, ip + 4);
         }
         if lane == BitLane::W32 && stride == 8 {
-            assert_eq!(narrowings, 3, "nested i32 address is narrowed again: {dump}");
+            assert!(narrowings <= 1, "intermediate i32 address was narrowed again: {dump}");
         }
         let mut vm = vybe_runtime::VM::new();
         vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
@@ -310,10 +1560,13 @@ fn unsigned_span_arithmetic_does_not_repeat_binding_conversions() {
     let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
     let span = chunks.iter().find(|chunk| chunk.name == "span_math").unwrap();
     let dump = vybe_runtime::debug::disassemble(span);
+    let word = chunks.iter().find(|chunk| chunk.name == "reinterpret_word").unwrap();
+    let word_dump = vybe_runtime::debug::disassemble(word);
     vm.run(chunks.clone()).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
     assert!(!dump.contains("f64.div"), "redundant unsigned binding conversion: {dump}");
     assert!(!dump.contains("dyneq"), "dynamic span equality: {dump}");
+    assert!(!word_dump.contains("f64.div"), "redundant integer word conversion: {word_dump}");
     println!("span_math bytecode bytes: {}", span.code.len());
 }
 
@@ -397,6 +1650,9 @@ fn doom_projection_matches_native_tables() {
         let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(chunk);
         assert!(!dump.contains("dyneq"), "dynamic projection comparison in {name}: {dump}");
+        if name == "divide" {
+            assert!(!dump.contains("__vybe_slot_"), "dynamic absolute-value comparison: {dump}");
+        }
     }
     vm.run(chunks).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
@@ -422,6 +1678,76 @@ fn scoped_embedded_patch_pointers_keep_backing() {
         }).collect::<Vec<_>>().join("\n");
         panic!("{error}\n{window}");
     });
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn mixed_word_pointer_offsets_preserve_both_backings() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/mixed_word_pointer_offsets.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    assert_no_dynamic_equality(&chunks);
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn span_frame_preserves_full_width_wrapped_texture_pixels() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/doom_span_frame.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    assert_no_dynamic_equality(&chunks);
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn record_word64_fields_cross_value_branches_with_declared_signedness() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/record_word64_value.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions { include_vybe_metadata: false, include_name_section: true });
+    validate_wasm_with_context(&bytes, &chunks);
+    assert_no_dynamic_equality(&chunks);
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn static_counter_postincrement_preserves_value_across_reference_store() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/static_counter_value.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions { include_vybe_metadata: false, include_name_section: true });
+    validate_wasm_with_context(&bytes, &chunks);
+    assert_no_dynamic_equality(&chunks);
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
 }
 
@@ -474,7 +1800,7 @@ fn sdl_events_roundtrip_between_record_backings() {
     let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
     for name in ["window_matches", "renderer_failed", "output_failed", "peeked",
         "window_fullscreen", "display_failed", "bounds_failed", "fullscreen_shortcut",
-        "ascii_text"] {
+        "ascii_text", "__libc_sdl_input"] {
         let helper = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(helper);
         assert!(!dump.contains("dyneq"), "dynamic SDL comparison in {name}: {dump}");
@@ -517,8 +1843,58 @@ fn sdl_queue_wasm_reload_runs_without_metadata() {
             include_name_section: true,
         },
     );
+    if let Some(path) = std::env::var_os("VYBE_SDL_RELOAD_ARTIFACT") {
+        std::fs::write(path, &wasm).expect("save requested SDL reload artifact");
+    }
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&wasm).unwrap();
     let reloaded = vybe_platform_wasm::read_wasm(&wasm).unwrap();
-    vm.run(reloaded).unwrap();
+    let diagnostic = reloaded.clone();
+    let strings = vybe_platform_wasm::writer::sections::collect_string_constants(&chunks);
+    let hosts = vybe_platform_wasm::writer::sections::collect_host_globals(&chunks);
+    let defined = vybe_platform_wasm::writer::sections::collect_globals(&chunks, &strings, &hosts);
+    let global_names = vybe_runtime::chunk::global_index_space(&strings, &hosts, &defined);
+    vm.run(reloaded).unwrap_or_else(|error| {
+        if let Some(frame) = error.call_stack.first() {
+            let offset = frame.offset as usize;
+            for chunk in diagnostic.iter().filter(|chunk|
+                chunk.name == frame.chunk_name && offset < chunk.code.len()) {
+                let mut ip = 0;
+                while ip < chunk.code.len() {
+                    let (instruction, next) = vybe_runtime::debug::disassemble_instruction(chunk, ip);
+                    if ip >= offset.saturating_sub(160) && ip <= offset + 40 {
+                        eprintln!("{instruction}");
+                        if instruction.starts_with("global.get ") {
+                            let index = chunk.read_u32(ip + 4);
+                            if let Some(name) = chunk.globals.get(index as usize) {
+                                eprintln!("global value {name}: {:?}", vm.global(name));
+                            }
+                            if let Some(name) = global_names.get(index as usize) {
+                                eprintln!("compiler binding: {name}");
+                                if let Some(root) = chunks.first() {
+                                    let dump = vybe_runtime::debug::disassemble(root);
+                                    let lines: Vec<_> = dump.lines().collect();
+                                    for (line, text) in lines.iter().enumerate()
+                                        .filter(|(_, text)| text.contains(&format!("({name})"))) {
+                                        eprintln!("binding source: {text}");
+                                        for nearby in &lines[line.saturating_sub(4)..(line + 5).min(lines.len())] {
+                                            eprintln!("{nearby}");
+                                        }
+                                    }
+                                }
+                                for init in chunks.iter().flat_map(|c| &c.global_inits)
+                                    .filter(|init| &init.name == name) {
+                                    eprintln!("binding initializer: {init:?}");
+                                }
+                            }
+                        }
+                    }
+                    ip = next;
+                }
+            }
+        }
+        panic!("{error}");
+    });
     assert_eq!(vm.pending_exit_code, 0);
 }
 
@@ -533,11 +1909,435 @@ fn pointer_distances_have_static_comparisons() {
     );
     vybe_language_c::register();
     let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
-    for name in ["full", "before"] {
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    for name in ["full", "before", "check_openings"] {
         let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(chunk);
         assert!(!dump.contains("dyneq"), "dynamic pointer distance: {dump}");
     }
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn save_menu_strings_copy_across_pointer_backings() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/save_menu_string_copy.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    for chunk in &compiled.chunks {
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"),
+            "dynamic save-menu equality in {}: {dump}", chunk.name);
+    }
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    if std::env::var_os("VYBE_C_SAVE_MENU_DUMP").is_some() {
+        for chunk in &compiled.chunks {
+            let dump = vybe_runtime::debug::disassemble(chunk);
+            if matches!(chunk.name.as_str(), "save_file" | "__c_write_carray_string"
+                | "main" | "worker" | "__c_thread_entry")
+                || (chunk.name == "<lambda>" && dump.contains("__c_write_carray_string"))
+            {
+                println!("{dump}");
+            }
+        }
+    }
+    let result = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled);
+    let stage = vm.globals_by_name().into_iter()
+        .find(|(name, _)| name == "copy_stage");
+    assert!(result.is_ok(), "save-menu stage {stage:?}: {result:?}");
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn deh_literal_keys_keep_bytes_in_zone_storage() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/deh_zone_replacements.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn automap_nested_endpoints_do_not_expand_record_owners() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/automap_nested_endpoints.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    let draw = compiled.chunks.iter().find(|chunk| chunk.name == "draw_character").unwrap();
+    eprintln!("draw_character: {} bytecode bytes, {} locals", draw.code.len(), draw.local_count);
+    assert!(draw.code.len() < 1_000_000, "nested endpoint lowering expanded");
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn zero_record_arrays_use_distinct_bounded_initializers() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/zero_nested_record_arrays.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    for chunk in &compiled.chunks {
+        assert!(chunk.code.len() < 200_000,
+            "record array expanded in {}: {} bytes", chunk.name, chunk.code.len());
+    }
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn nested_record_values_materialize_managed_and_linear_fields() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/nested_record_value_copy.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn threaded_player_movement_keeps_record_type_mapping() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/threaded_player_movement.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    for chunk in &compiled.chunks {
+        assert!(!vybe_runtime::debug::disassemble(chunk).contains("dyneq"),
+            "dynamic threaded movement equality in {}", chunk.name);
+    }
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn intercept_traversal_preserves_flags_union_and_callback_argument() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/intercept_traversal.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    for chunk in &compiled.chunks {
+        assert!(!vybe_runtime::debug::disassemble(chunk).contains("dyneq"),
+            "dynamic intercept comparison in {}", chunk.name);
+    }
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn player_movement_survives_runtime_compiler_service() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/player_thinker_movement.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    for chunk in &compiled.chunks {
+        assert!(!vybe_runtime::debug::disassemble(chunk).contains("dyneq"),
+            "dynamic movement equality in {}", chunk.name);
+    }
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+    for (name, expected) in [("calls", 4), ("destination_evaluations", 4),
+        ("source_evaluations", 4), ("observed_forward", 10),
+        ("observed_momentum", 20480), ("observed_x", -12511232)] {
+        assert_eq!(vm.global(name).expect("movement result must exist").as_i32(),
+            expected, "incorrect final movement result: {name}");
+    }
+}
+
+#[test]
+fn player_commands_reach_heap_thinker_movement() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/player_thinker_movement.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    for name in ["main", "tick", "movement", "add", "initialize_direct_list",
+        "add_direct_node", "run_direct_thinkers",
+        "check_direct_movement"] {
+        let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "dynamic movement comparison: {dump}");
+    }
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn global_address_promotion_survives_function_compilation_order() {
+    use vybe_ast::{BindingPattern, ExprKind, Expression, Modifiers, PlaceExpr,
+        Statement, StmtKind, VarDeclarator, VarDeclKind};
+    vybe_language_c::register();
+    let address = || Expression::new(ExprKind::RefOf(Box::new(
+        PlaceExpr::Ident("value".into()),
+    )));
+    let declaration = |name: &str, init: Expression| Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.into()), type_hint: None,
+            init: Some(init), array_bounds: None, with_events: false,
+        }], kind: VarDeclKind::Var,
+    });
+    for function_first in [false, true] {
+        let mut module = vybe_language_c::parse("int unused;").unwrap();
+        let function = Statement::new(StmtKind::FunctionDecl {
+            name: "address".into(), params: vec![], return_type: None,
+            body: vec![Statement::new(StmtKind::Return(Some(address())))],
+            modifiers: Modifiers::default(), handles: vec![], is_async: false,
+            is_generator: false, is_sub: false,
+        });
+        module.body = vec![declaration("root", address()),
+            declaration("value", Expression::int(17))];
+        module.body.insert(if function_first { 0 } else { 2 }, function);
+        module.body.push(Statement::new(StmtKind::Return(Some(
+            Expression::new(ExprKind::RefLoad(Box::new(Expression::ident("root")))),
+        ))));
+        let profile = vybe_compiler::profile::parse_profile(
+            vybe_language_c::profile_source(),
+        ).unwrap();
+        let chunks = vybe_compiler::Compiler::with_profile(profile).compile(&module).unwrap();
+        let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+            vybe_platform_wasm::WasmWriteOptions {
+                include_vybe_metadata: false, include_name_section: true,
+            });
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes).unwrap();
+        let mut vm = vybe_runtime::VM::new();
+        vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        assert_eq!(vm.run(chunks).unwrap().as_f64(), 17.0);
+    }
+}
+
+#[test]
+fn keyboard_bindings_build_static_signed_commands() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/keyboard_command_input.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes).unwrap();
+    for name in ["main", "build", "bind_key"] {
+        let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "dynamic keyboard command comparison: {dump}");
+    }
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn pointer_ordering_uses_backing_coordinates_once() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/static_pointer_ordering.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    assert_no_dynamic_equality(&chunks);
+    for name in ["after", "ordered", "record_after", "evaluated_once"] {
+        let dump = function_dependency_dump(&chunks, name);
+        assert!(!dump.contains("dyneq"), "dynamic pointer equality in {name}: {dump}");
+        for helper in ["dynlt", "dynle", "dyngt", "dynge"] {
+            assert!(!dump.contains(helper), "dynamic pointer ordering in {name}: {dump}");
+        }
+        assert!(!dump.contains("__vybe_slot_"), "dynamic pointer ordering in {name}: {dump}");
+        assert!(dump.contains("i64.lt_s") || dump.contains("i64.gt_s"),
+            "missing signed integer pointer ordering in {name}: {dump}");
+    }
+    let dump = function_dependency_dump(&chunks, "linear_after");
+    assert!(dump.contains("i32.gt_u"), "missing direct linear comparison: {dump}");
+    assert!(!dump.contains("__byte_offset"), "linear comparison uses managed coordinates: {dump}");
+    let wasm = vybe_platform_wasm::write_wasm_with_options(
+        &chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        },
+    );
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&wasm).unwrap();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+fn function_dependency_dump(chunks: &[vybe_runtime::Chunk], root: &str) -> String {
+    use std::collections::{HashMap, HashSet};
+    use vybe_runtime::Op;
+    let functions: HashMap<_, _> = chunks.iter().enumerate()
+        .map(|(index, chunk)| (chunk.name.as_str(), index)).collect();
+    let mut pending = vec![*functions.get(root).expect("compiled function")];
+    let mut visited = HashSet::new();
+    let mut dumps = Vec::new();
+    while let Some(index) = pending.pop() {
+        if !visited.insert(index) { continue; }
+        let chunk = &chunks[index];
+        dumps.push(vybe_runtime::debug::disassemble(chunk));
+        let mut offset = 0;
+        while offset < chunk.code.len() {
+            match Op::decode(chunk.read_u16(offset), chunk.read_u16(offset + 2)).unwrap() {
+                Op::GLOBAL_GET => {
+                    let globals = if chunk.globals.is_empty() {
+                        &chunks[0].globals
+                    } else {
+                        &chunk.globals
+                    };
+                    if let Some(name) = globals.get(chunk.read_u32(offset + 4) as usize)
+                        && let Some(&target) = functions.get(name.as_str())
+                    {
+                        pending.push(target);
+                    }
+                }
+                Op::REF_FUNC => {
+                    let target = chunk.read_u16(offset + 4) as usize;
+                    assert!(target < chunks.len(), "function reference in {}", chunk.name);
+                    pending.push(target);
+                }
+                _ => {},
+            }
+            let (_, next) = vybe_runtime::debug::disassemble_instruction(chunk, offset);
+            assert!(next > offset && next <= chunk.code.len());
+            offset = next;
+        }
+    }
+    dumps.join("\n")
+}
+
+#[test]
+fn realloc_null_and_size_guard_use_static_comparisons() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/realloc_null_static_guard.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    for name in ["allocate", "reject"] {
+        let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+        let dump = vybe_runtime::debug::disassemble(chunk);
+        assert!(!dump.contains("dyneq"), "dynamic realloc equality in {name}: {dump}");
+        assert!(!dump.contains("__vybe_slot_"), "dynamic realloc size guard in {name}: {dump}");
+        assert!(dump.contains("f64.le"), "missing static allocation guard: {dump}");
+    }
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn realloc_integer_buffers_preserve_prefix_and_static_storage() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/realloc_integer_prefix.c");
+    vybe_language_c::register();
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    assert_no_dynamic_equality(&chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
     vm.run(chunks).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
 }
@@ -570,11 +2370,55 @@ fn computed_scalar_pointer_assignments_keep_linear_backing() {
 
 #[test]
 #[ignore = "compiles the complete local Doom source"]
-fn doom_melt_uses_linear_source_pixels() {
+fn doom_load_menu_keeps_row_addresses() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/full_save_menu.c");
+    vybe_language_c::register();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .compile_path(&path).unwrap();
+    assert_no_dynamic_equality(&compiled.chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&compiled.chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &compiled.chunks);
+    vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
+        .run_compiled(compiled).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+#[ignore = "compiles the complete local Doom source"]
+fn doom_full_program_uses_static_equality_and_valid_wasm() {
+    let chunks = compile_and_validate_static_doom();
+    println!("full Doom static-equality gate: {} chunks", chunks.len());
+}
+
+fn compile_and_validate_static_doom() -> Vec<vybe_runtime::Chunk> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/chocolate-doom/vybe_doom_core.c");
     vybe_language_c::register();
     let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    assert_no_dynamic_equality(&chunks);
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
+    if let Some(path) = std::env::var_os("C_DOOM_STATIC_WASM_PATH") {
+        std::fs::write(path, &bytes).unwrap();
+    }
+    chunks
+}
+
+#[test]
+#[ignore = "compiles the complete local Doom source"]
+fn doom_melt_uses_linear_source_pixels() {
+    let chunks = compile_and_validate_static_doom();
     let helper = chunks.iter().find(|chunk| chunk.name == "wipe_doMelt").unwrap();
     let dump = vybe_runtime::debug::disassemble(helper);
     assert!(helper.code.len() < 6000, "linear melt source expanded: {dump}");
@@ -614,6 +2458,17 @@ fn doom_melt_uses_linear_source_pixels() {
     dynamic_game.sort_by(|left, right| right.0.cmp(&left.0));
     println!("Doom dynamic equality audit: {} functions; largest: {:?}",
         dynamic_game.len(), &dynamic_game[..dynamic_game.len().min(20)]);
+    assert!(dynamic_game.is_empty(), "Doom source uses dynamic equality: {dynamic_game:?}");
+    let mut dynamic_helpers = chunks.iter().filter(|chunk| {
+        chunk.name.starts_with("__") || chunk.name.starts_with('<')
+    }).filter_map(|chunk| {
+        let count = vybe_runtime::debug::disassemble(chunk).matches("dyneq").count();
+        (count > 0).then(|| (count, chunk.name.clone()))
+    }).collect::<Vec<_>>();
+    dynamic_helpers.sort_by(|left, right| right.0.cmp(&left.0));
+    println!("Doom generated dynamic equality audit: {dynamic_helpers:?}");
+    assert!(dynamic_helpers.is_empty(),
+        "Doom generated helpers use dynamic equality: {dynamic_helpers:?}");
 }
 
 #[test]
@@ -699,11 +2554,14 @@ fn character_reads_have_static_comparisons() {
     );
     vybe_language_c::register();
     let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
-    for name in ["valid_name", "slash", "is_option", "byte_marker", "byte_equal", "last_separator",
+    for name in ["valid_name", "slash", "is_option", "byte_marker", "byte_equal", "last_separator", "first_separator",
         "previous_separator", "previous_byte", "next_separator"] {
         let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(chunk);
         assert!(!dump.contains("dyneq"), "{name}: {dump}");
+        if matches!(name, "first_separator" | "last_separator") {
+            assert!(!dump.contains("__vybe_slot_"), "dynamic character search: {dump}");
+        }
     }
     vm.run(chunks).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
@@ -773,11 +2631,17 @@ fn scalar_dereferences_keep_static_comparisons() {
     );
     vybe_language_c::register();
     let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
-    for name in ["equal_words", "sentinel", "resize_changed"] {
+    for name in ["equal_words", "sentinel", "resize_changed",
+        "signed_short_sentinel", "unsigned_short_sentinel"] {
         let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(chunk);
         assert!(!dump.contains("dyneq"), "{name}: {dump}");
     }
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false, include_name_section: true,
+        });
+    validate_wasm_with_context(&bytes, &chunks);
     vm.run(chunks).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
 }
@@ -863,6 +2727,8 @@ fn indexed_scalar_helper_uses_static_width_comparisons() {
         .expect("fixture must exercise the compatibility load helper");
     let dump = vybe_runtime::debug::disassemble(helper);
     assert!(!dump.contains("dyneq"), "dynamic width comparison: {dump}");
+    assert!(!dump.contains("__vybe_slot_"), "dynamic signed scalar conversion: {dump}");
+    assert!(dump.contains("i32.shl") && dump.contains("i32.shr_s"), "missing signed extension: {dump}");
     assert!(dump.contains("i32.eq") || dump.contains("f64.eq"), "missing static width comparison: {dump}");
     let reads = chunks.iter().find(|chunk| chunk.name == "check_fields").unwrap();
     let reads_dump = vybe_runtime::debug::disassemble(reads);
@@ -943,6 +2809,7 @@ fn record_places_preserve_values_and_backings() {
         "sdl_keyboard_translation_table.c",
         "sdl_keyboard_event_roundtrip.c",
         "threaded_linear_string.c",
+        "heap_thinker_function_pointer_equality.c",
     ] {
         let mut vm = vybe_runtime::VM::new();
         vybe_runtime::init_all_registered(
@@ -953,6 +2820,16 @@ fn record_places_preserve_values_and_backings() {
         let bundle = vybe_compiler::projects::load(&root.join(fixture))
             .unwrap_or_else(|error| panic!("{fixture}: {error}"));
         let chunks = bundle.compile().unwrap_or_else(|error| panic!("{fixture}: {error}"));
+        if fixture == "heap_thinker_function_pointer_equality.c" {
+            let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+            assert!(main.code.len() < 128 * 1024,
+                "nested record places expanded to {} bytes", main.code.len());
+            for name in ["main", "update"] {
+                let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
+                assert!(!vybe_runtime::debug::disassemble(chunk).contains("dyneq"),
+                    "dynamic equality in {name}");
+            }
+        }
         if let Err(error) = vm.run(chunks) {
             let location = error.call_stack.first().and_then(|frame| {
                 vm.chunks.iter().find(|chunk| chunk.name == frame.chunk_name)

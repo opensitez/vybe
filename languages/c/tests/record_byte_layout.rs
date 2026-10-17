@@ -1,6 +1,71 @@
 use vybe_ast::{RecordByteLayout, StmtKind};
 
 #[test]
+fn pointer_offsets_retain_string_argument_type() {
+    vybe_language_c::register();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/char_pointer_offset_string_argument.c");
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn mapped_record_checksum_reads_declared_fields() {
+    vybe_language_c::register();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/mapped_record_byte_offsets.c");
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
+fn mapped_record_checksum_wasm_is_valid_and_reloadable() {
+    vybe_language_c::register();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/c/doom_startup/mapped_record_byte_offsets.c");
+    let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
+    let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
+        vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false,
+            include_name_section: true,
+        });
+    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes) {
+        let mut body_index = 0;
+        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                if body.range().contains(&error.offset()) {
+                    let mut reader = body.get_operators_reader().unwrap();
+                    let mut previous = std::collections::VecDeque::new();
+                    while !reader.eof() {
+                        let offset = reader.original_position();
+                        let operator = reader.read().unwrap();
+                        previous.push_back(format!("{offset}: {operator:?}"));
+                        if previous.len() > 12 { previous.pop_front(); }
+                        if offset >= error.offset() {
+                            panic!("WASM body {body_index}: {error}\n{}", previous.into_iter().collect::<Vec<_>>().join("\n"));
+                        }
+                    }
+                }
+                body_index += 1;
+            }
+        }
+        panic!("{error}");
+    }
+    let chunks = vybe_platform_wasm::read_wasm(&bytes).unwrap();
+    let mut vm = vybe_runtime::VM::new();
+    vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+    vm.run(chunks).unwrap();
+    assert_eq!(vm.pending_exit_code, 0);
+}
+
+#[test]
 fn reference_byte_coordinates_do_not_change_field_aliasing() {
     vybe_language_c::register();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

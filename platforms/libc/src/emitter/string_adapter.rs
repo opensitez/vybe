@@ -131,7 +131,7 @@ pub fn strchr(s: Expression, c_code: Expression) -> Expression {
     let idx1 = call(ident("__c_str_index_of"), vec![s.clone(), ch.clone()]);
     let idx2 = call(ident("__c_str_index_of"), vec![s.clone(), ch]);
     let cond = e(ExprKind::Binary {
-        op: BinOp::GtEq,
+        op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
         left: Box::new(idx1),
         right: Box::new(lit_int(0)),
     });
@@ -148,7 +148,7 @@ pub fn strrchr(s: Expression, c_code: Expression) -> Expression {
     let idx1 = call(ident("__c_str_last_index_of"), vec![s.clone(), ch.clone()]);
     let idx2 = call(ident("__c_str_last_index_of"), vec![s.clone(), ch]);
     let cond = e(ExprKind::Binary {
-        op: BinOp::GtEq,
+        op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
         left: Box::new(idx1),
         right: Box::new(lit_int(0)),
     });
@@ -175,7 +175,7 @@ pub fn strchr_c(s: Expression, c_code: Expression) -> Expression {
     }
     e(ExprKind::Ternary {
         cond: Box::new(e(ExprKind::Binary {
-            op: BinOp::Eq,
+            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
             left: Box::new(c_code.clone()),
             right: Box::new(lit_int(0)),
         })),
@@ -197,7 +197,7 @@ pub fn strrchr_c(s: Expression, c_code: Expression) -> Expression {
     }
     e(ExprKind::Ternary {
         cond: Box::new(e(ExprKind::Binary {
-            op: BinOp::Eq,
+            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
             left: Box::new(c_code.clone()),
             right: Box::new(lit_int(0)),
         })),
@@ -214,7 +214,7 @@ pub fn strstr(haystack: Expression, needle: Expression) -> Expression {
     );
     let idx2 = call(ident("__c_str_index_of"), vec![haystack.clone(), needle]);
     let cond = e(ExprKind::Binary {
-        op: BinOp::GtEq,
+        op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
         left: Box::new(idx1),
         right: Box::new(lit_int(0)),
     });

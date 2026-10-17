@@ -53,8 +53,8 @@ fn chan_try_recv(channel: Expression) -> Expression {
 /// Is this descriptor an AF_UNIX one? `AF_UNIX` is 1 in the constant table.
 fn is_unix_fd(fd_expr: Expression) -> Expression {
     bin(
-        BinOp::Eq,
-        index_expr(ident("__c_sock_family"), fd_expr),
+        BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+        nullish(index_expr(ident("__c_sock_family"), fd_expr), int_lit(0)),
         int_lit(1),
     )
 }
@@ -86,18 +86,18 @@ fn dlfcn_helpers() -> Vec<Statement> {
         BinOp::Or,
         bin(
             BinOp::NotEq,
-            call_member(ident("name"), "indexOf", vec![str_lit("does_not_exist")]),
+            numeric_value(call_member(ident("name"), "indexOf", vec![str_lit("does_not_exist")])),
             int_lit(-1),
         ),
         bin(
             BinOp::NotEq,
-            call_member(ident("name"), "indexOf", vec![str_lit("nonexistent")]),
+            numeric_value(call_member(ident("name"), "indexOf", vec![str_lit("nonexistent")])),
             int_lit(-1),
         ),
     );
     let symbol_missing = bin(
         BinOp::NotEq,
-        call_member(ident("symbol"), "indexOf", vec![str_lit("does_not_exist")]),
+        numeric_value(call_member(ident("symbol"), "indexOf", vec![str_lit("does_not_exist")])),
         int_lit(-1),
     );
     vec![
@@ -231,7 +231,13 @@ fn socket_helpers() -> Vec<Statement> {
             // INADDR_ANY binds loopback here: the tests bind ANY or
             // LOOPBACK and then connect to loopback.
             stmt(StmtKind::Expr(ternary(
-                bin(BinOp::Eq, ident("v"), int_lit(0)),
+                // The null-coalescing field reads above still produce a C
+                // uint32_t address, including addresses with the high bit set.
+                bin(
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                    ident("v"),
+                    int_lit(0),
+                ),
                 assign_expr(ident("v"), int_lit(0x7F00_0001)),
                 int_lit(0),
             ))),
@@ -293,7 +299,7 @@ fn socket_helpers() -> Vec<Statement> {
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_sock_res"), ident("fd")),
                 ternary(
-                    bin(BinOp::Eq, ident("kind"), int_lit(2)),
+                    bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), ident("kind"), int_lit(2)),
                     call_expr(ident("__c_wasi_udp_new"), vec![str_lit("ipv4")]),
                     call_expr(ident("__c_wasi_tcp_new"), vec![str_lit("ipv4")]),
                 ),
@@ -337,8 +343,8 @@ fn socket_helpers() -> Vec<Statement> {
                     ))),
                     if_stmt(
                         bin(
-                            BinOp::Eq,
-                            index_expr(ident("__c_sock_kind"), ident("fd")),
+                            BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                            nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                             int_lit(2),
                         ),
                         vec![stmt(StmtKind::Expr(assign_expr(
@@ -354,8 +360,8 @@ fn socket_helpers() -> Vec<Statement> {
             // UDP is a DIFFERENT wasi interface, not a flag on tcp.
             if_stmt(
                 bin(
-                    BinOp::Eq,
-                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                    nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                     int_lit(2),
                 ),
                 vec![
@@ -399,8 +405,8 @@ fn socket_helpers() -> Vec<Statement> {
             // listen(2) is stream-only: EOPNOTSUPP on a datagram socket.
             if_stmt(
                 bin(
-                    BinOp::Eq,
-                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                    nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                     int_lit(2),
                 ),
                 vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
@@ -445,8 +451,8 @@ fn socket_helpers() -> Vec<Statement> {
                     // remembers where an address-less `send` goes.
                     if_stmt(
                         bin(
-                            BinOp::Eq,
-                            index_expr(ident("__c_sock_kind"), ident("fd")),
+                            BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                            nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                             int_lit(2),
                         ),
                         vec![
@@ -502,8 +508,8 @@ fn socket_helpers() -> Vec<Statement> {
             ),
             if_stmt(
                 bin(
-                    BinOp::Eq,
-                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                    nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                     int_lit(2),
                 ),
                 vec![
@@ -653,7 +659,7 @@ fn socket_helpers() -> Vec<Statement> {
                 "r",
                 ternary(
                     bin(
-                        BinOp::NotEq,
+                        BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                         nullish(
                             index_expr(ident("__c_fd_nonblock"), ident("fd")),
                             int_lit(0),
@@ -726,7 +732,7 @@ fn socket_helpers() -> Vec<Statement> {
             ),
             if_stmt(
                 bin(
-                    BinOp::Eq,
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     nullish(index_expr(ident("__c_sock_bound"), ident("fd")), int_lit(0)),
                     int_lit(0),
                 ),
@@ -801,8 +807,8 @@ fn socket_helpers() -> Vec<Statement> {
             ),
             if_stmt(
                 bin(
-                    BinOp::Eq,
-                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                    nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                     int_lit(2),
                 ),
                 vec![
@@ -863,13 +869,10 @@ fn socket_helpers() -> Vec<Statement> {
                 None,
             ),
             stmt(StmtKind::Expr(call_expr(
-                ident("__c_wasi_sock_send"),
+                ident("__c_wasi_sock_send_bytes"),
                 vec![
                     index_expr(ident("__c_sock_res"), ident("fd")),
-                    call_expr(
-                        ident("__c_stream_from_bytes"),
-                        vec![call_expr(ident("__c_str_to_codes"), vec![ident("text")])],
-                    ),
+                    call_expr(ident("__c_str_to_codes"), vec![ident("text")]),
                 ],
             ))),
             stmt(StmtKind::Return(Some(ident("count")))),
@@ -898,7 +901,7 @@ fn socket_helpers() -> Vec<Statement> {
                     ),
                     if_stmt(
                         bin(
-                            BinOp::NotEq,
+                            BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                             bin(
                                 BinOp::BitAnd,
                                 nullish(ident("flags"), int_lit(0)),
@@ -918,7 +921,7 @@ fn socket_helpers() -> Vec<Statement> {
                     ),
                     if_stmt(
                         bin(
-                            BinOp::NotEq,
+                            BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                             nullish(
                                 index_expr(ident("__c_fd_nonblock"), ident("fd")),
                                 int_lit(0),
@@ -941,8 +944,8 @@ fn socket_helpers() -> Vec<Statement> {
             ),
             if_stmt(
                 bin(
-                    BinOp::Eq,
-                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                    nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                     int_lit(2),
                 ),
                 vec![stmt(StmtKind::Expr(call_expr(
@@ -962,7 +965,7 @@ fn socket_helpers() -> Vec<Statement> {
                 vec![
                     if_stmt(
                         bin(
-                            BinOp::Eq,
+                            BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                             bin(
                                 BinOp::BitAnd,
                                 nullish(ident("flags"), int_lit(0)),
@@ -984,8 +987,8 @@ fn socket_helpers() -> Vec<Statement> {
                 "data",
                 ternary(
                     bin(
-                        BinOp::Eq,
-                        index_expr(ident("__c_sock_kind"), ident("fd")),
+                        BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                        nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                         int_lit(2),
                     ),
                     call_expr(
@@ -1017,7 +1020,7 @@ fn socket_helpers() -> Vec<Statement> {
             stmt(StmtKind::While {
                 cond: bin(
                     BinOp::And,
-                    bin(BinOp::Eq, ident("nb"), int_lit(0)),
+                    bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), ident("nb"), int_lit(0)),
                     bin(
                         BinOp::And,
                         bin(
@@ -1025,7 +1028,7 @@ fn socket_helpers() -> Vec<Statement> {
                             bin(BinOp::NotEq, ident("data"), null_lit()),
                             bin(
                                 BinOp::Eq,
-                                nullish(member(ident("data"), "length"), int_lit(0)),
+                                numeric_value(nullish(member(ident("data"), "length"), int_lit(0))),
                                 int_lit(0),
                             ),
                         ),
@@ -1045,8 +1048,8 @@ fn socket_helpers() -> Vec<Statement> {
                         ident("data"),
                         ternary(
                             bin(
-                                BinOp::Eq,
-                                index_expr(ident("__c_sock_kind"), ident("fd")),
+                                BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                                nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                                 int_lit(2),
                             ),
                             call_expr(
@@ -1077,10 +1080,10 @@ fn socket_helpers() -> Vec<Statement> {
             if_stmt(
                 bin(
                     BinOp::And,
-                    bin(BinOp::NotEq, ident("nb"), int_lit(0)),
+                    bin(BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32), ident("nb"), int_lit(0)),
                     bin(
                         BinOp::Eq,
-                        nullish(member(ident("data"), "length"), int_lit(0)),
+                        numeric_value(nullish(member(ident("data"), "length"), int_lit(0))),
                         int_lit(0),
                     ),
                 ),
@@ -1093,15 +1096,15 @@ fn socket_helpers() -> Vec<Statement> {
             // the checks above have already turned into "" or EAGAIN.
             if_stmt(
                 bin(
-                    BinOp::Eq,
-                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                    nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                     int_lit(2),
                 ),
                 vec![
                     if_stmt(
                         bin(
                             BinOp::Eq,
-                            nullish(member(ident("data"), "length"), int_lit(0)),
+                            numeric_value(nullish(member(ident("data"), "length"), int_lit(0))),
                             int_lit(0),
                         ),
                         vec![stmt(StmtKind::Return(Some(str_lit(""))))],
@@ -1132,7 +1135,7 @@ fn socket_helpers() -> Vec<Statement> {
             // A peeking read leaves the bytes queued for the next one.
             if_stmt(
                 bin(
-                    BinOp::NotEq,
+                    BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                     bin(
                         BinOp::BitAnd,
                         nullish(ident("flags"), int_lit(0)),
@@ -1174,8 +1177,8 @@ fn socket_helpers() -> Vec<Statement> {
                 "rec",
                 ternary(
                     bin(
-                        BinOp::Eq,
-                        index_expr(ident("__c_sock_kind"), ident("fd")),
+                        BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                        nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                         int_lit(2),
                     ),
                     call_expr(
@@ -1230,8 +1233,8 @@ fn socket_helpers() -> Vec<Statement> {
                 "rec",
                 ternary(
                     bin(
-                        BinOp::Eq,
-                        index_expr(ident("__c_sock_kind"), ident("fd")),
+                        BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                        nullish(index_expr(ident("__c_sock_kind"), ident("fd")), int_lit(0)),
                         int_lit(2),
                     ),
                     call_expr(
@@ -1453,7 +1456,7 @@ fn exec_helper() -> Statement {
                     ))),
                 ],
                 Some(vec![if_stmt(
-                    bin(BinOp::Eq, ident("__c_env_dirty"), int_lit(1)),
+                    bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), ident("__c_env_dirty"), int_lit(1)),
                     vec![stmt(StmtKind::Expr(assign_expr(
                         member(ident("opts"), "env"),
                         ident("__c_env_obj"),
@@ -1525,7 +1528,7 @@ fn exec_helper() -> Statement {
                                 int_lit(0),
                             ))),
                             if_stmt(
-                                bin(BinOp::Eq, ident("__c_in_forked_child"), int_lit(1)),
+                                bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), ident("__c_in_forked_child"), int_lit(1)),
                                 vec![
                                     stmt(StmtKind::Expr(assign_expr(
                                         ident("__c_child_exec_done"),
@@ -1619,7 +1622,7 @@ fn exec_helper() -> Statement {
             // In a forked child: record and fall through (the parent's code
             // follows). At top level exec never returns — end the run.
             if_stmt(
-                bin(BinOp::Eq, ident("__c_in_forked_child"), int_lit(1)),
+                bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), ident("__c_in_forked_child"), int_lit(1)),
                 vec![
                     stmt(StmtKind::Expr(assign_expr(
                         ident("__c_child_exec_done"),
@@ -1681,7 +1684,7 @@ fn addr_fill_helper() -> Statement {
             if_stmt(
                 bin(
                     BinOp::Eq,
-                    nullish(member(ident("o"), "length"), int_lit(0)),
+                    numeric_value(nullish(member(ident("o"), "length"), int_lit(0))),
                     int_lit(4),
                 ),
                 vec![stmt(StmtKind::Expr(assign_expr(
@@ -1757,7 +1760,7 @@ fn poll_helper() -> Statement {
                     var_decl_stmt(
                         "p",
                         ternary(
-                            eq(ident("nfds"), int_lit(1)),
+                            eq(numeric_value(ident("nfds")), int_lit(1)),
                             ident("fds"),
                             index_expr(ident("fds"), ident("i")),
                         ),
@@ -1789,7 +1792,7 @@ fn poll_helper() -> Statement {
                                 if_stmt(
                                     and(
                                         bin(
-                                            BinOp::NotEq,
+                                            BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                                             bin(
                                                 BinOp::BitAnd,
                                                 member(ident("p"), "events"),
@@ -1826,9 +1829,9 @@ fn poll_helper() -> Statement {
                                 ),
                                 if_stmt(
                                     and(
-                                        eq(member(ident("p"), "revents"), int_lit(0)),
+                                        bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), member(ident("p"), "revents"), int_lit(0)),
                                         bin(
-                                            BinOp::NotEq,
+                                            BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                                             bin(
                                                 BinOp::BitAnd,
                                                 member(ident("p"), "events"),
@@ -2262,6 +2265,23 @@ fn inet_structs() -> Vec<HeaderStruct> {
     ]
 }
 
+/// Scalar declarations supplied by the compatibility headers.
+pub fn header_scalar_aliases(header: &str) -> &'static [(&'static str, &'static str)] {
+    let base = header.rsplit('/').next().unwrap_or(header).trim_end_matches(".h");
+    if base.starts_with("SDL") {
+        &[
+            ("Uint8", "uint8_t"), ("Sint8", "int8_t"),
+            ("Uint16", "uint16_t"), ("Sint16", "int16_t"),
+            ("Uint32", "uint32_t"), ("Sint32", "int32_t"),
+            ("Uint64", "uint64_t"), ("Sint64", "int64_t"),
+            ("SDL_Keymod", "int"), ("SDL_Scancode", "int"),
+            ("SDL_Keycode", "int32_t"), ("SDL_bool", "int"),
+        ]
+    } else {
+        &[]
+    }
+}
+
 pub fn header_variables(header: &str) -> &'static [(&'static str, &'static str, i64)] {
     match header {
         "errno.h" => &[("errno", "int", 0)],
@@ -2602,6 +2622,11 @@ fn eq(left: Expression, right: Expression) -> Expression {
     })
 }
 
+// Numeric host results such as lengths/indexOf retain their full Number range.
+fn numeric_value(value: Expression) -> Expression {
+    expr(ExprKind::Cast { expr: Box::new(value), type_name: "double".into() })
+}
+
 fn and(left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
         op: BinOp::And,
@@ -2619,7 +2644,7 @@ fn or(left: Expression, right: Expression) -> Expression {
 }
 
 pub fn open(path: Expression, flags: Expression) -> Expression {
-    let readonly = eq(
+    let readonly = bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
         expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
@@ -2686,7 +2711,7 @@ pub fn close(fd: Expression) -> Expression {
         int_lit(0),
     ]));
     ternary(
-        bin(BinOp::Eq, ident("__c_in_forked_child"), int_lit(1)),
+        bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), ident("__c_in_forked_child"), int_lit(1)),
         int_lit(0),
         body,
     )
@@ -2720,7 +2745,7 @@ pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expres
                     index_expr(ident("__c_fd_nonblock"), fd.clone()),
                     ternary(
                         bin(
-                            BinOp::NotEq,
+                            BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                             bin(BinOp::BitAnd, flags, int_lit(2048)),
                             int_lit(0),
                         ),
@@ -2746,7 +2771,7 @@ pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expres
             let target = arg.map(arg_target).unwrap_or_else(null_lit);
             let lock_type = member(target, "l_type");
             let readonly = bin(
-                BinOp::Eq,
+                BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                 bin(
                     BinOp::BitAnd,
                     nullish(index_expr(ident("__c_fd_flags"), fd.clone()), int_lit(0)),
@@ -2754,7 +2779,10 @@ pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expres
                 ),
                 int_lit(0),
             );
-            let write_lock = bin(BinOp::Eq, lock_type.clone(), int_lit(1));
+            let write_lock = bin(
+                BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                lock_type.clone(), int_lit(1),
+            );
             ternary(
                 and(readonly, write_lock),
                 int_lit(-1),
@@ -2774,16 +2802,16 @@ pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expres
 pub fn flock(fd: Expression, op: Expression) -> Expression {
     let invalid_fd = bin(BinOp::Lt, fd, int_lit(0));
     let unlock = bin(
-        BinOp::NotEq,
+        BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         bin(BinOp::BitAnd, op.clone(), int_lit(8)),
         int_lit(0),
     );
     let exclusive = bin(
-        BinOp::NotEq,
+        BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         bin(BinOp::BitAnd, op.clone(), int_lit(2)),
         int_lit(0),
     );
-    let nonblock = bin(BinOp::NotEq, bin(BinOp::BitAnd, op, int_lit(4)), int_lit(0));
+    let nonblock = bin(BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32), bin(BinOp::BitAnd, op, int_lit(4)), int_lit(0));
     ternary(
         invalid_fd,
         int_lit(-1),
@@ -2798,7 +2826,7 @@ pub fn flock(fd: Expression, op: Expression) -> Expression {
                     nonblock,
                     and(
                         exclusive.clone(),
-                        bin(BinOp::Eq, ident("__c_flock_mode"), int_lit(2)),
+                        bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), ident("__c_flock_mode"), int_lit(2)),
                     ),
                 ),
                 int_lit(-1),
@@ -2973,7 +3001,7 @@ pub fn dup_at(fd: Expression, new_fd: Expression, cloexec: bool) -> Expression {
 
 pub fn dup2(fd: Expression, new_fd: Expression, cloexec: bool) -> Expression {
     ternary(
-        eq(fd.clone(), new_fd.clone()),
+        bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), fd.clone(), new_fd.clone()),
         new_fd.clone(),
         dup_at(fd, new_fd, cloexec),
     )
@@ -3138,7 +3166,7 @@ pub fn ftruncate(fd: Expression, size: Expression) -> Expression {
 pub fn shm_open(path: Expression, flags: Expression) -> Expression {
     let exists = index_expr(ident("__c_shm_exists"), path.clone());
     let has_creat = expr(ExprKind::Binary {
-        op: BinOp::NotEq,
+        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
@@ -3147,7 +3175,7 @@ pub fn shm_open(path: Expression, flags: Expression) -> Expression {
         right: Box::new(int_lit(0)),
     });
     let has_excl = expr(ExprKind::Binary {
-        op: BinOp::NotEq,
+        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
@@ -3155,7 +3183,7 @@ pub fn shm_open(path: Expression, flags: Expression) -> Expression {
         })),
         right: Box::new(int_lit(0)),
     });
-    let invalid_flags = eq(flags.clone(), int_lit(99999));
+    let invalid_flags = bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), flags.clone(), int_lit(99999));
     let name_too_long = expr(ExprKind::Binary {
         op: BinOp::Gt,
         left: Box::new(member(path.clone(), "length")),
@@ -3190,7 +3218,7 @@ pub fn shm_open(path: Expression, flags: Expression) -> Expression {
         assign_expr(ident("__c_fd_eof"), int_lit(0)),
         assign_expr(
             ident("__c_shm_readonly"),
-            eq(
+            bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                 expr(ExprKind::Binary {
                     op: BinOp::BitAnd,
                     left: Box::new(flags.clone()),
@@ -3201,7 +3229,7 @@ pub fn shm_open(path: Expression, flags: Expression) -> Expression {
         ),
         assign_expr(
             ident("__c_fd_readonly"),
-            eq(
+            bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                 expr(ExprKind::Binary {
                     op: BinOp::BitAnd,
                     left: Box::new(flags),
@@ -3246,7 +3274,7 @@ pub fn mmap(
     fd: Expression,
 ) -> Expression {
     let wants_write = expr(ExprKind::Binary {
-        op: BinOp::NotEq,
+        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(prot.clone()),
@@ -3255,7 +3283,7 @@ pub fn mmap(
         right: Box::new(int_lit(0)),
     });
     let is_shared = expr(ExprKind::Binary {
-        op: BinOp::NotEq,
+        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
@@ -3264,7 +3292,7 @@ pub fn mmap(
         right: Box::new(int_lit(0)),
     });
     let is_anon = expr(ExprKind::Binary {
-        op: BinOp::NotEq,
+        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
@@ -3273,7 +3301,7 @@ pub fn mmap(
         right: Box::new(int_lit(0)),
     });
     let is_fixed = expr(ExprKind::Binary {
-        op: BinOp::NotEq,
+        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
@@ -3282,10 +3310,10 @@ pub fn mmap(
         right: Box::new(int_lit(0)),
     });
     let invalid = or(
-        eq(len, int_lit(0)),
+        eq(numeric_value(len), int_lit(0)),
         or(
             and(
-                eq(fd.clone(), int_lit(-1)),
+                bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), fd.clone(), int_lit(-1)),
                 expr(ExprKind::Unary {
                     op: UnaryOp::Not,
                     expr: Box::new(is_anon),
@@ -3421,7 +3449,7 @@ pub fn umask(mask: Expression) -> Expression {
 }
 
 pub fn s_isdir(mode: Expression) -> Expression {
-    ternary(eq(mode, int_lit(16384)), int_lit(1), int_lit(0))
+    ternary(bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), mode, int_lit(16384)), int_lit(1), int_lit(0))
 }
 
 // `socket`/`bind` used to live here, answering with the constant fd 10 and a
@@ -3624,19 +3652,19 @@ pub fn mq_open(path: Expression, flags: Expression, attr: Option<Expression>) ->
     let attr = attr.map(arg_target).unwrap_or_else(null_lit);
     let q = ident("__c_mq_desc");
     let exists = ident("__c_mq_exists");
-    let is_new = eq(exists.clone(), int_lit(0));
+    let is_new = bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), exists.clone(), int_lit(0));
     let msgsize = ternary(
         or(eq(attr.clone(), null_lit()), eq(attr.clone(), int_lit(0))),
         int_lit(8192),
         nullish(member(attr, "mq_msgsize"), int_lit(8192)),
     );
     let create = bin(
-        BinOp::NotEq,
+        BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         bin(BinOp::BitAnd, flags.clone(), int_lit(64)),
         int_lit(0),
     );
     let excl = bin(
-        BinOp::NotEq,
+        BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         bin(BinOp::BitAnd, flags.clone(), int_lit(128)),
         int_lit(0),
     );
@@ -3706,7 +3734,7 @@ pub fn mq_open(path: Expression, flags: Expression, attr: Option<Expression>) ->
 }
 
 pub fn mq_close(q: Expression) -> Expression {
-    ternary(eq(q, int_lit(-1)), int_lit(-1), int_lit(0))
+    ternary(bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), q, int_lit(-1)), int_lit(-1), int_lit(0))
 }
 
 pub fn mq_unlink(path: Expression) -> Expression {
@@ -4017,7 +4045,7 @@ pub fn getaddrinfo(
     let numeric_host_bad = and(
         eq(node.clone(), str_lit("localhost")),
         bin(
-            BinOp::NotEq,
+            BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
             bin(
                 BinOp::BitAnd,
                 nullish(member(hints_value.clone(), "ai_flags"), int_lit(0)),
@@ -4029,7 +4057,7 @@ pub fn getaddrinfo(
     let numeric_serv_bad = and(
         eq(service.clone(), str_lit("http")),
         bin(
-            BinOp::NotEq,
+            BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
             bin(
                 BinOp::BitAnd,
                 nullish(member(hints_value.clone(), "ai_flags"), int_lit(0)),
@@ -4073,7 +4101,10 @@ pub fn raise(sig: Expression) -> Expression {
     });
     expr(ExprKind::Sequence(vec![
         assign_expr(ident("__c_pending_signals"), pending),
-        super::build::call_expr(ident("__c_raise_h"), vec![sig]),
+        expr(ExprKind::Cast {
+            expr: Box::new(super::build::call_expr(ident("__c_raise_h"), vec![sig])),
+            type_name: "int".into(),
+        }),
     ]))
 }
 
@@ -4136,7 +4167,7 @@ pub fn exit_call(status: Expression, raw_exit: bool) -> Expression {
     child_seq.push(int_lit(0));
 
     ternary(
-        bin(BinOp::Eq, ident("__c_in_forked_child"), int_lit(1)),
+        bin(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), ident("__c_in_forked_child"), int_lit(1)),
         expr(ExprKind::Sequence(child_seq)),
         expr(ExprKind::Sequence(parent_seq)),
     )
@@ -4174,7 +4205,7 @@ pub fn wait(status: Option<Expression>, options: Option<Expression>) -> Expressi
     if let Some(options) = options {
         ternary(
             bin(
-                BinOp::NotEq,
+                BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                 bin(BinOp::BitAnd, options, int_lit(1)),
                 int_lit(0),
             ),
@@ -4293,7 +4324,7 @@ pub fn sigismember(set: Expression, sig: Expression) -> Expression {
     });
     ternary(
         expr(ExprKind::Binary {
-            op: BinOp::NotEq,
+            op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
             left: Box::new(masked),
             right: Box::new(int_lit(0)),
         }),
@@ -4330,7 +4361,7 @@ pub fn sigaction(sig: Expression, act: Expression, old: Expression) -> Expressio
     }
     let act_target = arg_target(act);
     let siginfo_enabled = expr(ExprKind::Binary {
-        op: BinOp::NotEq,
+        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(member(act_target.clone(), "sa_flags")),
@@ -4428,3 +4459,130 @@ pub fn getitimer(curr: Expression) -> Expression {
         int_lit(0),
     ]))
 }
+
+#[cfg(test)]
+mod socket_template_tests {
+    use super::*;
+
+    #[test]
+    fn posix_numeric_comparisons_keep_explicit_domains_and_nullable_resources() {
+        let mut numeric_helpers = std::collections::HashSet::new();
+        let mut null_checks = 0;
+        for mut helper in runtime_helpers() {
+            let StmtKind::FunctionDecl { name, .. } = &helper.kind else { continue; };
+            let name = name.clone();
+            helper.walk_exprs_mut(&mut |value| {
+                if let ExprKind::Binary { op, left, right } = &value.kind {
+                    let null = matches!(&left.kind, ExprKind::Lit(Literal::Null))
+                        || matches!(&right.kind, ExprKind::Lit(Literal::Null));
+                    if null && matches!(op, BinOp::Eq | BinOp::NotEq) {
+                        null_checks += 1;
+                    }
+                    if matches!(op, BinOp::Integer(vybe_ast::IntOp::Eq | vybe_ast::IntOp::Ne,
+                        vybe_ast::BitLane::W32))
+                    {
+                        assert!(!null, "{name}: nullable resources are not integer words");
+                        numeric_helpers.insert(name.clone());
+                    }
+                    if matches!(op, BinOp::Eq | BinOp::NotEq)
+                        && matches!(&right.kind, ExprKind::Lit(Literal::Int(_)))
+                    {
+                        // dlopen's name can be a C null pointer as well as a string.
+                        let pointer_null = name == "__c_dlopen_h"
+                            && matches!(&left.kind, ExprKind::Ident(name) if name == "name");
+                        assert!(pointer_null || matches!(&left.kind,
+                            ExprKind::Cast { type_name, .. } if type_name == "double"),
+                            "{name}: numeric equality lacks an explicit numeric contract");
+                    }
+                }
+            });
+        }
+        for name in ["__c_sock_addr_text", "__c_socket_h", "__c_bind_h", "__c_listen_h",
+            "__c_connect_h", "__c_accept_h", "__c_udp_stream_h", "__c_send_h",
+            "__c_recv_h", "__c_getsockname_h", "__c_getpeername_h", "__c_poll_h"]
+        {
+            assert!(numeric_helpers.contains(name), "missing typed comparisons in {name}");
+        }
+        assert!(null_checks > 0, "resource/null checks must remain non-integer comparisons");
+
+        let mut inline = vec![
+            open(ident("path"), ident("flags")), close(ident("fd")),
+            fcntl(ident("fd"), int_lit(4), Some(ident("flags"))),
+            fcntl(ident("fd"), int_lit(6), Some(ident("lock"))),
+            flock(ident("fd"), ident("flags")),
+            dup2(ident("fd"), ident("other"), false),
+            shm_open(ident("path"), ident("flags")),
+            mmap(ident("address"), ident("length"), ident("protection"),
+                ident("flags"), ident("fd")),
+            s_isdir(ident("mode")), mq_open(ident("path"), ident("flags"), None),
+            mq_close(ident("queue")),
+            getaddrinfo(ident("node"), ident("service"), ident("hints"),
+                ident("result"), false, false, false),
+            exit_call(ident("status"), false), wait(None, Some(ident("options"))),
+            sigismember(ident("signals"), ident("signal")),
+            sigaction(ident("signal"), ident("action"), null_lit()),
+        ];
+        for value in &mut inline {
+            let mut word_checks = 0;
+            value.walk_exprs_mut(&mut |value| {
+                word_checks += usize::from(matches!(&value.kind, ExprKind::Binary {
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq | vybe_ast::IntOp::Ne,
+                        vybe_ast::BitLane::W32), .. }));
+            });
+            assert!(word_checks > 0, "numeric POSIX template lost its word contract");
+        }
+    }
+
+    #[test]
+    fn udp_bound_flag_zero_check_uses_explicit_word_equality() {
+        let mut helpers = socket_helpers();
+        let helper = helpers.iter_mut().find(|helper|
+            matches!(&helper.kind, StmtKind::FunctionDecl { name, .. }
+                if name == "__c_udp_stream_h")).unwrap();
+        let mut checks = 0;
+        helper.walk_exprs_mut(&mut |expression| {
+            if let ExprKind::Binary { op, left, right } = &expression.kind
+                && matches!(&left.kind, ExprKind::NullCoalesce { .. })
+            {
+                assert!(matches!(op,
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32)));
+                assert!(matches!(&right.kind, ExprKind::Lit(Literal::Int(0))));
+                checks += 1;
+            }
+        });
+        assert_eq!(checks, 1);
+    }
+
+    #[test]
+    fn socket_address_zero_check_uses_explicit_word_equality() {
+        let mut helpers = socket_helpers();
+        let address_helper = helpers
+            .iter_mut()
+            .find(|helper| matches!(&helper.kind,
+                StmtKind::FunctionDecl { name, .. } if name == "__c_sock_addr_text"))
+            .expect("socket address formatter");
+        let mut word_checks = 0;
+        let mut address_reads = 0;
+        address_helper.walk_exprs_mut(&mut |expression| match &expression.kind {
+            ExprKind::Binary { op: BinOp::Eq | BinOp::NotEq, .. } => {
+                panic!("socket address formatter must not request coercing equality")
+            }
+            ExprKind::Binary {
+                op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                left,
+                right,
+            } => {
+                assert!(matches!(&left.kind, ExprKind::Ident(name) if name == "v"));
+                assert!(matches!(&right.kind, ExprKind::Lit(Literal::Int(0))));
+                word_checks += 1;
+            }
+            ExprKind::Member { field, .. } if field == "s_addr" => address_reads += 1,
+            _ => {}
+        });
+        assert_eq!(word_checks, 1);
+        // Keep the nested sockaddr and flat-address fallbacks, without
+        // cloning either field access into the comparison.
+        assert_eq!(address_reads, 2);
+    }
+}
+

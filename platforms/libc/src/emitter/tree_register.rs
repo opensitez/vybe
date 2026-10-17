@@ -77,6 +77,7 @@ pub const SDL_COMMON_EMITS: &[(&str, &str)] = &[
     ("SDL_LowerBlit", "libc.sdl.SDL_LowerBlit"),
     ("SDL_BlitSurface", "libc.sdl.SDL_BlitSurface"),
     ("SDL_RenderClear", "libc.sdl.SDL_RenderClear"),
+    ("SDL_RenderFillRect", "libc.sdl.SDL_RenderFillRect"),
     ("SDL_RenderCopy", "libc.sdl.SDL_RenderCopy"),
     ("SDL_RenderPresent", "libc.sdl.SDL_RenderPresent"),
     ("SDL_SetRenderTarget", "libc.sdl.SDL_SetRenderTarget"),
@@ -371,6 +372,7 @@ pub fn register_namespace_tree() {
             ("printf", "libc.stdio.printf"),
             ("sprintf", "libc.stdio.sprintf"),
             ("vsprintf", "libc.stdio.vsprintf"),
+            ("fileno", "libc.stdio.fileno"),
         ] {
             stdio.insert(
                 name.to_string(),
@@ -464,6 +466,7 @@ pub fn register_namespace_tree() {
             ("SDL_LowerBlit", "libc.sdl.SDL_LowerBlit"),
             ("SDL_BlitSurface", "libc.sdl.SDL_BlitSurface"),
             ("SDL_RenderClear", "libc.sdl.SDL_RenderClear"),
+            ("SDL_RenderFillRect", "libc.sdl.SDL_RenderFillRect"),
             ("SDL_RenderCopy", "libc.sdl.SDL_RenderCopy"),
             ("SDL_RenderPresent", "libc.sdl.SDL_RenderPresent"),
             ("SDL_SetRenderTarget", "libc.sdl.SDL_SetRenderTarget"),
@@ -710,6 +713,9 @@ pub fn register_namespace_tree() {
         root.insert("math".to_string(), NamespaceNode::Namespace(math));
         root.insert("dirent".to_string(), NamespaceNode::Namespace(dirent));
         root.insert("stdio".to_string(), NamespaceNode::Namespace(stdio));
+        let mut unistd = Subtree::new();
+        unistd.insert("isatty".to_string(), NamespaceNode::CommonEmit("libc.stdio.isatty".into()));
+        root.insert("unistd".to_string(), NamespaceNode::Namespace(unistd));
         root.insert("string".to_string(), NamespaceNode::Namespace(string));
         root.insert("stdlib".to_string(), NamespaceNode::Namespace(stdlib));
         root.insert("sdl".to_string(), NamespaceNode::Namespace(sdl.clone()));

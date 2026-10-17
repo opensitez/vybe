@@ -39,25 +39,30 @@ pub fn runtime_helpers() -> Vec<Statement> {
             stmt(StmtKind::Return(Some(ident("dst")))),
         ],
     ));
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_mem_index_of_h",
         vec!["buf", "needle", "n", "reverse"],
+        "int64",
         vec![
+            // The caller supplies bytes, not a managed-container length.
+            var_decl_stmt("limit", ident("n")),
             var_decl_stmt(
-                "limit",
-                expr(ExprKind::Ternary {
-                    cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Lt,
-                        left: Box::new(ident("n")),
-                        right: Box::new(member(ident("buf"), "length")),
+                "needle_byte",
+                expr(ExprKind::Binary {
+                    op: BinOp::Integer(vybe_ast::IntOp::And, vybe_ast::BitLane::W32),
+                    left: Box::new(expr(ExprKind::Ternary {
+                        cond: Box::new(expr(ExprKind::IsType {
+                            expr: Box::new(ident("needle")),
+                            type_name: "string".into(),
+                        })),
+                        then: Box::new(call_expr(
+                            ident("__c_char_code_at"),
+                            vec![ident("needle"), int_lit(0)],
+                        )),
+                        else_: Box::new(ident("needle")),
                     })),
-                    then: Box::new(ident("n")),
-                    else_: Box::new(member(ident("buf"), "length")),
+                    right: Box::new(int_lit(255)),
                 }),
-            ),
-            var_decl_stmt(
-                "needle_ch",
-                call_member(ident("String"), "fromCharCode", vec![ident("needle")]),
             ),
             var_decl_stmt(
                 "i",
@@ -86,20 +91,19 @@ pub fn runtime_helpers() -> Vec<Statement> {
                     })),
                 }),
                 body: vec![
-                    var_decl_stmt("value", index_expr(ident("buf"), ident("i"))),
+                    var_decl_stmt(
+                        "value",
+                        call_expr(ident("__c_char_ptr_read"), vec![ident("buf"), ident("i")]),
+                    ),
                     if_stmt(
                         expr(ExprKind::Binary {
-                            op: BinOp::Or,
+                            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                             left: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::Eq,
+                                op: BinOp::Integer(vybe_ast::IntOp::And, vybe_ast::BitLane::W32),
                                 left: Box::new(ident("value")),
-                                right: Box::new(ident("needle")),
+                                right: Box::new(int_lit(255)),
                             })),
-                            right: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::Eq,
-                                left: Box::new(ident("value")),
-                                right: Box::new(ident("needle_ch")),
-                            })),
+                            right: Box::new(ident("needle_byte")),
                         }),
                         vec![stmt(StmtKind::Return(Some(ident("i"))))],
                         None,

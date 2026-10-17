@@ -294,6 +294,15 @@ fn with_linear_string_bytes<R>(
 }
 
 fn c_indexed_string_len(ctx: Option<&HostContext<'_>>, value: &Value, offset: usize) -> usize {
+    if let Value::String(text) = value {
+        // Managed pointer offsets count characters, as char_ptr_add does;
+        // strlen retains the existing string adapter's UTF-8 byte length.
+        return text.chars().skip(offset).take_while(|&ch| ch != '\0')
+            .map(char::len_utf8).sum();
+    }
+    if let Some((base, base_offset)) = carray_view(ctx, value) {
+        return c_indexed_string_len(ctx, &base, base_offset.saturating_add(offset));
+    }
     let len = indexed_len(value).unwrap_or(0);
     let mut count = 0;
     for i in offset..len {
@@ -318,6 +327,12 @@ fn c_indexed_string_len(ctx: Option<&HostContext<'_>>, value: &Value, offset: us
 }
 
 fn c_string_from_indexed(ctx: Option<&HostContext<'_>>, value: &Value, offset: usize) -> String {
+    if let Value::String(text) = value {
+        return text.chars().skip(offset).take_while(|&ch| ch != '\0').collect();
+    }
+    if let Some((base, base_offset)) = carray_view(ctx, value) {
+        return c_string_from_indexed(ctx, &base, base_offset.saturating_add(offset));
+    }
     let mut out = String::new();
     let len = indexed_len(value).unwrap_or(0);
     for i in offset..len {
@@ -466,5 +481,55 @@ fn write_typed_array(ta: &mut TypedArrayState, offset: usize, codes: &[Value]) {
             break;
         }
         bytes[idx] = code.as_i32().clamp(0, 255) as u8;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn array(text: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::Array(text.chars().map(|ch| Value::I32(ch as i32)).collect());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    fn assert_text(value: &Value, expected: &str) {
+        assert_eq!(c_string_from_value(None, value), expected);
+        assert_eq!(c_string_len(None, value), expected.len());
+    }
+
+    #[test]
+    fn string_backed_carray_offsets_observe_nul_and_bounds() {
+        let base = Value::String("xxabc\0tail".into());
+        assert_text(&base, "xxabc");
+        for (offset, expected) in [(0, "xxabc"), (2, "abc"), (5, ""),
+            (6, "tail"), (10, ""), (11, "")]
+        {
+            assert_text(&carray_ref(base.clone(), offset), expected);
+        }
+        assert_text(&char_ptr_add(None, base.clone(), 2), "abc");
+        assert_text(&char_ptr_add(None, carray_ref(base, 1), 1), "abc");
+        // Preserve the existing managed string offset/length convention.
+        let unicode = Value::String("x\u{e9}Z\0tail".into());
+        assert_text(&carray_ref(unicode.clone(), 1), "\u{e9}Z");
+        assert_text(&char_ptr_add(None, unicode, 1), "\u{e9}Z");
+    }
+
+    #[test]
+    fn nested_carray_string_and_array_reads_keep_offsets_and_aliases() {
+        for base in [Value::String("xxabc\0tail".into()), array("xxabc\0tail")] {
+            let nested = carray_ref(carray_ref(base.clone(), 1), 1);
+            assert_text(&nested, "abc");
+            assert_text(&char_ptr_add(None, nested.clone(), 1), "bc");
+            assert_text(&carray_ref(carray_ref(base.clone(), 4), 1), "");
+            assert_text(&carray_ref(carray_ref(base.clone(), 4), 2), "tail");
+            assert_text(&carray_ref(carray_ref(base, 8), 4), "");
+        }
+        let backing = array("xxabc\0tail");
+        let view = char_ptr_add(None, backing.clone(), 2);
+        let _ = char_ptr_write(None, view.clone(), 1, b'Q' as i32, 'Q');
+        assert_text(&view, "aQc");
+        assert_text(&backing, "xxaQc");
     }
 }

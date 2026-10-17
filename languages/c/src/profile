@@ -25,13 +25,8 @@ globals_may_be_undeclared = true
 promote_addr_taken_at_entry = true
 # libc supplies sprintf; the shared helper must not be linked over it.
 excluded_runtime_helpers = ["__stdlib_sprintf"]
-# `int / int` truncates. C# has always declared this; C reached the SAME shared
-# block through a `profile.name == "c"` check that carried a second copy of the
-# integer-spelling test (builtinslotplan.md §3c).
-integer_division_on_slash = true
 # C's `&&` / `||` produce integer truth values. Unary `!` is always a logical
 # zero-test; bitwise complement is the separate `~` operator.
-logical_ops_bitwise_for_integers = false
 function_return = "explicit"
 self_keyword = "this"
 constructor_name = "constructor"
@@ -45,7 +40,6 @@ gated_namespace_roots = ["libc", "sdl"]
 # C's `+` is numeric/pointer arithmetic. String-buffer helper rewrites lower
 # explicit string joins as `BinOp::Concat`, so normal arithmetic must not pay
 # JS-style dynamic-add dispatch in hot loops.
-dynamic_add = false
 switch_fallthrough = true
 uses_normalize_class = false
 # Route function/method resolution through the common namespace resolver
@@ -77,6 +71,7 @@ uses_common_resolver = true
 "__c_sdl_listen_input" = { emit = "common:libc.sdl.listen_input", min_args = 1, max_args = 1 }
 "__c_sdl_document" = { emit = "host:web:html:activeDocument", min_args = 0, max_args = 0 }
 "__c_array_get" = { emit = "common:c.array_get", min_args = 2, max_args = 2 }
+"__c_invoke_fixed" = { emit = "common:c.invoke_fixed", min_args = 1, max_args = 255 }
 "__c_is_undefined" = { emit = "host:wasm:js-undefined:test", min_args = 1, max_args = 1 }
 "__c_ref_eq" = { emit = "common:ref_eq", min_args = 2, max_args = 2 }
 "__c_ref_nonnull" = { emit = "common:ref_nonnull", min_args = 1, max_args = 1, i32_condition = true }
@@ -85,7 +80,17 @@ uses_common_resolver = true
 "__c_tag_ne" = { emit = "common:strings.not_equals_if_string", min_args = 2, max_args = 2, i32_condition = true }
 "__c_string_byte_copy" = { emit = "common:libc.string.byte_copy", min_args = 3, max_args = 3 }
 "__c_binary_byte_copy" = { emit = "common:libc.string.binary_byte_copy", min_args = 3, max_args = 3 }
+"__c_binary_bytes_string" = { emit = "host:node:buffer:toString", min_args = 2, max_args = 2 }
+"__c_bytes_array" = { emit = "host:ecma:array:from", min_args = 1, max_args = 1 }
 "__c_strrchr_linear" = { emit = "common:libc.string.strrchr_linear", min_args = 2, max_args = 2 }
+"__c_strchr_linear" = { emit = "common:libc.string.strchr_linear", min_args = 2, max_args = 2 }
+"__c_mem_index_of_linear" = { emit = "common:libc.string.mem_index_of_linear", min_args = 3, max_args = 3 }
+"__c_strspn_literal_set" = { emit = "common:libc.string.strspn_literal_set", min_args = 2, max_args = 2 }
+"__c_strcspn_literal_set" = { emit = "common:libc.string.strcspn_literal_set", min_args = 2, max_args = 2 }
+"__c_strpbrk_literal_set" = { emit = "common:libc.string.strpbrk_literal_set", min_args = 2, max_args = 2 }
+"__c_strspn_one_byte" = { emit = "common:libc.string.strspn_one_byte", min_args = 2, max_args = 2 }
+"__c_strcspn_one_byte" = { emit = "common:libc.string.strcspn_one_byte", min_args = 2, max_args = 2 }
+"__c_strpbrk_one_byte" = { emit = "common:libc.string.strpbrk_one_byte", min_args = 2, max_args = 2 }
 "__c_is_array" = { emit = "host:ecma:array:isArray", min_args = 1, max_args = 1 }
 "__c_is_buffer_view" = { emit = "host:ecma:arraybuffer:isView", min_args = 1, max_args = 1 }
 "__c_array_set" = { emit = "common:c.array_set", min_args = 3, max_args = 3 }
@@ -97,18 +102,27 @@ uses_common_resolver = true
 "__c_ptr_i32_load8_s" = { emit = "common:pointers.linear_i32_load8_s", min_args = 1, max_args = 1 }
 "__c_ptr_i32_load16_u" = { emit = "common:pointers.linear_i32_load16_u", min_args = 1, max_args = 1 }
 "__c_ptr_i32_load16_s" = { emit = "common:pointers.linear_i32_load16_s", min_args = 1, max_args = 1 }
-"__c_ptr_i64_load" = { emit = "common:pointers.linear_i64_load", min_args = 1, max_args = 1 }
+"__c_ptr_i64_load" = { emit = "common:pointers.linear_i64_value_load_s", min_args = 1, max_args = 1 }
+"__c_ptr_u64_load" = { emit = "common:pointers.linear_i64_value_load_u", min_args = 1, max_args = 1 }
 "__c_ptr_i32_store" = { emit = "common:pointers.linear_i32_store", min_args = 2, max_args = 2 }
 "__c_ptr_i32_store8" = { emit = "common:pointers.linear_i32_store8", min_args = 2, max_args = 2 }
+"__c_ptr_byte_store" = { emit = "common:pointers.linear_byte_store", min_args = 2, max_args = 2 }
 "__c_ptr_i32_store16" = { emit = "common:pointers.linear_i32_store16", min_args = 2, max_args = 2 }
-"__c_ptr_i64_store" = { emit = "common:pointers.linear_i64_store", min_args = 2, max_args = 2 }
+"__c_ptr_i64_store" = { emit = "common:pointers.linear_i64_value_store_s", min_args = 2, max_args = 2 }
+"__c_ptr_u64_store" = { emit = "common:pointers.linear_i64_value_store_u", min_args = 2, max_args = 2 }
 "__c_ptr_memory_size" = { emit = "common:pointers.linear_memory_size", min_args = 0, max_args = 0 }
 "__c_ptr_memory_grow" = { emit = "common:pointers.linear_memory_grow", min_args = 1, max_args = 1 }
+"__c_ptr_byte_compare" = { emit = "common:pointers.linear_byte_compare", min_args = 3, max_args = 3 }
+"__c_ptr_string_compare" = { emit = "common:pointers.linear_string_compare", min_args = 2, max_args = 2 }
+"__c_ptr_string_ncompare" = { emit = "common:pointers.linear_string_ncompare", min_args = 3, max_args = 3 }
 "__c_ptr_memory_copy" = { emit = "common:pointers.linear_memory_copy", min_args = 3, max_args = 3 }
 "__c_ptr_memory_fill" = { emit = "common:pointers.linear_memory_fill", min_args = 3, max_args = 3 }
 "__c_byte_fill" = { emit = "common:c.byte_fill", min_args = 3, max_args = 3 }
 "__c_ptr_byte_copy" = { emit = "common:pointers.byte_copy", min_args = 3, max_args = 3 }
-"__c_ptr_linear_alloc" = { emit = "common:pointers.linear_alloc", min_args = 1, max_args = 1 }
+"__c_ptr_copy_column" = { emit = "common:libc.memory.copy_column", min_args = 4, max_args = 4 }
+"__c_ptr_copy_column16" = { emit = "common:libc.memory.copy_column16", min_args = 4, max_args = 4 }
+"__c_ptr_linear_alloc" = { emit = "common:libc.memory.alloc", min_args = 1, max_args = 1 }
+"__c_ptr_linear_realloc" = { emit = "common:libc.memory.realloc", min_args = 2, max_args = 2 }
 "__c_struct_array" = { emit = "common:c.struct_array", min_args = 2, max_args = 2 }
 "__c_static_numeric_array" = { emit = "common:c.static_numeric_array", min_args = 1, max_args = 1 }
 "__c_static_json_value" = { emit = "common:c.static_json_value", min_args = 1, max_args = 1 }
@@ -161,6 +175,7 @@ uses_common_resolver = true
 "__c_wasi_listen"      = { emit = "host:wasi:sockets/types:[method]tcp-socket.listen",  min_args = 1, max_args = 1 }
 "__c_wasi_connect"     = { emit = "host:wasi:sockets/types:[method]tcp-socket.connect", min_args = 2, max_args = 2 }
 "__c_wasi_sock_send"   = { emit = "host:wasi:sockets/types:[method]tcp-socket.send",    min_args = 2, max_args = 2 }
+"__c_wasi_sock_send_bytes" = { emit = "common:libc.socket.send_bytes", min_args = 2, max_args = 2 }
 "__c_wasi_sock_recv"   = { emit = "host:wasi:sockets/types:[method]tcp-socket.receive", min_args = 1, max_args = 1 }
 "__c_wasi_local_addr"  = { emit = "host:wasi:sockets/types:[method]tcp-socket.get-local-address",  min_args = 1, max_args = 1 }
 "__c_wasi_remote_addr" = { emit = "host:wasi:sockets/types:[method]tcp-socket.get-remote-address", min_args = 1, max_args = 1 }
@@ -382,6 +397,7 @@ path = "libc"
 "charCodeAt"  = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
 "split"       = { emit = "host:ecma:string:split",       min_args = 1, max_args = 2 }
 "push"        = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
+"pop"         = { emit = "common:collections.pop",       min_args = 0, max_args = 0 }
 # Bulk fill — `memset` on an array lowers to this. One host call over a native
 # Vec, instead of one AST literal per element.
 "fill"        = { emit = "host:ecma:array:fill",         min_args = 1, max_args = 3 }
@@ -443,9 +459,14 @@ extra_imports = []
 "strcmp" = "int"
 "strncmp" = "int"
 "memcmp" = "int"
+"fflush" = "int"
+"closedir" = "int"
+"ungetc" = "int"
+"raise" = "int"
 "strncasecmp" = "int"
 "strnicmp" = "int"
 "SDL_GetWindowID" = "uint32"
+"SDL_GetTicks" = "uint32"
 "SDL_Init" = "integer"
 "SDL_PushEvent" = "integer"
 "SDL_GetWindowFlags" = "uint32"
@@ -504,3 +525,4 @@ unsigned = { bits = 32, signed = false }
 "unsigned int" = { bits = 32, signed = false }
 "unsigned long" = { bits = 32, signed = false }
 long = {}
+

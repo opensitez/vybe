@@ -17,9 +17,6 @@ fn float_lit(value: f64) -> Expression {
     expr(ExprKind::Lit(Literal::Float(value)))
 }
 
-fn bool_lit(value: bool) -> Expression {
-    expr(ExprKind::Lit(Literal::Bool(value)))
-}
 
 fn binary_expr(op: BinOp, left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
@@ -240,27 +237,186 @@ fn c_runtime_carray_load(base: Expression, idx: Expression) -> Expression {
 }
 
 fn c_runtime_signed_scalar(raw: Expression) -> Expression {
+    let sign_extend = |shift| {
+        binary_expr(
+            BinOp::Integer(vybe_ast::IntOp::ShrS, vybe_ast::BitLane::W32),
+            binary_expr(
+                BinOp::Integer(vybe_ast::IntOp::Shl, vybe_ast::BitLane::W32),
+                raw.clone(), int_lit(shift),
+            ),
+            int_lit(shift),
+        )
+    };
     expr(ExprKind::Ternary {
         cond: Box::new(ident("unsigned")),
         then: Box::new(raw.clone()),
         else_: Box::new(expr(ExprKind::Ternary {
-            cond: Box::new(binary_expr(BinOp::Eq, ident("width"), int_lit(1))),
-            then: Box::new(expr(ExprKind::Ternary {
-                cond: Box::new(binary_expr(BinOp::GtEq, raw.clone(), int_lit(128))),
-                then: Box::new(binary_expr(BinOp::Sub, raw.clone(), int_lit(256))),
-                else_: Box::new(raw.clone()),
-            })),
+            cond: Box::new(binary_expr(
+                BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                ident("width"), int_lit(1),
+            )),
+            then: Box::new(sign_extend(24)),
             else_: Box::new(expr(ExprKind::Ternary {
-                cond: Box::new(binary_expr(BinOp::Eq, ident("width"), int_lit(2))),
-                then: Box::new(expr(ExprKind::Ternary {
-                    cond: Box::new(binary_expr(BinOp::GtEq, raw.clone(), int_lit(32768))),
-                    then: Box::new(binary_expr(BinOp::Sub, raw.clone(), int_lit(65536))),
-                    else_: Box::new(raw.clone()),
-                })),
+                cond: Box::new(binary_expr(
+                    BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                    ident("width"), int_lit(2),
+                )),
+                then: Box::new(sign_extend(16)),
                 else_: Box::new(raw),
             })),
         })),
     })
+}
+
+fn build_record_pointer_value_fn() -> Statement {
+    let pointer = ident("ptr");
+    function_stmt(
+        "__c_record_pointer_value",
+        vec!["ptr"],
+        vec![return_stmt(expr(ExprKind::Ternary {
+            cond: Box::new(binary_expr(
+                BinOp::Or,
+                call_expr(ident("__c_tag_eq"), vec![
+                    member(pointer.clone(), "__ref_kind"), str_lit("cell"),
+                ]),
+                call_expr(ident("__c_tag_eq"), vec![
+                    member(pointer.clone(), "__ref_kind"), str_lit("shared"),
+                ]),
+            )),
+            then: Box::new(expr(ExprKind::RefLoad(Box::new(pointer.clone())))),
+            else_: Box::new(pointer),
+        }))],
+    )
+}
+
+fn build_pointer_identity_base_fn() -> Statement {
+    let pointer = ident("ptr");
+    let get = |object, key| call_expr(ident("__c_array_get"), vec![object, str_lit(key)]);
+    let object = |value: Expression| binary_expr(BinOp::And,
+        expr(ExprKind::IsType { expr: Box::new(value.clone()), type_name: "object".into() }),
+        non_null_object(value));
+    let update = |value| stmt(StmtKind::Expr(assign_expr(pointer.clone(), value)));
+    let again = || stmt(StmtKind::Continue(vybe_ast::ContinueTarget::Implicit));
+    function_stmt("__c_pointer_identity_base", vec!["ptr"], vec![
+        stmt(StmtKind::While {
+            cond: object(pointer.clone()),
+            body: vec![
+                let_decl_stmt("container", get(pointer.clone(), "__c_container")),
+                // Only zero-offset first-member carriers carry this metadata.
+                if_stmt(object(ident("container")),
+                    vec![update(ident("container")), again()], None),
+                let_decl_stmt("kind", get(pointer.clone(), "__ref_kind")),
+                if_stmt(call_expr(ident("__c_tag_eq"), vec![ident("kind"), str_lit("cstruct")]),
+                    vec![update(get(pointer.clone(), "__base")), again()], None),
+                if_stmt(binary_expr(BinOp::Or,
+                    call_expr(ident("__c_tag_eq"), vec![ident("kind"), str_lit("cell")]),
+                    call_expr(ident("__c_tag_eq"), vec![ident("kind"), str_lit("shared")])),
+                    vec![
+                        let_decl_stmt("value", expr(ExprKind::RefLoad(Box::new(pointer.clone())))),
+                        if_stmt(binary_expr(BinOp::And, object(ident("value")),
+                            binary_expr(BinOp::Or,
+                                expr(ExprKind::IsType {
+                                    expr: Box::new(get(ident("value"), "__c_type")),
+                                    type_name: "string".into(),
+                                }),
+                                expr(ExprKind::IsType {
+                                    expr: Box::new(get(pointer.clone(), "__byte_fields")),
+                                    type_name: "object".into(),
+                                }))), vec![update(ident("value")), again()], None),
+                    ], None),
+                return_stmt(pointer.clone()),
+            ],
+            else_body: None,
+        }),
+        return_stmt(pointer),
+    ])
+}
+
+fn build_embedded_record_pointer_fn() -> Statement {
+    function_stmt("__c_hybrid_embedded_record_ptr", vec!["ptr", "field", "offset"], vec![
+        let_decl_stmt("value", call_expr(ident("__c_hybrid_struct_field_ptr"),
+            vec![ident("ptr"), ident("field"), ident("offset")])),
+        if_stmt(binary_expr(BinOp::And,
+            binary_expr(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                ident("offset"), int_lit(0)),
+            binary_expr(BinOp::And,
+                expr(ExprKind::IsType {
+                    expr: Box::new(ident("value")), type_name: "object".into(),
+                }), non_null_object(ident("value")))),
+            vec![stmt(StmtKind::Expr(call_expr(ident("__c_array_set"),
+                vec![ident("value"), str_lit("__c_container"), ident("ptr")])))], None),
+        return_stmt(ident("value")),
+    ])
+}
+
+fn build_fwrite_handle_fn() -> Statement {
+    use vybe_ast::{BitLane, IntOp};
+    let integer = |op, left, right| binary_expr(BinOp::Integer(op, BitLane::W64), left, right);
+    let file = |name| index_expr(ident(name), ident("handle"));
+    let update = |target, value| stmt(StmtKind::Expr(assign_expr(target, value)));
+    let failure = || vec![update(file("__c_file_error"), int_lit(1)), return_stmt(int_lit(0))];
+    let byte_view = |base, offset| expr(ExprKind::Object(vec![
+        ObjectProperty::KeyValue { key: str_lit("__ref_kind"), value: str_lit("carray") },
+        ObjectProperty::KeyValue { key: str_lit("__base"), value: base },
+        ObjectProperty::KeyValue { key: str_lit("__idx"), value: offset },
+    ]));
+    let text = |bytes| call_expr(ident("__c_binary_bytes_string"), vec![bytes, str_lit("latin1")]);
+    typed_function_stmt("__c_fwrite_h", vec!["data", "size", "count", "handle"], "uint64", vec![
+        if_stmt(binary_expr(BinOp::Or,
+            integer(IntOp::Eq, ident("size"), int_lit(0)),
+            integer(IntOp::Eq, ident("count"), int_lit(0))),
+            vec![return_stmt(int_lit(0))], None),
+        // Bound both factors before multiplying, then bound the byte-copy lane.
+        if_stmt(binary_expr(BinOp::Or,
+            integer(IntOp::GtU, ident("size"), int_lit(u32::MAX as i64)),
+            integer(IntOp::GtU, ident("count"), int_lit(u32::MAX as i64))), failure(), None),
+        var_decl_stmt("bytes", integer(IntOp::Mul, ident("size"), ident("count"))),
+        if_stmt(integer(IntOp::GtU, ident("bytes"), int_lit(u32::MAX as i64)), failure(), None),
+        if_stmt(binary_expr(BinOp::Or,
+            integer(IntOp::Eq, ident("handle"), int_lit(1)),
+            integer(IntOp::Eq, ident("handle"), int_lit(2))), vec![
+                var_decl_stmt("payload", call_expr(ident("__c_u8array_new"), vec![ident("bytes")])),
+                stmt(StmtKind::Expr(call_expr(ident("__c_binary_byte_copy"),
+                    vec![ident("payload"), ident("data"), ident("bytes")]))),
+                var_decl_stmt("result", call_expr(ident("__c_fputs_h"),
+                    vec![text(ident("payload")), ident("handle")])),
+                return_stmt(expr(ExprKind::Ternary {
+                    cond: Box::new(integer(IntOp::LtS, ident("result"), int_lit(0))),
+                    then: Box::new(int_lit(0)), else_: Box::new(ident("count")),
+                })),
+            ], None),
+        if_stmt(binary_expr(BinOp::Or,
+            call_expr(ident("__c_is_undefined"), vec![file("__c_file_content")]),
+            binary_expr(BinOp::Or, file("__c_file_closed"), file("__c_file_readonly"))), failure(), None),
+        var_decl_stmt("content", file("__c_file_content")),
+        var_decl_stmt("old_length", member(ident("content"), "length")),
+        var_decl_stmt("pos", expr(ExprKind::Ternary {
+            cond: Box::new(file("__c_file_append")),
+            then: Box::new(ident("old_length")), else_: Box::new(file("__c_file_pos")),
+        })),
+        if_stmt(integer(IntOp::GtU, ident("pos"), int_lit(u32::MAX as i64)), failure(), None),
+        if_stmt(integer(IntOp::GtU, ident("bytes"),
+            integer(IntOp::Sub, int_lit(u32::MAX as i64), ident("pos"))), failure(), None),
+        var_decl_stmt("end", integer(IntOp::Add, ident("pos"), ident("bytes"))),
+        var_decl_stmt("length", expr(ExprKind::Ternary {
+            cond: Box::new(integer(IntOp::GtU, ident("end"), ident("old_length"))),
+            then: Box::new(ident("end")), else_: Box::new(ident("old_length")),
+        })),
+        var_decl_stmt("output", call_expr(ident("__c_u8array_new"), vec![ident("length")])),
+        stmt(StmtKind::Expr(call_expr(ident("__c_binary_byte_copy"),
+            vec![ident("output"), ident("content"), ident("old_length")]))),
+        stmt(StmtKind::Expr(call_expr(ident("__c_binary_byte_copy"), vec![
+            byte_view(ident("output"), ident("pos")), ident("data"), ident("bytes"),
+        ]))),
+        update(file("__c_file_content"), expr(ExprKind::Ternary {
+            cond: Box::new(file("__c_file_binary")),
+            then: Box::new(call_expr(ident("__c_bytes_array"), vec![ident("output")])),
+            else_: Box::new(text(ident("output"))),
+        })),
+        update(file("__c_file_pos"), ident("end")),
+        update(file("__c_file_dirty"), int_lit(1)),
+        return_stmt(ident("count")),
+    ])
 }
 
 fn build_hybrid_indexed_scalar_load_fn() -> Statement {
@@ -273,7 +429,30 @@ fn build_hybrid_indexed_scalar_load_fn() -> Statement {
         vec!["ptr", "index", "width", "unsigned"],
         vec![
             if_stmt(
-                member(ptr.clone(), "__byte_backed"),
+                binary_expr(
+                    BinOp::And,
+                    binary_expr(
+                        BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
+                        index.clone(), int_lit(0),
+                    ),
+                    binary_expr(
+                        BinOp::Or,
+                        call_expr(ident("__c_tag_eq"), vec![
+                            member(ptr.clone(), "__ref_kind"), str_lit("cell"),
+                        ]),
+                        call_expr(ident("__c_tag_eq"), vec![
+                            member(ptr.clone(), "__ref_kind"), str_lit("shared"),
+                        ]),
+                    ),
+                ),
+                vec![return_stmt(expr(ExprKind::RefLoad(Box::new(ptr.clone()))))],
+                None,
+            ),
+            if_stmt(
+                // Managed typed arrays contain bytes, not scalar elements.
+                binary_expr(BinOp::Or,
+                    member(ptr.clone(), "__byte_backed"),
+                    call_expr(ident("__c_is_buffer_view"), vec![base.clone()])),
                 vec![
                     let_decl_stmt(
                         "raw",
@@ -300,6 +479,15 @@ fn build_hybrid_indexed_scalar_load_fn() -> Statement {
                     ident("__c_array_get"),
                     vec![base, binary_expr(BinOp::Add, idx, index.clone())],
                 ))],
+                None,
+            ),
+            if_stmt(
+                call_expr(ident("__c_is_buffer_view"), vec![ptr.clone()]),
+                vec![
+                    let_decl_stmt("raw_bytes", c_runtime_carray_load(
+                        ptr.clone(), binary_expr(BinOp::Mul, index.clone(), ident("width")))),
+                    return_stmt(c_runtime_signed_scalar(ident("raw_bytes"))),
+                ],
                 None,
             ),
             return_stmt(index_expr(ptr, index)),
@@ -339,6 +527,25 @@ fn build_hybrid_struct_field_write_ptr_fn() -> Statement {
         "__c_hybrid_struct_field_write_ptr",
         vec!["ptr", "field", "offset", "value"],
         vec![
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(
+                        BinOp::Or,
+                        call_expr(ident("__c_tag_eq"), vec![ref_kind.clone(), str_lit("cell")]),
+                        call_expr(ident("__c_tag_eq"), vec![ref_kind.clone(), str_lit("shared")]),
+                    ),
+                ),
+                vec![return_stmt(call_expr(
+                    ident("__c_hybrid_struct_field_write_ptr"),
+                    vec![
+                        expr(ExprKind::RefLoad(Box::new(ptr.clone()))),
+                        field.clone(), offset.clone(), value.clone(),
+                    ],
+                ))],
+                None,
+            ),
             if_stmt(
                 binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("number")),
                 vec![
@@ -574,9 +781,23 @@ fn build_hybrid_struct_field_ptr_fn() -> Statement {
         vec!["ptr", "field", "offset"],
         vec![
             if_stmt(
-                binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("number")),
+                binary_expr(BinOp::Or,
+                    call_expr(ident("__c_tag_eq"), vec![ref_kind.clone(), str_lit("cell")]),
+                    call_expr(ident("__c_tag_eq"), vec![ref_kind.clone(), str_lit("shared")]),
+                ),
+                vec![return_stmt(call_expr(ident("__c_hybrid_struct_field_ptr"), vec![
+                    expr(ExprKind::RefLoad(Box::new(ptr.clone()))),
+                    field.clone(), offset.clone(),
+                ]))],
+                None,
+            ),
+            if_stmt(
+                expr(ExprKind::IsType {
+                    expr: Box::new(ptr.clone()),
+                    type_name: "number".into(),
+                }),
                 vec![return_stmt(binary_expr(
-                    BinOp::Add,
+                    BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
                     ptr.clone(),
                     offset.clone(),
                 ))],
@@ -659,7 +880,7 @@ fn build_hybrid_struct_field_read_ptr_fn() -> Statement {
     let ref_kind = member(ptr.clone(), "__ref_kind");
     let base = member(ptr.clone(), "__base");
     let idx = binary_expr(BinOp::Add, member(ptr.clone(), "__idx"), offset.clone());
-    let dyn_field = index_expr(ptr.clone(), field.clone());
+    let dyn_field = call_expr(ident("__c_array_get"), vec![ptr.clone(), field.clone()]);
     let carray_ptr = |base: Expression, idx: Expression| {
         expr(ExprKind::Object(vec![
             ObjectProperty::KeyValue {
@@ -693,6 +914,18 @@ fn build_hybrid_struct_field_read_ptr_fn() -> Statement {
         vec!["ptr", "field", "offset"],
         vec![
             if_stmt(
+                binary_expr(
+                    BinOp::Or,
+                    call_expr(ident("__c_tag_eq"), vec![ref_kind.clone(), str_lit("cell")]),
+                    call_expr(ident("__c_tag_eq"), vec![ref_kind.clone(), str_lit("shared")]),
+                ),
+                vec![return_stmt(call_expr(
+                    ident("__c_hybrid_struct_field_read_ptr"),
+                    vec![expr(ExprKind::RefLoad(Box::new(ptr.clone()))), field.clone(), offset.clone()],
+                ))],
+                None,
+            ),
+            if_stmt(
                 binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("number")),
                 vec![return_stmt(call_expr(
                     ident("__c_ptr_i32_load"),
@@ -718,7 +951,7 @@ fn build_hybrid_struct_field_read_ptr_fn() -> Statement {
                     valid_object.clone(),
                     binary_expr(BinOp::Eq, ref_kind.clone(), str_lit("cstruct")),
                 ),
-                vec![return_stmt(index_expr(base.clone(), field.clone()))],
+                vec![return_stmt(call_expr(ident("__c_array_get"), vec![base.clone(), field.clone()]))],
                 None,
             ),
             if_stmt(
@@ -737,7 +970,7 @@ fn build_hybrid_struct_field_read_ptr_fn() -> Statement {
                     ),
                     if_stmt(
                         object_field_available(ident("elem"), field.clone()),
-                        vec![return_stmt(index_expr(ident("elem"), field.clone()))],
+                        vec![return_stmt(call_expr(ident("__c_array_get"), vec![ident("elem"), field.clone()]))],
                         None,
                     ),
                     return_stmt(carray_pointer_value(base, idx)),
@@ -1473,6 +1706,9 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ],
         ),
         build_hybrid_struct_field_load_fn(),
+        build_record_pointer_value_fn(),
+        build_pointer_identity_base_fn(),
+        build_embedded_record_pointer_fn(),
         build_hybrid_indexed_scalar_load_fn(),
         build_hybrid_struct_field_ptr_fn(),
         build_hybrid_struct_field_read_ptr_fn(),
@@ -2645,7 +2881,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         vec![
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(ident("__c_env_seeded")),
                     right: Box::new(int_lit(1)),
                 }),
@@ -2657,10 +2893,10 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 int_lit(1),
             ))),
             var_decl_stmt("pairs", call_expr(ident("__c_get_environment"), vec![])),
-            var_decl_stmt("i", float_lit(0.0)),
+            var_decl_stmt("i", int_lit(0)),
             stmt(StmtKind::While {
                 cond: expr(ExprKind::Binary {
-                    op: BinOp::Lt,
+                    op: BinOp::Integer(vybe_ast::IntOp::LtU, vybe_ast::BitLane::W32),
                     left: Box::new(ident("i")),
                     right: Box::new(member(ident("pairs"), "length")),
                 }),
@@ -2675,9 +2911,9 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     stmt(StmtKind::Expr(assign_expr(
                         ident("i"),
                         expr(ExprKind::Binary {
-                            op: BinOp::Add,
+                            op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
                             left: Box::new(ident("i")),
-                            right: Box::new(float_lit(1.0)),
+                            right: Box::new(int_lit(1)),
                         }),
                     ))),
                 ],
@@ -2837,7 +3073,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         vec![
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(call_expr(ident("__c_fs_exists"), vec![ident("path")])),
                     right: Box::new(int_lit(0)),
                 }),
@@ -2855,8 +3091,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     })),
                     right: Box::new(expr(ExprKind::Binary {
                         op: BinOp::Eq,
-                        left: Box::new(ident("st")),
-                        right: Box::new(expr(ExprKind::Lit(Literal::Undefined))),
+                        left: Box::new(typeof_expr(ident("st"))),
+                        right: Box::new(str_lit("undefined")),
                     })),
                 }),
                 vec![stmt(StmtKind::Return(Some(int_lit(0))))],
@@ -2864,7 +3100,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             stmt(StmtKind::Return(Some(expr(ExprKind::Ternary {
                 cond: Box::new(expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(member(ident("st"), "__type")),
                     right: Box::new(int_lit(1)),
                 })),
@@ -2874,9 +3110,10 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_path_present",
         vec!["path"],
+        "int",
         vec![
             stmt(StmtKind::Expr(assign_expr(
                 ident("path"),
@@ -2898,8 +3135,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             // friends), 0 = TOMBSTONE (removed/renamed away — a stale REAL
             // file with the same name must NOT resurrect it), absent = ask
             // the real filesystem.
-            var_decl_stmt(
-                "pe",
+            typed_var_decl_stmt(
+                "pe", "int",
                 expr(ExprKind::NullCoalesce {
                     left: Box::new(index_expr(ident("__c_path_exists"), ident("path"))),
                     right: Box::new(int_lit(-1)),
@@ -2907,7 +3144,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(ident("pe")),
                     right: Box::new(int_lit(1)),
                 }),
@@ -2916,7 +3153,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(ident("pe")),
                     right: Box::new(int_lit(0)),
                 }),
@@ -2932,13 +3169,18 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_remove_h",
         vec!["path"],
+        "int",
         vec![
+            stmt(StmtKind::Expr(assign_expr(
+                ident("path"),
+                call_expr(ident("__libc_char_to_str"), vec![ident("path")]),
+            ))),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Gt,
+                    op: BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W64),
                     left: Box::new(member(ident("path"), "length")),
                     right: Box::new(int_lit(240)),
                 }),
@@ -2947,7 +3189,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(call_expr(ident("__c_path_present"), vec![ident("path")])),
                     right: Box::new(int_lit(0)),
                 }),
@@ -2968,7 +3210,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         right: Box::new(null_lit()),
                     })),
                     right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::NotEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                         left: Box::new(expr(ExprKind::NullCoalesce {
                             left: Box::new(index_expr(ident("__c_path_exists"), ident("path"))),
                             right: Box::new(int_lit(-1)),
@@ -2997,13 +3239,22 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_rename_h",
         vec!["src", "dst"],
+        "int",
         vec![
+            stmt(StmtKind::Expr(assign_expr(
+                ident("src"),
+                call_expr(ident("__libc_char_to_str"), vec![ident("src")]),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("dst"),
+                call_expr(ident("__libc_char_to_str"), vec![ident("dst")]),
+            ))),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(call_expr(ident("__c_path_present"), vec![ident("src")])),
                     right: Box::new(int_lit(0)),
                 }),
@@ -3013,15 +3264,15 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             // POSIX type agreement: a file cannot replace a directory
             // (EISDIR), a directory cannot replace a file (ENOTDIR), and a
             // directory cannot replace a NON-EMPTY directory (ENOTEMPTY).
-            var_decl_stmt(
-                "sd",
+            typed_var_decl_stmt(
+                "sd", "int",
                 expr(ExprKind::NullCoalesce {
                     left: Box::new(index_expr(ident("__c_is_dir"), ident("src"))),
                     right: Box::new(int_lit(0)),
                 }),
             ),
-            var_decl_stmt(
-                "dd",
+            typed_var_decl_stmt(
+                "dd", "int",
                 expr(ExprKind::NullCoalesce {
                     left: Box::new(index_expr(ident("__c_is_dir"), ident("dst"))),
                     right: Box::new(int_lit(0)),
@@ -3060,7 +3311,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                             right: Box::new(int_lit(0)),
                         })),
                         right: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Eq,
+                            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                             left: Box::new(call_expr(
                                 ident("__c_path_present"),
                                 vec![ident("dst")],
@@ -3088,7 +3339,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                             right: Box::new(int_lit(1)),
                         })),
                         right: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Eq,
+                            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                             left: Box::new(expr(ExprKind::NullCoalesce {
                                 left: Box::new(index_expr(ident("__c_dir_nonempty"), ident("dst"))),
                                 right: Box::new(int_lit(0)),
@@ -3114,7 +3365,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         right: Box::new(null_lit()),
                     })),
                     right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::NotEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                         left: Box::new(expr(ExprKind::NullCoalesce {
                             left: Box::new(index_expr(ident("__c_path_exists"), ident("src"))),
                             right: Box::new(int_lit(-1)),
@@ -3170,7 +3421,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         vec![
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(expr(ExprKind::NullCoalesce {
                         left: Box::new(index_expr(ident("__c_is_dir"), ident("path"))),
                         right: Box::new(int_lit(0)),
@@ -3193,7 +3444,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         vec![
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::NotEq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                     left: Box::new(expr(ExprKind::NullCoalesce {
                         left: Box::new(index_expr(ident("__c_is_dir"), ident("path"))),
                         right: Box::new(int_lit(0)),
@@ -3570,7 +3821,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         "__c_stdout_has_buffered",
         vec![],
         vec![stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
-            op: BinOp::Gt,
+            op: BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W32),
             left: Box::new(member(ident(buffer_name), "length")),
             right: Box::new(int_lit(0)),
         }))))],
@@ -3618,7 +3869,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 "write_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::GtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
                         left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("w")])),
                         right: Box::new(int_lit(0)),
                     })),
@@ -3706,7 +3957,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 "binary_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::GtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
                         left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("b")])),
                         right: Box::new(int_lit(0)),
                     })),
@@ -4257,7 +4508,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 "write_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::GtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
                         left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("w")])),
                         right: Box::new(int_lit(0)),
                     })),
@@ -4269,7 +4520,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 "binary_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::GtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
                         left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("b")])),
                         right: Box::new(int_lit(0)),
                     })),
@@ -4281,7 +4532,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 "append_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::GtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
                         left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("a")])),
                         right: Box::new(int_lit(0)),
                     })),
@@ -4295,7 +4546,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::And,
                         left: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Eq,
+                            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W64),
                             left: Box::new(call_member(
                                 ident("mode"),
                                 "indexOf",
@@ -4304,7 +4555,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                             right: Box::new(int_lit(-1)),
                         })),
                         right: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Eq,
+                            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W64),
                             left: Box::new(call_member(
                                 ident("mode"),
                                 "indexOf",
@@ -4329,11 +4580,9 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         left: Box::new(ident("content")),
                         right: Box::new(null_lit()),
                     })),
-                    right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Eq,
-                        left: Box::new(ident("content")),
-                        right: Box::new(expr(ExprKind::Lit(Literal::Undefined))),
-                    })),
+                    right: Box::new(call_expr(
+                        ident("__c_is_undefined"), vec![ident("content")],
+                    )),
                 }),
                 vec![stmt(StmtKind::Expr(assign_expr(
                     ident("content"),
@@ -4346,7 +4595,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         cond: Box::new(expr(ExprKind::Binary {
                             op: BinOp::And,
                             left: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::NotEq,
+                                op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                                 left: Box::new(expr(ExprKind::NullCoalesce {
                                     left: Box::new(index_expr(
                                         ident("__c_path_exists"),
@@ -4432,11 +4681,9 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                             left: Box::new(ident("content")),
                             right: Box::new(null_lit()),
                         })),
-                        right: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Eq,
-                            left: Box::new(ident("content")),
-                            right: Box::new(expr(ExprKind::Lit(Literal::Undefined))),
-                        })),
+                        right: Box::new(call_expr(
+                            ident("__c_is_undefined"), vec![ident("content")],
+                        )),
                     })),
                 }),
                 vec![
@@ -4444,7 +4691,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         ident("errno"),
                         expr(ExprKind::Ternary {
                             cond: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::NotEq,
+                                op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                                 left: Box::new(call_expr(
                                     ident("__c_path_present"),
                                     vec![ident("path")],
@@ -4474,7 +4721,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         right: Box::new(int_lit(0)),
                     })),
                     right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::GtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::GeS, vybe_ast::BitLane::W64),
                         left: Box::new(call_member(
                             ident("path"),
                             "lastIndexOf",
@@ -4551,13 +4798,14 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_fsync_h",
         vec!["handle"],
+        "int",
         vec![
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W64),
                     left: Box::new(ident("handle")),
                     right: Box::new(int_lit(1)),
                 }),
@@ -4565,8 +4813,15 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 None,
             ),
             if_stmt(
+                call_expr(ident("__c_is_undefined"), vec![
+                    index_expr(ident("__c_file_dirty"), ident("handle")),
+                ]),
+                vec![return_stmt(int_lit(-1))],
+                None,
+            ),
+            if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::NotEq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                     left: Box::new(index_expr(ident("__c_file_dirty"), ident("handle"))),
                     right: Box::new(int_lit(0)),
                 }),
@@ -4589,9 +4844,10 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_fclose_h",
         vec!["handle"],
+        "int",
         vec![
             stmt(StmtKind::Expr(call_expr(
                 ident("__c_fsync_h"),
@@ -4606,6 +4862,42 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
     ));
 
     out.push(function_stmt(
+        "__c_snprintf_write",
+        vec!["ptr", "capacity", "text"],
+        vec![
+            if_stmt(
+                binary_expr(
+                    BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W64),
+                    ident("capacity"),
+                    int_lit(0),
+                ),
+                vec![stmt(StmtKind::Expr(call_expr(
+                    ident("__c_write_carray_string"),
+                    vec![
+                        ident("ptr"),
+                        call_expr(
+                            member(ident("text"), "slice"),
+                            vec![
+                                int_lit(0),
+                                binary_expr(
+                                    BinOp::Integer(vybe_ast::IntOp::Sub, vybe_ast::BitLane::W64),
+                                    ident("capacity"),
+                                    int_lit(1),
+                                ),
+                            ],
+                        ),
+                    ],
+                )))],
+                None,
+            ),
+            return_stmt(expr(ExprKind::Cast {
+                expr: Box::new(member(ident("text"), "length")),
+                type_name: "int".into(),
+            })),
+        ],
+    ));
+
+    out.push(function_stmt(
         "__c_write_carray_string",
         vec!["ptr", "text"],
         vec![
@@ -4615,7 +4907,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     ident("ptr"),
                     ident("text"),
                     expr(ExprKind::Binary {
-                        op: BinOp::Add,
+                        op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
                         left: Box::new(member(ident("text"), "length")),
                         right: Box::new(int_lit(1)),
                     }),
@@ -4631,7 +4923,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         vec![
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(ident("handle")),
                     right: Box::new(int_lit(1)),
                 }),
@@ -4646,7 +4938,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             // store path below threw on `undefined.length`).
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(ident("handle")),
                     right: Box::new(int_lit(2)),
                 }),
@@ -4685,7 +4977,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Gt,
+                    op: BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W64),
                     left: Box::new(ident("pos")),
                     right: Box::new(member(ident("content"), "length")),
                 }),
@@ -4698,7 +4990,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                             str_lit("\0"),
                             "repeat",
                             vec![expr(ExprKind::Binary {
-                                op: BinOp::Sub,
+                                op: BinOp::Integer(vybe_ast::IntOp::Sub, vybe_ast::BitLane::W64),
                                 left: Box::new(ident("pos")),
                                 right: Box::new(member(ident("content"), "length")),
                             })],
@@ -4709,7 +5001,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W64),
                     left: Box::new(ident("pos")),
                     right: Box::new(member(ident("content"), "length")),
                 }),
@@ -4737,7 +5029,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                                 ident("content"),
                                 "substring",
                                 vec![expr(ExprKind::Binary {
-                                    op: BinOp::Add,
+                                    op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W64),
                                     left: Box::new(ident("pos")),
                                     right: Box::new(member(ident("text"), "length")),
                                 })],
@@ -4749,7 +5041,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_pos"), ident("handle")),
                 expr(ExprKind::Binary {
-                    op: BinOp::Add,
+                    op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W64),
                     left: Box::new(ident("pos")),
                     right: Box::new(member(ident("text"), "length")),
                 }),
@@ -4791,7 +5083,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 kind: VarDeclKind::Var,
             }),
             if_stmt(
-                binary_expr(BinOp::Lt, ident("status"), int_lit(0)),
+                binary_expr(BinOp::Integer(vybe_ast::IntOp::LtS, vybe_ast::BitLane::W32), ident("status"), int_lit(0)),
                 vec![return_stmt(int_lit(-1))],
                 None,
             ),
@@ -4799,9 +5091,10 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_fgetc_h",
         vec!["handle"],
+        "int",
         vec![
             var_decl_stmt(
                 "ungot",
@@ -4830,7 +5123,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Gt,
+                    op: BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W32),
                     left: Box::new(member(ident("ungot"), "length")),
                     right: Box::new(int_lit(0)),
                 }),
@@ -4865,7 +5158,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::GtEq,
+                    op: BinOp::Integer(vybe_ast::IntOp::GeU, vybe_ast::BitLane::W64),
                     left: Box::new(index_expr(ident("__c_file_pos"), ident("handle"))),
                     right: Box::new(member(
                         index_expr(ident("__c_file_content"), ident("handle")),
@@ -4885,7 +5178,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 "ch",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::NotEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                         left: Box::new(index_expr(ident("__c_file_binary"), ident("handle"))),
                         right: Box::new(int_lit(0)),
                     })),
@@ -4918,13 +5211,14 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_ungetc_h",
         vec!["code", "handle"],
+        "int",
         vec![
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(ident("code")),
                     right: Box::new(int_lit(-1)),
                 }),
@@ -5089,9 +5383,10 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         })],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_fseek_h",
         vec!["handle", "offset", "whence"],
+        "int",
         vec![
             var_decl_stmt(
                 "len",
@@ -5104,14 +5399,14 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 "pos",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Eq,
+                        op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                         left: Box::new(ident("whence")),
                         right: Box::new(int_lit(0)),
                     })),
                     then: Box::new(ident("offset")),
                     else_: Box::new(expr(ExprKind::Ternary {
                         cond: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Eq,
+                            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                             left: Box::new(ident("whence")),
                             right: Box::new(int_lit(1)),
                         })),
@@ -5130,7 +5425,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Lt,
+                    op: BinOp::Integer(vybe_ast::IntOp::LtS, vybe_ast::BitLane::W64),
                     left: Box::new(ident("pos")),
                     right: Box::new(int_lit(0)),
                 }),
@@ -5158,13 +5453,14 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_ftell_h",
         vec!["handle"],
+        "long",
         vec![
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W64),
                     left: Box::new(ident("handle")),
                     right: Box::new(int_lit(1)),
                 }),
@@ -5200,25 +5496,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
-        "__c_fwrite_h",
-        vec!["data", "count", "handle"],
-        vec![
-            stmt(StmtKind::Expr(assign_expr(
-                index_expr(ident("__c_file_content"), ident("handle")),
-                call_member(ident("data"), "slice", vec![int_lit(0), ident("count")]),
-            ))),
-            stmt(StmtKind::Expr(assign_expr(
-                index_expr(ident("__c_file_pos"), ident("handle")),
-                ident("count"),
-            ))),
-            stmt(StmtKind::Expr(assign_expr(
-                index_expr(ident("__c_file_dirty"), ident("handle")),
-                int_lit(1),
-            ))),
-            stmt(StmtKind::Return(Some(ident("count")))),
-        ],
-    ));
+    out.push(build_fwrite_handle_fn());
 
     out.push(function_stmt(
         "__c_fread_h",
@@ -5251,7 +5529,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::Eq,
+                    op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     left: Box::new(member(ident("ungot"), "length")),
                     right: Box::new(int_lit(0)),
                 }),
@@ -5272,7 +5550,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     ),
                     if_stmt(
                         expr(ExprKind::Binary {
-                            op: BinOp::Gt,
+                            op: BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W64),
                             left: Box::new(ident("end")),
                             right: Box::new(ident("len")),
                         }),
@@ -5284,7 +5562,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     ),
                     if_stmt(
                         expr(ExprKind::Binary {
-                            op: BinOp::LtEq,
+                            op: BinOp::Integer(vybe_ast::IntOp::LeU, vybe_ast::BitLane::W64),
                             left: Box::new(ident("end")),
                             right: Box::new(ident("pos")),
                         }),
@@ -5295,7 +5573,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                             ))),
                             stmt(StmtKind::Return(Some(expr(ExprKind::Ternary {
                                 cond: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::NotEq,
+                                    op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                                     left: Box::new(index_expr(
                                         ident("__c_file_binary"),
                                         ident("handle"),
@@ -5320,7 +5598,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         index_expr(ident("__c_file_eof"), ident("handle")),
                         expr(ExprKind::Ternary {
                             cond: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::GtEq,
+                                op: BinOp::Integer(vybe_ast::IntOp::GeU, vybe_ast::BitLane::W64),
                                 left: Box::new(ident("end")),
                                 right: Box::new(ident("len")),
                             })),
@@ -5336,7 +5614,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 "out",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::NotEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                         left: Box::new(index_expr(ident("__c_file_binary"), ident("handle"))),
                         right: Box::new(int_lit(0)),
                     })),
@@ -5347,7 +5625,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             var_decl_stmt("i", int_lit(0)),
             stmt(StmtKind::While {
                 cond: expr(ExprKind::Binary {
-                    op: BinOp::Lt,
+                    op: BinOp::Integer(vybe_ast::IntOp::LtU, vybe_ast::BitLane::W64),
                     left: Box::new(ident("i")),
                     right: Box::new(ident("count")),
                 }),
@@ -5355,7 +5633,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     var_decl_stmt("ch", call_expr(ident("__c_fgetc_h"), vec![ident("handle")])),
                     if_stmt(
                         expr(ExprKind::Binary {
-                            op: BinOp::Eq,
+                            op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                             left: Box::new(ident("ch")),
                             right: Box::new(int_lit(-1)),
                         }),
@@ -5364,7 +5642,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     ),
                     if_stmt(
                         expr(ExprKind::Binary {
-                            op: BinOp::NotEq,
+                            op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                             left: Box::new(index_expr(ident("__c_file_binary"), ident("handle"))),
                             right: Box::new(int_lit(0)),
                         }),
@@ -5409,12 +5687,12 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 expr(ExprKind::Binary {
                     op: BinOp::Or,
                     left: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::LtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::LeU, vybe_ast::BitLane::W64),
                         left: Box::new(ident("size")),
                         right: Box::new(int_lit(0)),
                     })),
                     right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::LtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::LeU, vybe_ast::BitLane::W64),
                         left: Box::new(ident("count")),
                         right: Box::new(int_lit(0)),
                     })),
@@ -5429,7 +5707,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     vec![
                         ident("handle"),
                         expr(ExprKind::Binary {
-                            op: BinOp::Mul,
+                            op: BinOp::Integer(vybe_ast::IntOp::Mul, vybe_ast::BitLane::W64),
                             left: Box::new(ident("size")),
                             right: Box::new(ident("count")),
                         }),
@@ -5437,7 +5715,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 ),
             ),
             var_decl_stmt("dst_base", ident("ptr")),
-            var_decl_stmt("dst_idx", float_lit(0.0)),
+            var_decl_stmt("dst_idx", int_lit(0)),
             if_stmt(
                 expr(ExprKind::Binary {
                     op: BinOp::Eq,
@@ -5484,14 +5762,14 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         None,
                     ),
                     stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
-                        op: BinOp::Div,
+                        op: BinOp::Integer(vybe_ast::IntOp::DivU, vybe_ast::BitLane::W64),
                         left: Box::new(member(ident("data"), "length")),
                         right: Box::new(ident("size")),
                     })))),
                 ],
                 None,
             ),
-            var_decl_stmt("i", float_lit(0.0)),
+            var_decl_stmt("i", int_lit(0)),
             if_stmt(
                 expr(ExprKind::Binary {
                     op: BinOp::NotEq,
@@ -5503,7 +5781,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 }),
                 vec![stmt(StmtKind::While {
                     cond: expr(ExprKind::Binary {
-                        op: BinOp::Lt,
+                        op: BinOp::Integer(vybe_ast::IntOp::LtU, vybe_ast::BitLane::W64),
                         left: Box::new(ident("i")),
                         right: Box::new(member(ident("data"), "length")),
                     }),
@@ -5512,7 +5790,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                             index_expr(
                                 ident("dst_base"),
                                 expr(ExprKind::Binary {
-                                    op: BinOp::Add,
+                                    op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W64),
                                     left: Box::new(ident("dst_idx")),
                                     right: Box::new(ident("i")),
                                 }),
@@ -5536,9 +5814,9 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         stmt(StmtKind::Expr(assign_expr(
                             ident("i"),
                             expr(ExprKind::Binary {
-                                op: BinOp::Add,
+                                op: BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W64),
                                 left: Box::new(ident("i")),
-                                right: Box::new(float_lit(1.0)),
+                                right: Box::new(int_lit(1)),
                             }),
                         ))),
                     ],
@@ -5547,27 +5825,28 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 None,
             ),
             stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
-                op: BinOp::Div,
+                op: BinOp::Integer(vybe_ast::IntOp::DivU, vybe_ast::BitLane::W64),
                 left: Box::new(member(ident("data"), "length")),
                 right: Box::new(ident("size")),
             })))),
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_fread_into_linear_h",
         vec!["ptr", "size", "count", "handle"],
+        "uint64",
         vec![
             if_stmt(
                 expr(ExprKind::Binary {
                     op: BinOp::Or,
                     left: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::LtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::LeU, vybe_ast::BitLane::W64),
                         left: Box::new(ident("size")),
                         right: Box::new(int_lit(0)),
                     })),
                     right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::LtEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::LeU, vybe_ast::BitLane::W64),
                         left: Box::new(ident("count")),
                         right: Box::new(int_lit(0)),
                     })),
@@ -5579,12 +5858,12 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 expr(ExprKind::Binary {
                     op: BinOp::And,
                     left: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::NotEq,
+                        op: BinOp::Integer(vybe_ast::IntOp::Ne, vybe_ast::BitLane::W32),
                         left: Box::new(index_expr(ident("__c_file_binary"), ident("handle"))),
                         right: Box::new(int_lit(0)),
                     })),
                     right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Eq,
+                        op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                         left: Box::new(member(
                             index_expr(ident("__c_file_ungot"), ident("handle")),
                             "length",
@@ -5612,7 +5891,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     ),
                     if_stmt(
                         expr(ExprKind::Binary {
-                            op: BinOp::Gt,
+                            op: BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W64),
                             left: Box::new(ident("end")),
                             right: Box::new(member(ident("content"), "length")),
                         }),
@@ -5624,7 +5903,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     ),
                     if_stmt(
                         expr(ExprKind::Binary {
-                            op: BinOp::LtEq,
+                            op: BinOp::Integer(vybe_ast::IntOp::LeU, vybe_ast::BitLane::W64),
                             left: Box::new(ident("end")),
                             right: Box::new(ident("pos")),
                         }),
@@ -5670,7 +5949,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         index_expr(ident("__c_file_eof"), ident("handle")),
                         expr(ExprKind::Ternary {
                             cond: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::GtEq,
+                                op: BinOp::Integer(vybe_ast::IntOp::GeU, vybe_ast::BitLane::W64),
                                 left: Box::new(ident("end")),
                                 right: Box::new(member(ident("content"), "length")),
                             })),
@@ -6094,7 +6373,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 ident("__c_rand_state"),
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Eq,
+                        op: BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                         left: Box::new(ident("seed")),
                         right: Box::new(int_lit(0)),
                     })),
@@ -6106,9 +6385,10 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    out.push(typed_function_stmt(
         "__c_rand_h",
         vec![],
+        "int",
         vec![
             stmt(StmtKind::Expr(assign_expr(
                 ident("__c_rand_state"),
@@ -6146,45 +6426,12 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
-    out.push(function_stmt(
+    let mut raise_helper = function_stmt(
         "__c_raise_h",
         vec!["sig"],
         vec![
             var_decl_stmt("h", index_expr(ident("__c_signal_handlers"), ident("sig"))),
-            if_stmt(
-                expr(ExprKind::Binary {
-                    op: BinOp::Or,
-                    left: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Eq,
-                        left: Box::new(ident("h")),
-                        right: Box::new(null_lit()),
-                    })),
-                    right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Eq,
-                        left: Box::new(ident("h")),
-                        right: Box::new(expr(ExprKind::Lit(Literal::Undefined))),
-                    })),
-                }),
-                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
-                None,
-            ),
-            if_stmt(
-                expr(ExprKind::Binary {
-                    op: BinOp::Or,
-                    left: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Eq,
-                        left: Box::new(ident("h")),
-                        right: Box::new(int_lit(0)),
-                    })),
-                    right: Box::new(expr(ExprKind::Binary {
-                        op: BinOp::Eq,
-                        left: Box::new(ident("h")),
-                        right: Box::new(int_lit(1)),
-                    })),
-                }),
-                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
-                None,
-            ),
+            // The callable guard also rejects unset and sentinel handlers.
             if_stmt(
                 expr(ExprKind::Binary {
                     op: BinOp::NotEq,
@@ -6201,7 +6448,11 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             }))),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
-    ));
+    );
+    if let StmtKind::FunctionDecl { return_type, .. } = &mut raise_helper.kind {
+        *return_type = Some("int".to_string());
+    }
+    out.push(raise_helper);
 
     out.push(function_stmt(
         "__c_setlocale_h",

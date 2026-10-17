@@ -121,6 +121,23 @@ pub fn if_stmt(
     })
 }
 
+pub fn typed_function_stmt(
+    name: &str,
+    params: Vec<&str>,
+    return_type: &str,
+    body: Vec<Statement>,
+) -> Statement {
+    let mut function = function_stmt(name, params, body);
+    if let StmtKind::FunctionDecl {
+        return_type: result,
+        ..
+    } = &mut function.kind
+    {
+        *result = Some(return_type.to_string());
+    }
+    function
+}
+
 pub fn function_stmt(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
     stmt(StmtKind::FunctionDecl {
         name: name.to_string(),

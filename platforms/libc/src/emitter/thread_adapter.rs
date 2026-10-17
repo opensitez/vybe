@@ -3,7 +3,7 @@
 use vybe_ast::{BinOp, ExprKind, Expression, Literal, PlaceExpr, Statement, StmtKind, UnaryOp};
 
 use super::build::{
-    assign_expr, expr, function_stmt, ident, if_stmt, index_expr, int_lit, member, null_lit, stmt,
+    assign_expr, call_expr, expr, function_stmt, ident, if_stmt, index_expr, int_lit, member, null_lit, stmt,
     var_decl_stmt,
 };
 
@@ -570,9 +570,8 @@ pub fn runtime_functions() -> Vec<Statement> {
 fn thread_entry_fn() -> Statement {
     let call_start = expr(ExprKind::Call {
         callee: Box::new(index_expr(ident("__c_thread_starts"), ident("h"))),
-        args: vec![vybe_ast::Argument::positional(index_expr(
-            ident("__c_thread_args"),
-            ident("h"),
+        args: vec![vybe_ast::Argument::positional(call_expr(
+            ident("__c_array_get"), vec![ident("__c_thread_args"), ident("h")],
         ))],
         optional: false,
     });
@@ -602,21 +601,32 @@ fn thread_entry_fn() -> Statement {
 /// cannot stop a running thread from outside, so `pthread_cancel` records
 /// PTHREAD_CANCELED (-1) and the joiner takes it without blocking.
 fn thread_join_fn() -> Statement {
+    // These slots hold pointer values, not references to load through.
+    let result = call_expr(ident("__c_array_get"),
+        vec![ident("__c_thread_results"), ident("h")]);
+    let integer_eq = |left, right| binary(
+        BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32), left, right,
+    );
     function_stmt(
         "__c_thread_join_h",
         vec!["h"],
         vec![
             if_stmt(
-                eq(
-                    index_expr(ident("__c_thread_results"), ident("h")),
-                    int_lit(-1),
+                binary(BinOp::And,
+                    expr(ExprKind::IsType {
+                        expr: Box::new(result.clone()), type_name: "number".into(),
+                    }),
+                    integer_eq(result.clone(), int_lit(-1)),
                 ),
                 vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
                 None,
             ),
             var_decl_stmt("task", index_expr(ident("__c_thread_tasks"), ident("h"))),
             if_stmt(
-                binary(BinOp::NotEq, ident("task"), null_lit()),
+                expr(ExprKind::NullCoalesce {
+                    left: Box::new(ident("task")),
+                    right: Box::new(int_lit(0)),
+                }),
                 vec![stmt(StmtKind::Expr(expr(ExprKind::Call {
                     callee: Box::new(ident("__c_task_wait")),
                     args: vec![vybe_ast::Argument::positional(ident("task"))],
@@ -624,10 +634,7 @@ fn thread_join_fn() -> Statement {
                 })))],
                 None,
             ),
-            stmt(StmtKind::Return(Some(index_expr(
-                ident("__c_thread_results"),
-                ident("h"),
-            )))),
+            stmt(StmtKind::Return(Some(result))),
         ],
     )
 }
@@ -643,7 +650,11 @@ fn barrier_wait_fn() -> Statement {
         vec![
             var_decl_stmt("limit", index_expr(ident("__c_barrier_limit"), ident("h"))),
             if_stmt(
-                eq(ident("limit"), null_lit()),
+                expr(ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(
+                    expr(ExprKind::IsType {
+                        expr: Box::new(ident("limit")), type_name: "number".into(),
+                    }),
+                ) }),
                 vec![stmt(StmtKind::Return(Some(int_lit(0))))],
                 None,
             ),
@@ -679,7 +690,7 @@ fn barrier_wait_fn() -> Statement {
             ),
             var_decl_stmt("spins", int_lit(0)),
             stmt(StmtKind::While {
-                cond: eq(
+                cond: binary(BinOp::Integer(vybe_ast::IntOp::Eq, vybe_ast::BitLane::W32),
                     index_expr(ident("__c_barrier_gen"), ident("h")),
                     ident("gen"),
                 ),

@@ -32,7 +32,7 @@ pub fn initialize_input(body: &mut Vec<Statement>) {
     let state_field = |name: &str| member(ident(INPUT_STATE), name);
     let mouse_event = ["mousedown", "mouseup", "mousemove"]
         .into_iter()
-        .map(|kind| binary(BinOp::Eq, event_field("type"), str_lit(kind)))
+        .map(|kind| call_expr(ident("__c_tag_eq"), vec![event_field("type"), str_lit(kind)]))
         .reduce(|left, right| binary(BinOp::Or, left, right))
         .unwrap();
     let mut input_body = vec![run(call_member(

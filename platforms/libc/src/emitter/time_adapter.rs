@@ -271,17 +271,11 @@ fn weekday_name_for(tm: &Expression, full: bool) -> Expression {
     )
 }
 
-fn year_full() -> Expression {
-    year_full_for(&ident("tm"))
-}
 
 fn year_full_for(tm: &Expression) -> Expression {
     add(tm_field_of(tm, "tm_year"), int_lit(1900))
 }
 
-fn hour12() -> Expression {
-    hour12_for(&ident("tm"))
-}
 
 fn hour12_for(tm: &Expression) -> Expression {
     ternary(
@@ -291,9 +285,6 @@ fn hour12_for(tm: &Expression) -> Expression {
     )
 }
 
-fn computed_yday() -> Expression {
-    computed_yday_for(&ident("tm"))
-}
 
 fn computed_yday_for(tm: &Expression) -> Expression {
     call_name(
@@ -306,9 +297,6 @@ fn computed_yday_for(tm: &Expression) -> Expression {
     )
 }
 
-fn sunday_week_number() -> Expression {
-    sunday_week_number_for(&ident("tm"))
-}
 
 fn sunday_week_number_for(tm: &Expression) -> Expression {
     div(
@@ -320,9 +308,6 @@ fn sunday_week_number_for(tm: &Expression) -> Expression {
     )
 }
 
-fn monday_week_number() -> Expression {
-    monday_week_number_for(&ident("tm"))
-}
 
 fn monday_week_number_for(tm: &Expression) -> Expression {
     let monday_zero_wday = modulo(add(tm_field_of(tm, "tm_wday"), int_lit(6)), int_lit(7));

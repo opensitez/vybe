@@ -11,45 +11,33 @@ fn set(c: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn scan(chunks: &mut [Chunk], current: usize, ptr: u16, limit: Option<u16>, line: u32) -> u16 {
-    let c = &mut chunks[current];
-    let len = c.alloc_scratch(1);
-    c.emit_i32_const(0, line);
-    set(c, len, line);
-    let done = c.emit_block(line);
-    let (repeat, _) = c.emit_loop_s(line);
-    if let Some(limit) = limit {
-        get(c, len, line);
-        get(c, limit, line);
-        c.emit_op(Op::I32_GE_U, line);
-        c.emit_br_if(1, line);
-    }
-    get(c, ptr, line);
-    get(c, len, line);
-    c.emit_op(Op::I32_ADD, line);
-    pointers::emit_linear_i32_load8_u(chunks, current, line);
-    let c = &mut chunks[current];
-    c.emit_op(Op::I32_EQZ, line);
-    c.emit_br_if(1, line);
-    get(c, len, line);
-    c.emit_i32_const(1, line);
-    c.emit_op(Op::I32_ADD, line);
-    set(c, len, line);
-    c.emit_br(0, line);
-    c.emit_end(line);
-    c.patch_loop(repeat);
-    c.emit_end(line);
-    c.patch_block(done);
-    len
+    vybe_compiler::primitives::memory_scan::emit_zero_terminated_length(
+        chunks, current, ptr, limit, line,
+    )
 }
 
 pub fn emit_read(chunks: &mut [Chunk], current: usize, text: bool, line: u32) {
+    emit_read_with_limit(chunks, current, text, None, line);
+}
+
+/// Read at most `limit` bytes from a numeric C string pointer. The caller
+/// supplies a nonnegative W32 limit local; managed values retain their adapter.
+pub fn emit_read_bounded(
+    chunks: &mut [Chunk], current: usize, text: bool, limit: u16, line: u32,
+) {
+    emit_read_with_limit(chunks, current, text, Some(limit), line);
+}
+
+fn emit_read_with_limit(
+    chunks: &mut [Chunk], current: usize, text: bool, limit: Option<u16>, line: u32,
+) {
     let c = &mut chunks[current];
     let ptr = c.alloc_scratch(1);
     set(c, ptr, line);
     get(c, ptr, line);
     host::emit(c, "wasm:js-number", "test", 1, line);
     let branch = c.emit_if_value(line);
-    let len = scan(chunks, current, ptr, None, line);
+    let len = scan(chunks, current, ptr, limit, line);
     let c = &mut chunks[current];
     if text {
         canon_marshal::emit_load_utf8(c, line, ptr, len);
@@ -67,6 +55,32 @@ pub fn emit_read(chunks: &mut [Chunk], current: usize, text: bool, line: u32) {
     );
     c.emit_end(line);
     c.patch_block(branch);
+}
+
+#[cfg(test)]
+mod bounded_read_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_numeric_string_read_checks_limit_before_first_load() {
+        for text in [false, true] {
+            let mut chunks = [Chunk::new("bounded-read")];
+            chunks[0].local_count = 1; // local zero holds the caller's W32 limit
+            chunks[0].emit_i32_const(65536, 0);
+            emit_read_bounded(&mut chunks, 0, text, 0, 0);
+            let dump = vybe_runtime::debug::disassemble(&chunks[0]);
+            let first_load = dump.find("i32.load8_u").expect("numeric string scan");
+            let before_load = &dump[..first_load];
+            let guard = before_load.rfind("i32.ge_u").expect("unsigned limit check");
+            assert!(before_load[..guard].contains("local.get 0"));
+            assert!(before_load[guard..].contains("br_if"),
+                "zero limit must exit before touching even the first byte");
+            assert!(chunks[0].imports.iter().any(|import|
+                import.module == "libc:string"
+                    && import.name == if text { "charToStr" } else { "strlenCString" }),
+                "managed fallback retains the existing adapter ABI");
+        }
+    }
 }
 
 /// Adapt immutable string backing to C byte storage before the shared copy.
@@ -112,6 +126,14 @@ fn emit_encoded_byte_copy(chunks: &mut [Chunk], current: usize, binary: bool, li
 
 /// Search byte-addressed C storage, returning an address rather than a suffix.
 pub fn emit_strrchr_linear(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_char_search_linear(chunks, current, line, false);
+}
+
+pub fn emit_strchr_linear(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_char_search_linear(chunks, current, line, true);
+}
+
+fn emit_char_search_linear(chunks: &mut [Chunk], current: usize, line: u32, first_match: bool) {
     let c = &mut chunks[current];
     let first = c.alloc_scratch(4);
     let (ptr, needle, found, byte) = (first, first + 1, first + 2, first + 3);
@@ -132,6 +154,9 @@ pub fn emit_strrchr_linear(chunks: &mut [Chunk], current: usize, line: u32) {
     let matched = c.emit_if(line);
     get(c, ptr, line);
     set(c, found, line);
+    if first_match {
+        c.emit_br(2, line);
+    }
     c.emit_end(line);
     c.patch_block(matched);
     get(c, byte, line);
@@ -160,14 +185,20 @@ pub fn emit_strncpy(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(c, "wasm:js-number", "test", 1, line);
     let destination = c.emit_if_value(line);
     get(c, src, line);
-    set(c, bytes, line);
-    get(c, src, line);
     host::emit(c, "wasm:js-number", "test", 1, line);
     let source = c.emit_if(line);
     let len = scan(chunks, current, src, Some(n), line);
     let c = &mut chunks[current];
     get(c, len, line);
     set(c, count, line);
+    // Both number tests proved linear backing. Retain memory.copy snapshot
+    // semantics without rebuilding spans or crossing the generic helper ABI.
+    get(c, dst, line);
+    get(c, src, line);
+    get(c, count, line);
+    pointers::emit_linear_memory_copy(chunks, current, line);
+    let c = &mut chunks[current];
+    c.emit_op(Op::DROP, line);
     c.emit_else(line);
     host::emit(c, "web:encoding", "encoderNew", 0, line);
     get(c, src, line);
@@ -179,14 +210,14 @@ pub fn emit_strncpy(chunks: &mut [Chunk], current: usize, line: u32) {
     get(c, n, line);
     host::emit(c, "ecma:math", "min", 2, line);
     set(c, count, line);
-    c.emit_end(line);
-    c.patch_block(source);
     get(c, dst, line);
     get(c, bytes, line);
     get(c, count, line);
     pointers::emit_byte_copy(chunks, current, line);
     let c = &mut chunks[current];
     c.emit_op(Op::DROP, line);
+    c.emit_end(line);
+    c.patch_block(source);
     get(c, dst, line);
     get(c, count, line);
     c.emit_op(Op::I32_ADD, line);
@@ -245,11 +276,12 @@ pub fn emit_pointer(chunks: &mut [Chunk], current: usize, write: bool, line: u32
 
 pub fn emit_strdup(chunks: &mut [Chunk], current: usize, line: u32) {
     let c = &mut chunks[current];
-    let first = c.alloc_scratch(3);
-    let (src, count, dst) = (first, first + 1, first + 2);
+    let first = c.alloc_scratch(4);
+    let (src, count, dst, linear) = (first, first + 1, first + 2, first + 3);
     set(c, src, line);
     get(c, src, line);
     host::emit(c, "wasm:js-number", "test", 1, line);
+    c.emit_op_u16(Op::LOCAL_TEE, linear, line);
     let source = c.emit_if(line);
     let len = scan(chunks, current, src, None, line);
     let c = &mut chunks[current];
@@ -269,15 +301,26 @@ pub fn emit_strdup(chunks: &mut [Chunk], current: usize, line: u32) {
     get(c, count, line);
     c.emit_i32_const(1, line);
     c.emit_op(Op::I32_ADD, line);
-    pointers::emit_linear_alloc(chunks, current, line);
+    super::heap_memory::emit_alloc(chunks, current, line);
     let c = &mut chunks[current];
     set(c, dst, line);
+    get(c, linear, line);
+    let copy = c.emit_if(line);
+    get(c, dst, line);
+    get(c, src, line);
+    get(c, count, line);
+    pointers::emit_linear_memory_copy(chunks, current, line);
+    let c = &mut chunks[current];
+    c.emit_op(Op::DROP, line);
+    c.emit_else(line);
     get(c, dst, line);
     get(c, src, line);
     get(c, count, line);
     pointers::emit_byte_copy(chunks, current, line);
     let c = &mut chunks[current];
     c.emit_op(Op::DROP, line);
+    c.emit_end(line);
+    c.patch_block(copy);
     get(c, dst, line);
     get(c, count, line);
     c.emit_op(Op::I32_ADD, line);

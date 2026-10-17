@@ -10,10 +10,12 @@
 //! semantics are centralised here.
 
 pub mod bessel;
+pub mod byte_memory;
 pub mod build;
 pub mod c_runtime;
 pub mod ctype;
 pub mod dirent_adapter;
+pub mod heap_memory;
 pub mod dispatch;
 pub mod math_adapter;
 pub mod math_runtime;
@@ -27,6 +29,7 @@ pub mod sdl_runtime;
 pub mod sqlite_adapter;
 pub mod stdio_adapter;
 pub mod stdio_format;
+pub mod stdio_terminal;
 pub mod stdlib_adapter;
 pub mod stdlib_runtime;
 pub mod string_adapter;

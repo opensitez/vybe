@@ -40,7 +40,7 @@ fn emit_opendir(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_SET, path, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path, line);
-    fs_path::emit_is_dir(chunk, line);
+    fs_path::emit_is_dir_condition(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, path, line);
     fs_path::emit_list_dir(chunk, line);

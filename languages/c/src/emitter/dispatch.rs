@@ -89,6 +89,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     }
 
     match name {
+        "c.invoke_fixed" => {
+            callable::emit_stacked_invoke(chunks, current, _argc - 1, line);
+        }
         "c.array_get" => {
             chunks[current].emit_op(Op::ARRAY_GET, line);
         }
