@@ -19,20 +19,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
-name = "accelerate"
-version = "0.1.0"
-dependencies = [
- "libloading",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-foundation 0.3.2",
- "objc2-quartz-core 0.3.2",
- "raw-window-handle",
- "tiny-skia 0.12.0",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -148,12 +134,6 @@ dependencies = [
  "windows-sys 0.60.2",
  "x11rb",
 ]
-
-[[package]]
-name = "array-init"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d62b7694a562cdf5a74227903507c56ab2cc8bdd1f781ed5cb4cf9c9f810bfc"
 
 [[package]]
 name = "arrayref"
@@ -808,7 +788,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "code_editor"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "arboard",
  "crossbeam-channel",
@@ -1275,6 +1255,38 @@ checksum = "ecc8e1361066d91f5ffccff060a3c3be9c3ecde15be2959c1937595f7a82a9f8"
 dependencies = [
  "libc",
  "linux-raw-sys 0.9.4",
+]
+
+[[package]]
+name = "dx"
+version = "0.7.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "form_urlencoded",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "indexmap",
+ "mime_guess",
+ "percent-encoding",
+ "serde_json",
+ "tiny-skia 0.12.0",
+ "tokio",
+ "uuid",
+ "vybe_compiler",
+ "vybe_language_csharp",
+ "vybe_language_powershell",
+ "vybe_language_vb",
+ "vybe_platform_dotnet",
+ "vybe_platform_ecma",
+ "vybe_platform_node",
+ "vybe_platform_wasi",
+ "vybe_platform_wasm",
+ "vybe_platform_web",
+ "vybe_runtime",
+ "webcore",
 ]
 
 [[package]]
@@ -1860,6 +1872,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbrown"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash 0.2.0",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "hashlink"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2013,7 +2036,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-layer",
@@ -2654,12 +2677,12 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.13.0"
+version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
+checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "serde",
  "serde_core",
 ]
@@ -2809,48 +2832,6 @@ dependencies = [
  "futures-util",
  "once_cell",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "jxl"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43b041e4bd5bb931cf73b271bc3304eb135bb473914877d64bf77fdf5b4d4687"
-dependencies = [
- "array-init",
- "byteorder",
- "jxl_macros",
- "jxl_simd",
- "jxl_transforms",
- "num-derive",
- "num-traits",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "jxl_macros"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7401c9c53e44e2efa17d7562c613f0972b93cf134aa91f08c14e00c8278ce663"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "jxl_simd"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba1f65c01a3f807385be7a1200f78b9d958bff1321b753b859ecfcba63a0642d"
-
-[[package]]
-name = "jxl_transforms"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f72e196c6c1e938a4c7e2175d7c83464fa9e7f587224d310cac15d83fc80a37"
-dependencies = [
- "jxl_simd",
 ]
 
 [[package]]
@@ -3306,17 +3287,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
 
 [[package]]
-name = "num-derive"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed3955f1a9c7c0c15e092f9c887db08b1fc683305fdf6eb6684f22555355e202"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "num-integer"
 version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3765,7 +3735,7 @@ dependencies = [
 
 [[package]]
 name = "osbrowser"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -4166,7 +4136,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4204,7 +4174,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -5869,17 +5839,52 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vx"
+version = "0.7.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "form_urlencoded",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "indexmap",
+ "mime_guess",
+ "percent-encoding",
+ "serde_json",
+ "tiny-skia 0.12.0",
+ "tokio",
+ "uuid",
+ "vybe_compiler",
+ "vybe_language_c",
+ "vybe_language_go",
+ "vybe_language_js",
+ "vybe_language_php",
+ "vybe_language_python",
+ "vybe_platform_ecma",
+ "vybe_platform_libc",
+ "vybe_platform_node",
+ "vybe_platform_wasi",
+ "vybe_platform_wasm",
+ "vybe_platform_web",
+ "vybe_runtime",
+ "webcore",
+]
+
+[[package]]
 name = "vybe_ast"
-version = "0.6.2"
+version = "0.7.0"
 
 [[package]]
 name = "vybe_compiler"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "crossbeam-channel",
  "quick-xml 0.39.2",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "toml",
  "uuid",
@@ -5897,27 +5902,29 @@ dependencies = [
  "vybe_platform_web",
  "vybe_runtime",
  "vybex",
- "wasmparser",
+ "wasmparser 0.244.0",
 ]
 
 [[package]]
 name = "vybe_language_c"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
  "inventory",
+ "libc",
  "vybe_ast",
  "vybe_compiler",
  "vybe_platform_libc",
  "vybe_platform_wasm",
+ "vybe_platform_web",
  "vybe_runtime",
- "wasmparser",
+ "wasmparser 0.244.0",
 ]
 
 [[package]]
 name = "vybe_language_cobol"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -5929,7 +5936,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_csharp"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -5944,7 +5951,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_dart"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -5952,12 +5959,14 @@ dependencies = [
  "vybe_ast",
  "vybe_compiler",
  "vybe_platform_flutter",
+ "vybe_platform_wasm",
  "vybe_runtime",
+ "wasmparser 0.244.0",
 ]
 
 [[package]]
 name = "vybe_language_fortran"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -5969,7 +5978,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_go"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -5982,7 +5991,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_java"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -5996,20 +6005,22 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_js"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
  "inventory",
+ "libc",
  "vybe_ast",
  "vybe_compiler",
  "vybe_platform_dotnet",
+ "vybe_platform_wasm",
  "vybe_runtime",
 ]
 
 [[package]]
 name = "vybe_language_kotlin"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -6022,7 +6033,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_lua"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -6034,7 +6045,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_pascal"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -6048,7 +6059,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_php"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "getrandom 0.2.17",
  "glob",
@@ -6062,12 +6073,14 @@ dependencies = [
  "uuid",
  "vybe_ast",
  "vybe_compiler",
+ "vybe_platform_wasm",
  "vybe_runtime",
+ "wasmparser 0.244.0",
 ]
 
 [[package]]
 name = "vybe_language_powershell"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -6080,7 +6093,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_python"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -6095,7 +6108,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_ruby"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -6108,7 +6121,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_vb"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "grameo",
@@ -6119,12 +6132,13 @@ dependencies = [
  "vybe_compiler",
  "vybe_language_js",
  "vybe_platform_dotnet",
+ "vybe_platform_web",
  "vybe_runtime",
 ]
 
 [[package]]
 name = "vybe_language_washm"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
@@ -6136,20 +6150,24 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_wast"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "grameo",
  "grameo_codegen",
  "inventory",
+ "semver",
  "vybe_ast",
  "vybe_compiler",
+ "vybe_platform_ecma",
  "vybe_platform_wasm",
  "vybe_runtime",
+ "wasmparser 0.261.0",
+ "wat",
 ]
 
 [[package]]
 name = "vybe_platform_dotnet"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "inventory",
  "quick-xml 0.39.2",
@@ -6164,7 +6182,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_ecma"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -6176,8 +6194,10 @@ dependencies = [
  "indexmap",
  "intl_pluralrules",
  "inventory",
+ "memchr",
  "regex",
  "regress",
+ "serde_json",
  "unic-langid",
  "unicode-normalization",
  "unicode-segmentation",
@@ -6188,7 +6208,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_flutter"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "inventory",
  "vybe_ast",
@@ -6198,7 +6218,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_jvm"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "inventory",
  "vybe_ast",
@@ -6208,7 +6228,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_libc"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "inventory",
  "vybe_ast",
@@ -6218,7 +6238,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_node"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "brotli 7.0.0",
  "flate2",
@@ -6239,7 +6259,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_plib"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "inventory",
  "vybe_ast",
@@ -6249,7 +6269,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_wasi"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "blake2",
  "getrandom 0.2.17",
@@ -6272,17 +6292,20 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_wasm"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "indexmap",
  "inventory",
+ "serde_json",
+ "vybe_ast",
+ "vybe_platform_ecma",
  "vybe_runtime",
- "wasmparser",
+ "wasmparser 0.261.0",
 ]
 
 [[package]]
 name = "vybe_platform_web"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "form_urlencoded",
  "inventory",
@@ -6302,7 +6325,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_runtime"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "indexmap",
  "inventory",
@@ -6313,7 +6336,7 @@ dependencies = [
 
 [[package]]
 name = "vybex"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "bytes",
  "dashmap",
@@ -6494,7 +6517,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "990065f2fe63003fe337b932cfb5e3b80e0b4d0f5ff650e6985b1048f62c8319"
 dependencies = [
  "leb128fmt",
- "wasmparser",
+ "wasmparser 0.244.0",
+]
+
+[[package]]
+name = "wasm-encoder"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2608e8bb6d67fd68f5a8d0eb1363d6e7bcbc1f8ded5a0bd3a1e382462b876b22"
+dependencies = [
+ "leb128fmt",
+ "wasmparser 0.261.0",
 ]
 
 [[package]]
@@ -6505,8 +6538,8 @@ checksum = "bb0e353e6a2fbdc176932bbaab493762eb1255a7900fe0fea1a2f96c296cc909"
 dependencies = [
  "anyhow",
  "indexmap",
- "wasm-encoder",
- "wasmparser",
+ "wasm-encoder 0.244.0",
+ "wasmparser 0.244.0",
 ]
 
 [[package]]
@@ -6520,6 +6553,41 @@ dependencies = [
  "indexmap",
  "semver",
  "serde",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f20f20e44f7e8aeb6744823ea9d869ede51e51be4fdaedede2852282e54d2d8"
+dependencies = [
+ "bitflags 2.11.0",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "semver",
+ "serde",
+]
+
+[[package]]
+name = "wast"
+version = "261.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "776443145731a4062e5b0d392892a2005909b6ab72d9fdc3cad53dd1a714e44a"
+dependencies = [
+ "bumpalo",
+ "leb128fmt",
+ "memchr",
+ "unicode-width",
+ "wasm-encoder 0.261.0",
+]
+
+[[package]]
+name = "wat"
+version = "1.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7b4d1a49ea73a8f3326e74e3a05db667001b16bd1035ed3356fc1a0ed05ca7f"
+dependencies = [
+ "wast",
 ]
 
 [[package]]
@@ -6654,8 +6722,9 @@ dependencies = [
 [[package]]
 name = "webcanvas"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c967d5dd8d219f54a5df224b962b6ffee495059e5f0322af519d5603533acf23"
 dependencies = [
- "accelerate",
  "base64 0.21.7",
  "cosmic-text",
  "image",
@@ -6667,9 +6736,9 @@ dependencies = [
 [[package]]
 name = "webcore"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "430deb09d3d7e2cfbeeaa6f1cb37298673ed4fef9a0326ba1ec29ce02a9529f8"
 dependencies = [
- "accelerate",
- "arboard",
  "base64 0.21.7",
  "bytemuck",
  "cosmic-text",
@@ -6677,13 +6746,17 @@ dependencies = [
  "fontdb",
  "image",
  "mime",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "png",
  "rand 0.8.5",
  "raw-window-handle",
  "rayon",
  "reqwest",
- "rfd 0.15.4",
- "serde_json",
+ "rfd 0.14.1",
  "softbuffer",
  "swash",
  "tiny-skia 0.12.0",
@@ -6698,12 +6771,12 @@ dependencies = [
 [[package]]
 name = "webmedia"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e93d518395cca9139400cb341eb96e11a0aa782463e7dcaed35e83a6341195c4"
 dependencies = [
- "accelerate",
  "brotli 8.0.4",
  "flate2",
  "image",
- "jxl",
  "url",
 ]
 
@@ -6768,7 +6841,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -7203,9 +7276,9 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "wasm-encoder",
+ "wasm-encoder 0.244.0",
  "wasm-metadata",
- "wasmparser",
+ "wasmparser 0.244.0",
  "wit-parser",
 ]
 
@@ -7224,7 +7297,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "unicode-xid",
- "wasmparser",
+ "wasmparser 0.244.0",
 ]
 
 [[package]]
@@ -7750,3 +7823,15 @@ dependencies = [
  "syn 3.0.6",
  "winnow",
 ]
+
+[[patch.unused]]
+name = "webcanvas"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "webcore"
+version = "0.5.0"
+
+[[patch.unused]]
+name = "webmedia"
+version = "0.2.0"

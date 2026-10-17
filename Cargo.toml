@@ -7,6 +7,8 @@ members = [
     "crates/vybe_runtime",
     "crates/vybe_compiler",
     "crates/vybex",
+    "crates/vx",
+    "crates/dx",
     "crates/testrunner",
     "crates/vybe_ast",
     "languages/java",
@@ -155,7 +157,7 @@ vybe_platform_jvm = { path = "platforms/jvm" }
 vybe_platform_plib = { path = "platforms/plib" }
 widgets = "0.2.0"
 # The HTML/CSS engine behind `web:*` when the `engine-webcore` feature is on.
-webcore = "0.4.0"
+webcore = "0.5.0"
 vybe_compiler = { path = "crates/vybe_compiler" }
 osbrowser = { path = "crates/osbrowser" }
 vybex = { path = "crates/vybex" }
@@ -165,10 +167,19 @@ opt-level = 2
 [profile.dev.package.vybe_language_php]
 opt-level = 2
 
+[profile.dev.package.vybe_language_js]
+opt-level = 2
+
+[profile.dev.package.vybe_language_python]
+opt-level = 2
+
 [profile.dev.package.grameo]
 opt-level = 2
 
 [profile.dev.package.vybe_runtime]
+opt-level = 2
+
+[profile.dev.package.wasmparser]
 opt-level = 2
 
 [profile.dev.package.webcore]
