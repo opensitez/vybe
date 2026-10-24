@@ -375,14 +375,7 @@ impl<'i> Ast<'i> {
         self.arena.rollback(mark - self.mode_undo.len());
     }
     fn span(&self, span: grameo::Span) -> Span {
-        let (start_line, start_col) = offset_to_line_col(span.start, &self.lines);
-        let (end_line, end_col) = offset_to_line_col(span.end, &self.lines);
-        Span {
-            start_line,
-            start_col,
-            end_line,
-            end_col,
-        }
+        span_from_offsets(span.start, span.end, &self.lines)
     }
     fn push(&mut self, value: Value) {
         let id = self.arena.alloc(value);
@@ -1379,8 +1372,8 @@ mod tests {
             "$_GET + 1", "1 / 0", "9223372036854775807 + 1", "-9223372036854775807 - 2",
             "(9223372036854775807 + 1) * 2", "(1 / 0) + 2"] {
             let mut walker = PhpWalker::default();
-            let pair = parse_pairs_with_frontend(&mut walker, true, false,
-                Rule::comparison_expression, source).unwrap().next().unwrap();
+            let pair = parse_pairs_with_source_units_and_commit(&mut walker, true, false,
+                Rule::comparison_expression, source, None, None).unwrap().next().unwrap();
             for lhs_depth in [0, 1, 0] {
                 walker.assign_lhs_depth = lhs_depth;
                 let actual = walk_expression(&mut walker, pair.clone()).unwrap();
@@ -1404,8 +1397,8 @@ mod tests {
             ("$_GET + 1", NEEDS_GLOBAL_BINDING | NEEDS_SUPERGLOBAL_BINDING),
         ] {
             let mut walker = PhpWalker::default();
-            let pair = parse_pairs_with_frontend(&mut walker, true, false,
-                Rule::comparison_expression, source).unwrap().next().unwrap();
+            let pair = parse_pairs_with_source_units_and_commit(&mut walker, true, false,
+                Rule::comparison_expression, source, None, None).unwrap().next().unwrap();
             let span = pair.as_span();
             let cached = walker.direct_expressions.get(&(span.start(), span.end())).unwrap();
             let CachedExpression::Deferred { normalization, .. } = cached else {

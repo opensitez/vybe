@@ -32,8 +32,7 @@ fn compile(module: &Module, arrays: bool, interpolation: bool) -> Vec<Chunk> {
     }).with_run_module_end_hooks(false).compile(module).unwrap();
     let wasm = vybe_platform_wasm::write_wasm_with_options(&chunks,
         vybe_platform_wasm::WasmWriteOptions {include_vybe_metadata:false,include_name_section:true});
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm).unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
     chunks
 }
 

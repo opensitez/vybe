@@ -18,8 +18,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     match name {
         "php.isnumeric" => {
             vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
-            let index = chunks[current].add_import("php:value", "isNumeric");
-            chunks[current].emit_call(index, 1, line);
+            super::value_adapter::emit_is_numeric(&mut chunks[current], line);
             return true;
         }
         "php.regex_match_all_pat_first" => {

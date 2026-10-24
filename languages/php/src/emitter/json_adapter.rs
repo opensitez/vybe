@@ -30,6 +30,19 @@ pub fn emit_php_json_normalize(
         c.emit_bool_const(true, line);
         lset(c, props_slot, line);
     }
+    if super::php_array_type::ENABLED {
+        // Every visited value is read through its `$PhpArray` storage.
+        let ty = super::php_array_type::typeidx(chunks);
+        vybe_compiler::primitives::json::emit_normalize_with_entry(
+            chunks,
+            current,
+            "__php_json_normalize",
+            &|chunk: &mut Chunk, line| super::php_array_type::emit_store_of_in(chunk, ty, line),
+            [value_slot, default_slot, sort_slot, props_slot],
+            line,
+        );
+        return;
+    }
     vybe_compiler::primitives::json::emit_normalize(
         chunks,
         current,

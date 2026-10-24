@@ -957,6 +957,9 @@ pub fn emit_php_serialize(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, li
 }
 
 fn emit_php_serialize_with_helper(chunks: &mut Vec<Chunk>, current: usize, helper_idx: usize, line: u32) {
+    if super::php_array_type::ENABLED {
+        super::php_array_type::emit_leaf_arguments(chunks, current, "php.serialize", 1, line);
+    }
     let chunk = &mut chunks[current];
     let value_slot = alloc_local(chunk);
     lset(chunk, value_slot, line);

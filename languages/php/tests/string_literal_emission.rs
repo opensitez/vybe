@@ -44,8 +44,7 @@ fn run(chunks: Vec<Chunk>) -> Value {
 
 fn validate_wasm(chunks: &[Chunk]) {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).expect("string adapter emission must remain standard Wasm");
+    vybe_platform_wasm::validate_binary(&bytes).expect("string adapter emission must remain standard Wasm");
 }
 
 #[test]

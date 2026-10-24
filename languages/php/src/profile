@@ -484,10 +484,16 @@ is_object           = { emit = "common:php.is_object",           min_args = 1, m
 # ── Array functions ─────────────────────────────────────────────────────────
 
 __vybe_php_array_read = { emit = "common:php.array_read_deref", min_args = 2, max_args = 2 }
+__vybe_php_array_read_key = { emit = "common:php.array_read_key", min_args = 2, max_args = 2 }
+__php_unset_capture = { emit = "common:php.unset_capture", min_args = 2, max_args = 2 }
+__php_unset_release = { emit = "common:php.unset_release", min_args = 0, max_args = 0 }
 __vybe_php_quiet_index = { emit = "common:php.quiet_index", min_args = 2, max_args = 2 }
 __vybe_php_nested_member_set = { emit = "host:php:array:nested_member_set", min_args = 5, max_args = 5 }
-__vybe_php_local_set = { emit = "host:php:array:local_set", min_args = 3, max_args = 3 }
-__vybe_php_local_append = { emit = "host:php:array:local_append", min_args = 2, max_args = 2 }
+__php_array_own = { emit = "common:php.array_own", min_args = 1, max_args = 1 }
+__php_array_wrap = { emit = "common:php.array_wrap", min_args = 1, max_args = 1 }
+__php_array_storage_mut = { emit = "common:php.array_storage_mut", min_args = 1, max_args = 1 }
+__vybe_php_local_set = { emit = "common:php.local_set", min_args = 3, max_args = 3 }
+__vybe_php_local_append = { emit = "common:php.local_append", min_args = 2, max_args = 2 }
 __vybe_php_property_inaccessible = { emit = "host:php:property:isInaccessible", min_args = 3, max_args = 3 }
 __vybe_php_recursive_files = { emit = "host:php:spl:recursiveFiles", min_args = 1, max_args = 1 }
 __php_spl_directory_entries = { emit = "host:php:spl:directoryEntries", min_args = 2, max_args = 2 }
@@ -503,13 +509,13 @@ count               = { emit = "common:php.count",                min_args = 1, 
 sizeof              = { emit = "common:php.count",                min_args = 1, max_args = 2 }
 array_push          = { emit = "common:php.array_push_g",          min_args = 2, max_args = 255 }
 array_pop           = { emit = "common:php.array_pop_g",           min_args = 1, max_args = 1 }
-current             = { emit = "host:php:array:current",            min_args = 1, max_args = 1 }
-reset               = { emit = "host:php:array:reset",              min_args = 1, max_args = 1 }
-next                = { emit = "host:php:array:next",               min_args = 1, max_args = 1 }
-end                 = { emit = "host:php:array:end",                min_args = 1, max_args = 1 }
-prev                = { emit = "host:php:array:prev",               min_args = 1, max_args = 1 }
-array_shift         = { emit = "common:array_shift",               min_args = 1, max_args = 1 }
-array_unshift       = { emit = "host:ecma:array:unshift",          min_args = 2, max_args = 255 }
+current             = { emit = "common:php.cursor_current",            min_args = 1, max_args = 1 }
+reset               = { emit = "common:php.cursor_reset",              min_args = 1, max_args = 1 }
+next                = { emit = "common:php.cursor_next",               min_args = 1, max_args = 1 }
+end                 = { emit = "common:php.cursor_end",                min_args = 1, max_args = 1 }
+prev                = { emit = "common:php.cursor_prev",               min_args = 1, max_args = 1 }
+array_shift         = { emit = "common:php.array_shift",               min_args = 1, max_args = 1 }
+array_unshift       = { emit = "common:php.array_unshift",          min_args = 2, max_args = 255 }
 array_reverse       = { emit = "common:php.array_reverse",         min_args = 1, max_args = 2 }
 array_rand          = { emit = "common:php.array_rand",            min_args = 1, max_args = 2 }
 in_array            = { emit = "common:php.in_array",              min_args = 2, max_args = 3 }
@@ -533,8 +539,8 @@ __php_offset__      = { emit = "common:php.offset",                min_args = 2,
 __php_key__         = { emit = "common:php.key",                   min_args = 1, max_args = 1 }
 __php_copy_on_assign = { emit = "common:php.copy_on_assign",       min_args = 1, max_args = 1 }
 __php_is_arrayobject = { emit = "host:php:array:isArrayObject",    min_args = 1, max_args = 1 }
-__php_arrayobject_exchange = { emit = "host:php:array:objectExchange", min_args = 2, max_args = 2 }
-__php_arrayobject_copy = { emit = "host:php:array:objectCopy", min_args = 1, max_args = 1 }
+__php_arrayobject_exchange = { emit = "common:php.arrayobject_exchange", min_args = 2, max_args = 2 }
+__php_arrayobject_copy = { emit = "common:php.arrayobject_copy", min_args = 1, max_args = 1 }
 __php_stringify_value = { emit = "common:php.concat_stringify", min_args = 1, max_args = 1 }
 __php_strict_eq     = { emit = "common:php.strict_eq",             min_args = 2, max_args = 2 }
 array_fill          = { emit = "common:php.array_fill",            min_args = 3, max_args = 3 }
@@ -575,7 +581,7 @@ __php_foreach_protocol_next = { emit = "common:php.foreach_protocol_next", min_a
 __php_foreach_protocol_rewind = { emit = "common:php.foreach_protocol_rewind", min_args = 1, max_args = 1 }
 __php_foreach_protocol_key = { emit = "common:php.foreach_protocol_key", min_args = 1, max_args = 1 }
 __php_foreach_protocol_getiterator = { emit = "common:php.foreach_protocol_getiterator", min_args = 1, max_args = 1 }
-__php_foreach_entries = { emit = "host:ecma:object:entries", min_args = 1, max_args = 1 }
+__php_foreach_entries = { emit = "common:php.foreach_entries", min_args = 1, max_args = 1 }
 __php_foreach_get = { emit = "host:ecma:array:get", min_args = 2, max_args = 2 }
 __php_foreach_length = { emit = "host:ecma:array:length", min_args = 1, max_args = 1 }
 array_is_list        = { emit = "common:php.array_is_list",      min_args = 1, max_args = 1 }
@@ -637,7 +643,7 @@ array_count_values  = { emit = "common:php.array_count_values",   min_args = 1, 
 array_column        = { emit = "common:php.array_column",         min_args = 2, max_args = 3 }
 array_key_first     = { emit = "common:php.array_key_first",      min_args = 1, max_args = 1 }
 array_key_last      = { emit = "common:php.array_key_last",       min_args = 1, max_args = 1 }
-key                 = { emit = "host:php:array:key",                min_args = 1, max_args = 1 }
+key                 = { emit = "common:php.cursor_key",                min_args = 1, max_args = 1 }
 
 # Assoc-array sort family — mutates the object in place, preserving
 # the caller's reference (PHP arrays are JS objects in our model).
@@ -748,7 +754,7 @@ sprintf             = { emit = "common:sprintf.format",     min_args = 1, max_ar
 
 # ── Internal helpers — AST rewrite targets ─────────────────────────────────
 
-__php_substr        = { emit = "host:php:string:substr",         min_args = 2, max_args = 3 }
+__php_substr        = { emit = "common:php.substr_bytes",        min_args = 2, max_args = 3 }
 __php_mb_substr     = { emit = "common:php.mb_substr",          min_args = 2, max_args = 3 }
 __php_strpos        = { emit = "common:php.strpos",             min_args = 2, max_args = 3 }
 __php_array_search  = { emit = "intrinsic:php_array_search",    min_args = 2, max_args = 3 }
@@ -884,7 +890,7 @@ __php_closure_this = { emit = "host:php:environment:closureThis", min_args = 1, 
 __php_closure_called_class = { emit = "host:php:environment:closureCalledClass", min_args = 1, max_args = 1 }
 __php_reflection_class_name = { emit = "host:php:environment:reflectionClassName", min_args = 1, max_args = 1 }
 __php_get_class_methods_runtime = { emit = "host:php:environment:getClassMethods", min_args = 1, max_args = 1 }
-__php_unpack_values = { emit = "host:php:array:unpackValues", min_args = 1, max_args = 1 }
+__php_unpack_values = { emit = "common:php.unpack_values", min_args = 1, max_args = 1 }
 getallheaders        = { emit = "host:php:environment:getallheaders", min_args = 0, max_args = 0 }
 apache_request_headers = { emit = "host:php:environment:getallheaders", min_args = 0, max_args = 0 }
 __php_getallheaders_host = { emit = "host:php:environment:getallheaders", min_args = 0, max_args = 0 }
@@ -1370,7 +1376,7 @@ array  = ["array", "iterable"]
 compare = "common:php.compare3"
 # Typed strings can use the runtime's UTF-8 byte length directly. Generic
 # strlen still applies PHP scalar coercion in common:php.strlen first.
-len = "host:php:string:byteLength"
+len = "host:wasm:text-encoder:measureStringAsUTF8"
 # `==` / `!=`. PHP's loose equality coerces (`"1" == 1` is true) and is NOT the
 # platform's `ops::emit_dyn_eq`.
 #

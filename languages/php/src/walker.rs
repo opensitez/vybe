@@ -1069,7 +1069,6 @@ struct ClassMeta {
     // final tests exercise it through `eval()`, i.e. a runtime path).
     is_final: bool,
     methods: Vec<MethodMeta>,
-    has_destructor: bool,
     fields: Vec<FieldMeta>,
     field_defaults: Vec<(String, Expression)>,
     dynamic_instance_field_writes: bool,
@@ -1147,6 +1146,74 @@ fn build_line_starts(source: &str) -> Vec<usize> {
     starts
 }
 
+/// Resolve both ends of one span with one search for the common single-line
+/// case. Source offsets remain byte-based, including the exclusive end offset;
+/// an end exactly at the next line's start must still advance to that line.
+fn span_from_offsets(start: usize, end: usize, line_starts: &[usize]) -> Span {
+    let start_index = match line_starts.binary_search(&start) {
+        Ok(index) => index,
+        Err(next_index) => next_index.saturating_sub(1),
+    };
+    let start_base = line_starts.get(start_index).copied().unwrap_or(0);
+    let start_line = (start_index + 1) as u32;
+    let start_col = (start.saturating_sub(start_base) + 1) as u32;
+    let (end_line, end_col) = if end >= start_base
+        && line_starts.get(start_index + 1).is_none_or(|next| end < *next)
+    {
+        (start_line, (end.saturating_sub(start_base) + 1) as u32)
+    } else {
+        offset_to_line_col(end, line_starts)
+    };
+    Span { start_line, start_col, end_line, end_col }
+}
+
+#[cfg(test)]
+mod span_endpoint_lookup_tests {
+    use super::*;
+
+    fn expected(start: usize, end: usize, lines: &[usize]) -> (u32, u32, u32, u32) {
+        let (start_line, start_col) = offset_to_line_col(start, lines);
+        let (end_line, end_col) = offset_to_line_col(end, lines);
+        (start_line, start_col, end_line, end_col)
+    }
+    fn actual(start: usize, end: usize, lines: &[usize]) -> (u32, u32, u32, u32) {
+        let span = span_from_offsets(start, end, lines);
+        (span.start_line, span.start_col, span.end_line, span.end_col)
+    }
+
+    #[test]
+    fn endpoint_lookup_preserves_byte_columns_and_exclusive_line_boundaries() {
+        for source in ["", "\n", "a\r\nb\n", "λ😀\0x\n\nend"] {
+            let lines = build_line_starts(source);
+            for start in 0..=source.len()+2 {
+                for end in 0..=source.len()+2 {
+                    assert_eq!(actual(start, end, &lines), expected(start, end, &lines));
+                }
+            }
+        }
+        assert_eq!(actual(2, 4, &[0, 4, 8]), (1, 3, 2, 1));
+        assert_eq!(actual(4, 4, &[0, 4, 8]), (2, 1, 2, 1));
+    }
+
+    #[test]
+    fn endpoint_lookup_preserves_empty_maps_reverse_ranges_and_large_columns() {
+        for lines in [vec![], vec![0], vec![4, 8, 12], vec![0, 32, 64, 65, 200]] {
+            for start in 0..256 {
+                for end in 0..256 {
+                    assert_eq!(actual(start, end, &lines), expected(start, end, &lines));
+                }
+            }
+        }
+        if usize::BITS > 32 {
+            for start in [u32::MAX as usize, u32::MAX as usize+7] {
+                for end in [start, start+1, start+20] {
+                    assert_eq!(actual(start, end, &[0]), expected(start, end, &[0]));
+                }
+            }
+        }
+    }
+}
+
 fn offset_to_line_col(offset: usize, line_starts: &[usize]) -> (u32, u32) {
     let line_index = match line_starts.binary_search(&offset) {
         Ok(index) => index,
@@ -1191,6 +1258,10 @@ struct PhpWalker {
     function_temp_stack: Vec<Vec<VarDeclarator>>,
     method_this_class_stack: Vec<Option<String>>,
     function_symbol_scope_stack: Vec<Option<String>>,
+    /// Per function: its variable names in compiled-variable order (bindings,
+    /// then first lexical use), collected only when the body calls
+    /// `get_defined_vars`.
+    function_variable_names_stack: Vec<(Vec<String>, Option<Vec<String>>)>,
     function_value_capture_stack: Vec<std::collections::HashSet<String>>,
     method_type_stack: Vec<String>,
     namespace_stack: Vec<String>,
@@ -1216,8 +1287,6 @@ struct PhpWalker {
     predeclared_type_names: std::collections::HashSet<String>,
     simple_array_vars: std::collections::HashMap<String, Vec<(String, Expression)>>,
     simple_string_vars: std::collections::HashMap<String, String>,
-    simple_string_constants: std::collections::HashMap<String, String>,
-    simple_value_constants: std::collections::HashMap<String, Expression>,
     simple_value_vars: std::collections::HashMap<String, Expression>,
     simple_object_class_vars: std::collections::HashMap<String, String>,
     simple_clone_object_fields:
@@ -1634,18 +1703,21 @@ fn php_push_function_scope<'a>(
     bindings: impl IntoIterator<Item = &'a str>,
 ) {
     __php_w.function_stack.push(name);
-    __php_w.function_bound_stack.push(bindings.into_iter()
+    let bindings: Vec<String> = bindings.into_iter()
         .map(|name| name.trim_start_matches('&').trim_start_matches('$').to_string())
-        .collect());
+        .collect();
+    __php_w.function_bound_stack.push(bindings.iter().cloned().collect());
     __php_w.function_temp_stack.push(Vec::new());
     __php_w.method_this_class_stack.push(None);
     __php_w.function_symbol_scope_stack.push(None);
+    __php_w.function_variable_names_stack.push((bindings, None));
     __php_w.function_value_capture_stack.push(Default::default());
     __php_w.function_global_stack.push(Default::default());
 }
 
 fn php_pop_function_scope(__php_w: &mut PhpWalker) -> Vec<Statement> {
     let symbol_scope = __php_w.function_symbol_scope_stack.pop().flatten();
+    __php_w.function_variable_names_stack.pop();
     let value_captures = __php_w.function_value_capture_stack.pop().unwrap_or_default();
     let bindings = __php_w.function_bound_stack.last().cloned().unwrap_or_default();
     __php_w.function_stack.pop();
@@ -1738,6 +1810,15 @@ fn extract_scope_source_guard_preserves_nested_callable_boundaries() {
 
 
 fn php_body_has_runtime_include(pair: &Pair<Rule>) -> bool {
+    // Every include_expression contains an ASCII include/require keyword.
+    // A negative source check therefore excludes the entire capture walk;
+    // positive text (including comments/strings) still takes the exact
+    // scope-aware capture path, never an inferred include dependency.
+    source_unit_admission::may_contain_source_load(pair.as_str())
+        && php_body_has_runtime_include_captures(pair)
+}
+
+fn php_body_has_runtime_include_captures(pair: &Pair<Rule>) -> bool {
     // Includes execute in the current symbol table. A copied table followed
     // by delayed writeback leaves the caller's outgoing object rooted during
     // an included assignment, postponing (or losing) its destructor.
@@ -1747,7 +1828,40 @@ fn php_body_has_runtime_include(pair: &Pair<Rule>) -> bool {
         Rule::closure_expression | Rule::arrow_function | Rule::function_declaration
         | Rule::class_declaration | Rule::interface_declaration | Rule::trait_declaration => false,
         Rule::include_expression => true,
-        _ => pair.clone().into_inner().any(|child| php_body_has_runtime_include(&child)),
+        _ => pair.clone().into_inner().any(|child| php_body_has_runtime_include_captures(&child)),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn include_scope_negative_guard_keeps_keyword_and_nested_scope_semantics() {
+    for (source, expected) in [
+        ("function f(){ $value = 1; }", false),
+        ("function f(){ $include = 'require_once'; }", false),
+        ("function f(){ /* include 'ignored.php'; */ return 'require'; }", false),
+        ("function f(){ include 'a.php'; }", true),
+        ("function f(){ InClUdE_OnCe('a.php'); }", true),
+        ("function f(){ ReQuIrE 'a.php'; }", true),
+        ("function f(){ require_once 'a.php'; }", true),
+        ("function f(){ if (false) { include 'a.php'; } }", true),
+        ("function f(){ function nested(){ require 'a.php'; } }", false),
+        ("function f(){ $callback = function(){ include 'a.php'; }; }", false),
+        ("function f(){ $callback = fn() => require 'a.php'; }", false),
+        ("function f(){ $text = 'λ😀 require'; }", false),
+    ] {
+        let mut pending: Vec<_> = PhpParser::parse(Rule::program_pure, source)
+            .expect("scope control parses")
+            .collect();
+        let body = loop {
+            let pair = pending.pop().expect("function declaration exists");
+            if pair.as_rule() == Rule::function_declaration {
+                break pair.into_inner()
+                    .find(|child| child.as_rule() == Rule::block_statement)
+                    .expect("function body exists");
+            }
+            pending.extend(pair.into_inner());
+        };
+        assert_eq!(php_body_has_runtime_include(&body), expected, "{source}");
     }
 }
 
@@ -1790,10 +1904,53 @@ fn include_symbol_scope_selection_respects_nested_callable_boundaries() {
 }
 
 fn php_enable_symbol_scope(walker: &mut PhpWalker, body: &Pair<Rule>) {
+    if body.as_str().as_bytes().windows(16).any(|text| text.eq_ignore_ascii_case(b"get_defined_vars")) {
+        if let Some((bindings, slot)) = walker.function_variable_names_stack.last_mut() {
+            let mut names = bindings.clone();
+            let mut ordered: Vec<String> = Vec::new();
+            php_collect_variable_names(body, &mut ordered);
+            let mut seen: std::collections::HashSet<String> = names.iter().cloned().collect();
+            names.extend(ordered.into_iter().filter(|name| seen.insert(name.clone())));
+            *slot = Some(names);
+        }
+    }
     if php_body_has_extract(body) || php_body_has_runtime_include(body) {
         let name = format!("${}", next_tmp_name(walker, "symbol_scope"));
         if let Some(scope) = walker.function_symbol_scope_stack.last_mut() {
             *scope = Some(name);
+        }
+    }
+}
+
+/// The variables a function body names, in first-use order, without `$`.
+/// Nested functions, classes and arrow functions are their own scopes; a
+/// closure contributes only the parent variables its `use` clause names.
+fn php_collect_variable_names(pair: &Pair<Rule>, out: &mut Vec<String>) {
+    match pair.as_rule() {
+        Rule::simple_variable => {
+            let name = pair.as_str().trim_start_matches('$');
+            if name != "this"
+                && !PHP_SUPERGLOBAL_NAMES.contains(&pair.as_str())
+                && name != "GLOBALS"
+                && !out.iter().any(|seen| seen == name)
+            {
+                out.push(name.to_string());
+            }
+        }
+        Rule::closure_expression => {
+            for child in pair.clone().into_inner() {
+                if child.as_rule() == Rule::closure_use {
+                    php_collect_variable_names(&child, out);
+                }
+            }
+        }
+        Rule::arrow_function | Rule::function_declaration | Rule::class_declaration
+        | Rule::anonymous_class | Rule::interface_declaration | Rule::trait_declaration
+        | Rule::enum_declaration | Rule::static_access_op => {}
+        _ => {
+            for child in pair.clone().into_inner() {
+                php_collect_variable_names(&child, out);
+            }
         }
     }
 }
@@ -1908,6 +2065,21 @@ fn php_assignment_tmp(__php_w: &mut PhpWalker, prefix: &str) -> String {
     name
 }
 
+/// A generated temporary that holds only a compiler-owned scalar or a value
+/// it clears itself. Inside a function it is a frame local outside the PHP
+/// variable namespace, so its writes run no rebind finalizer and returns do
+/// not release it. Script scope keeps the variable temporary.
+fn php_internal_tmp(__php_w: &mut PhpWalker, prefix: &str) -> String {
+    if __php_w.function_temp_stack.is_empty() {
+        return php_assignment_tmp(__php_w, prefix);
+    }
+    let name = next_tmp_name(__php_w, prefix);
+    if let Some(temps) = __php_w.function_temp_stack.last_mut() {
+        temps.push(VarDeclarator {pattern: BindingPattern::Ident(name.clone()), type_hint: None, init: None, array_bounds: None, with_events: false});
+    }
+    name
+}
+
 fn php_note_function_global(__php_w: &mut PhpWalker, name: &str) {
     if let Some(scope) = __php_w.function_global_stack.last_mut() {
         scope.insert(name.trim_start_matches('$').to_string());
@@ -1975,31 +2147,6 @@ fn lookup_simple_string_var(__php_w: &mut PhpWalker, name: &str) -> Option<Strin
     __php_w
         .simple_string_vars
         .get(name.trim_start_matches('$'))
-        .cloned()
-}
-
-fn note_simple_string_constant(__php_w: &mut PhpWalker, name: &str, expr: &Expression) {
-    let key = name.trim_start_matches('\\').to_string();
-    let Some(value) = php_literal_string(__php_w, expr) else {
-        __php_w.simple_string_constants.remove(&key);
-        return;
-    };
-    __php_w.simple_string_constants.insert(key, value);
-}
-
-fn lookup_simple_string_constant(__php_w: &mut PhpWalker, name: &str) -> Option<String> {
-    __php_w
-        .simple_string_constants
-        .get(name.trim_start_matches('\\'))
-        .cloned()
-}
-
-
-
-fn lookup_simple_value_constant(__php_w: &mut PhpWalker, name: &str) -> Option<Expression> {
-    __php_w
-        .simple_value_constants
-        .get(name.trim_start_matches('\\'))
         .cloned()
 }
 
@@ -4593,6 +4740,29 @@ fn php_array_read_parts(expr: &Expression) -> Option<(Expression, Expression)> {
         {
             return Some((args[0].value.clone(), args[1].value.clone()));
         }
+        // The fused read carries the raw key; its place is the offset form.
+        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vybe_php_array_read_key")
+            && args.len() == 2
+        {
+            let receiver = args[0].value.clone();
+            let base = match &receiver.kind {
+                ExprKind::RefLoad(inner) => (**inner).clone(),
+                _ => receiver.clone(),
+            };
+            let span = args[1].value.span.clone();
+            let offset = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("__php_offset__")),
+                    args: vec![
+                        Argument::positional(base),
+                        Argument::positional(args[1].value.clone()),
+                    ],
+                    optional: false,
+                },
+                span,
+            );
+            return Some((receiver, offset));
+        }
     }
     let ExprKind::Sequence(items) = &expr.kind else {
         return None;
@@ -6938,16 +7108,6 @@ mod declaration_discovery_tests {
 /// where it gets dropped.
 pub fn reset_program_state() {}
 
-fn parse_pairs_with_frontend<'i>(walker: &mut PhpWalker, direct: bool, pratt_only: bool, rule: Rule, source: &'i str)
-    -> Result<grameo::compat::Pairs<'i, Rule>, grameo::ParseError> {
-    parse_pairs_with_source_units(walker, direct, pratt_only, rule, source, None)
-}
-
-fn parse_pairs_with_source_units<'i>(walker: &mut PhpWalker, direct: bool, pratt_only: bool, rule: Rule, source: &'i str,
-    requests: Option<&mut Vec<grameo::source_units::Request<String>>>)
-    -> Result<grameo::compat::Pairs<'i, Rule>, grameo::ParseError> {
-    parse_pairs_with_source_units_and_commit(walker,direct,pratt_only,rule,source,requests,None)
-}
 fn parse_pairs_with_source_units_and_commit<'i>(walker: &mut PhpWalker, direct: bool, pratt_only: bool, rule: Rule, source: &'i str,
     requests: Option<&mut Vec<grameo::source_units::Request<String>>>,
     unit_commit: Option<&std::cell::Cell<Option<usize>>>)
@@ -7036,7 +7196,7 @@ pub(super) fn parse_direct_with_committed_source_unit(source: &str)
 }
 
 fn parse_with_source_unit_requests_and_commit(source: &str, direct: bool, pratt_only: bool,
-    mut requests: Option<&mut Vec<grameo::source_units::Request<String>>>,
+    requests: Option<&mut Vec<grameo::source_units::Request<String>>>,
     on_committed: Option<&mut dyn FnMut(Vec<grameo::source_units::Request<String>>)>,
     unit_commit: Option<&mut Option<crate::GrammarCommit>>) -> Result<Module,String> {
     parse_with_source_unit_requests_commit_and_facts(source,direct,pratt_only,requests,on_committed,unit_commit,None)
@@ -7801,11 +7961,22 @@ fn parse_with_source_unit_requests_commit_and_facts(source: &str, direct: bool, 
             // argument's type. Stated so the common exit emitter branches on a
             // PROPERTY instead of shared code matching the spellings.
             exit_argument: Some(ExitArgument::MessageOrStatus),
+            // `foo()` names the function `foo`; a callee held in `$f` is
+            // lowered to a `CallableRef`, so a bare callee is never a value.
+            bare_callee_names_function: Some(true),
             shutdown_callbacks: Some(ShutdownPolicy::Callbacks {
                 registry: "__php_shutdown_fns".into(),
                 order: ShutdownOrder::Registration,
             }),
             flush_output_buffers: Some(true),
+            shutdown_finalizer: Some("php:object:shutdown".into()),
+            array_wrapper: crate::emitter::php_array_type::ENABLED.then(|| vybe_ast::ArrayWrapper {
+                wrap: "php.array_wrap".into(),
+                storage: "php.array_storage".into(),
+                storage_mut: "php.array_storage_mut".into(),
+                type_name: crate::emitter::php_array_type::TYPE_NAME.into(),
+                fields: crate::emitter::php_array_type::field_names(),
+            }),
             // PHP's `==`/`!=` fallback is its language-declared loose slot
             // target. Static builtin operands still resolve their own Eq/Ne
             // slots before this fallback is considered.
@@ -7942,7 +8113,9 @@ fn walk_statement_kind(
                     }
                     _ => expr,
                 };
-                php_expression_statement_kind(php_drop_low_precedence_assignment_bool(expr))
+                php_expression_statement_kind(php_release_element_write_value(
+                    php_drop_low_precedence_assignment_bool(expr),
+                ))
             }
         }
 
@@ -10853,11 +11026,15 @@ fn php_dynamic_foreach_rewrite(
     // protocol dispatch from the generated loop.
     let literal_array = php_foreach_is_literal_array(&iter);
     let span = iter.span.clone();
+    // The protocol flag, length and index are compiler-owned scalars: inside a
+    // function they stay out of the PHP variable namespace, so the per-
+    // iteration index write runs no rebind finalizer and returns skip them.
+    let scalar_sigil = if walker.function_temp_stack.is_empty() { "$" } else { "" };
     let source = format!("${}", next_tmp_name(walker, "foreach_source"));
-    let protocol = format!("${}", next_tmp_name(walker, "foreach_protocol"));
+    let protocol = format!("{scalar_sigil}{}", next_tmp_name(walker, "foreach_protocol"));
     let entries = format!("${}", next_tmp_name(walker, "foreach_entries"));
-    let length = format!("${}", next_tmp_name(walker, "foreach_length"));
-    let index = format!("${}", next_tmp_name(walker, "foreach_index"));
+    let length = format!("{scalar_sigil}{}", next_tmp_name(walker, "foreach_length"));
+    let index = format!("{scalar_sigil}{}", next_tmp_name(walker, "foreach_index"));
     let id = |name: &str| Expression::with_span(ExprKind::Ident(name.to_string()), span.clone());
     let assign = |name: &str, value: Expression| {
         Expression::with_span(
@@ -10881,7 +11058,9 @@ fn php_dynamic_foreach_rewrite(
                     } else {
                         None
                     },
-                    init: None,
+                    // The index is a number from its declaration on, which is
+                    // what lets it live as a frame number.
+                    init: (name == &index).then(|| Expression::int(0)),
                     array_bounds: None,
                     with_events: false,
                 })
@@ -11113,6 +11292,7 @@ fn php_nested_array_append_rewrite(
         field,
         null_safe: false,
     } = &bucket_receiver.kind
+        && !crate::emitter::php_array_type::ENABLED
     {
         let receiver = (**object).clone();
         let field = field.clone();
@@ -11200,6 +11380,34 @@ fn php_nested_array_append_rewrite(
     )
 }
 
+/// A nested element place whose path is owned by the writer, so the write
+/// separates every shared array on the way down.
+fn php_owned_nested_target(__php_w: &mut PhpWalker, target: Expression, span: &Span) -> Expression {
+    if !crate::emitter::php_array_type::ENABLED {
+        return target;
+    }
+    match target.kind {
+        ExprKind::Index { object, index, null_safe } if php_array_read_parts(&object).is_some() => {
+            let object = php_owned_write_receiver(__php_w, *object, span);
+            Expression::with_span(ExprKind::Index { object: Box::new(object), index, null_safe }, target.span)
+        }
+        kind => Expression::with_span(kind, target.span),
+    }
+}
+
+/// `receiver` as the owner of a nested write: each array read on the path is
+/// taken from an array this holder owns, and the result is owned too.
+fn php_owned_write_receiver(__php_w: &mut PhpWalker, receiver: Expression, span: &Span) -> Expression {
+    let receiver = match php_array_read_parts(&receiver) {
+        Some((parent, index)) => {
+            let parent = php_owned_write_receiver(__php_w, parent, span);
+            php_array_access_read(__php_w, parent, index, span)
+        }
+        None => receiver,
+    };
+    php_mk_call("__php_array_own", vec![receiver], span)
+}
+
 fn php_nested_array_append_rewrite_slow(
     __php_w: &mut PhpWalker,
     bucket_receiver: Expression,
@@ -11210,11 +11418,18 @@ fn php_nested_array_append_rewrite_slow(
 ) -> ExprKind {
     let bucket_tmp = php_assignment_tmp(__php_w, "append_bucket");
     let bucket_ident = || Expression::with_span(ExprKind::Ident(bucket_tmp.clone()), span.clone());
+    // The bucket is written in place, so every array on the path to it must
+    // be this holder's own first.
+    let bucket_source = if crate::emitter::php_array_type::ENABLED {
+        php_owned_write_receiver(__php_w, bucket_receiver.clone(), span)
+    } else {
+        bucket_receiver.clone()
+    };
     let read_bucket = Expression::with_span(
         ExprKind::NullCoalesce {
             left: Box::new(php_array_access_read(
                 __php_w,
-                bucket_receiver.clone(),
+                bucket_source,
                 bucket_index.clone(),
                 span,
             )),
@@ -11379,35 +11594,57 @@ fn php_array_field_writeback_rewrite(
     let assigned_tmp = php_assignment_tmp(__php_w, "array_assigned_value");
     let assigned_ident =
         || Expression::with_span(ExprKind::Ident(assigned_tmp.clone()), span.clone());
-    let save_value = Expression::with_span(
-        ExprKind::Assign {
-            target: Box::new(assigned_ident()),
-            value: Box::new(php_wrap_copy_on_assign(__php_w, value)),
-        },
-        span.clone(),
-    );
-    let write_index = if matches!(&index.kind, ExprKind::Lit(Literal::Null)) {
-        php_mk_call("array_push", vec![field_ident(), assigned_ident()], span)
+    // A keyed write goes through the local-variable setter: the temporary
+    // then follows PHP's key semantics (a sparse or string key on a list
+    // keeps every key) and the setter yields the stored value.
+    let keyed_write = if matches!(&index.kind, ExprKind::Lit(Literal::Null)) {
+        None
     } else {
-        Expression::with_span(
+        php_local_array_index_assign_rewrite(__php_w, &field_tmp, index.clone(), value.clone(), span)
+    };
+    let mutated_field = if let Some(keyed_write) = keyed_write {
+        let save_value = Expression::with_span(
             ExprKind::Assign {
-                target: Box::new(Expression::with_span(
-                    ExprKind::Index {
-                        object: Box::new(field_ident()),
-                        index: Box::new(index),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                )),
-                value: Box::new(assigned_ident()),
+                target: Box::new(assigned_ident()),
+                value: Box::new(keyed_write),
             },
+            span.clone(),
+        );
+        Expression::with_span(
+            ExprKind::Sequence(vec![save_field, save_value, field_ident()]),
+            span.clone(),
+        )
+    } else {
+        let save_value = Expression::with_span(
+            ExprKind::Assign {
+                target: Box::new(assigned_ident()),
+                value: Box::new(php_wrap_copy_on_assign(__php_w, value)),
+            },
+            span.clone(),
+        );
+        let write_index = if matches!(&index.kind, ExprKind::Lit(Literal::Null)) {
+            php_mk_call("array_push", vec![field_ident(), assigned_ident()], span)
+        } else {
+            Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(Expression::with_span(
+                        ExprKind::Index {
+                            object: Box::new(field_ident()),
+                            index: Box::new(index),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    )),
+                    value: Box::new(assigned_ident()),
+                },
+                span.clone(),
+            )
+        };
+        Expression::with_span(
+            ExprKind::Sequence(vec![save_field, save_value, write_index, field_ident()]),
             span.clone(),
         )
     };
-    let mutated_field = Expression::with_span(
-        ExprKind::Sequence(vec![save_field, save_value, write_index, field_ident()]),
-        span.clone(),
-    );
     let write_back = if let Some((object, field)) = clone_field {
         php_mk_call(
             "__php_clone_field_set",
@@ -11686,6 +11923,47 @@ fn class_uses_dynamic_instance_field_writes(__php_w: &mut PhpWalker, class_name:
     })
 }
 
+/// An element write used as a statement need not yield its value: clear the
+/// value temporary instead, so the written array is the value's only owner
+/// and overwriting the element later can destruct it.
+fn php_release_element_write_value(mut expr: Expression) -> Expression {
+    if let ExprKind::Sequence(items) = &mut expr.kind
+        && let Some(last) = items.last_mut()
+        && let ExprKind::Ident(name) = &last.kind
+        && name.trim_start_matches('$').starts_with("__php_array_value_")
+    {
+        let span = last.span.clone();
+        *last = Expression::with_span(ExprKind::Assign {
+            target: Box::new(Expression::with_span(ExprKind::Ident(name.clone()), span.clone())),
+            value: Box::new(Expression::null()),
+        }, span);
+        return expr;
+    }
+    // A clone's result temporary has handed the copy on once the statement
+    // ends; clearing it leaves the copy's real owners as its only ones.
+    let mut clone_results = Vec::new();
+    expr.walk_exprs(&mut |inner| {
+        if let ExprKind::Sequence(items) = &inner.kind
+            && let Some(Expression { kind: ExprKind::Ident(name), .. }) = items.last()
+            && name.starts_with("__php_clone_obj_")
+        {
+            clone_results.push(name.clone());
+        }
+    });
+    if clone_results.is_empty() {
+        return expr;
+    }
+    let span = expr.span.clone();
+    let mut items = vec![expr];
+    for name in clone_results {
+        items.push(Expression::with_span(ExprKind::Assign {
+            target: Box::new(Expression::with_span(ExprKind::Ident(name), span.clone())),
+            value: Box::new(Expression::null()),
+        }, span.clone()));
+    }
+    Expression::with_span(ExprKind::Sequence(items), span)
+}
+
 fn php_local_array_index_assign_rewrite(
     __php_w: &mut PhpWalker,
     object_name: &str,
@@ -11738,9 +12016,11 @@ fn php_local_array_index_assign_rewrite(
     }
     // Declare generated storage in the enclosing call frame so recursive
     // RHS calls cannot overwrite the key saved by the outer assignment.
-    let key_tmp = php_assignment_tmp(__php_w, "array_key");
-    let val_tmp = php_assignment_tmp(__php_w, "array_value");
-    let fast_tmp = php_assignment_tmp(__php_w, "array_fast");
+    let key_tmp = php_internal_tmp(__php_w, "array_key");
+    // Outside the PHP variable namespace, the stored value has no second
+    // program-visible owner, so overwriting the element can destruct it.
+    let val_tmp = php_internal_tmp(__php_w, "array_value");
+    let fast_tmp = php_internal_tmp(__php_w, "array_fast");
     let object_ident =
         || Expression::with_span(ExprKind::Ident(object_name.to_string()), span.clone());
     let key_ident = || Expression::with_span(ExprKind::Ident(key_tmp.clone()), span.clone());
@@ -11817,6 +12097,15 @@ fn php_local_array_index_assign_rewrite(
                 span.clone(),
             ),
             write_back,
+            // The written array lives on in its variable; the temporary must
+            // not keep a second owner of its elements.
+            Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(fast_ident()),
+                    value: Box::new(Expression::null()),
+                },
+                span.clone(),
+            ),
             val_ident(),
         ]),
         span.clone(),
@@ -12572,11 +12861,28 @@ fn php_rest_param_initializer(param: &Param, span: Span) -> Statement {
         },
         span,
     );
+    if param.pass_by != PassBy::Value {
+        return Statement::with_span(
+            StmtKind::Assign {
+                targets: vec![rest_ident()],
+                value: normalized,
+                by_ref: false,
+            },
+            span,
+        );
+    }
+    // A by-value rest array is the callee's own: declare its normalized
+    // value instead of assigning it back through the rebind path.
     Statement::with_span(
-        StmtKind::Assign {
-            targets: vec![rest_ident()],
-            value: normalized,
-            by_ref: false,
+        StmtKind::VarDecl {
+            kind: VarDeclKind::Let,
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(param.name.clone()),
+                type_hint: None,
+                init: Some(normalized),
+                array_bounds: None,
+                with_events: false,
+            }],
         },
         span,
     )
@@ -12614,12 +12920,20 @@ fn prepend_php_param_initializers(params: &[Param], body: &mut Vec<Statement>, s
                 )
             })
             .map(|param| {
-                let target = Expression::with_span(ExprKind::Ident(param.name.clone()), span);
+                // A declaration, not an assignment: the parameter's own slot
+                // holds a plain argument value, so the copy needs no rebind
+                // release and no store through a reference.
+                let source = Expression::with_span(ExprKind::Ident(param.name.clone()), span);
                 Statement::with_span(
-                    StmtKind::Assign {
-                        targets: vec![target.clone()],
-                        value: php_mk_call("__php_copy_on_assign", vec![target], &span),
-                        by_ref: false,
+                    StmtKind::VarDecl {
+                        kind: VarDeclKind::Let,
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(param.name.clone()),
+                            type_hint: None,
+                            init: Some(php_mk_call("__php_copy_on_assign", vec![source], &span)),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
                     },
                     span,
                 )
@@ -12652,30 +12966,6 @@ fn copy_member_attributes<T: Clone>(
     {
         attributes.insert((to_class.to_string(), to_name.to_string()), attrs);
     }
-}
-
-fn copy_property_attributes(
-    __php_w: &mut PhpWalker,
-    from_class: &str,
-    from_name: &str,
-    to_class: &str,
-    to_name: &str,
-) {
-    copy_member_attributes(
-        &mut __php_w.property_attributes, from_class, from_name, to_class, to_name,
-    );
-}
-
-fn copy_method_attributes(
-    __php_w: &mut PhpWalker,
-    from_class: &str,
-    from_name: &str,
-    to_class: &str,
-    to_name: &str,
-) {
-    copy_member_attributes(
-        &mut __php_w.method_attributes, from_class, from_name, to_class, to_name,
-    );
 }
 
 fn php_lsb_class_field(name: &str, span: &Span) -> ClassMember {
@@ -13232,7 +13522,6 @@ fn extract_class_meta(
     let mut fields = Vec::new();
     let mut field_defaults = Vec::new();
     let mut constants = Vec::new();
-    let mut has_destructor = false;
     let mut dynamic_instance_field_writes = false;
     let mut constructor_params = Vec::new();
     let mut constructor_rest_index = None;
@@ -13248,9 +13537,6 @@ fn extract_class_meta(
                     ..
                 } = &stmt.kind
                 {
-                    if name == "__destruct" {
-                        has_destructor = true;
-                    }
                     let required = params.iter().filter(|p| p.default.is_none()).count();
                     methods.push(MethodMeta {
                         name: name.clone(),
@@ -13358,7 +13644,6 @@ fn extract_class_meta(
         is_readonly,
         is_final: modifiers.is_sealed,
         methods,
-        has_destructor,
         fields,
         field_defaults,
         dynamic_instance_field_writes,
@@ -14004,18 +14289,6 @@ fn class_property_declaring_class(
     })
 }
 
-fn class_has_destructor(__php_w: &mut PhpWalker, c: &str) -> bool {
-    let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(__php_w, c));
-    names.iter().any(|n| {
-        __php_w
-            .class_registry
-            .get(n)
-            .map(|m| m.has_destructor)
-            .unwrap_or(false)
-    })
-}
-
 
 fn class_direct_parent(__php_w: &mut PhpWalker, c: &str) -> Option<String> {
     __php_w.class_registry.get(c).and_then(|m| m.parent.clone())
@@ -14449,6 +14722,11 @@ fn build_known_class_clone_expr(
             ));
         }
     }
+    // The source is no longer needed; it must not stay a second owner.
+    items.push(Expression::with_span(
+        ExprKind::Assign { target: Box::new(src()), value: Box::new(Expression::null()) },
+        span.clone(),
+    ));
     items.push(clone());
     Expression::with_span(ExprKind::Sequence(items), span.clone())
 }
@@ -17859,50 +18137,9 @@ fn build_unset_rewrite(__php_w: &mut PhpWalker, target: Expression, span: &Span)
         }
     }
     match &target.kind {
-        ExprKind::Ident(name) => {
-            if let Some(class_name) = php_object_class_from_expr(__php_w, &target) {
-                if class_has_destructor(__php_w, &class_name) {
-                    // CALL `__destruct` — it is bound on the object under its
-                    // source name — rather than inlining its body.
-                    //
-                    // The body used to be spliced in statement by statement,
-                    // keeping only `StmtKind::Expr` and silently dropping every
-                    // other kind. `echo 'closed';` is `StmtKind::Echo`, so the
-                    // most ordinary destructor there is compiled to nothing.
-                    // A call carries the whole body, whatever is in it, and
-                    // binds `$this` the normal way.
-                    let mut seq: Vec<Expression> = vec![Expression::with_span(
-                        ExprKind::Call {
-                            callee: Box::new(Expression::with_span(
-                                ExprKind::Member {
-                                    object: Box::new(Expression::with_span(
-                                        ExprKind::Ident(name.clone()),
-                                        span.clone(),
-                                    )),
-                                    field: "__destruct".to_string(),
-                                    null_safe: false,
-                                },
-                                span.clone(),
-                            )),
-                            args: vec![],
-                            optional: false,
-                        },
-                        span.clone(),
-                    )];
-                    let clear_var = Expression::with_span(
-                        ExprKind::Assign {
-                            target: Box::new(Expression::with_span(
-                                ExprKind::Ident(name.clone()),
-                                span.clone(),
-                            )),
-                            value: Box::new(Expression::null()),
-                        },
-                        span.clone(),
-                    );
-                    seq.push(clear_var);
-                    return Expression::with_span(ExprKind::Sequence(seq), span.clone());
-                }
-            }
+        // The rebind releases the old value: its destructor runs once no
+        // other reference holds it, exactly as for any other overwrite.
+        ExprKind::Ident(_) => {
             Expression::with_span(
                 ExprKind::Assign {
                     target: Box::new(target),
@@ -18071,7 +18308,22 @@ fn build_unset_rewrite(__php_w: &mut PhpWalker, target: Expression, span: &Span)
                     );
                 }
             }
-            Expression::with_span(ExprKind::Delete(Box::new(target)), span.clone())
+            // The removed element may own the last reference to an object.
+            // Only side-effect-free operands can be evaluated a second time.
+            let simple = |expr: &Expression| matches!(&expr.kind, ExprKind::Ident(_) | ExprKind::Lit(_));
+            let simple_key = simple(index) || matches!(&index.kind,
+                ExprKind::Call { callee, args, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__php_offset__")
+                        && args.iter().all(|arg| simple(&arg.value)));
+            let delete = Expression::with_span(ExprKind::Delete(Box::new(target.clone())), span.clone());
+            if !(simple(object) && simple_key) {
+                return delete;
+            }
+            Expression::with_span(ExprKind::Sequence(vec![
+                php_mk_call("__php_unset_capture", vec![(**object).clone(), (**index).clone()], span),
+                delete,
+                php_mk_call("__php_unset_release", vec![], span),
+            ]), span.clone())
         }
         _ => {
             // Fallback: assign null. Best we can do without a real
@@ -20089,7 +20341,7 @@ fn walk_assignment(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expressi
                     span.clone(),
                 );
                 ExprKind::Assign {
-                    target: Box::new(lhs),
+                    target: Box::new(php_owned_nested_target(__php_w, lhs, &span)),
                     value: Box::new(combined),
                 }
             }
@@ -20528,6 +20780,7 @@ fn walk_unary(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, S
             } else {
                 UnaryOp::PreDec
             };
+            let expr = php_owned_nested_target(__php_w, php_incdec_index_place(expr), &span);
             if let Some(rewrite) = php_incdec_place_rewrite(__php_w, expr.clone(), op, &span) {
                 return Ok(rewrite);
             }
@@ -21472,6 +21725,60 @@ fn walk_postfix(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression,
         __php_w.assign_lhs_depth = lhs_depth_was;
     }
     Ok(expr)
+}
+
+// The outer '$' selects a computed static-property name, not a variable read.
+fn php_computed_static_property_key(
+    walker: &mut PhpWalker,
+    member: &Pair<Rule>,
+    span: &Span,
+) -> Result<Option<Expression>, String> {
+    if member.as_rule() != Rule::variable {
+        return Ok(None);
+    }
+    let Some(form) = member.clone().into_inner().next() else {
+        return Ok(None);
+    };
+    if form.as_rule() != Rule::dynamic_variable {
+        return Ok(None);
+    }
+    let inner = form.into_inner().next()
+        .ok_or("computed static property is missing its name expression")?;
+    let lhs_depth = walker.assign_lhs_depth;
+    walker.assign_lhs_depth = 0;
+    let value = match inner.as_rule() {
+        Rule::simple_variable => walk_php_variable_expr(walker, inner, span.clone()),
+        Rule::dynamic_variable => php_computed_variable_expr(walker, inner, span.clone()),
+        _ => walk_expression(walker, inner),
+    };
+    walker.assign_lhs_depth = lhs_depth;
+    // A bare Ident encodes a literal member. Sequence retains value evaluation.
+    Ok(Some(Expression::with_span(
+        ExprKind::Sequence(vec![value?]), span.clone(),
+    )))
+}
+
+fn php_computed_static_property_receiver(receiver: Expression, span: &Span) -> Expression {
+    if !matches!(&receiver.kind, ExprKind::This) {
+        return receiver;
+    }
+    let is_class = Expression::with_span(ExprKind::Binary {
+        op: BinOp::StrictEq,
+        left: Box::new(Expression::with_span(
+            ExprKind::TypeOf(Box::new(receiver.clone())), span.clone(),
+        )),
+        right: Box::new(Expression::string("function")),
+    }, span.clone());
+    let constructor = Expression::with_span(ExprKind::Member {
+        object: Box::new(receiver.clone()),
+        field: "constructor".to_string(),
+        null_safe: false,
+    }, span.clone());
+    Expression::with_span(ExprKind::Ternary {
+        cond: Box::new(is_class),
+        then: Box::new(receiver),
+        else_: Box::new(constructor),
+    }, span.clone())
 }
 
 fn apply_postfix(
@@ -24474,19 +24781,27 @@ fn apply_postfix(
             let magic_call = build_known_magic_call_rewrite(
                 __php_w, receiver_ident, method_name, args, span,
             );
-            let fallback = Expression::with_span(
-                ExprKind::Ternary {
-                    cond: Box::new(is_function(magic_lookup)),
-                    then: Box::new(magic_call),
-                    else_: Box::new(direct_call.clone()),
+            // Preserve short-circuit lookup order while emitting the identical
+            // direct-call subtree once instead of in two conditional arms.
+            let use_direct = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(direct_exists),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Unary {
+                            op: UnaryOp::Not,
+                            expr: Box::new(is_function(magic_lookup)),
+                        },
+                        span.clone(),
+                    )),
                 },
                 span.clone(),
             );
             let dispatch = Expression::with_span(
                 ExprKind::Ternary {
-                    cond: Box::new(direct_exists),
+                    cond: Box::new(use_direct),
                     then: Box::new(direct_call),
-                    else_: Box::new(fallback),
+                    else_: Box::new(magic_call),
                 },
                 span.clone(),
             );
@@ -24918,6 +25233,12 @@ fn apply_postfix(
                     }),
                 _ => receiver,
             };
+            if let Some(member) = php_computed_static_property_key(__php_w, &inner_pair, span)? {
+                return Ok(Expression::with_span(ExprKind::StaticAccess {
+                    class: Box::new(php_computed_static_property_receiver(receiver, span)),
+                    member: Box::new(member),
+                }, span.clone()));
+            }
             let name = match inner_pair.as_rule() {
                 Rule::variable => lookup_simple_string_var(__php_w, raw)
                     .unwrap_or_else(|| raw.strip_prefix('$').unwrap_or(raw).to_string()),
@@ -26978,6 +27299,7 @@ fn apply_postfix(
             } else {
                 UnaryOp::PostDec
             };
+            let receiver = php_owned_nested_target(__php_w, php_incdec_index_place(receiver), span);
             if let Some(rewrite) = php_incdec_place_rewrite(__php_w, receiver.clone(), op, span) {
                 return Ok(rewrite);
             }
@@ -34591,7 +34913,8 @@ fn php_wrap_copy_on_assign(__php_w: &mut PhpWalker, rhs: Expression) -> Expressi
         // lowering an Index to a Call does not make that value fresh.
         || matches!(&rhs.kind, ExprKind::Call { callee, .. }
             if matches!(&callee.kind, ExprKind::Ident(name)
-                if name == "__vybe_php_array_read" || name == "__php_field_get"))
+                if name == "__vybe_php_array_read" || name == "__vybe_php_array_read_key"
+                    || name == "__php_field_get"))
         || php_is_array_access_read_expr(&rhs)
         || matches!(&rhs.kind, ExprKind::NullCoalesce { .. })
             && php_request_global_assignment_name(&rhs).is_some()
@@ -35038,6 +35361,15 @@ fn php_dynamic_method_exists_expr(
             span,
         ),
     ])
+}
+
+/// A native array method mutates its receiver's storage in place.
+fn php_array_storage_mut_place(place: Expression, span: &Span) -> Expression {
+    if crate::emitter::php_array_type::ENABLED {
+        php_mk_call("__php_array_storage_mut", vec![place], span)
+    } else {
+        place
+    }
 }
 
 fn php_mk_call(name: &str, args: Vec<Expression>, span: &Span) -> Expression {
@@ -36348,20 +36680,62 @@ fn php_array_access_read(
     index: Expression,
     span: &Span,
 ) -> Expression {
+    // `$v[__php_offset__($v, $k)]` names the receiver twice. Read it once and
+    // let the fused adapter apply the same offset conversion to `$k`.
+    let fused_key = php_offset_key_of_receiver(&receiver, &index);
     let receiver = if matches!(&receiver.kind, ExprKind::Ident(name) if php_is_function_global(__php_w, name))
     {
         Expression::with_span(ExprKind::RefLoad(Box::new(receiver)), span.clone())
     } else {
         receiver
     };
+    let (callee, index) = match fused_key {
+        Some(key) => ("__vybe_php_array_read_key", key),
+        None => ("__vybe_php_array_read", index),
+    };
     Expression::with_span(
         ExprKind::Call {
-            callee: Box::new(Expression::ident("__vybe_php_array_read")),
+            callee: Box::new(Expression::ident(callee)),
             args: vec![Argument::positional(receiver), Argument::positional(index)],
             optional: false,
         },
         span.clone(),
     )
+}
+
+/// `$x[__php_offset__($x, $k)]` as the place of `++`/`--`: php rejects
+/// increments of string offsets, so the base-dependent string rule never
+/// applies and the key takes the array-key conversion without re-reading `$x`.
+fn php_incdec_index_place(place: Expression) -> Expression {
+    let ExprKind::Index { object, index, null_safe: false } = &place.kind else { return place; };
+    let Some(key) = php_offset_key_of_receiver(object, index) else { return place; };
+    let span = index.span.clone();
+    Expression::with_span(ExprKind::Index {
+        object: object.clone(),
+        index: Box::new(Expression::with_span(ExprKind::Call {
+            callee: Box::new(Expression::ident("__php_key__")),
+            args: vec![Argument::positional(key)],
+            optional: false,
+        }, span)),
+        null_safe: false,
+    }, place.span)
+}
+
+/// The key of `__php_offset__($v, $k)` when its receiver is the read's own
+/// receiver — the copy `php_index_operand` made of it.
+fn php_offset_key_of_receiver(receiver: &Expression, index: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, optional: false } = &index.kind else { return None; };
+    if !matches!(&callee.kind, ExprKind::Ident(helper) if helper == "__php_offset__")
+        || args.len() != 2
+        || args.iter().any(|arg| arg.name.is_some() || arg.by_ref || arg.spread)
+    {
+        return None;
+    }
+    let same_receiver = match (&receiver.kind, &args[0].value.kind) {
+        (ExprKind::Ident(name), ExprKind::Ident(base)) => name == base,
+        _ => format!("{:?}", receiver) == format!("{:?}", args[0].value),
+    };
+    same_receiver.then(|| args[1].value.clone())
 }
 
 fn php_fold_simple_generator_iife(
@@ -38271,6 +38645,42 @@ fn lower_php_builtin_call(
             }
         }
         "extract" if !args.is_empty() => php_extract_expr(__php_w, args, span)?,
+        // `get_defined_vars()` in a function: every bound variable by name, in
+        // compiled-variable order. Parameters are always defined; another
+        // variable is listed once it holds a value.
+        "get_defined_vars" if args.is_empty() => {
+            let names = __php_w.function_variable_names_stack.last()
+                .and_then(|(_, names)| names.clone())?;
+            let params: std::collections::HashSet<String> = __php_w.function_bound_stack.last()
+                .cloned().unwrap_or_default();
+            let var = |name: &str| Expression::with_span(ExprKind::Ident(format!("${name}")), span.clone());
+            let pair = |name: &str| Expression::with_span(ExprKind::Array(vec![ArrayElement {
+                key: Some(Expression::string(name)),
+                value: var(name),
+                spread: false,
+                by_ref: false,
+            }]), span.clone());
+            let parts: Vec<Expression> = names.iter().map(|name| {
+                if params.contains(name) {
+                    pair(name)
+                } else {
+                    Expression::with_span(ExprKind::Ternary {
+                        cond: Box::new(Expression::with_span(ExprKind::Binary {
+                            op: BinOp::StrictNotEq,
+                            left: Box::new(var(name)),
+                            right: Box::new(Expression::null()),
+                        }, span.clone())),
+                        then: Box::new(pair(name)),
+                        else_: Box::new(Expression::with_span(ExprKind::Array(vec![]), span.clone())),
+                    }, span.clone())
+                }
+            }).collect();
+            if parts.is_empty() {
+                ExprKind::Array(vec![])
+            } else {
+                php_mk_call("array_merge", parts, span).kind
+            }
+        }
         // ── compact(name, ...) → ['name' => $name, ...] ──────────────────
         // PHP `compact('a', 'b')` (or `compact(['a', 'b'])`) builds an array
         // mapping each NAME to the value of the same-named variable. With
@@ -39168,7 +39578,7 @@ fn lower_php_builtin_call(
                         ExprKind::Call {
                             callee: Box::new(Expression::with_span(
                                 ExprKind::Member {
-                                    object: Box::new(target),
+                                    object: Box::new(php_array_storage_mut_place(target, &span)),
                                     field: "shift".to_string(),
                                     null_safe: false,
                                 },
@@ -41455,7 +41865,7 @@ fn lower_php_builtin_call(
             ExprKind::Call {
                 callee: Box::new(Expression::with_span(
                     ExprKind::Member {
-                        object: Box::new(arr_expr),
+                        object: Box::new(php_array_storage_mut_place(arr_expr, &span)),
                         field: "splice".to_string(),
                         null_safe: false,
                     },
@@ -42253,12 +42663,6 @@ fn lower_php_builtin_call(
 /// `[namespace_constants]` table — same path JS uses. No PHP-specific
 /// intrinsic, host fn, or profile builtin needed.
 fn php_constant_expr(__php_w: &mut PhpWalker, name: &str, span: &Span) -> Option<ExprKind> {
-    if let Some(value) = lookup_simple_value_constant(__php_w, name) {
-        return Some(value.kind);
-    }
-    if let Some(value) = lookup_simple_string_constant(__php_w, name) {
-        return Some(ExprKind::Lit(Literal::Str(value)));
-    }
     let mk_member = |obj: &str, field: &str| ExprKind::Member {
         object: Box::new(Expression::with_span(
             ExprKind::Ident(obj.to_string()),
@@ -42435,6 +42839,16 @@ fn php_constant_expr(__php_w: &mut PhpWalker, name: &str, span: &Span) -> Option
         "JSON_NUMERIC_CHECK" => ExprKind::Lit(Literal::Int(32)),
         "JSON_UNESCAPED_SLASHES" => ExprKind::Lit(Literal::Int(64)),
         "JSON_PRETTY_PRINT" => ExprKind::Lit(Literal::Int(128)),
+        "ENT_NOQUOTES" => ExprKind::Lit(Literal::Int(0)),
+        "ENT_COMPAT" => ExprKind::Lit(Literal::Int(2)),
+        "ENT_QUOTES" => ExprKind::Lit(Literal::Int(3)),
+        "ENT_IGNORE" => ExprKind::Lit(Literal::Int(4)),
+        "ENT_SUBSTITUTE" => ExprKind::Lit(Literal::Int(8)),
+        "ENT_DISALLOWED" => ExprKind::Lit(Literal::Int(128)),
+        "ENT_HTML401" => ExprKind::Lit(Literal::Int(0)),
+        "ENT_XML1" => ExprKind::Lit(Literal::Int(16)),
+        "ENT_XHTML" => ExprKind::Lit(Literal::Int(32)),
+        "ENT_HTML5" => ExprKind::Lit(Literal::Int(48)),
         "JSON_UNESCAPED_UNICODE" => ExprKind::Lit(Literal::Int(256)),
         "JSON_PARTIAL_OUTPUT_ON_ERROR" => ExprKind::Lit(Literal::Int(512)),
         "JSON_PRESERVE_ZERO_FRACTION" => ExprKind::Lit(Literal::Int(1024)),
@@ -42626,14 +43040,7 @@ fn to_span(__php_w: &mut PhpWalker, pair: &Pair<Rule>) -> Span {
                 end_col: end_col as u32,
             }
         } else {
-            let (start_line, start_col) = offset_to_line_col(s.start(), starts);
-            let (end_line, end_col) = offset_to_line_col(s.end(), starts);
-            Span {
-                start_line,
-                start_col,
-                end_line,
-                end_col,
-            }
+            span_from_offsets(s.start(), s.end(), starts)
         }
     }
 }

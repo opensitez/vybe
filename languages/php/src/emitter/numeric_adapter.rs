@@ -57,10 +57,18 @@ pub fn emit_php_floatval(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     let parse_float = chunks[current].add_import("ecma:number", "parseFloat");
     let test_bool = chunks[current].add_import("wasm:js-boolean", "test");
     let boolean_cast = chunks[current].add_import("wasm:js-boolean", "cast");
+    let test_number = chunks[current].add_import("wasm:js-number", "test");
+    let to_f64 = chunks[current].add_import("wasm:js-number", "toF64");
     let chunk = &mut chunks[current];
     let v_slot = alloc_local(chunk);
     let n_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_TEE, v_slot, line);
+    chunk.emit_call(test_number, 1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    chunk.emit_call(to_f64, 1, line);
+    chunk.emit_else(line);
+    lget(chunk, v_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
@@ -89,6 +97,7 @@ pub fn emit_php_floatval(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
 
     chunk.emit_end(line);
     chunk.emit_end(line);
+    chunk.emit_end(line); // Physical Number branch.
 }
 
 /// `__php_float_bytes($v, $bytes)` → a Uint8Array holding the little-endian
@@ -149,6 +158,14 @@ pub fn emit_php_int_min(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
 }
 
 pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_php_is_int_result(chunks, current, line, false);
+}
+
+pub(super) fn emit_php_is_int_condition(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_php_is_int_result(chunks, current, line, true);
+}
+
+fn emit_php_is_int_result(chunks: &mut [Chunk], current: usize, line: u32, raw: bool) {
     let chunk = &mut chunks[current];
     let v_slot = alloc_local(chunk);
     let test_bigint = chunk.add_import("wasm:js-bigint", "test");
@@ -176,29 +193,31 @@ pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunk.emit_end(line);
 
     chunk.emit_end(line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+    if !raw {
+        vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+    }
 }
 
 pub fn emit_php_is_float(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_php_is_float_result(chunks, current, line, false);
+}
+
+pub(super) fn emit_php_is_float_condition(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_php_is_float_result(chunks, current, line, true);
+}
+
+fn emit_php_is_float_result(chunks: &mut [Chunk], current: usize, line: u32, raw: bool) {
     // PHP is_float: true for any Value::F64, false for everything else.
     // wasm:js-number.test returns true for F64 values.
     // BigInt is NOT float. I32 is NOT float.
     let chunk = &mut chunks[current];
-    let v_slot = alloc_local(chunk);
     let test_number = chunk.add_import("wasm:js-number", "test");
-    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
-
-    // Retain the input while testing it, without a store/reload pair.
-    chunk.emit_op_u16(Op::LOCAL_TEE, v_slot, line);
-    // BigInt → false
-    chunk.emit_call(test_bigint, 1, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::Bool(false), line);
-    chunk.emit_else(line);
-    // Number (F64) → true
-    lget(chunk, v_slot, line);
+    // Number testing already excludes BigInt. It is pure, so a separate
+    // BigInt guard and retained operand cannot change the result.
     chunk.emit_call(test_number, 1, line);
-    chunk.emit_end(line);
+    if !raw {
+        vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+    }
 }
 
 pub fn emit_php_abs(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -576,7 +595,13 @@ pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_SUB, line);
     chunk.emit_op(Op::F64_MIN, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    if argc < 2 {
+        // This path emitted the minimum as an exact Number above; the
+        // scaled random offset is also f64. No dynamic addition is needed.
+        chunk.emit_op(Op::F64_ADD, line);
+    } else {
+        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    }
 }
 
 /// PHP `lcg_value()` — a pseudo-random float in the half-open range [0, 1).

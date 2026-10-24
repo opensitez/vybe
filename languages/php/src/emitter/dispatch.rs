@@ -35,6 +35,10 @@ fn dispatch_typed(
     use vybe_runtime::registry::emitter_results::{
         EmitOutcome, EmitRequest, ResultRepresentation,
     };
+    if request == EmitRequest::I32Word && name == "php.compare3" && argc == 2 {
+        super::relational_adapter::emit_compare3_i32(chunks, current, line);
+        return EmitOutcome::Handled(ResultRepresentation::RawI32Word);
+    }
     if request == EmitRequest::ScalarLiteralOperand {
         if name != "php.add" || argc != 2 {
             return EmitOutcome::Unhandled;
@@ -73,6 +77,27 @@ fn dispatch_typed(
             return EmitOutcome::Handled(ResultRepresentation::BoxedBoolean);
         }
         return EmitOutcome::Unhandled;
+    }
+    if matches!(name, "php.is_int" | "php.is_float" | "php.is_object") {
+        if argc != 1 || !matches!(request, EmitRequest::Value | EmitRequest::I32Condition) {
+            return EmitOutcome::Unhandled;
+        }
+        if request == EmitRequest::I32Condition {
+            match name {
+                "php.is_int" => super::numeric_adapter::emit_php_is_int_condition(chunks, current, line),
+                "php.is_float" => super::numeric_adapter::emit_php_is_float_condition(chunks, current, line),
+                "php.is_object" => super::array_adapter::emit_php_is_object_condition(chunks, current, line),
+                _ => unreachable!(),
+            }
+            return EmitOutcome::Handled(ResultRepresentation::RawI32Boolean);
+        }
+        match name {
+            "php.is_int" => super::numeric_adapter::emit_php_is_int(chunks, current, argc, line),
+            "php.is_float" => super::numeric_adapter::emit_php_is_float(chunks, current, argc, line),
+            "php.is_object" => super::array_adapter::emit_php_is_object(chunks, current, line),
+            _ => unreachable!(),
+        }
+        return EmitOutcome::Handled(ResultRepresentation::BoxedBoolean);
     }
     // This provider owns only these resolved adapter keys. Other operations
     // remain legacy emissions, with their existing result contracts.
@@ -151,6 +176,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 }
 
 fn dispatch_inline(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    // Every adapter body is reached through here, including the shared
+    // helper bodies built once per module, so the argument policy is too.
+    if super::php_array_type::ENABLED {
+        super::php_array_type::emit_leaf_arguments(chunks, current, name, argc, line);
+    }
     match name {
         name @ ("php.foreach_protocol_current" | "php.foreach_protocol_valid" | "php.foreach_protocol_next" | "php.foreach_protocol_rewind" | "php.foreach_protocol_key" | "php.foreach_protocol_getiterator") => {
             super::foreach_protocol::emit(chunks,current,name.trim_start_matches("php.foreach_protocol_"),line);
@@ -359,8 +389,39 @@ fn dispatch_inline(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "php.copy_on_assign" => {
             super::copy_adapter::emit_php_copy_on_assign(chunks, current, argc, line)
         }
+        name @ ("php.local_set" | "php.local_append" | "php.cursor_current" | "php.cursor_reset"
+        | "php.cursor_next" | "php.cursor_end" | "php.cursor_prev" | "php.cursor_key"
+        | "php.array_unshift" | "php.foreach_entries" | "php.unpack_values"
+        | "php.arrayobject_exchange" | "php.arrayobject_copy") => {
+            let (module, operation) = match name {
+                "php.local_set" => ("php:array", "local_set"),
+                "php.local_append" => ("php:array", "local_append"),
+                "php.cursor_current" => ("php:array", "current"),
+                "php.cursor_reset" => ("php:array", "reset"),
+                "php.cursor_next" => ("php:array", "next"),
+                "php.cursor_end" => ("php:array", "end"),
+                "php.cursor_prev" => ("php:array", "prev"),
+                "php.cursor_key" => ("php:array", "key"),
+                "php.array_unshift" => ("ecma:array", "unshift"),
+                "php.foreach_entries" => ("ecma:object", "entries"),
+                "php.arrayobject_exchange" => ("php:array", "objectExchange"),
+                "php.arrayobject_copy" => ("php:array", "objectCopy"),
+                _ => ("php:array", "unpackValues"),
+            };
+            let host = chunks[current].add_import(module, operation);
+            chunks[current].emit_call(host, argc, line);
+        }
+        "php.array_shift" => {
+            vybe_compiler::primitives::collections::emit_shift(chunks, current, line)
+        }
+        "php.array_wrap" => super::php_array_type::emit_wrap(chunks, current, line),
+        "php.array_own" => super::php_array_type::emit_own(chunks, current, line),
+        "php.array_storage" => super::php_array_type::emit_store_of(chunks, current, line),
+        "php.array_storage_mut" => super::php_array_type::emit_store_of_mut(chunks, current, line),
         "php.clone_shell" => {
-            crate::emitter::string_adapter::emit_php_clone_shell(chunks, current, argc, line)
+            let source = super::destructor_adapter::emit_clone_source_spill(&mut chunks[current], argc, line);
+            crate::emitter::string_adapter::emit_php_clone_shell(chunks, current, argc, line);
+            super::destructor_adapter::emit_track_clone(&mut chunks[current], source, line);
         }
         "php.clone_field_get" => {
             crate::emitter::string_adapter::emit_php_clone_field_get(chunks, current, argc, line)
@@ -535,6 +596,9 @@ fn dispatch_inline(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         }
         "php.array_read_deref" => {
             super::array_adapter::emit_php_array_read_deref(chunks, current, argc, line)
+        }
+        "php.array_read_key" => {
+            super::array_adapter::emit_php_array_read_key(chunks, current, argc, line)
         }
         "php.array_flip" => super::array_adapter::emit_array_flip(chunks, current, argc, line),
         "php.array_diff" => super::array_adapter::emit_array_diff(chunks, current, argc, line),
@@ -988,6 +1052,10 @@ fn dispatch_inline(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "php.rawurldecode" => {
             crate::emitter::string_adapter::emit_rawurldecode(chunks, current, argc, line)
         }
+        "php.substr_bytes" => {
+            super::string_adapter::coerce_str_args(chunks, current, argc, 1, line);
+            super::string_bytes_adapter::emit_substr_bytes(chunks, current, argc, line);
+        }
         "php.htmlspecialchars" => {
             crate::emitter::string_adapter::emit_htmlspecialchars(chunks, current, argc, line)
         }
@@ -1188,8 +1256,12 @@ fn dispatch_inline(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "php.preg_replace_callback" => {
             crate::emitter::string_adapter::emit_preg_replace_callback(chunks, current, argc, line)
         }
+        "php.unset_capture" => super::destructor_adapter::emit_unset_capture(&mut chunks[current], line),
+        "php.unset_release" => super::destructor_adapter::emit_unset_release(&mut chunks[current], line),
         "php.clone_helper" => {
-            crate::emitter::string_adapter::emit_php_clone(chunks, current, argc, line)
+            let source = super::destructor_adapter::emit_clone_source_spill(&mut chunks[current], argc, line);
+            crate::emitter::string_adapter::emit_php_clone(chunks, current, argc, line);
+            super::destructor_adapter::emit_track_clone(&mut chunks[current], source, line);
         }
         "php.spl_splstack" => {
             crate::emitter::spl_adapter::emit_spl_new(chunks, current, "SplStack", argc, line)
@@ -1746,7 +1818,8 @@ fn dispatch_inline(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             crate::emitter::serialization_adapter::emit_php_serialize(chunks, current, argc, line)
         }
         "php.unserialize" => {
-            crate::emitter::serialization_adapter::emit_php_unserialize(chunks, current, argc, line)
+            crate::emitter::serialization_adapter::emit_php_unserialize(chunks, current, argc, line);
+            super::destructor_adapter::emit_track_value(&mut chunks[current], line);
         }
         "php.pdo_new" => crate::emitter::pdo_adapter::emit_php_pdo_new(chunks, current, argc, line),
         "php.pdo_query" => {
@@ -1815,7 +1888,8 @@ fn dispatch_inline(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "php.pdo_statement_fetch_object" => {
             crate::emitter::pdo_adapter::emit_php_pdo_statement_fetch_object(
                 chunks, current, argc, line,
-            )
+            );
+            super::destructor_adapter::emit_track_value(&mut chunks[current], line);
         }
         "php.pdo_statement_row_count" => {
             crate::emitter::pdo_adapter::emit_php_pdo_statement_row_count(
@@ -2017,9 +2091,10 @@ fn dispatch_inline(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "php.mysqli_fetch_assoc" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_assoc(chunks, current, argc, line)
         }
-        "php.mysqli_fetch_object" => crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_object(
-            chunks, current, argc, line,
-        ),
+        "php.mysqli_fetch_object" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_object(chunks, current, argc, line);
+            super::destructor_adapter::emit_track_value(&mut chunks[current], line);
+        }
         "php.mysqli_num_rows" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_num_rows(chunks, current, argc, line)
         }

@@ -18,7 +18,7 @@ fn actual_php_metaphone_preserves_coercion_limits_and_callback_order() {
   let ast=vybe_language_php::parse(source).unwrap();
   let profile=vybe_compiler::profile::parse_profile(vybe_language_php::profile_source()).unwrap();
   let chunks=vybe_compiler::Compiler::with_profile(profile).compile(&ast).unwrap();
-  wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&vybe_platform_wasm::write_wasm(&chunks)).unwrap();
+  vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks)).unwrap();
   let mut vm=VM::new();vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
   assert_eq!(vm.run(chunks).unwrap(),Value::String(expected.into()),"{source}");
   assert!(vm.last_exception.is_none());

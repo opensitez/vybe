@@ -44,7 +44,6 @@ vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_platform_wasm = { workspace = true }
-wasmparser = "0.244"
 uuid = { workspace = true }
 
 [build-dependencies]

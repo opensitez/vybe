@@ -71,8 +71,7 @@ fn foreach_protocol_preserves_values_callbacks_and_control_flow() {
         let compiled = bundle
             .compile_prepared_module(&module, &vm.modules)
             .unwrap();
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&compiled.chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&compiled.chunks))
             .unwrap_or_else(|e| panic!("{name}: invalid Wasm: {e}"));
         vm.run(compiled.chunks)
             .unwrap_or_else(|e| panic!("{name}: {e}"));

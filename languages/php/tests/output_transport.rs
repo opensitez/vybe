@@ -19,8 +19,7 @@ return ob_get_clean();
     let profile = vybe_compiler::profile::parse_profile(vybe_language_php::profile_source()).unwrap();
     let chunks = Compiler::with_profile(profile).compile(&ast).unwrap();
     let wasm = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm).expect("output transport must remain standard Wasm");
+    vybe_platform_wasm::validate_binary(&wasm).expect("output transport must remain standard Wasm");
     let mut vm = VM::new();
     platforms::register_platforms_all(&mut vm);
     assert_eq!(vm.run(chunks).unwrap(), Value::String("[a]a[b]b[c]c[p]p:1:1".into()));
@@ -56,8 +55,7 @@ return ob_get_clean();
                         && local.origin == vybe_runtime::chunk::LocalOrigin::Compiler)).count(), 1);
             }
             let wasm = vybe_platform_wasm::write_wasm(&chunks);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&wasm).expect("literal output must remain standard Wasm");
+            vybe_platform_wasm::validate_binary(&wasm).expect("literal output must remain standard Wasm");
             let mut vm = VM::new();
             platforms::register_platforms_all(&mut vm);
             assert_eq!(vm.run(chunks).unwrap(), Value::String(expected.into()));

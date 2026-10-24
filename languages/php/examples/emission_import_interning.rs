@@ -43,12 +43,12 @@ fn same(a: &[Chunk], b: &[Chunk], unit: &str) {
         vybe_platform_wasm::WasmWriteOptions { include_vybe_metadata: false, include_name_section: true });
     let wa = write(a); let wb = write(b);
     assert!(wa == wb, "complete standard Wasm bytes {unit}");
-    let validation = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&wa).map(|_| ());
+    let validation = vybe_platform_wasm::validate_binary(&wa).map(|_| ());
     match validation {
         Ok(()) => println!("parity unit={unit} chunks={} bytes={} wasm_bytes={} validation=pass", a.len(), a.iter().map(|c| c.code.len()).sum::<usize>(), wa.len()),
         Err(error) => {
             // This is a shared baseline limit, not a successful validation.
-            // Continue only for wasmparser's explicit implementation size cap.
+            // Continue only for the validator's explicit implementation size cap.
             let message = error.to_string();
             assert!(message.contains("function body size count exceeds limit"), "Wasm validation {unit}: {message}");
             println!("parity unit={unit} chunks={} validation=shared_size_limit error={message:?}", a.len());

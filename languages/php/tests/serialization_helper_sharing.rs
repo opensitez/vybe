@@ -76,8 +76,7 @@ fn repeated_serialization_builds_one_owned_recursive_body_and_preserves_results(
                 include_name_section: true,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&wasm)
+        vybe_platform_wasm::validate_binary(&wasm)
             .unwrap();
         let mut vm = vybe_runtime::VM::new();
         vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
@@ -119,8 +118,7 @@ fn repeated_unserialization_shares_allocator_and_decoder_and_preserves_results()
                     include_name_section: true,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&wasm)
+            vybe_platform_wasm::validate_binary(&wasm)
                 .unwrap();
             let mut vm = vybe_runtime::VM::new();
             vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);

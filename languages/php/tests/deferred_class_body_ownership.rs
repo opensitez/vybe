@@ -40,7 +40,7 @@ fn same_emission(a: &[Chunk], b: &[Chunk]) -> Vec<u8> {
 }
 fn same(a: &[Chunk], b: &[Chunk], allow_shared_size_limit: bool) {
     let a=same_emission(a,b);
-    if let Err(error)=wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&a) {
+    if let Err(error)=vybe_platform_wasm::validate_binary(&a) {
         assert!(allow_shared_size_limit && error.to_string().contains("function body size count exceeds limit"), "{error}");
         println!("full-unit validation=shared-function-size-limit error={error}");
     }
@@ -418,8 +418,7 @@ fn borrowed_include_metadata_wordpress_cpu_and_allocations() {
         // baseline writer rejects a unit. Exact output equality remains
         // mandatory; strict correctness tests above retain validation gates.
         let wasm=same_emission(&old,&new);
-        let validation=wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&wasm).map(|_|()).map_err(|error|error.to_string());
+        let validation=vybe_platform_wasm::validate_binary(&wasm).map(|_|()).map_err(|error|error.to_string());
         println!("borrowed-metadata-baseline-validation unit={path} result={validation:?}");
         drop(wasm);drop(old);drop(new);
         admitted+=usize::from(stats.installed_library_methods>0);

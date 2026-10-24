@@ -14,11 +14,11 @@ mod array_read;
 mod cookies;
 pub(crate) mod core_exceptions;
 mod datetime;
+mod destructors;
 mod dynamic_symbols;
 pub mod emitter;
 mod environment;
 mod filesystem;
-mod globals;
 mod logging;
 pub mod normalize_class;
 mod numeric;
@@ -30,8 +30,6 @@ mod serialization;
 mod sodium;
 mod spl_filesystem;
 mod spl_classes;
-mod string_bytes;
-mod html_entities;
 mod html_entity_names;
 mod string_scan;
 pub mod tree_register;
@@ -273,11 +271,10 @@ pub fn register() {
                 let host = chunk.add_import("php:array", "newClosure");
                 chunk.emit_call(host, 1, line);
             }),
-            rebind_finalizer: Some(|chunk, line| {
-                let host = chunk.add_import("php:object", "finalizeUnreachable");
-                chunk.emit_call(host, 2, line);
-                chunk.emit_op(vybe_runtime::opcode::Op::DROP, line);
-            }),
+            rebind_finalizer: Some(emitter::destructor_adapter::emit_finalize),
+            rebind_release: Some(emitter::destructor_adapter::emit_release_slot),
+            construct_tracker: Some(emitter::destructor_adapter::emit_track_construction),
+            rebind_gate: Some(emitter::destructor_adapter::emit_live_gate),
             constructor_ref_autoload: Some(
                 emitter::autoload_adapter::emit_constructor_ref_with_autoload,
             ),
@@ -300,7 +297,6 @@ impl vybe_runtime::Plugin for Plugin {
     fn init(&self, fw: &mut vybe_runtime::Framework<'_>) {
         register();
         array_read::register(fw);
-        globals::register(fw);
         numeric::register(fw);
         string_scan::register(fw);
         random::register(fw);
@@ -310,9 +306,8 @@ impl vybe_runtime::Plugin for Plugin {
         spl_filesystem::register(fw);
         dynamic_symbols::register(fw);
         regex::register(fw);
-        string_bytes::register(fw);
-        html_entities::register(fw);
         datetime::register(fw);
+        destructors::register(fw);
         logging::register(fw);
         environment::register(fw);
         filesystem::register(fw);
@@ -332,6 +327,7 @@ impl vybe_runtime::Plugin for Plugin {
     /// directly, which is exactly why the VM's own reset could never reach it."
     fn reset(&self) {
         crate::walker::reset_program_state();
+        crate::destructors::reset();
     }
 }
 

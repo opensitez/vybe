@@ -128,6 +128,35 @@ fn array_comparison_definition(intersect: bool) -> vybe_compiler::primitives::he
     }
 }
 
+// Exact arity 1 only: preserve the original snapshots, keys and reference cells.
+fn build_array_reverse_one(chunks: &mut Vec<Chunk>, _: u32) -> usize {
+    let index = chunks.len();
+    let mut chunk = Chunk::new("__stdlib_php_array_reverse_1");
+    chunk.arity = 1;
+    chunk.param_count = 1;
+    chunk.local_count = 1;
+    chunk.direct_entry_has_captures = Some(false);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunks.push(chunk);
+    assert!(super::dispatch_inline("php.array_reverse", chunks, index, 1, 0));
+    chunks[index].emit_op(Op::RETURN, 0);
+    index
+}
+
+fn array_reverse_one_definition() -> vybe_compiler::primitives::helper_templates::Definition {
+    use vybe_compiler::primitives::helper_templates::{Contract, Definition};
+    Definition {
+        contract: Contract::ContextualDirectCallAppendOnlyUnit {
+            key: array_keys_context_key,
+            build: build_array_reverse_one,
+        },
+        operation: "php.array_reverse", namespace: "php", version: 1,
+        parser: crate::parse, producer: super::dispatch, arity: 1,
+        helper_name: "__stdlib_php_array_reverse_1",
+        factory: unused_array_keys_factory, caller: unused_array_keys_caller,
+    }
+}
+
 pub(crate) fn helper_definitions() -> &'static [vybe_compiler::primitives::helper_templates::Definition] {
     use vybe_compiler::primitives::helper_templates::Definition;
     static DEFINITIONS: std::sync::OnceLock<Vec<Definition>> = std::sync::OnceLock::new();
@@ -143,10 +172,15 @@ pub(crate) fn helper_definitions() -> &'static [vybe_compiler::primitives::helpe
                 factory: definition.factory, caller: definition.caller,
             }).collect();
         definitions.push(super::super::copy_adapter::strict_eq_definition());
+        definitions.push(super::super::relational_adapter::compare3_word_definition());
+        definitions.push(super::super::relational_adapter::loose_eq_prefix_definition(false));
+        definitions.push(super::super::relational_adapter::loose_eq_prefix_definition(true));
+        definitions.push(array_fill_definition());
         definitions.push(array_keys_definition());
         definitions.push(array_comparison_definition(false));
         definitions.push(array_comparison_definition(true));
         definitions.push(array_values_definition());
+        definitions.push(array_reverse_one_definition());
         definitions.push(super::super::string_adapter::trim_one_definition());
         definitions.push(super::super::string_adapter::quotemeta_string_definition());
         definitions.push(super::super::string_adapter::count_chars_definition(1));
@@ -257,5 +291,29 @@ mod tests {
         }
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].code.is_empty());
+    }
+}
+
+fn build_array_fill_three(chunks: &mut Vec<Chunk>, _: u32) -> usize {
+    let index = chunks.len();
+    let mut chunk = Chunk::new("__stdlib_php_array_fill_3");
+    chunk.arity = 3; chunk.param_count = 3; chunk.local_count = 3;
+    chunk.direct_entry_has_captures = Some(false);
+    for slot in 0..3 { chunk.emit_op_u16(Op::LOCAL_GET, slot, 0); }
+    chunks.push(chunk);
+    super::super::array_adapter::emit_array_fill(chunks, index, 3, 0);
+    chunks[index].emit_op(Op::RETURN, 0);
+    index
+}
+fn array_fill_definition() -> vybe_compiler::primitives::helper_templates::Definition {
+    use vybe_compiler::primitives::helper_templates::{Contract, Definition};
+    Definition {
+        contract: Contract::ContextualDirectCallAppendOnlyUnit {
+            key: array_keys_context_key, build: build_array_fill_three,
+        },
+        operation: "php.array_fill", namespace: "php", version: 1,
+        parser: crate::parse, producer: super::dispatch, arity: 3,
+        helper_name: "__stdlib_php_array_fill_3",
+        factory: unused_array_keys_factory, caller: unused_array_keys_caller,
     }
 }

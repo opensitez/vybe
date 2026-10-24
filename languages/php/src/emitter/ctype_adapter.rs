@@ -27,7 +27,6 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     let i_slot = chunk.alloc_scratch(1);
     let len_slot = chunk.alloc_scratch(1);
     let code_slot = chunk.alloc_scratch(1);
-    let matched_slot = chunk.alloc_scratch(1);
     let result_slot = chunk.alloc_scratch(1);
 
     // s = "" + s  (string coerce)
@@ -50,8 +49,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
 
     // if len === 0: result = false; break.
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunk.emit_f64_const(0.0, line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -59,7 +57,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_end(line);
 
     // i = 0
-    chunk.emit_f64_const(0.0, line);
+    chunk.emit_i32_const(0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
     chunk.emit_bool_const(true, line);
@@ -69,7 +67,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     let (loop_patch, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::I32_LT_U, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
@@ -82,33 +80,21 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     }
     chunk.emit_op_u16(Op::LOCAL_SET, code_slot, line);
 
-    chunk.emit_bool_const(false, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
-
-    // For each range: if lo<=code<=hi, remember that this char matched.
-    for rng in ranges {
-        // code >= lo  ≡  !(code < lo)
+    // Both js-string builtins return raw i32 values. An unsigned range
+    // test rejects values below lo through wrapping subtraction, so no
+    // dynamic coercion, Boolean boxing, or nested range branches are needed.
+    for (index, rng) in ranges.iter().enumerate() {
         chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
-        chunk.emit_f64_const(rng.lo as f64, line);
-        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
-        chunk.emit_if(line);
-        // code <= hi  ≡  !(code > hi)
-        chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
-        chunk.emit_f64_const(rng.hi as f64, line);
-        vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-        vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
-        chunk.emit_if(line);
-        chunk.emit_bool_const(true, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
-        chunk.emit_end(line);
-        chunk.emit_end(line);
+        chunk.emit_i32_const(rng.lo as i32, line);
+        chunk.emit_op(Op::I32_SUB, line);
+        chunk.emit_i32_const((rng.hi - rng.lo) as i32, line);
+        chunk.emit_op(Op::I32_LE_U, line);
+        if index != 0 { chunk.emit_op(Op::I32_OR, line); }
     }
     // No range matched → result = false; exit loop.
     // Inside this `if`, label depths are 0=if, 1=loop, 2=outer block, so the
     // loop-exiting break is `br 2` (to `outer`). `br 1` would target the loop
     // itself and restart it → infinite loop on the first non-matching char.
-    chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     chunk.emit_bool_const(false, line);
@@ -118,8 +104,8 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
 
     // i++
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_f64_const(1.0, line);
-    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
     chunk.emit_br(0, line);

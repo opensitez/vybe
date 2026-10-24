@@ -27,7 +27,7 @@ fn same(a: &[Chunk], b: &[Chunk]) {
     let write=|c|vybe_platform_wasm::write_wasm_with_options(c,
         vybe_platform_wasm::WasmWriteOptions { include_vybe_metadata:false, include_name_section:true });
     let a=write(a);let b=write(b);assert_eq!(a,b);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&a).unwrap();
+    vybe_platform_wasm::validate_binary(&a).unwrap();
 }
 fn run(chunks: Vec<Chunk>, prepared: bool, expected: i32) -> String {
     let mut vm=VM::new();

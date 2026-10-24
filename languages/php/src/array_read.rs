@@ -181,7 +181,13 @@ fn export_array_value(value: &Value, depth: usize, active: &mut Vec<usize>) -> S
     for (key, item) in entries {
         output.push_str(&"  ".repeat(depth + 1));
         output.push_str(&export_scalar(&key));
-        output.push_str(" => ");
+        // php puts a nested array on its own line, indented to its own depth.
+        if exports_as_array(&item) {
+            output.push_str(" => \n");
+            output.push_str(&"  ".repeat(depth + 1));
+        } else {
+            output.push_str(" => ");
+        }
         output.push_str(&export_array_value(&item, depth + 1, active));
         output.push_str(",\n");
     }
@@ -189,6 +195,13 @@ fn export_array_value(value: &Value, depth: usize, active: &mut Vec<usize>) -> S
     output.push(')');
     active.pop();
     output
+}
+
+/// Does `export_array_value` render `value` as an `array (…)` block?
+fn exports_as_array(value: &Value) -> bool {
+    let Value::Object(object) = value else { return false; };
+    let object = object.lock().unwrap();
+    !is_array_object(&object) && matches!(object.kind, ObjectKind::Map(_) | ObjectKind::Array(_))
 }
 
 fn array_entry_count(object: &Object) -> Option<usize> {
@@ -237,13 +250,23 @@ fn array_entry_count(object: &Object) -> Option<usize> {
 // Copy PHP array values in one runtime operation. Objects (including reference
 // cells) keep their identity. Only the active recursion path is memoized: two
 // separate occurrences of a nested value must become independent array values.
-fn copy_array(value: &Value, active: &mut Vec<(usize, Value)>) -> Value {
+struct CopyPath<'a> {
+    identity: usize,
+    copy: &'a Value,
+    parent: Option<&'a CopyPath<'a>>,
+}
+
+fn copy_array(value: &Value, active: Option<&CopyPath<'_>>) -> Value {
     let Value::Object(source) = value else {
         return value.clone();
     };
     let identity = Arc::as_ptr(source) as usize;
-    if let Some((_, copy)) = active.iter().find(|(id, _)| *id == identity) {
-        return copy.clone();
+    let mut path = active;
+    while let Some(frame) = path {
+        if frame.identity == identity {
+            return frame.copy.clone();
+        }
+        path = frame.parent;
     }
     let mut snapshot = {
         let source = source.lock().unwrap();
@@ -268,25 +291,26 @@ fn copy_array(value: &Value, active: &mut Vec<(usize, Value)>) -> Value {
     }
     let target = heap::alloc(Object::new());
     let result = Value::Object(target.clone());
-    active.push((identity, result.clone()));
+    // Borrow the live result instead of allocating an active-path vector and
+    // retaining another strong reference at every recursive level.
+    let path = CopyPath { identity, copy: &result, parent: active };
     match &mut snapshot.kind {
         ObjectKind::Array(items) => {
             for item in items {
                 if matches!(item, Value::Object(_)) {
-                    *item = copy_array(item, active);
+                    *item = copy_array(item, Some(&path));
                 }
             }
         }
         ObjectKind::Map(items) => {
             for item in items.values_mut() {
                 if matches!(item, Value::Object(_)) {
-                    *item = copy_array(item, active);
+                    *item = copy_array(item, Some(&path));
                 }
             }
         }
         _ => unreachable!(),
     }
-    active.pop();
     // Preserve array metadata, including its internal cursor. Metadata is not
     // user array contents and must not recursively clone prototypes/callables.
     *target.lock().unwrap() = snapshot;
@@ -344,7 +368,7 @@ fn union_arrays(left: &Value, right: &Value) -> Option<Value> {
     // Reuse the map's ordered storage and PHP's array-copy rules. Presence,
     // including a null value, wins on the left; numeric keys are not renumbered.
     for (key, value) in left.iter().chain(right.iter()) {
-        entries.entry(union_key(key)).or_insert_with(|| copy_array(value, &mut Vec::new()));
+        entries.entry(union_key(key)).or_insert_with(|| copy_array(value, None));
     }
     let packed = entries.keys().enumerate().all(|(index, key)| {
         matches!(key, Value::I64(number) if *number == index as i64)
@@ -373,9 +397,9 @@ fn replace_arrays_recursive(base: &Value, overlay: &Value) -> Option<Value> {
     for (key, value) in &mut merged {
         *value = match (base.get(key), overlay.get(key)) {
             (Some(base), Some(overlay)) => replace_arrays_recursive(base, overlay)
-                .unwrap_or_else(|| copy_array(overlay, &mut Vec::new())),
-            (_, Some(overlay)) => copy_array(overlay, &mut Vec::new()),
-            (Some(base), None) => copy_array(base, &mut Vec::new()),
+                .unwrap_or_else(|| copy_array(overlay, None)),
+            (_, Some(overlay)) => copy_array(overlay, None),
+            (Some(base), None) => copy_array(base, None),
             _ => unreachable!(),
         };
     }
@@ -599,7 +623,7 @@ pub fn register(fw: &mut Framework<'_>) {
         "newArrayObject",
         Box::new(|_, args| {
             let input = args.first().cloned().unwrap_or(Value::Null);
-            let output = copy_array(&input, &mut Vec::new());
+            let output = copy_array(&input, None);
             let mut object = match output {
                 Value::Object(object) => object.lock().unwrap().clone(),
                 _ => Object::new_array(Vec::new()),
@@ -621,7 +645,7 @@ pub fn register(fw: &mut Framework<'_>) {
                 return Value::Null;
             };
             let replacement = args.get(1).cloned().unwrap_or(Value::Null);
-            let replacement = copy_array(&replacement, &mut Vec::new());
+            let replacement = copy_array(&replacement, None);
             let replacement_kind = match &replacement {
                 Value::Object(value) => value.lock().unwrap().kind.clone(),
                 _ => ObjectKind::Array(Vec::new()),
@@ -643,7 +667,7 @@ pub fn register(fw: &mut Framework<'_>) {
                         })
                 }
             };
-            copy_array(&old, &mut Vec::new())
+            copy_array(&old, None)
         }),
     );
     fw.register_host_fn(
@@ -670,7 +694,7 @@ pub fn register(fw: &mut Framework<'_>) {
                         })
                 }
             };
-            copy_array(&storage, &mut Vec::new())
+            copy_array(&storage, None)
         }),
     );
     fw.register_host_fn(
@@ -807,7 +831,7 @@ pub fn register(fw: &mut Framework<'_>) {
         "copy",
         Box::new(|_, args| {
             args.first()
-                .map_or(Value::Null, |value| copy_array(value, &mut Vec::new()))
+                .map_or(Value::Null, |value| copy_array(value, None))
         }),
     );
     fw.register_host_fn(
@@ -949,17 +973,18 @@ pub fn register(fw: &mut Framework<'_>) {
     fw.register_host_fn(
         "php:array",
         "local_set",
-        Box::new(|_, args| {
+        Box::new(|ctx, args| {
             let [Value::Object(array), key, value, ..] = args else {
                 return Value::Null;
             };
             if matches!(key, Value::Null | Value::Undefined) {
                 return Value::Null;
             }
+            let mut displaced = None;
             let mut object = array.lock().unwrap();
             match &mut object.kind {
                 ObjectKind::Map(entries) => {
-                    entries.insert(key.clone(), value.clone());
+                    displaced = entries.insert(key.clone(), value.clone());
                 }
                 ObjectKind::Array(items) => {
                     // A dense integer write keeps the indexed representation.
@@ -977,7 +1002,7 @@ pub fn register(fw: &mut Framework<'_>) {
                         _ => usize::MAX,
                     };
                     if dense_index < items.len() {
-                        items[dense_index] = value.clone();
+                        displaced = Some(std::mem::replace(&mut items[dense_index], value.clone()));
                     } else if dense_index == items.len() {
                         items.push(value.clone());
                     } else {
@@ -1002,6 +1027,11 @@ pub fn register(fw: &mut Framework<'_>) {
                     object.set(key.to_string(), value.clone());
                 }
                 _ => return Value::Null,
+            }
+            drop(object);
+            // The displaced element no longer belongs to this array.
+            if let Some(displaced @ Value::Object(_)) = displaced {
+                crate::destructors::release(ctx, &displaced);
             }
             Value::Object(array.clone())
         }),
@@ -1133,9 +1163,11 @@ pub fn register(fw: &mut Framework<'_>) {
         "php:array",
         "read",
         Box::new(|ctx, args| {
-            let object = args.first().cloned().unwrap_or(Value::Null);
-            let key = args.get(1).cloned().unwrap_or(Value::Null);
-            match &object {
+            // The host call already roots its arguments. Plain indexed reads
+            // need not increment/decrement both Arc counts on every lookup.
+            let object = args.first().unwrap_or(&Value::Null);
+            let key = args.get(1).unwrap_or(&Value::Null);
+            match object {
                 Value::Object(cell) => {
                     let method = {
                         let object = cell.lock().unwrap();
@@ -1144,7 +1176,7 @@ pub fn register(fw: &mut Framework<'_>) {
                         if matches!(&object.kind, ObjectKind::Array(_) | ObjectKind::Map(_))
                             && !is_array_object(&object)
                         {
-                            return indexed_value(&object, &key);
+                            return indexed_value(&object, key);
                         }
                         let canonical = object.get("offsetget");
                         if matches!(canonical, Value::Null | Value::Undefined) {
@@ -1157,10 +1189,10 @@ pub fn register(fw: &mut Framework<'_>) {
                         if matches!(function.lock().unwrap().kind,
                             ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
                     if callable {
-                        return ctx.invoke_with_receiver(&method, object, &[key]);
+                        return ctx.invoke_with_receiver(&method, object.clone(), &[key.clone()]);
                     }
                     let data = cell.lock().unwrap();
-                    indexed_value(&data, &key)
+                    indexed_value(&data, key)
                 }
                 Value::String(s) => {
                     let len = s.len() as i64;
@@ -1178,6 +1210,70 @@ pub fn register(fw: &mut Framework<'_>) {
             }
         }),
     );
+}
+
+#[cfg(test)]
+mod array_copy_path_tests {
+    use super::*;
+
+    fn array(items: Vec<Value>) -> Value {
+        Value::Object(heap::alloc(Object::new_array(items)))
+    }
+
+    fn object(value: &Value) -> &Arc<std::sync::Mutex<Object>> {
+        let Value::Object(object) = value else { panic!("expected object") };
+        object
+    }
+
+    #[test]
+    fn repeated_nested_arrays_copy_independently_and_objects_keep_identity() {
+        let nested = array(vec![Value::I32(7)]);
+        let ordinary = Value::Object(heap::alloc(Object::new()));
+        let source = array(vec![nested.clone(), nested.clone(), ordinary.clone()]);
+        let copied = copy_array(&source, None);
+        let items = match &object(&copied).lock().unwrap().kind {
+            ObjectKind::Array(items) => items.clone(),
+            _ => panic!("expected array"),
+        };
+        assert!(!Arc::ptr_eq(object(&source), object(&copied)));
+        assert!(!Arc::ptr_eq(object(&nested), object(&items[0])));
+        assert!(!Arc::ptr_eq(object(&items[0]), object(&items[1])));
+        assert!(Arc::ptr_eq(object(&ordinary), object(&items[2])));
+        if let ObjectKind::Array(values) = &mut object(&items[0]).lock().unwrap().kind {
+            values[0] = Value::I32(99);
+        }
+        for value in [&nested, &items[1]] {
+            let guard = object(value).lock().unwrap();
+            assert!(matches!(&guard.kind, ObjectKind::Array(values)
+                if matches!(values[0], Value::I32(7))));
+        }
+    }
+
+    #[test]
+    fn cycles_point_at_the_copy_and_metadata_stays_attached() {
+        let source = array(Vec::new());
+        {
+            let mut guard = object(&source).lock().unwrap();
+            guard.properties.insert("__php_array_cursor".into(), Value::I64(3));
+            if let ObjectKind::Array(items) = &mut guard.kind {
+                items.push(source.clone());
+            }
+        }
+        let copied = copy_array(&source, None);
+        {
+            let guard = object(&copied).lock().unwrap();
+            assert!(matches!(guard.properties.get("__php_array_cursor"), Some(Value::I64(3))));
+            let ObjectKind::Array(items) = &guard.kind else { panic!("expected array") };
+            assert!(Arc::ptr_eq(object(&copied), object(&items[0])));
+            assert!(!Arc::ptr_eq(object(&source), object(&items[0])));
+        }
+        // These synthetic cycles must not outlive the test.
+        for value in [&source, &copied] {
+            if let ObjectKind::Array(items) = &mut object(value).lock().unwrap().kind {
+                items.clear();
+            }
+        }
+    }
 }
 
 #[cfg(test)]

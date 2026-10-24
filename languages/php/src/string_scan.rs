@@ -67,43 +67,6 @@ pub fn register(fw: &mut Framework<'_>) {
         "addcslashes",
         Box::new(|_, args| addcslashes(args)),
     );
-    fw.register_host_fn(
-        "php:string",
-        "pregQuote",
-        Box::new(|_, args| {
-            let Some(Value::String(subject)) = args.first() else {
-                return Value::String(Arc::from(""));
-            };
-            let delimiter = match args.get(1) {
-                Some(Value::String(value)) => value.as_bytes().first().copied(),
-                _ => None,
-            };
-            let mut quoted = String::with_capacity(subject.len());
-            for ch in subject.chars() {
-                if ch == '\0' {
-                    quoted.push_str("\\000");
-                    continue;
-                }
-                let mut encoded = [0; 4];
-                let bytes = ch.encode_utf8(&mut encoded);
-                if ".\\+*?[^]$(){}=!<>|:-#".contains(ch)
-                    || delimiter == bytes.as_bytes().first().copied()
-                {
-                    quoted.push('\\');
-                }
-                quoted.push(ch);
-            }
-            Value::String(Arc::from(quoted))
-        }),
-    );
-    fw.register_host_fn(
-        "php:string",
-        "byteLength",
-        Box::new(|_, args| match args.first() {
-            Some(Value::String(value)) => Value::I64(value.len() as i64),
-            _ => Value::I64(0),
-        }),
-    );
     for (name, reject) in [("strspn", false), ("strcspn", true)] {
         fw.register_host_fn(
             "php:string",

@@ -66,8 +66,13 @@ fn helper_loop_end(
 
 /// Stack: [] -> [i32 bool]. PHP arrays exclude objects such as ArrayObject,
 /// even when their implementation uses map storage.
-pub(crate) fn emit_php_arrayish_slot(chunk: &mut Chunk, slot: u16, line: u32) {
+/// `array_type` is [`super::php_array_type::array_type`] of the module.
+pub(crate) fn emit_php_arrayish_slot(chunk: &mut Chunk, slot: u16, line: u32, array_type: u16) {
     lget(chunk, slot, line);
+    if array_type != 0 {
+        super::php_array_type::emit_is_php_array_in(chunk, array_type, line);
+        return;
+    }
     call_import(chunk, "php:array", "isArray", 1, line);
     // The existing PHP array predicate returns I32. Its generic native host
     // boundary boxes the value; recover that exact checked I32 for consumers.
@@ -75,6 +80,7 @@ pub(crate) fn emit_php_arrayish_slot(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let array_type = super::php_array_type::array_type(chunks);
     let helper_idx = chunks.len();
     let mut c = create_function_chunk("__php_strict_eq_impl", 2);
     c.local_count = c.local_count.max(2);
@@ -98,9 +104,9 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let pair_b_slot = alloc_local(&mut c);
     let result_slot = alloc_local(&mut c);
 
-    emit_php_arrayish_slot(&mut c, a_slot, line);
+    emit_php_arrayish_slot(&mut c, a_slot, line, array_type);
     lset(&mut c, a_is_slot, line);
-    emit_php_arrayish_slot(&mut c, b_slot, line);
+    emit_php_arrayish_slot(&mut c, b_slot, line, array_type);
     lset(&mut c, b_is_slot, line);
 
     lget(&mut c, a_is_slot, line);
@@ -117,6 +123,13 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
 
+    if array_type != 0 {
+        for slot in [a_slot, b_slot] {
+            lget(&mut c, slot, line);
+            super::php_array_type::emit_store_of_in(&mut c, array_type, line);
+            lset(&mut c, slot, line);
+        }
+    }
     lget(&mut c, a_slot, line);
     call_import(&mut c, "ecma:object", "entries", 1, line);
     lset(&mut c, entries_a_slot, line);
@@ -213,6 +226,10 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 }
 
 pub fn emit_php_copy_on_assign(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    if super::php_array_type::ENABLED {
+        super::php_array_type::emit_share(chunks, current, line);
+        return;
+    }
     call_import(&mut chunks[current], "php:array", "copy", 1, line);
 }
 

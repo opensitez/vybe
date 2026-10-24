@@ -1,24 +1,5 @@
 //! PHP numeric strings consume the entire string, unlike parseFloat.
-use vybe_runtime::value::ObjectKind;
 use vybe_runtime::{Framework, Value};
-
-fn php_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null | Value::Undefined => false,
-        Value::Bool(value) => *value,
-        Value::I32(value) => *value != 0,
-        Value::I64(value) => *value != 0,
-        Value::F32(value) => *value != 0.0 && !value.is_nan(),
-        Value::F64(value) => *value != 0.0 && !value.is_nan(),
-        Value::String(value) => !value.is_empty() && value.as_ref() != "0",
-        Value::Object(value) => match &value.lock().unwrap().kind {
-            ObjectKind::Array(items) => !items.is_empty(),
-            ObjectKind::Map(items) => !items.is_empty(),
-            _ => true,
-        },
-        _ => true,
-    }
-}
 
 pub(crate) fn is_numeric_string(value: &str) -> bool {
     let value = value.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'));
@@ -187,24 +168,6 @@ pub fn register(fw: &mut Framework<'_>) {
                 _ => 14,
             };
             Value::String(php_float_string(number, precision).into())
-        }),
-    );
-    fw.register_host_fn(
-        "php:value",
-        "looseBoolEq",
-        Box::new(|_, args| {
-            Value::Bool(args.len() >= 2 && php_truthy(&args[0]) == php_truthy(&args[1]))
-        }),
-    );
-    fw.register_host_fn(
-        "php:value",
-        "isNumeric",
-        Box::new(|_, args| {
-            Value::Bool(match args.first() {
-                Some(Value::I32(_) | Value::I64(_) | Value::F64(_)) => true,
-                Some(Value::String(value)) => is_numeric_string(value),
-                _ => false,
-            })
         }),
     );
 }

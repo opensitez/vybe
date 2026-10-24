@@ -39,10 +39,58 @@ fn emit_is_null_or_undefined(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op(Op::I32_OR, line);
 }
 
-/// Leaves the shared PHP globals object on the stack.
+/// Leaves the shared PHP globals object on the stack: the `globalThis`
+/// property that holds the request's variables, created on first use.
 pub fn emit_php_globals_object(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_memoized(chunks, current, "php.globals_object", line, emit_php_globals_object_lookup);
+}
+
+/// Whether the variable stores are resolved once per invocation.
+const MEMOIZE_STORES: bool = true;
+
+/// Leaves the value `compute` produces on the stack, computing it at most once
+/// per invocation of the current function: the request's variable stores do
+/// not change while one function body or script body runs.
+fn emit_memoized(
+    chunks: &mut [Chunk],
+    current: usize,
+    key: &str,
+    line: u32,
+    compute: fn(&mut [Chunk], usize, u32),
+) {
+    if !MEMOIZE_STORES {
+        compute(chunks, current, line);
+        return;
+    }
+    let memo = chunks[current].memo_slot(key);
+    emit_is_null_or_undefined(&mut chunks[current], memo, line);
+    chunks[current].emit_if(line);
+    compute(chunks, current, line);
+    lset(&mut chunks[current], memo, line);
+    chunks[current].emit_end(line);
+    lget(&mut chunks[current], memo, line);
+}
+
+fn emit_php_globals_object_lookup(chunks: &mut [Chunk], current: usize, line: u32) {
+    const KEY: &str = "__vybe_php_globals";
+    let global_this = chunks[current].alloc_scratch(1);
+    let store = chunks[current].alloc_scratch(1);
     call_import(chunks, current, "ecma:globalThis", "get", 0, line);
-    call_import(chunks, current, "php:globals", "store", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, global_this, line);
+    chunks[current].emit_string_const(KEY, line);
+    call_import(chunks, current, "ecma:reflect", "get", 2, line);
+    lset(&mut chunks[current], store, line);
+    emit_is_null_or_undefined(&mut chunks[current], store, line);
+    chunks[current].emit_if(line);
+    call_import(chunks, current, "ecma:object", "new", 0, line);
+    lset(&mut chunks[current], store, line);
+    lget(&mut chunks[current], global_this, line);
+    chunks[current].emit_string_const(KEY, line);
+    lget(&mut chunks[current], store, line);
+    call_import(chunks, current, "ecma:reflect", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    lget(&mut chunks[current], store, line);
 }
 
 /// `__php_global_get($name)` -> value-or-null.
@@ -59,6 +107,10 @@ fn emit_variable_store(chunks: &mut [Chunk], current: usize, line: u32, module: 
         emit_php_globals_object(chunks, current, line);
         return;
     }
+    emit_memoized(chunks, current, "php.module_store", line, emit_module_store_lookup);
+}
+
+fn emit_module_store_lookup(chunks: &mut [Chunk], current: usize, line: u32) {
     call_import(chunks, current, "vybe:php", "include_scope", 0, line);
     let scope = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], scope, line);
@@ -85,9 +137,11 @@ fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, module: b
     // yield its referenced value; only the explicit *_ref APIs return places.
     vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
     let value = chunks[current].alloc_scratch(1);
-    lset(&mut chunks[current], value, line);
-
-    emit_is_null_or_undefined(&mut chunks[current], value, line);
+    // Null already is the required result. Only undefined needs normalization.
+    // Keep the same root slot while consuming the value directly in the test.
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, value, line);
+    let undef = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(undef, 1, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
@@ -129,7 +183,36 @@ fn emit_ref(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, module: b
         vybe_compiler::primitives::references::emit_carray_new(chunks, current, store, key, line);
         chunks[current].emit_end(line);
     } else {
-        vybe_compiler::primitives::references::emit_carray_new(chunks, current, store, key, line);
+        // `global $x` binds the request variable itself: the store keeps one
+        // reference cell for it, created on first binding, so every binding
+        // and the store share that cell and reads take the cell fast path.
+        lget(&mut chunks[current], store, line);
+        lget(&mut chunks[current], key, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        let existing = chunks[current].alloc_scratch(1);
+        lset(&mut chunks[current], existing, line);
+        lget(&mut chunks[current], existing, line);
+        vybe_compiler::primitives::references::emit_is_reference_to_stack(chunks, current, line);
+        chunks[current].emit_if_value(line);
+        lget(&mut chunks[current], existing, line);
+        chunks[current].emit_else(line);
+        let undefined = chunks[current].add_import("wasm:js-undefined", "test");
+        lget(&mut chunks[current], existing, line);
+        chunks[current].emit_call(undefined, 1, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        lset(&mut chunks[current], existing, line);
+        chunks[current].emit_end(line);
+        vybe_compiler::primitives::references::emit_cell_new(chunks, current, existing, line);
+        let cell = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_TEE, cell, line);
+        lset(&mut chunks[current], existing, line);
+        lget(&mut chunks[current], store, line);
+        lget(&mut chunks[current], key, line);
+        lget(&mut chunks[current], cell, line);
+        chunks[current].emit_op(Op::ARRAY_SET, line);
+        lget(&mut chunks[current], cell, line);
+        chunks[current].emit_end(line);
     }
 }
 
@@ -185,23 +268,6 @@ fn emit_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, module: b
     // check and before a destructor reenters PHP. Genuine aliases in globals,
     // include scopes and source locals remain roots; never special-case them
     // away. Keep this inline so no callee parameter becomes an extra owner.
-    let chunk = &mut chunks[current];
-    let destructor = vybe_compiler::primitives::class_slots::resolve_interned(
-        chunk,
-        &vybe_compiler::primitives::class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::Destructor),
-        &vybe_compiler::primitives::class_slots::PlainNames,
-    );
-    lget(chunk, old_value, line);
-    lget(chunk, old_value, line);
-    vybe_compiler::primitives::class_slots::emit_class_get(
-        chunk,
-        vybe_compiler::primitives::class_slots::ObjSource::Stack,
-        &destructor,
-        vybe_compiler::primitives::class_slots::Dest::Stack,
-        line,
-    );
-    let finalize = chunk.add_import("php:object", "finalizeUnreachable");
-    chunk.emit_call(finalize, 2, line);
-    chunk.emit_op(Op::DROP, line);
+    super::destructor_adapter::emit_finalize_or_release_slot(&mut chunks[current], old_value, line);
     lget(&mut chunks[current], value, line);
 }

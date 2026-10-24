@@ -266,6 +266,7 @@ fn ensure_wrapper(chunks: &mut Vec<Chunk>, counted: bool) -> usize {
     let literal = ensure_literal(chunks, counted);
     let stringify = super::string_adapter::ensure_concat_stringify_helper(chunks);
     let current = append_owned(chunks, name, arity);
+    let array_type = super::php_array_type::array_type(chunks);
     let c = &mut chunks[current];
     let search_array = c.alloc_scratch(1);
     let replacement_array = c.alloc_scratch(1);
@@ -274,7 +275,7 @@ fn ensure_wrapper(chunks: &mut Vec<Chunk>, counted: bool) -> usize {
     let replacements = c.alloc_scratch(1);
     let entries = c.alloc_scratch(1);
     for (input, output) in [(0, search_array), (1, replacement_array), (2, subject_array)] {
-        super::copy_adapter::emit_php_arrayish_slot(c, input, 0);
+        super::copy_adapter::emit_php_arrayish_slot(c, input, 0, array_type);
         set(c, output, 0);
     }
     // Pure shallow snapshots preserve raw cells/objects. Do not pre-stringify

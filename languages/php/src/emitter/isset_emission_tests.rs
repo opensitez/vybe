@@ -27,8 +27,7 @@ fn check(values: Vec<Value>, expected: bool, raw: bool) {
         vybe_platform_wasm::WasmWriteOptions {
             include_vybe_metadata: false, include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let result = vm.run(chunks).unwrap();
     if raw {
         assert!(matches!(result, Value::I32(value) if value == i32::from(expected)));

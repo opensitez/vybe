@@ -57,7 +57,7 @@ pub fn emit_php_max(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 /// strings like `'10'`) go through `ecma:number.parseFloat`. `parseFloat`
 /// alone is wrong because the host fn expects a string and returns 0/NaN
 /// for an f64 operand, and `0 + v` is wrong because it concatenates a
-/// string operand. Stack: `[v]` → `[number]`.
+/// string operand. Stack: `[v]` -> `[f64]`.
 fn emit_to_number(chunk: &mut Chunk, pf_idx: u16, line: u32) {
     let t = alloc_local(chunk);
     lset(chunk, t, line);
@@ -70,6 +70,10 @@ fn emit_to_number(chunk: &mut Chunk, pf_idx: u16, line: u32) {
     lget(chunk, t, line);
     chunk.emit_call(pf_idx, 1, line);
     chunk.emit_end(line);
+    // Both branches have established a Number, including NaN. Extract it
+    // once rather than expanding a dynamic comparison of two known Numbers.
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    chunk.emit_call(to_f64, 1, line);
 }
 
 fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool, line: u32) {
@@ -137,9 +141,9 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
         lget(chunk, best_slot, line);
         emit_to_number(chunk, pf_idx, line);
         if want_lt {
-            vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line)
+            chunk.emit_op(Op::F64_LT, line);
         } else {
-            vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line)
+            chunk.emit_op(Op::F64_GT, line);
         };
         chunk.emit_if(line);
         lget(chunk, base + i as u16, line);
@@ -310,7 +314,8 @@ fn emit_dec_to_radix(
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     }
     lget(chunk, out_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    // Both the digit rendering and the accumulated output are strings.
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
     lset(chunk, out_slot, line);
 
     // n = floor(n / radix)
@@ -460,7 +465,9 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_end(line); // end scan block
     chunk.patch_block(scan_block);
 
-    let outer = chunk.emit_block(line);
+    // Both the zero shortcut and the ordinary path produce one string.
+    // Declare that result so a native Wasm validator accepts the join.
+    let outer = chunk.emit_block_typed(line, 1);
 
     // if n === 0: push "0" and break
     lget(chunk, n_slot, line);
@@ -502,7 +509,8 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
         chunk.emit_call(idx, 2, line);
     }
     lget(chunk, out_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    // charAt returns a string and out was initialized as a string.
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
     lset(chunk, out_slot, line);
 
     // n = floor(n / to)

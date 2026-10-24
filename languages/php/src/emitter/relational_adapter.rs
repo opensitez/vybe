@@ -69,6 +69,13 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
 /// The comparison recipe is identical in value and condition contexts. Only
 /// value consumers require a boxed Boolean; condition consumers retain i32.
 pub fn emit_php_loose_eq_condition(chunks: &mut [Chunk], current: usize, _argc: u8, negate: bool, line: u32) {
+    emit_php_loose_eq_condition_impl(chunks, current, negate, line, false);
+}
+
+fn emit_php_loose_eq_condition_impl(
+    chunks: &mut [Chunk], current: usize, negate: bool, line: u32,
+    defer_fallback: bool,
+) {
     let c = &mut chunks[current];
     let a = alloc_local(c);
     let b = alloc_local(c);
@@ -79,9 +86,6 @@ pub fn emit_php_loose_eq_condition(chunks: &mut [Chunk], current: usize, _argc: 
     let string = c.add_import("wasm:js-string", "test");
     let equal = c.add_import("wasm:js-string", "equals");
     let boolean = c.add_import("wasm:js-boolean", "test");
-    let cast = c.add_import("wasm:js-boolean", "cast");
-    let bool_equal = c.add_import("php:value", "looseBoolEq");
-    let numeric = c.add_import("php:value", "isNumeric");
     let to_number = c.add_import("ecma:number", "parseFloat");
     let parse = c.add_import("ecma:number", "parseFloat");
 
@@ -102,8 +106,7 @@ pub fn emit_php_loose_eq_condition(chunks: &mut [Chunk], current: usize, _argc: 
     lget(c, a, line); c.emit_call(boolean, 1, line);
     lget(c, b, line); c.emit_call(boolean, 1, line);
     c.emit_op(Op::I32_OR, line); c.emit_if(line);
-    lget(c, a, line); lget(c, b, line);
-    c.emit_call(bool_equal, 2, line); c.emit_call(cast, 1, line);
+    super::value_adapter::emit_same_truthiness_condition(c, a, b, line);
     c.emit_br(1, line);
     c.emit_else(line);
     lget(c, a, line); c.emit_call(string, 1, line); c.emit_if(line);
@@ -113,9 +116,9 @@ pub fn emit_php_loose_eq_condition(chunks: &mut [Chunk], current: usize, _argc: 
     lget(c, a, line); lget(c, b, line); c.emit_call(equal, 2, line);
     c.emit_if_i32(line); c.emit_i32_const(1, line);
     c.emit_else(line);
-    lget(c, a, line); c.emit_call(numeric, 1, line); c.emit_call(cast, 1, line);
+    lget(c, a, line); super::value_adapter::emit_is_numeric_string_condition(c, line);
     c.emit_if_i32(line);
-    lget(c, b, line); c.emit_call(numeric, 1, line); c.emit_call(cast, 1, line);
+    lget(c, b, line); super::value_adapter::emit_is_numeric_string_condition(c, line);
     c.emit_if_i32(line);
     lget(c, a, line); c.emit_call(to_number, 1, line);
     lget(c, b, line); c.emit_call(to_number, 1, line);
@@ -145,10 +148,116 @@ pub fn emit_php_loose_eq_condition(chunks: &mut [Chunk], current: usize, _argc: 
     c.emit_end(line); c.emit_end(line);
     c.emit_end(line); c.emit_end(line);
 
-    // Every remaining pair used this same observable fallback before.
-    lget(c, a, line); lget(c, b, line); emit_dyn_eq(c, line);
+    // The owned scalar prefix never executes an observable fallback in its
+    // helper frame. Its caller keeps the original operands and performs the
+    // exact old fallback at the original call site.
+    if defer_fallback {
+        c.emit_i32_const(2, line);
+    } else {
+        lget(c, a, line); lget(c, b, line); emit_dyn_eq(c, line);
+    }
     c.emit_end(line); // i32 result block
     if negate { c.emit_op(Op::I32_EQZ, line); }
+}
+
+fn loose_eq_prefix_context_key(_: &[Chunk], _: u32) -> Vec<u8> {
+    Vec::new()
+}
+
+fn build_loose_eq_prefix(chunks: &mut Vec<Chunk>, _: u32) -> usize {
+    let index = chunks.len();
+    let mut body = Chunk::new("__stdlib_php_loose_eq_scalar_prefix_2");
+    body.arity = 2;
+    body.param_count = 2;
+    body.local_count = 2;
+    body.takes_receiver = false;
+    body.direct_entry_has_captures = Some(false);
+    body.module_receiver_abi =
+        vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
+    // Status is raw i32, never a boxed Boolean or an inferred return hint.
+    body.func_sig = Some(("externref,externref".into(), "i32".into()));
+    body.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    body.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    chunks.push(body);
+    emit_php_loose_eq_condition_impl(chunks, index, false, 0, true);
+    chunks[index].emit_op(Op::RETURN, 0);
+    index
+}
+
+static LOOSE_EQ_PREFIX_RECIPE:
+    vybe_compiler::primitives::helper_templates::ContextualRecipe =
+    vybe_compiler::primitives::helper_templates::ContextualRecipe {
+        key: loose_eq_prefix_context_key,
+        build: build_loose_eq_prefix,
+        helper_name: "__stdlib_php_loose_eq_scalar_prefix_2",
+    };
+
+fn invoke_loose_eq_prefix(
+    chunks: &mut Vec<Chunk>, current: usize, helper: usize, line: u32,
+    negate: bool,
+) {
+    // Preserve the old caller's three scratch slots and, critically, its two
+    // operand roots. Helper return must not release a sole temporary operand.
+    let a = alloc_local(&mut chunks[current]);
+    let b = alloc_local(&mut chunks[current]);
+    let status = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], b, line);
+    lset(&mut chunks[current], a, line);
+    lget(&mut chunks[current], a, line);
+    lget(&mut chunks[current], b, line);
+    assert!(vybe_compiler::primitives::functions::try_emit_direct_i32_helper_call(
+        chunks, current, helper, 2, line,
+    ), "owned loose-equality prefix must keep its explicit i32 status ABI");
+    let c = &mut chunks[current];
+    lset(c, status, line);
+    lget(c, status, line);
+    c.emit_i32_const(2, line);
+    c.emit_op(Op::I32_EQ, line);
+    c.emit_if_i32(line);
+    lget(c, a, line);
+    lget(c, b, line);
+    emit_dyn_eq(c, line);
+    c.emit_else(line);
+    lget(c, status, line);
+    let reload_status = c.add_import("wasm:js-number", "toI32");
+    c.emit_call(reload_status, 1, line);
+    c.emit_end(line);
+    if negate { c.emit_op(Op::I32_EQZ, line); }
+    vybe_compiler::primitives::ops::emit_i32_to_bool(c, line);
+}
+
+fn invoke_loose_eq_value(chunks: &mut Vec<Chunk>, current: usize, helper: usize, line: u32) {
+    invoke_loose_eq_prefix(chunks, current, helper, line, false);
+}
+
+fn invoke_loose_ne_value(chunks: &mut Vec<Chunk>, current: usize, helper: usize, line: u32) {
+    invoke_loose_eq_prefix(chunks, current, helper, line, true);
+}
+
+fn unused_loose_eq_prefix_factory() -> Chunk {
+    unreachable!("loose equality uses its unit-owned pure-prefix recipe")
+}
+
+fn unused_loose_eq_prefix_caller(_: &mut Chunk, _: usize, _: u32) {
+    unreachable!("loose equality retains its caller operand roots")
+}
+
+pub(crate) fn loose_eq_prefix_definition(negate: bool)
+    -> vybe_compiler::primitives::helper_templates::Definition
+{
+    use vybe_compiler::primitives::helper_templates::{Contract, Definition};
+    Definition {
+        contract: Contract::ContextualRecipeAppendOnlyUnit {
+            recipe: &LOOSE_EQ_PREFIX_RECIPE,
+            invoke: if negate { invoke_loose_ne_value } else { invoke_loose_eq_value },
+        },
+        operation: if negate { "php.loose_ne" } else { "php.loose_eq" },
+        namespace: "php", version: 1,
+        parser: crate::parse, producer: super::dispatch::dispatch, arity: 2,
+        helper_name: "__stdlib_php_loose_eq_scalar_prefix_2",
+        factory: unused_loose_eq_prefix_factory,
+        caller: unused_loose_eq_prefix_caller,
+    }
 }
 
 /// Consume the top two stack values (`[a, b]`) and push `a <op> b` using
@@ -250,6 +359,57 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
 /// for `"9a"` — exactly PHP's `is_numeric`, including the leading-whitespace
 /// tolerance that makes `" 1" == "1"` true.
 pub fn emit_compare3(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_compare3_with_result(chunks, current, line, false);
+}
+
+pub fn emit_compare3_i32(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_compare3_with_result(chunks, current, line, true);
+}
+
+fn compare3_context_key(chunks: &[Chunk], _: u32) -> Vec<u8> {
+    vec![match vybe_compiler::primitives::class_context::module_receiver_abi(chunks) {
+        vybe_runtime::chunk::ReceiverAbi::Ambient => 0,
+        vybe_runtime::chunk::ReceiverAbi::Parameter => 1,
+    }]
+}
+
+fn build_compare3_word(chunks: &mut Vec<Chunk>, _: u32) -> usize {
+    let index = chunks.len();
+    let mut body = Chunk::new("__stdlib_php_compare3_i32");
+    body.arity = 2;
+    body.param_count = 2;
+    body.local_count = 2;
+    body.takes_receiver = false;
+    body.direct_entry_has_captures = Some(false);
+    body.module_receiver_abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
+    body.func_sig = Some(("externref,externref".into(), "i32".into()));
+    body.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    body.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    chunks.push(body);
+    emit_compare3_i32(chunks, index, 0);
+    chunks[index].emit_op(Op::RETURN, 0);
+    index
+}
+
+fn unused_compare3_factory() -> Chunk { unreachable!("comparison uses its unit-owned builder") }
+fn unused_compare3_caller(_: &mut Chunk, _: usize, _: u32) { unreachable!("comparison uses its checked typed direct edge") }
+
+pub(crate) fn compare3_word_definition() -> vybe_compiler::primitives::helper_templates::Definition {
+    use vybe_compiler::primitives::helper_templates::{Contract, Definition};
+    Definition {
+        contract: Contract::ContextualTypedDirectCallAppendOnlyUnit {
+            key: compare3_context_key,
+            build: build_compare3_word,
+            result: vybe_runtime::registry::emitter_results::ResultRepresentation::RawI32Word,
+        },
+        operation: "php.compare3", namespace: "php", version: 1,
+        parser: crate::parse, producer: super::dispatch::dispatch, arity: 2,
+        helper_name: "__stdlib_php_compare3_i32",
+        factory: unused_compare3_factory, caller: unused_compare3_caller,
+    }
+}
+
+fn emit_compare3_with_result(chunks: &mut [Chunk], current: usize, line: u32, raw_i32: bool) {
     let chunk = &mut chunks[current];
     let t_b = alloc_local(chunk);
     let t_a = alloc_local(chunk);
@@ -287,7 +447,7 @@ pub fn emit_compare3(chunks: &mut [Chunk], current: usize, line: u32) {
     let test_bool_b = chunk.add_import("wasm:js-boolean", "test");
     chunk.emit_call(test_bool_b, 1, line);
     chunk.emit_op(Op::I32_OR, line);
-    chunk.emit_if_value(line);
+    if raw_i32 { chunk.emit_if_i32(line); } else { chunk.emit_if_value(line); }
 
     // PHP falsiness, via PHP's own `empty` — NOT `ops::emit_dyn_to_bool`,
     // which is JS's and calls `"0"` truthy. Each side lands as an i32 in
@@ -315,7 +475,7 @@ pub fn emit_compare3(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(chunk, b_num, line);
     chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if_value(line);
+    if raw_i32 { chunk.emit_if_i32(line); } else { chunk.emit_if_value(line); }
 
     // Numeric: (a > b) - (a < b).
     lget(chunk, a_num, line);
@@ -497,4 +657,22 @@ pub fn emit_php_loose_eq_null_literal(chunks:&mut [Chunk],current:usize,negate:b
  // writable aliases and the complete object/Ticks observation recipe.
  c.emit_op_u16(Op::LOCAL_GET,left,line);c.emit_op_u16(Op::LOCAL_GET,right,line);vybe_compiler::primitives::ops::emit_dyn_eq(c,line);
  c.emit_end(line);if negate {c.emit_op(Op::I32_EQZ,line);}vybe_compiler::primitives::ops::emit_i32_to_bool(c,line);
+}
+
+#[cfg(test)]
+mod loose_prefix_call_abi_tests {
+    use super::*;
+    #[test]
+    fn value_prefix_invocation_preserves_native_status_and_caller_operand_roots() {
+        for negate in [false,true] {
+            let mut chunks=vec![Chunk::new("loose-prefix-caller")];
+            let target=build_loose_eq_prefix(&mut chunks,1);
+            invoke_loose_eq_prefix(&mut chunks,0,target,2,negate);
+            assert_eq!(chunks[0].local_count,3,"caller must retain both operands and status");
+            let edge=chunks[0].direct_defined_calls.values().next().unwrap();
+            assert_eq!(edge.target as usize,target);
+            assert!(!edge.source);assert_eq!(edge.params,"externref,externref");assert_eq!(edge.results,"i32");
+            assert_eq!(chunks[target].func_sig.as_ref().unwrap(), &("externref,externref".into(),"i32".into()));
+        }
+    }
 }

@@ -536,12 +536,16 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     emit_nullish_slot(chunk, method_slot, line);
     chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
-    let array_test = chunk.add_import("php:array", "isArray");
-    chunk.emit_call(array_test, 1, line);
-    // Existing internal provider returns strict I32; its generic host import
-    // boxes that result at the native boundary. Recover I32 before the IF.
-    let array_i32 = chunk.add_import("wasm:js-number", "toI32");
-    chunk.emit_call(array_i32, 1, line);
+    if super::php_array_type::ENABLED {
+        super::php_array_type::emit_is_php_array_in(chunk, super::php_array_type::TYPE_INDEX, line);
+    } else {
+        let array_test = chunk.add_import("php:array", "isArray");
+        chunk.emit_call(array_test, 1, line);
+        // Existing internal provider returns strict I32; its generic host import
+        // boxes that result at the native boundary. Recover I32 before the IF.
+        let array_i32 = chunk.add_import("wasm:js-number", "toI32");
+        chunk.emit_call(array_i32, 1, line);
+    }
     chunk.emit_if_value(line);
     push_str(chunk, "Array", line);
     chunk.emit_else(line);
@@ -1139,7 +1143,7 @@ pub fn emit_stristr(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
 /// Preserve quote/document flags and double_encode while coercing the input
 /// through PHP's normal string conversion before the adapter boundary.
-pub fn emit_htmlspecialchars(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_htmlspecialchars(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let options = chunk.alloc_scratch(u16::from(argc.saturating_sub(1)));
     for argument in (1..argc).rev() {
@@ -1149,11 +1153,10 @@ pub fn emit_htmlspecialchars(chunks: &mut [Chunk], current: usize, argc: u8, lin
     for argument in 1..argc {
         chunk.emit_op_u16(Op::LOCAL_GET, options + u16::from(argument - 1), line);
     }
-    let escape = chunk.add_import("php:html", "specialChars");
-    chunk.emit_call(escape, argc, line);
+    super::html_adapter::emit_htmlspecialchars(chunks, current, argc, line);
 }
 
-pub fn emit_htmlentities(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_htmlentities(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     emit_htmlspecialchars(chunks, current, argc, line);
     let chunk = &chunks[current];
     let missing = [("ecma:regexp", "test"), ("wasm:js-boolean", "cast")]
@@ -2331,7 +2334,7 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 /// Plus the optional delimiter character.
 pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     coerce_str_args(chunks, current, argc, argc.min(2), line);
-    call_import(chunks, current, "php:string", "pregQuote", argc, line);
+    super::html_adapter::emit_preg_quote(&mut chunks[current], argc, line);
 }
 
 // ── encoding: url / base64 / hex / rot13 / qp / uuencode ───────────
@@ -2432,7 +2435,7 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 
 /// Coerce the FIRST `n` values of the argument group to strings, in place.
 /// Stack: `[a1, … aN, rest…]` → `[String(a1), … String(aN), rest…]`.
-fn coerce_str_args(chunks: &mut [Chunk], current: usize, argc: u8, n: u8, line: u32) {
+pub(crate) fn coerce_str_args(chunks: &mut [Chunk], current: usize, argc: u8, n: u8, line: u32) {
     let total = argc as u16;
     let n = (n as u16).min(total);
     if n == 0 {
@@ -5842,6 +5845,7 @@ fn emit_strtr_map(chunks: &mut [Chunk], current: usize, line: u32) {
     let entries_slot = alloc_local(chunk);
     let idx_slot = alloc_local(chunk);
     let pair_slot = alloc_local(chunk);
+    let length_slot = alloc_local(chunk);
 
     // Stack (bottom→top): str, map. Pop map then str.
     lset(chunk, map_slot, line);
@@ -5853,27 +5857,25 @@ fn emit_strtr_map(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::collections::emit_iter_entries(chunks, current, line);
     let chunk = &mut chunks[current];
     lset(chunk, entries_slot, line);
+    // The fresh entries snapshot is private; replacement callbacks cannot
+    // change its length. Measure it once using the native GC array operation.
+    lget(chunk, entries_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, length_slot, line);
 
     let _ = chunk;
-    let state = vybe_compiler::primitives::loops::emit_for_in_start(
+    let state = vybe_compiler::primitives::loops::emit_for_in_snapshot_no_continue_start(
         chunks,
         current,
         entries_slot,
         idx_slot,
+        length_slot,
         line,
     );
-    // for_in_start leaves the current entry on the stack — drop it; we
-    // re-fetch [k, v] by index below.
-    chunks[current].emit_op(Op::DROP, line);
-
-    let chunk = &mut chunks[current];
-    lget(chunk, str_slot, line);
-    lget(chunk, entries_slot, line);
-    lget(chunk, idx_slot, line);
-    let _ = chunk;
-    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+    // Reuse the pair already loaded by the loop instead of fetching it twice.
     let chunk = &mut chunks[current];
     lset(chunk, pair_slot, line);
+    lget(chunk, str_slot, line);
     lget(chunk, pair_slot, line);
     push_const(chunk, Value::I32(0), line);
     let _ = chunk;
@@ -6244,7 +6246,7 @@ pub fn emit_str_decrement(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 pub fn emit_strlen(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     coerce_to_str(chunk, line);
-    let length = chunk.add_import("php:string", "byteLength");
+    let length = chunk.add_import("wasm:text-encoder", "measureStringAsUTF8");
     chunk.emit_call(length, 1, line);
 }
 

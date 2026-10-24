@@ -15,6 +15,10 @@
 
 pub mod component_classes;
 pub mod copy_adapter;
+pub mod value_adapter;
+pub mod html_adapter;
+pub mod string_bytes_adapter;
+pub mod destructor_adapter;
 pub mod datetime_adapter;
 
 // Inline-emit adapters for PHP top-level functions. Each `emit_<fn>`
@@ -26,6 +30,7 @@ pub mod datetime_adapter;
 // bound from the PHP profile's `[builtins]` section. No JS
 // polyfills; no PHP-specific host fns.
 pub mod array_adapter;
+pub mod php_array_type;
 pub mod argument_emission;
 pub mod autoload_adapter;
 pub mod call_adapter;

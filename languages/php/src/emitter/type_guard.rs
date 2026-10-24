@@ -105,6 +105,7 @@ pub fn guard_arg(
     msg: &str,
     line: u32,
 ) {
+    let array_type = super::php_array_type::array_type(chunks);
     let chunk = &mut chunks[current];
     // Values below the guarded argument can remain on the operand stack.
     // Keep the guarded value there too: local.tee gives the predicate a
@@ -128,7 +129,7 @@ pub fn guard_arg(
     match expect {
         // PHP arrays exclude ordinary objects and ArrayObject instances.
         Expect::Array => {
-            super::copy_adapter::emit_php_arrayish_slot(chunk, slot, line);
+            super::copy_adapter::emit_php_arrayish_slot(chunk, slot, line, array_type);
             chunk.emit_op(Op::I32_EQZ, line);
         }
         Expect::NotScalar => {

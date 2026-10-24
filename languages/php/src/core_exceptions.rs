@@ -303,6 +303,37 @@ fn core_exception_decl(
 /// These declarations travel through the same class normalizer, class slots,
 /// reflection metadata, and shared throw/catch machinery as user PHP classes.
 /// They are not parsed source preludes.
+const DERIVED_EXCEPTIONS: &[(&str, &str)] = &[
+
+        ("ErrorException", "Exception"),
+        ("TypeError", "Error"),
+        ("ValueError", "Error"),
+        ("ArithmeticError", "Error"),
+        ("DivisionByZeroError", "ArithmeticError"),
+        ("ArgumentCountError", "TypeError"),
+        ("CompileError", "Error"),
+        ("ParseError", "CompileError"),
+        ("AssertionError", "Error"),
+        ("UnhandledMatchError", "Error"),
+        ("FiberError", "Error"),
+        ("RuntimeException", "Exception"),
+        ("PDOException", "RuntimeException"),
+        ("LogicException", "Exception"),
+        ("InvalidArgumentException", "LogicException"),
+        ("DomainException", "LogicException"),
+        ("LengthException", "LogicException"),
+        ("OutOfRangeException", "LogicException"),
+        ("BadFunctionCallException", "LogicException"),
+        ("BadMethodCallException", "BadFunctionCallException"),
+        ("OutOfBoundsException", "RuntimeException"),
+        ("RangeException", "RuntimeException"),
+        ("OverflowException", "RuntimeException"),
+        ("UnderflowException", "RuntimeException"),
+        ("UnexpectedValueException", "RuntimeException"),
+        ("JsonException", "Exception"),
+
+];
+
 pub(crate) fn declarations() -> Vec<Statement> {
     let span = Span::default();
     let mut stmts = vec![
@@ -331,34 +362,7 @@ pub(crate) fn declarations() -> Vec<Statement> {
             &span,
         ),
     ];
-    for (name, parent) in [
-        ("ErrorException", "Exception"),
-        ("TypeError", "Error"),
-        ("ValueError", "Error"),
-        ("ArithmeticError", "Error"),
-        ("DivisionByZeroError", "ArithmeticError"),
-        ("ArgumentCountError", "TypeError"),
-        ("CompileError", "Error"),
-        ("ParseError", "CompileError"),
-        ("AssertionError", "Error"),
-        ("UnhandledMatchError", "Error"),
-        ("FiberError", "Error"),
-        ("RuntimeException", "Exception"),
-        ("PDOException", "RuntimeException"),
-        ("LogicException", "Exception"),
-        ("InvalidArgumentException", "LogicException"),
-        ("DomainException", "LogicException"),
-        ("LengthException", "LogicException"),
-        ("OutOfRangeException", "LogicException"),
-        ("BadFunctionCallException", "LogicException"),
-        ("BadMethodCallException", "BadFunctionCallException"),
-        ("OutOfBoundsException", "RuntimeException"),
-        ("RangeException", "RuntimeException"),
-        ("OverflowException", "RuntimeException"),
-        ("UnderflowException", "RuntimeException"),
-        ("UnexpectedValueException", "RuntimeException"),
-        ("JsonException", "Exception"),
-    ] {
+    for &(name, parent) in DERIVED_EXCEPTIONS {
         stmts.push(core_exception_decl(
             name,
             Some(parent),
@@ -379,27 +383,84 @@ pub(crate) fn declarations() -> Vec<Statement> {
     stmts
 }
 
-/// Keep the ordinary class declarations and their topological order, but only
-/// publish requested constructors and their transitive PHP ancestors.
+/// Select canonical library schemas before constructing method/constructor ASTs.
+/// The catalog order and all inherited interfaces remain identical to declarations().
 pub(crate) fn declarations_for(roots: &[&str]) -> Vec<Statement> {
-    let declarations = declarations();
-    let mut needed: std::collections::HashSet<String> =
-        roots.iter().map(|name| (*name).to_string()).collect();
+    let mut needed: std::collections::HashSet<&str> = roots.iter().copied().collect();
     loop {
-        let previous = needed.len();
-        for declaration in &declarations {
-            if let StmtKind::ClassDecl { name, parents, interfaces, .. } = &declaration.kind {
-                if needed.contains(name) {
-                    needed.extend(parents.iter().cloned());
-                    needed.extend(interfaces.iter().cloned());
-                }
-            }
+        let before = needed.len();
+        if needed.contains("Exception") || needed.contains("Error") {
+            needed.insert("Throwable");
         }
-        if needed.len() == previous {
-            break;
+        for &(name, parent) in DERIVED_EXCEPTIONS {
+            if needed.contains(name) { needed.insert(parent); }
+        }
+        if before == needed.len() { break; }
+    }
+    let span = Span::default();
+    let mut statements = Vec::new();
+    if needed.contains("Throwable") {
+        statements.push(core_exception_decl("Throwable", None, Vec::new(), Vec::new(), ClassKind::Interface, &span));
+    }
+    for name in ["Exception", "Error"] {
+        if needed.contains(name) {
+            statements.push(core_exception_decl(name, None, vec!["Throwable".to_string()],
+                exception_members(name, &span, true), ClassKind::Class, &span));
         }
     }
-    declarations.into_iter().filter(|declaration| {
-        matches!(&declaration.kind, StmtKind::ClassDecl { name, .. } if needed.contains(name))
-    }).collect()
+    for &(name, parent) in DERIVED_EXCEPTIONS {
+        if needed.contains(name) {
+            statements.push(core_exception_decl(name, Some(parent), Vec::new(),
+                exception_members(name, &span, false), ClassKind::Class, &span));
+        }
+    }
+    if needed.contains("__PHP_Incomplete_Class") {
+        statements.push(core_exception_decl("__PHP_Incomplete_Class", None, Vec::new(),
+            vec![lsb_class_field("__PHP_Incomplete_Class", &span)], ClassKind::Class, &span));
+    }
+    statements
+}
+
+#[cfg(test)]
+mod selective_catalog_tests {
+    use super::*;
+    fn oracle(catalog: &[Statement], roots: &[&str]) -> Vec<Statement> {
+        let mut needed: std::collections::HashSet<&str> = roots.iter().copied().collect();
+        loop {
+            let before = needed.len();
+            for declaration in catalog {
+                if let StmtKind::ClassDecl { name, parents, interfaces, .. } = &declaration.kind {
+                    if needed.contains(name.as_str()) {
+                        needed.extend(parents.iter().map(String::as_str));
+                        needed.extend(interfaces.iter().map(String::as_str));
+                    }
+                }
+            }
+            if needed.len() == before { break; }
+        }
+        catalog.iter().filter(|declaration|
+            matches!(&declaration.kind, StmtKind::ClassDecl { name, .. } if needed.contains(name.as_str()))
+        ).cloned().collect()
+    }
+    #[test]
+    fn every_selected_schema_and_ancestor_matches_the_full_authoritative_catalog() {
+        let catalog = declarations();
+        let names: Vec<_> = catalog.iter().map(|declaration| match &declaration.kind {
+            StmtKind::ClassDecl { name, .. } => name.as_str(),
+            _ => panic!("builtin catalog contains a non-class declaration"),
+        }).collect();
+        let check = |roots: &[&str]| assert_eq!(format!("{:?}", declarations_for(roots)),
+            format!("{:?}", oracle(&catalog, roots)), "requested roots {roots:?}");
+        check(&[]); check(&["unknown"]); check(&["error"]); check(&names);
+        for &name in &names {
+            check(&[name]); check(&[name, name, "unknown"]);
+            for &other in &names { check(&[name, other]); }
+        }
+    }
+    #[test]
+    fn exact_unknown_roots_do_not_construct_or_publish_any_builtin() {
+        for roots in [&[][..], &["missing"][..], &["typeerror", "Error\\"][..]] {
+            assert!(declarations_for(roots).is_empty());
+        }
+    }
 }
