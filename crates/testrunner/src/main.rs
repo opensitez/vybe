@@ -11,14 +11,19 @@
 //! runtime, neither of which `cargo test` can offer.
 
 mod model;
+mod concurrency;
+mod reporter;
+mod reporting;
+mod schedule;
+mod output;
 mod pool;
 mod report;
 mod run;
+mod safety;
 mod style;
 mod suites;
 
 use anyhow::{Context, Result};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -39,12 +44,15 @@ fn main() -> Result<()> {
                  --vybex PATH    vybex binary to drive      (default target/debug/vybex)\n  \
                  --runtime CMD   run under something else   (\"go run\", \"node\", \"python3\")\n  \
                  --cold          one fresh process per test (default: warm workers)\n  \
-                 -j N            parallel workers           (default: CPU count)\n  \
+                 -j N            parallel workers           (default: CPU/memory sized, at most 8)\n  \
+                 --suites N      active suites, rolling admission (default 3)\n  \
+                 --memory-limit-mb N  worker data/RSS budget (default 512; 0 disables)\n  \
                  --timeout SECS  per-test deadline          (default 60)\n  \
                  --results DIR   report directory           (default results/testrunner)\n  \
                  --progress      live per-suite table       (default: cargo-test output)\n  \
                  --json          write the timestamped JSON report + regression diff\n  \
                  --save          write the plain test log to results/<dir>/saved/<target>.txt\n  \
+                 --durable-journal  sync each test start before dispatch (slower)\n  \
                  --verbose       stream every failure as it happens (default: report only)\n\n\
                  `summary` reads a log written by `run --save` and groups the\n\
                  failures by category, worst first. `dashboard` totals EVERY\n\
@@ -76,7 +84,7 @@ fn positionals(args: &[String]) -> Vec<&String> {
         if arg.starts_with("--") || arg == "-j" {
             skip_next = !matches!(
                 arg.as_str(),
-                "--verbose" | "--cold" | "--progress" | "--json" | "--save"
+                "--verbose" | "--cold" | "--progress" | "--json" | "--save" | "--durable-journal"
             );
             continue;
         }
@@ -749,29 +757,23 @@ fn cmd_run(args: &[String]) -> Result<()> {
     // Plain-text copy of the test log, named after the target, for a stats
     // script to parse the way it parses `<lang>.tests.txt` today.
     let save = args.iter().any(|a| a == "--save");
+    let durable_journal = args.iter().any(|a| a == "--durable-journal");
     // 60s, matching the point at which cargo declares a test worth mentioning.
     let timeout: u64 = flag(args, "--timeout")
         .and_then(|n| n.parse().ok())
         .unwrap_or(60);
+    anyhow::ensure!(timeout > 0, "--timeout must be greater than zero");
+    let memory_mb: u64 = match flag(args, "--memory-limit-mb") {
+        Some(value) => value.parse().context("invalid --memory-limit-mb")?,
+        None => 512,
+    };
+    safety::configure(memory_mb);
     let results_dir = PathBuf::from(flag(args, "--results").unwrap_or("results/testrunner"));
-    // How many SUITES are in flight at once — `run_lang_tests.py`'s `jobs`, not
-    // `-j`, which is worker threads. Several suites given at once used to be
-    // flattened into one pool, so nothing finished until nearly everything did:
-    // eleven `--save` logs all sat half-written, and the dashboard could only
-    // say "running" about all of them. The cost is a drain-down at each wave
-    // boundary, where one hung test holds the pool open for up to the full
-    // timeout; raise the number to trade per-suite reporting back for it.
+    // Rolling suite admission is independent of the shared worker count (-j).
     let suites_at_once: usize = flag(args, "--suites")
         .and_then(|n| n.parse().ok())
         .unwrap_or(3)
         .max(1);
-    if let Some(jobs) = flag(args, "-j").and_then(|n| n.parse().ok()) {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(jobs)
-            .build_global()
-            .ok();
-    }
-
     let root = PathBuf::from(flag(args, "--tests").unwrap_or("tests"));
     let targets = positionals(args);
     anyhow::ensure!(!targets.is_empty(), "no suites or paths given");
@@ -802,53 +804,19 @@ fn cmd_run(args: &[String]) -> Result<()> {
     files.sort();
     anyhow::ensure!(!files.is_empty(), "no test files found");
 
-    // Workers are subprocesses that block on I/O as well as compute, so a
-    // couple more than the core count keeps them all fed. Measured on a
-    // 10-core box: 10→97, 12→99, 16→92, 20→88 tests/s.
+    // Account for memory budgets and warm spares without forcing all machines
+    // down to two workers. Explicit concurrency remains the caller's choice.
     let threads = flag(args, "-j")
         .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get() + 2)
-                .unwrap_or(8)
-        });
+        .unwrap_or_else(concurrency::default_jobs);
+    anyhow::ensure!(threads > 0, "-j must be greater than zero");
     let under = match &runtime {
         Some(cmd) => cmd.join(" "),
         None => vybex.display().to_string(),
     };
-    let waves: Vec<(Vec<usize>, Vec<PathBuf>)> = (0..roots.len())
-        .collect::<Vec<_>>()
-        .chunks(suites_at_once)
-        .map(|group| {
-            let group = group.to_vec();
-            // ROUND-ROBIN across the wave's targets, not sorted path order.
-            // The wave is one flat pool, and a pool fed in path order drains
-            // `tests/java/...` entirely before it reaches `tests/wast/...` —
-            // three suites "at a time" that still ran one at a time, with two
-            // logs sitting empty while the first filled. Interleaving means
-            // every suite in the wave progresses together.
-            let mut lanes: Vec<Vec<PathBuf>> = group
-                .iter()
-                .map(|i| {
-                    files
-                        .iter()
-                        .filter(|f| owner.get(*f) == Some(i))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-            let mut wave = Vec::new();
-            let deepest = lanes.iter().map(Vec::len).max().unwrap_or(0);
-            for n in 0..deepest {
-                for lane in &mut lanes {
-                    if let Some(file) = lane.get(n) {
-                        wave.push(file.clone());
-                    }
-                }
-            }
-            (group, wave)
-        })
-        .collect();
+    let mut groups = vec![Vec::new(); roots.len()];
+    for file in &files { groups[owner[file]].push(file.clone()); }
+    let schedule = std::sync::Arc::new(schedule::Schedule::new(groups, suites_at_once));
     eprintln!(
         "[testrunner] {} test(s){} · {threads} {} workers · {timeout}s timeout · under `{under}`",
         files.len(),
@@ -864,9 +832,9 @@ fn cmd_run(args: &[String]) -> Result<()> {
         },
     );
 
-    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut counts: Vec<_> = roots.iter().map(|root| (root.display().to_string(), 0usize)).collect();
     for file in &files {
-        *counts.entry(model::identify(file).0).or_default() += 1;
+        counts[owner[file]].1 += 1;
     }
     // The live table and the cargo-style per-test lines cannot share a stream:
     // the table redraws in place. Exactly one of them is on.
@@ -878,172 +846,62 @@ fn cmd_run(args: &[String]) -> Result<()> {
     }
 
     let started = std::time::Instant::now();
-    // A WARNING, and shaped like one. It is not a verdict: the test has not
-    // failed, has not timed out, and may still pass. Writing it as
-    // `test <slug> …` made it read as a result line, which is exactly the
-    // confusion to avoid. Without it a hang is a silent gap for the whole
-    // timeout and looks like the runner stalled — it has not, the other workers
-    // keep draining and the stuck one is killed and replaced at the deadline.
-    let announce = |file: &std::path::Path, secs: u64| {
-        let (lang, cat, name) = model::identify(file);
-        table.suspend(|| {
-            println!(
-                "{} {lang}/{cat}/{name} still running after {secs}s",
-                style::yellow("warning:")
-            );
-        });
-    };
-    // Opened BEFORE the run and written line by line, not buffered to the end:
-    // on a suite that takes minutes you want to watch or grep the log while it
-    // is still filling.
-    let savers: Vec<(PathBuf, std::sync::Mutex<Option<std::fs::File>>)> = if save {
-        let mut out = Vec::new();
-        for root in roots.iter() {
-            let path = saved_log_path(&results_dir, root);
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
+    let mut output = reporting::State::new(reporting::Config {
+        roots: &roots, owner: &owner, results_dir: &results_dir, under: &under,
+        provenance: &provenance, started, table: &table, progress, verbose, save,
+    })?;
+    let execution_result = std::thread::scope(|scope| -> Result<Vec<model::TestExecution>> {
+        let writer = reporter::Reporter::spawn(scope, reporter::DEFAULT_CAPACITY,
+            move |event| output.handle(event))?;
+        let start = |file: &Path, pid: u32| {
+            if writer.failed() { schedule.cancel(); return; }
+            let (ack, receiver) = if durable_journal && save {
+                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                (Some(sender), Some(receiver))
+            } else { (None, None) };
+            if writer.send(reporting::Event::Start {
+                path: file.to_owned(), pid, at: std::time::Instant::now(), durable: ack,
+            }).is_err() {
+                schedule.cancel();
+                return;
             }
-            out.push((path, std::sync::Mutex::new(None)));
-        }
-        out
-    } else {
-        Vec::new()
-    };
-    // Each log is CREATED when its wave starts, not when the run starts.
-    // Creating all of them up front truncated the logs of suites that would not
-    // begin for hours, so a dashboard lost every earlier number the moment a
-    // long multi-suite run began — and showed an empty file in its place.
-    // Opened before the wave rather than at its end, and flushed per line, so
-    // `tail -f` and a mid-run `grep` both see it fill.
-    let open_saver = |i: usize| -> Result<()> {
-        let Some((path, slot)) = savers.get(i) else {
-            return Ok(());
+            if let Some(receiver) = receiver {
+                if !matches!(receiver.recv(), Ok(Ok(()))) { schedule.cancel(); }
+            }
         };
-        let count = owner.values().filter(|&&o| o == i).count();
-        let mut file =
-            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
-        writeln!(file, "running {count} tests")?;
-        // Second line, so a saved log carries its own date and the identity of
-        // the binary that produced it — see [`provenance`].
-        writeln!(file, "{provenance}")?;
-        file.flush()?;
-        // A sidecar naming the PID that owns this log. mtime cannot tell a live
-        // run from an abandoned one — a stalled worker writes nothing for the
-        // whole timeout, and a run killed a second ago still looks fresh. A PID
-        // can be asked. Removed on the way out; if the process is killed it
-        // stays behind and the dashboard sees a dead PID, which is exactly the
-        // "interrupted" it should report.
-        let _ = std::fs::write(run_marker(path), format!("{}\n", std::process::id()));
-        *slot.lock().unwrap() = Some(file);
-        Ok(())
-    };
-    let note = |exec: &model::TestExecution| {
-        table.record(exec);
-        if !progress {
-            // cargo prints each verdict as it lands, unordered under parallelism.
-            // Exactly cargo's three verdicts. A timeout is a FAILURE, not a
-            // fourth word: anything parsing `ok|FAILED|ignored` would skip a
-            // `TIMEOUT` line and under-report. The reason survives in the
-            // failures block ("timeout after 30s").
-            println!("{}", report::cargo_verdict_line(exec, true));
-        }
-        if let Some((_, file)) = owner.get(&exec.path).and_then(|i| savers.get(*i)) {
-            // Always uncoloured: the file exists to be parsed. Flushed per
-            // line so `tail -f` and a mid-run `grep` both see it.
-            let line = report::cargo_verdict_line(exec, false);
-            if let Ok(mut slot) = file.lock() {
-                if let Some(file) = slot.as_mut() {
-                    let _ = writeln!(file, "{line}");
-                    let _ = file.flush();
-                }
+        let announce = |file: &Path, seconds: u64| {
+            if writer.send(reporting::Event::Slow { path: file.to_owned(), seconds }).is_err() {
+                schedule.cancel();
             }
-        }
-        // Quiet by default. A failure is a data point, not a message: the live
-        // rows carry the counts, the console report names the first few, and
-        // the JSON holds all of them. Streaming every one turned a 705-failure
-        // run into 1,410 lines of scrollback.
-        if verbose && exec.result != model::TestResult::Pass {
-            table.suspend(|| {
-                println!("FAIL {}", exec.slug());
-                println!("     {}", exec.message);
-                println!("     {}", exec.path.display());
-            });
-        }
-    };
-
-    let run_wave = |files: &[PathBuf]| -> Vec<model::TestExecution> {
-        match &runtime {
-            // A foreign runtime has no warm mode — one process per test is all
-            // `go run` / `python3` / `node` offer.
-            Some(cmd) => run::run_each(
-                files,
-                threads,
-                |file, mode| {
-                    run::run_foreign(&cmd[0], &cmd[1..], file, mode, timeout, &|secs| {
-                        announce(file, secs)
-                    })
-                },
+        };
+        let note = |execution: &model::TestExecution| {
+            if writer.send(reporting::Event::Finished {
+                execution: execution.clone(), at: std::time::Instant::now(),
+            }).is_err() { schedule.cancel(); }
+        };
+        let executions = match &runtime {
+            Some(command) => run::run_each_scheduled(
+                schedule.clone(), threads,
+                |file, mode| run::run_foreign(&command[0], &command[1..], file, mode,
+                    timeout, &|seconds| announce(file, seconds), &|pid| start(file, pid)),
                 &note,
             ),
-            None if cold => run::run_each(
-                files,
-                threads,
-                |file, mode| {
-                    run::run_case(&vybex, file, mode, timeout, &|secs| announce(file, secs))
-                },
+            None if cold => run::run_each_scheduled(
+                schedule.clone(), threads,
+                |file, mode| run::run_case(&vybex, file, mode, timeout,
+                    &|seconds| announce(file, seconds), &|pid| start(file, pid)),
                 &note,
             ),
-            None => pool::run_all(
-                &vybex,
-                files,
-                threads,
-                std::time::Duration::from_secs(timeout),
-                &note,
-                &announce,
-            ),
-        }
-    };
-    // One wave at a time, each wave being up to `--suites` targets run across
-    // the full worker pool. With a single target there is one wave and this is
-    // exactly the old behaviour.
-    let mut executions: Vec<model::TestExecution> = Vec::with_capacity(files.len());
-    for (group, wave) in &waves {
-        // Each wave times itself. Elapsed-since-run-start made every suite
-        // after the first overstate its duration in the very log a stats
-        // script parses.
-        let wave_started = std::time::Instant::now();
-        for &i in group {
-            open_saver(i)?;
-        }
-        let done = run_wave(wave);
-        // Close each finished target's log HERE, not at the end of the whole
-        // run. Its `test result:` line is what tells the dashboard the suite
-        // completed; deferring it left a finished suite reading "running" for
-        // as long as the remaining waves took.
-        for &i in group {
-            let Some((path, file)) = savers.get(i) else {
-                continue;
-            };
-            let mut sub = model::TestReport::new(under.clone());
-            for exec in done.iter().filter(|e| owner.get(&e.path) == Some(&i)) {
-                sub.add_execution(exec.clone());
-            }
-            let mut slot = file.lock().unwrap();
-            let Some(handle) = slot.as_mut() else {
-                continue;
-            };
-            for line in report::cargo_tail(&sub, wave_started.elapsed().as_secs_f64(), false) {
-                writeln!(handle, "{line}")?;
-            }
-            handle.flush()?;
-            *slot = None;
-            drop(slot);
-            let _ = std::fs::remove_file(run_marker(path));
-            eprintln!("[testrunner] saved: {}", path.display());
-        }
-        executions.extend(done);
-    }
+            None => pool::run_all_scheduled(&vybex, schedule.clone(), threads,
+                std::time::Duration::from_secs(timeout), &note, &announce, &start),
+        };
+        writer.finish_with(reporting::Event::FinishRun)?;
+        anyhow::ensure!(executions.len() == files.len(),
+            "run incomplete: {} of {} tests finished", executions.len(), files.len());
+        Ok(executions)
+    });
     table.finish();
+    let executions = execution_result?;
 
     let mut report = model::TestReport::new(under.clone());
     for exec in executions {
@@ -1054,12 +912,12 @@ fn cmd_run(args: &[String]) -> Result<()> {
     let secs = started.elapsed().as_secs_f64();
     if progress {
         report::print_console(&report);
-        report::print_summary_table(&report, secs);
     } else {
         for line in report::cargo_tail(&report, secs, true) {
             println!("{line}");
         }
     }
+    report::print_summary_table(&report, &table.summaries());
 
     // Timestamped JSON, and the run-over-run diff that rides on it. Opt-in:
     // one report per run buried `results/` in files nobody opened.
@@ -1081,7 +939,7 @@ fn cmd_run(args: &[String]) -> Result<()> {
             println!("Report: {}", out.display());
         }
         println!(
-            "{}/{} passed ({:.1}%) in {:.1}s — {:.0} tests/s across {threads} workers",
+            "{}/{} passed ({:.1}%) in {:.1}s — {:.0}/s across {threads} workers",
             report.passed,
             report.total,
             report.pass_rate(),
@@ -1121,34 +979,6 @@ fn cmd_run(args: &[String]) -> Result<()> {
     } else {
         std::process::exit(1)
     }
-}
-
-/// Shorten a case name to `max` characters, keeping it unique within its
-/// directory. Truncation alone collides (many names share a long prefix), so a
-/// colliding name gets a numeric suffix inside the budget rather than beyond
-/// it.
-fn short_unique_name(
-    name: &str,
-    max: usize,
-    used: &mut std::collections::HashSet<String>,
-) -> String {
-    let mut candidate: String = if name.chars().count() <= max {
-        name.to_string()
-    } else {
-        name.chars().take(max).collect()
-    };
-    if used.insert(candidate.clone()) {
-        return candidate;
-    }
-    for n in 2..1000u32 {
-        let suffix = format!("_{n}");
-        let keep = max.saturating_sub(suffix.chars().count());
-        candidate = name.chars().take(keep).collect::<String>() + &suffix;
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-    }
-    candidate
 }
 
 /// `tests/php` → `results/testrunner/saved/tests.php.txt`.

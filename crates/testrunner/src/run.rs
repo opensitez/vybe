@@ -103,6 +103,7 @@ pub fn run_case(
     mode: Mode,
     timeout_secs: u64,
     slow: &dyn Fn(u64),
+    start: &dyn Fn(u32),
 ) -> Outcome {
     let text = std::fs::read_to_string(file).unwrap_or_default();
     let want_exit = expected_exit(&text);
@@ -122,7 +123,7 @@ pub fn run_case(
     for unit in extra_units(&text, file) {
         cmd.arg(unit);
     }
-    execute(cmd, mode, timeout_secs, slow, want_exit)
+    execute(cmd, mode, timeout_secs, slow, want_exit, start)
 }
 
 /// Run the same file under a foreign runtime — `go run`, `python3`, `node`,
@@ -136,13 +137,14 @@ pub fn run_foreign(
     mode: Mode,
     timeout_secs: u64,
     slow: &dyn Fn(u64),
+    start: &dyn Fn(u32),
 ) -> Outcome {
     let want_exit = std::fs::read_to_string(file)
         .map(|t| expected_exit(&t))
         .unwrap_or(0);
     let mut cmd = Command::new(program);
     cmd.args(args).arg(file);
-    execute(cmd, mode, timeout_secs, slow, want_exit)
+    execute(cmd, mode, timeout_secs, slow, want_exit, start)
 }
 
 fn execute(
@@ -151,6 +153,7 @@ fn execute(
     timeout_secs: u64,
     slow: &dyn Fn(u64),
     want_exit: i32,
+    start: &dyn Fn(u32),
 ) -> Outcome {
     let started = Instant::now();
     // Empty stdin, never the terminal's. A test that reads stdin must see EOF
@@ -162,7 +165,7 @@ fn execute(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = match cmd.spawn() {
+    let mut child = match crate::safety::spawn(&mut cmd) {
         Ok(child) => child,
         Err(e) => {
             return Outcome {
@@ -172,6 +175,7 @@ fn execute(
             };
         }
     };
+    start(child.id());
 
     // Drain both pipes on their own threads BEFORE waiting. A pipe holds only
     // ~64KB; `vybex -d` writes a disassembly far larger than that, so a parent
@@ -231,6 +235,10 @@ fn execute(
         }
     };
 
+    // Descendants may inherit output pipes. Terminate the isolated group even
+    // when its leader exited, before joining pipe readers.
+    let _ = child.kill();
+
     let mut text = String::new();
     for reader in [out_reader, err_reader].into_iter().flatten() {
         if let Ok(chunk) = reader.join() {
@@ -241,6 +249,13 @@ fn execute(
     // `want_exit` is the whole point of the marker: a test that legitimately
     // ends in `exit(1)` passes on 1 and FAILS on 0, which is stricter than
     // `run-fail` (any non-zero) and than the default (must be 0).
+    if let Some(message) = child.memory_failure() {
+        return Outcome {
+            result: TestResult::Error,
+            message,
+            duration_ms: started.elapsed().as_millis(),
+        };
+    }
     let clean = status.code().unwrap_or(-1) == want_exit;
     let pass = if matches!(mode, Mode::CompileFail | Mode::RunFail) {
         !status.success()
@@ -263,9 +278,22 @@ fn execute(
 }
 
 fn drain<R: std::io::Read>(mut stream: R) -> String {
-    let mut buf = String::new();
-    let _ = stream.read_to_string(&mut buf);
-    buf
+    // Keep draining after the diagnostic budget is exhausted, otherwise a
+    // verbose guest blocks on its output pipe instead of reaching its verdict.
+    let mut retained = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                let keep = n.min((64 * 1024usize).saturating_sub(retained.len()));
+                retained.extend_from_slice(&buffer[..keep]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&retained).into_owned()
 }
 
 /// The first line that explains a failure. The harness prints its own
@@ -289,37 +317,169 @@ pub fn failure_line(output: &str) -> String {
 
 /// Cold path: one fresh process per test, `threads` at a time. Used for
 /// `--cold` and for foreign runtimes, which have no warm protocol.
-pub fn run_each(
-    files: &[std::path::PathBuf],
+pub fn run_each_scheduled(
+    schedule: std::sync::Arc<crate::schedule::Schedule>,
     threads: usize,
     exec: impl Fn(&Path, Mode) -> Outcome + Sync,
     note: impl Fn(&crate::model::TestExecution) + Sync,
 ) -> Vec<crate::model::TestExecution> {
     use rayon::prelude::*;
+    if threads == 0 {
+        schedule.cancel();
+        return Vec::new();
+    }
     let pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(pool) => pool,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            schedule.cancel();
+            return Vec::new();
+        }
     };
     pool.install(|| {
-        files
-            .par_iter()
-            .map(|file| {
-                let text = std::fs::read_to_string(file).unwrap_or_default();
-                let mode = Mode::of(&text);
-                let outcome = exec(file, mode);
-                let (language, category, name) = crate::model::identify(file);
-                let execution = crate::model::TestExecution {
-                    path: file.clone(),
-                    language,
-                    category,
-                    name,
-                    result: outcome.result,
-                    message: outcome.message,
-                    duration_ms: outcome.duration_ms,
-                };
-                note(&execution);
-                execution
+        (0..threads)
+            .into_par_iter()
+            .map(|_| {
+                let mut results = Vec::new();
+                while let Some(lease) = schedule.lease() {
+                    let file = lease.path();
+                    let text = std::fs::read_to_string(file).unwrap_or_default();
+                    let mode = Mode::of(&text);
+                    let outcome = exec(file, mode);
+                    let (language, category, name) = crate::model::identify(file);
+                    let execution = crate::model::TestExecution {
+                        path: file.to_owned(),
+                        language,
+                        category,
+                        name,
+                        result: outcome.result,
+                        message: outcome.message,
+                        duration_ms: outcome.duration_ms,
+                    };
+                    note(&execution);
+                    results.push(execution);
+                    lease.complete();
+                }
+                results
             })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flatten()
             .collect()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheduled_cold_workers_roll_suites_while_first_case_is_blocked() {
+        use crate::schedule::Schedule;
+        use std::sync::{Arc, Mutex, mpsc};
+        let schedule = Arc::new(Schedule::new(
+            vec![
+                vec![PathBuf::from("A")],
+                vec![PathBuf::from("B")],
+                vec![PathBuf::from("C")],
+            ],
+            2,
+        ));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let started_rx = Mutex::new(started_rx);
+        let release_rx = Mutex::new(release_rx);
+        let reported = Mutex::new(Vec::new());
+        let copy = schedule.clone();
+        let results = run_each_scheduled(
+            schedule.clone(),
+            2,
+            |path, _| {
+                match path.to_str().unwrap() {
+                    "A" => {
+                        started_tx.send(()).unwrap();
+                        release_rx
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(2))
+                            .unwrap();
+                    }
+                    "B" => started_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap(),
+                    "C" => {
+                        assert_eq!(reported.lock().unwrap().as_slice(), &[PathBuf::from("B")]);
+                        release_tx.send(()).unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+                Outcome {
+                    result: TestResult::Pass,
+                    message: String::new(),
+                    duration_ms: 0,
+                }
+            },
+            |execution| {
+                // This callback must precede completion's admission of C.
+                if execution.path == Path::new("B") {
+                    assert!(!copy.is_complete());
+                }
+                reported.lock().unwrap().push(execution.path.clone());
+            },
+        );
+        assert_eq!(results.len(), 3);
+        assert!(schedule.is_complete());
+    }
+
+    #[test]
+    fn scheduled_cold_worker_panic_cancels_waiters_and_is_not_a_pass() {
+        use std::sync::Arc;
+        let schedule = Arc::new(crate::schedule::Schedule::new(
+            vec![vec![PathBuf::from("panic")], vec![PathBuf::from("never")]],
+            1,
+        ));
+        let copy = schedule.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_each_scheduled(copy, 2, |_, _| panic!("synthetic executor panic"), |_| {});
+        }));
+        assert!(result.is_err());
+        assert!(schedule.is_cancelled());
+        assert!(!schedule.is_complete());
+    }
+
+    #[test]
+    fn output_capture_is_bounded_but_drains_to_eof() {
+        let bytes = vec![b'x'; 2 * 1024 * 1024];
+        let mut input = std::io::Cursor::new(bytes);
+        let text = drain(&mut input);
+        assert_eq!(text.len(), 64 * 1024);
+        assert_eq!(input.position(), 2 * 1024 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descendant_output_pipe_cannot_hold_up_a_completed_test() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 20 & exit 0"]);
+        let started = Instant::now();
+        let result = execute(command, Mode::Run, 2, &|_| {}, 0, &|_| {});
+        assert!(
+            matches!(result.result, TestResult::Pass),
+            "{}",
+            result.message
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cold_timeout_kills_the_group_and_returns() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 20 & wait"]);
+        let started = Instant::now();
+        let result = execute(command, Mode::Run, 1, &|_| {}, 0, &|_| {});
+        assert!(matches!(result.result, TestResult::Timeout));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
 }

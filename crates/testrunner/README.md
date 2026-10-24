@@ -109,6 +109,21 @@ you saved), naming the files it merged.
 
 `--help` lists the rest (`-j`, `--timeout`, `--results`, `--vybex`, `--verbose`).
 
+`-j` sets one shared worker pool; `--suites N` limits concurrently active suites
+(default three). Admission is rolling: finishing one suite starts the next,
+without waiting for the other active suites. A stuck test holds only its own
+worker until its deadline. Starts, warnings, results and saved logs are handled
+by a separate bounded reporting thread, not by worker-side file writes.
+
+Workers default to twelve active processes (`-j N` overrides), with a 512 MiB per-worker memory watchdog on
+macOS/Linux (`--memory-limit-mb N`, 0 disables). Output retention is bounded;
+Unix worker groups are cleaned up on timeout, memory failure, and interruption.
+`--save` also writes an active-test JSONL journal with periodic disk commits,
+so an interrupted process names unfinished tests and child PIDs. Add
+`--durable-journal` to sync every start before dispatch when diagnosing hard resets. For freeze
+investigation, use `--cold -j 1 --timeout 5 --memory-limit-mb 256` on one category
+first. See [containment limitations](../../documentation/testrunner.md#44-containment-and-freeze-diagnosis).
+
 `--json` writes `results/testrunner/run_<stamp>.json` and diffs it against the
 previous run **of the same runtime**, naming regressions and newly-passing
 tests; runs over different test sets compare only their overlap. It is opt-in —

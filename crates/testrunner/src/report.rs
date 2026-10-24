@@ -120,40 +120,20 @@ pub fn print_console(report: &TestReport) {
 }
 
 /// The per-suite summary table, in the shape `run_lang_tests.py` prints.
-pub fn print_summary_table(report: &TestReport, elapsed_secs: f64) {
+pub fn print_summary_table(report: &TestReport, rows: &[crate::suites::Summary]) {
     println!("\n=== summary ===");
+    let width = rows.iter().map(|row| row.label.len()).max().unwrap_or(8).max(8);
     println!(
-        "  {:<8} {:>7} {:>7} {:>7} {:>5} {:>7} {:>6}",
-        "suite", "%ok", "ok", "fail", "t/o", "total", "time"
+        "  {:<width$} {:>7} {:>7} {:>7} {:>5} {:>7} {:>9} {:>10}",
+        "suite", "%ok", "ok", "fail", "t/o", "total", "time", "rate"
     );
 
-    let mut timeouts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for exec in &report.executions {
-        if exec.result == TestResult::Timeout {
-            *timeouts.entry(exec.language.as_str()).or_default() += 1;
-        }
-    }
-
-    let mut rows: Vec<_> = report.by_language.iter().collect();
-    // Worst first — the suite needing attention is the one you read first.
-    rows.sort_by(|a, b| {
-        a.1.pass_rate()
-            .partial_cmp(&b.1.pass_rate())
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.0.cmp(b.0))
-    });
-
-    for (lang, stats) in rows {
-        let tos = timeouts.get(lang.as_str()).copied().unwrap_or(0);
+    for row in rows {
+        let total = row.passed + row.failed;
+        let pass_rate = if total > 0 { 100.0 * row.passed as f64 / total as f64 } else { 0.0 };
         println!(
-            "  {:<8} {:>7} {:>7} {:>7} {:>5} {:>7} {:>5}s",
-            lang,
-            format!("{:.2}", stats.pass_rate()),
-            stats.passed,
-            stats.failed,
-            tos,
-            stats.total,
-            elapsed_secs.round() as u64,
+            "  {:<width$} {:>7.2} {:>7} {:>7} {:>5} {:>7} {:>8.2}s {:>10}",
+            row.label, pass_rate, row.passed, row.failed, row.timeouts, total, row.seconds, format!("{:.0}/s", row.rate),
         );
     }
 
@@ -162,7 +142,7 @@ pub fn print_summary_table(report: &TestReport, elapsed_secs: f64) {
     } else {
         0.0
     };
-    let tos_total: usize = timeouts.values().sum();
+    let tos_total: usize = rows.iter().map(|row| row.timeouts).sum();
     let tos_str = if tos_total > 0 {
         format!(" / {tos_total} t/o")
     } else {
@@ -172,7 +152,7 @@ pub fn print_summary_table(report: &TestReport, elapsed_secs: f64) {
         " total: {} ok / {} fail{tos_str} ({fail_pct:.1}% fail)   {} suite(s)",
         report.passed,
         report.failed + report.errors,
-        report.by_language.len(),
+        rows.len(),
     );
 }
 
