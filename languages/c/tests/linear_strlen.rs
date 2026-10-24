@@ -37,8 +37,7 @@ int main(void){char *p=malloc(8193);for(int n=0;n<=96;n++){memset(p,145,n);p[n]=
         .compile_source_by_name(source, "c", Path::new("length.c"))
         .unwrap();
     let native = vybe_platform_wasm::write_wasm(&compiled.chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&native)
+    vybe_platform_wasm::validate_binary(&native)
         .unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled)

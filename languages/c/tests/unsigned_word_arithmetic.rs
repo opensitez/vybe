@@ -28,8 +28,7 @@ fn unsigned_word_arithmetic_preserves_wrap_and_positive_result() {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());

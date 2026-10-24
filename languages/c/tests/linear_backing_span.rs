@@ -244,8 +244,7 @@ fn specialized_span_preserves_bytes_without_redundant_narrowing() {
                 include_name_section: true,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         chunks
     };
@@ -282,8 +281,7 @@ fn compare_lookup_versions(fixture: &str) {
                 include_name_section: true,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
     }
     let scalar = run_counted(scalar);

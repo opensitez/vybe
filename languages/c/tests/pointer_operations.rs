@@ -86,8 +86,7 @@ fn matches_native(fixture: &str, no_dynamic_equality: bool) {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .unwrap();
     if let Some(dir) = std::env::var_os("C_POINTER_WASM_DIR") {
         std::fs::write(

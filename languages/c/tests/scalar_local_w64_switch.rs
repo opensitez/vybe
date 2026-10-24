@@ -104,42 +104,25 @@ fn scalar_local_w64_switch_preserves_exact_values_without_wide_abi() {
             include_name_section: false,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-        .unwrap();
+vybe_platform_wasm::validate_binary(&bytes).unwrap();
+    let module = vybe_platform_wasm::inspection::CoreModule::new(&bytes).unwrap();
     let mut abstract_imports = Vec::new();
-    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-        match payload.unwrap() {
-            wasmparser::Payload::ImportSection(section) => {
-                for import in section.into_imports() {
-                    let import = import.unwrap();
-                    if matches!(
-                        import.ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                    ) {
-                        abstract_imports.push(
-                            import.module == "ecma:value"
-                                && matches!(import.name, "abstractEq" | "abstractNe"),
-                        );
-                    }
-                }
-            }
-            wasmparser::Payload::CodeSectionEntry(body) => {
-                let mut reader = body.get_operators_reader().unwrap();
-                while !reader.eof() {
-                    match reader.read().unwrap() {
-                        wasmparser::Operator::Call { function_index }
-                        | wasmparser::Operator::ReturnCall { function_index }
-                        | wasmparser::Operator::RefFunc { function_index } => {
-                            assert_ne!(abstract_imports.get(function_index as usize), Some(&true));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
+    module.imports(|module, name, ty| {
+        if matches!(ty, vybe_platform_wasm::inspection::ImportType::Func { .. }) {
+            abstract_imports.push(module == "ecma:value"
+                && matches!(name, "abstractEq" | "abstractNe"));
         }
-    }
+        Ok(())
+    }).unwrap();
+    module.function_bodies(|body| {
+        for instruction in body.instructions()? {
+            if let Some(function_index) = instruction?.function_index() {
+                assert_ne!(abstract_imports.get(function_index as usize), Some(&true),
+                    "emitted WASM references abstract equality at function {function_index}");
+            }
+        }
+        Ok(())
+    }).unwrap();
     let audit_elapsed = audit_start.elapsed();
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());

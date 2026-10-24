@@ -95,8 +95,7 @@ fn check_pattern(case: &str, fixture: &str) {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .unwrap_or_else(|error| panic!("{case}: invalid WASM: {error}"));
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());

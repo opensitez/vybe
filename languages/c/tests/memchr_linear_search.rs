@@ -47,8 +47,7 @@ fn signed_negative_counts_do_not_read_memory_and_evaluate_once() {
             .any(|c| c.name == "__c_mem_index_of_h")
     );
     let wasm = vybe_platform_wasm::write_wasm(&compiled.chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled)
@@ -80,8 +79,7 @@ fn narrow_dynamic_needles_preserve_byte_wrapping() {
             .any(|c| c.name == "__c_mem_index_of_h")
     );
     let wasm = vybe_platform_wasm::write_wasm(&compiled.chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled)
@@ -113,8 +111,7 @@ fn dynamic_integer_needles_wrap_and_evaluate_once() {
             .any(|c| c.name == "__c_mem_index_of_h")
     );
     let wasm = vybe_platform_wasm::write_wasm(&compiled.chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled)
@@ -146,8 +143,7 @@ fn unsigned_dynamic_counts_keep_full_word_range_and_evaluate_once() {
             .any(|c| c.name == "__c_mem_index_of_h")
     );
     let wasm = vybe_platform_wasm::write_wasm(&compiled.chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled)
@@ -179,8 +175,7 @@ fn proven_linear_search_preserves_bounds_zero_and_wrapped_needles() {
             .any(|c| c.name == "__c_mem_index_of_h")
     );
     let wasm = vybe_platform_wasm::write_wasm(&compiled.chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled)
@@ -210,8 +205,7 @@ fn signed_dynamic_count_retains_existing_search_recipe() {
             .any(|c| c.name == "<primitive-memory32-byte-index>")
     );
     let wasm = vybe_platform_wasm::write_wasm(&compiled.chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled)

@@ -32,8 +32,7 @@ fn postfix_byte_reads_preserve_linear_and_string_backing() {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     let mut vm = VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());

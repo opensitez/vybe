@@ -129,8 +129,7 @@ fn static_helpers_preserve_computed_pointer_aliases() {
                     include_name_section: true,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap_or_else(|error| panic!("{fixture}: {error}"));
             let mut vm = vybe_runtime::VM::new();
             vybe_runtime::init_all_registered(
@@ -197,8 +196,7 @@ fn static_helpers_doom_emitted_opcode_census() {
                 include_name_section: true,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
     }
 }

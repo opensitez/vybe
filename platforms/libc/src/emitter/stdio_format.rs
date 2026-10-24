@@ -348,13 +348,34 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         ci(&mut c, 37);
         c.emit_op(Op::I32_EQ, 0);
         c.emit_br_if(0, 0);
+        // Copy a whole literal span. charAt on one UTF-16 code unit loses
+        // surrogate pairs in the UTF-8-backed host string representation.
+        // Percent boundaries never split a valid pair; one slice also avoids
+        // repeatedly allocating and concatenating single-character strings.
+        // CH is dead on this branch, so reuse it for the span end.
+        lg(&mut c, FMT);
+        cs(&mut c, "%");
+        lg(&mut c, I);
+        hc(&mut c, str_indexof, 3);
+        c.emit_op(Op::I32_FROM_F64, 0);
+        ls(&mut c, CH);
+        lg(&mut c, CH);
+        ci(&mut c, 0);
+        c.emit_op(Op::I32_LT_S, 0);
+        let no_percent = c.emit_if(0);
+        lg(&mut c, FLEN);
+        ls(&mut c, CH);
+        c.emit_end(0);
+        c.patch_block(no_percent);
         lg(&mut c, OUT);
         lg(&mut c, FMT);
         lg(&mut c, I);
-        hc(&mut c, str_chat, 2);
+        lg(&mut c, CH);
+        hc(&mut c, str_slice, 3);
         hc(&mut c, str_cat, 2);
         ls(&mut c, OUT);
-        inc(&mut c, I);
+        lg(&mut c, CH);
+        ls(&mut c, I);
         c.emit_br(1, 0); // continue ol
         c.emit_end(0);
         c.patch_block(pb);
@@ -1209,7 +1230,8 @@ fn conv_s(c: &mut Chunk, str_slice: u16, str_test: u16, str_indexof: u16) {
 mod helper_call_emission_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use vybe_runtime::{ReceiverAbi, Value, VM, heap, value::{Object, ObjectKind}};
+    use vybe_runtime::chunk::ReceiverAbi;
+    use vybe_runtime::{Value, VM, heap, value::{Object, ObjectKind}};
 
     fn observation_helper() -> Chunk {
         let mut helper = Chunk::new(CHUNK_NAME);
@@ -1241,6 +1263,13 @@ mod helper_call_emission_tests {
                 let observation_count = observed.clone();
                 let mut vm = VM::new();
                 vybe_runtime::js_builtins::register(&mut vm);
+                // This isolated packing test does not register the ECMA
+                // platform. Supply only the existing zero-length array
+                // primitive's contract, using the common runtime array type.
+                vm.register_free_fn("vybe:js-array", "newWithLength", Box::new(|_, args| {
+                    assert_eq!(args, &[Value::I32(0)]);
+                    Value::Object(heap::alloc(Object::new_array(Vec::new())))
+                }));
                 vm.register_free_fn("test:formatter", "argument", Box::new(move |_, _| {
                     let mut index = input_index.lock().unwrap();
                     let value = input_values[*index].clone();
@@ -1304,6 +1333,51 @@ mod helper_call_emission_tests {
         assert_eq!(chunks[0].local_count, 2);
         let listing = vybe_runtime::debug::disassemble(&chunks[0]);
         assert!(listing.contains("call_ref 2 1"));
+    }
+
+    // Retain only the former caller emission as a size reference. The
+    // formatter implementation is the same real helper in both graphs.
+    fn legacy_variadic_caller(chunks: &mut Vec<Chunk>, argc: u8) {
+        let helper = ensure_chunk(chunks);
+        let push = chunks[0].add_import("ecma:array", "push");
+        let count = u16::from(argc - 1);
+        let first = chunks[0].alloc_scratch(count + 2);
+        let (array, format, arguments) = (first, first + 1, first + 2);
+        for index in (0..count).rev() {
+            chunks[0].emit_op_u16(Op::LOCAL_SET, arguments + index, 0);
+        }
+        chunks[0].emit_op_u16(Op::LOCAL_SET, format, 0);
+        vybe_compiler::primitives::collections::emit_array_new(chunks, 0, 0, 0);
+        chunks[0].emit_op_u16(Op::LOCAL_SET, array, 0);
+        for index in 0..count {
+            chunks[0].emit_op_u16(Op::LOCAL_GET, array, 0);
+            chunks[0].emit_op_u16(Op::LOCAL_GET, arguments + index, 0);
+            chunks[0].emit_call(push, 2, 0);
+            chunks[0].emit_op(Op::DROP, 0);
+        }
+        chunks[0].emit_op_u16(Op::REF_FUNC, helper as u16, 0);
+        chunks[0].emit(0u8, 0);
+        chunks[0].emit_op_u16(Op::LOCAL_GET, format, 0);
+        chunks[0].emit_op_u16(Op::LOCAL_GET, array, 0);
+        chunks[0].emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
+    }
+
+    #[test]
+    fn caller_emission_shrinks_against_previous_packing() {
+        for argc in [1u8, 2, 4, 9, 33, 255] {
+            let mut previous = vec![Chunk::new("old-formatter-caller")];
+            let mut current = vec![Chunk::new("new-formatter-caller")];
+            legacy_variadic_caller(&mut previous, argc);
+            emit_sprintf(&mut current, 0, argc, 0);
+            assert_eq!(previous.len(), current.len());
+            assert_eq!(previous[1].code, current[1].code, "formatter body changed");
+            assert!(current[0].code.len() < previous[0].code.len());
+            assert_eq!(current[0].local_count, 0);
+            assert_eq!(current[0].direct_defined_calls.len(), 1);
+            println!("formatter_args={} previous_ir={} current_ir={} previous_locals={} current_locals={}",
+                argc - 1, previous[0].code.len(), current[0].code.len(),
+                previous[0].local_count, current[0].local_count);
+        }
     }
 }
 

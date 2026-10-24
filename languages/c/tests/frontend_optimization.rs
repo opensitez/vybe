@@ -529,8 +529,7 @@ fn expected_execution_and_standard_wasm_match() {
                     include_name_section: true,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
             let mut vm = vybe_runtime::VM::new();
             vybe_runtime::init_all_registered(

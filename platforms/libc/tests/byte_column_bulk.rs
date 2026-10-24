@@ -58,9 +58,7 @@ fn validate(chunks: &[Chunk]) {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-        .unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
 }
 
 pub fn measure(emit: Emitter) {

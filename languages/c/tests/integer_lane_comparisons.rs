@@ -113,8 +113,7 @@ fn shared_comparisons_validate_as_wasm_and_keep_both_lanes() {
                 include_name_section: true,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         let result = runtime().run(chunks).unwrap();
         assert_eq!(result.as_i32(), expected, "{lane:?} {operation:?}");

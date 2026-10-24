@@ -44,46 +44,29 @@ fn run_fixture(name: &str) {
             include_name_section: true,
         },
     );
-    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-    {
+    if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
+        use vybe_platform_wasm::inspection::{CoreModule, ImportType};
+        let module = CoreModule::new(&bytes).unwrap();
         let mut names = std::collections::HashMap::new();
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let Ok(wasmparser::Payload::CustomSection(section)) = payload {
-                if let wasmparser::KnownCustom::Name(reader) = section.as_known() {
-                    for name in reader {
-                        if let Ok(wasmparser::Name::Function(map)) = name {
-                            for entry in map {
-                                let entry = entry.unwrap();
-                                names.insert(entry.index, entry.name.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        module.function_names(|index, name| { names.insert(index, name); Ok(()) }).unwrap();
         let mut function = 0;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let Ok(wasmparser::Payload::ImportSection(section)) = &payload {
-                function += section.clone().into_imports().filter(|import|
-                    import.as_ref().is_ok_and(|import| matches!(import.ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_))))
-                    .count() as u32;
+        module.imports(|_, _, ty| {
+            function += u32::from(matches!(ty, ImportType::Func { .. }));
+            Ok(())
+        }).unwrap();
+        module.function_bodies(|body| {
+            if let Some(offset) = error.offset().filter(|offset| body.range().contains(offset)) {
+                let nearby = body.instructions()?.collect::<Result<Vec<_>, _>>()?
+                    .into_iter().filter(|op| op.offset >= offset.saturating_sub(60) && op.offset <= offset + 16)
+                    .collect::<Vec<_>>();
+                let mut locals = Vec::new();
+                body.locals(|count, ty| { locals.push((count, ty)); Ok(()) })?;
+                eprintln!("{name}: invalid WASM context: {nearby:?}");
+                eprintln!("function {function}: {:?}, locals: {locals:?}", names.get(&function));
             }
-            if let Ok(wasmparser::Payload::CodeSectionEntry(body)) = payload {
-                if body.range().contains(&error.offset()) {
-                    let nearby = body.get_operators_reader().unwrap()
-                        .into_iter_with_offsets().filter_map(Result::ok)
-                        .filter(|(_, offset)| *offset >= error.offset().saturating_sub(60)
-                            && *offset <= error.offset() + 16)
-                        .collect::<Vec<_>>();
-                    eprintln!("{name}: invalid WASM context: {nearby:?}");
-                    eprintln!("function {function}: {:?}, locals: {:?}", names.get(&function),
-                        body.get_locals_reader().unwrap().into_iter().collect::<Vec<_>>());
-                }
-                function += 1;
-            }
-        }
+            function += 1;
+            Ok(())
+        }).unwrap();
         panic!("{name}: {error}");
     }
     let mut vm = vybe_runtime::VM::new();

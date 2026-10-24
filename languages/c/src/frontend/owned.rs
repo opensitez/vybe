@@ -442,7 +442,7 @@ impl Builder for Owned<'_> {
                     expression: le,
                     raw: lr,
                     anchor: la,
-                    replay: mut replay,
+                    mut replay,
                 } = left
                 else {
                     unreachable!()
@@ -1703,7 +1703,6 @@ impl Builder for ContextualBuilder<'_> {
                 declarations::Value::Declaration {
                     statement,
                     declarator_spans,
-                    ..
                 } => {
                     let vybe_ast::StmtKind::VarDecl { declarations, .. } = statement.kind else {
                         unreachable!()
@@ -1928,7 +1927,6 @@ pub(crate) mod declarations {
             syntax: PlainDeclaratorSyntax,
         },
         Declaration {
-            span: Span,
             statement: Statement,
             declarator_spans: Vec<(Span, PlainDeclaratorSyntax)>,
         },
@@ -2351,7 +2349,6 @@ pub(crate) mod declarations {
                                 policy.map_or(Default::default(), |p| p.statement_span);
                             return (
                                 Value::Declaration {
-                                    span,
                                     statement,
                                     declarator_spans: declarators.clone(),
                                 },

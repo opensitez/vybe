@@ -71,8 +71,7 @@ fn source_intercept_callback_has_static_comparisons_and_native_backing_parity() 
         vybe_platform_wasm::WasmWriteOptions {
             include_vybe_metadata: false, include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm).unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
     vm.run(chunks).unwrap();

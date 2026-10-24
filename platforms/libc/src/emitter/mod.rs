@@ -23,6 +23,7 @@ pub mod mysql_adapter;
 pub mod object_fields;
 pub mod posix_adapter;
 pub mod regex_adapter;
+pub mod scan_runtime;
 pub mod sdl;
 pub mod sdl_app;
 pub mod sdl_runtime;

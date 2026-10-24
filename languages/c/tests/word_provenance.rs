@@ -174,8 +174,7 @@ fn validate(chunks: &[Chunk], name: &str) {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     if let Some(dir) = std::env::var_os("C_WORD_WASM_DIR") {
         std::fs::write(Path::new(&dir).join(format!("{name}.wasm")), bytes).unwrap();

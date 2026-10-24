@@ -163,3 +163,27 @@ pub fn function_stmt(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Sta
         is_sub: false,
     })
 }
+
+/// Store a string value and its terminator through a C character
+/// destination: bytes go through a linear address or carray pointer, and
+/// only a managed string buffer is rebound.
+pub fn write_c_string(destination: Expression, text: Expression) -> Expression {
+    let through_pointer = expr(ExprKind::Binary {
+        op: vybe_ast::BinOp::Or,
+        left: Box::new(expr(ExprKind::IsType {
+            expr: Box::new(destination.clone()),
+            type_name: "number".into(),
+        })),
+        right: Box::new(vybe_compiler::primitives::pointers::is_carray_ptr_kind(
+            destination.clone(),
+        )),
+    });
+    expr(ExprKind::Ternary {
+        cond: Box::new(through_pointer),
+        then: Box::new(call_expr(
+            ident("__c_write_carray_string"),
+            vec![destination.clone(), text.clone()],
+        )),
+        else_: Box::new(assign_expr(destination, text)),
+    })
+}

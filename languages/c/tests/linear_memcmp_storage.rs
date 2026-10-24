@@ -61,8 +61,7 @@ fn parsed_c_storage_directive_order_aliases_and_byte_difference() {
             assert_eq!(vectors, 0);
         }
         let native = vybe_platform_wasm::write_wasm(&chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&native)
+        vybe_platform_wasm::validate_binary(&native)
             .unwrap();
         let mut vm = VM::new();
         primitives::platforms::register_platforms_all(&mut vm);
@@ -98,8 +97,7 @@ int main(void) {
                 chunk.name
             );
         }
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm_with_options(
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm_with_options(
                 &chunks,
                 vybe_platform_wasm::WasmWriteOptions {
                     include_vybe_metadata: false,
@@ -118,8 +116,7 @@ fn user_memcmp_definition_retains_normal_call_resolution() {
     let source = r#"void *malloc(int n); int result; int memcmp(const void *a,const void *b,int n){return 77;} int main(){int *a=malloc(128);int *b=malloc(128);result=memcmp(a,b,128);return 0;}"#;
     let chunks = compile(source, true);
     assert_eq!(vector_count(&chunks), 0);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
         .unwrap();
     let mut vm = VM::new();
     primitives::platforms::register_platforms_all(&mut vm);
@@ -135,8 +132,7 @@ fn managed_buffers_and_internal_name_collision_retain_original_route() {
     ] {
         let chunks = compile(source, true);
         assert_eq!(vector_count(&chunks), 0);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
         let mut vm = VM::new();
         primitives::platforms::register_platforms_all(&mut vm);

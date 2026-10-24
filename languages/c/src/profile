@@ -104,6 +104,10 @@ uses_common_resolver = true
 "__c_ptr_i32_load16_s" = { emit = "common:pointers.linear_i32_load16_s", min_args = 1, max_args = 1 }
 "__c_ptr_i64_load" = { emit = "common:pointers.linear_i64_value_load_s", min_args = 1, max_args = 1 }
 "__c_ptr_u64_load" = { emit = "common:pointers.linear_i64_value_load_u", min_args = 1, max_args = 1 }
+"__c_ptr_f64_load" = { emit = "common:libc.memory.f64_load", min_args = 1, max_args = 1 }
+"__c_ptr_f32_load" = { emit = "common:libc.memory.f32_load", min_args = 1, max_args = 1 }
+"__c_ptr_f64_store" = { emit = "common:libc.memory.f64_store", min_args = 2, max_args = 2 }
+"__c_ptr_f32_store" = { emit = "common:libc.memory.f32_store", min_args = 2, max_args = 2 }
 "__c_ptr_i32_store" = { emit = "common:pointers.linear_i32_store", min_args = 2, max_args = 2 }
 "__c_ptr_i32_store8" = { emit = "common:pointers.linear_i32_store8", min_args = 2, max_args = 2 }
 "__c_ptr_byte_store" = { emit = "common:pointers.linear_byte_store", min_args = 2, max_args = 2 }
@@ -136,8 +140,8 @@ uses_common_resolver = true
 # Walker normalizations (in walker.rs):
 #   printf(fmt, args...)    → libc printf emitter / C fputs lowering
 #   fprintf(f, fmt, args...)→ puts(sprintf(fmt, args...))  (stream dropped)
-#   sprintf(buf, fmt, args...)→ sprintf(fmt, args...)      (buf dropped)
-#   snprintf(buf,n,fmt,...) → sprintf(fmt, args...)
+#   sprintf(buf, fmt, args...)/snprintf(buf, n, fmt, args...)
+#                           → format once, write through buf, yield the length
 "printf"  = { emit = "common:libc.stdio.printf",  min_args = 1, max_args = 255 }
 # sprintf routes through the libc inline emitter helper (no JS polyfill).
 "sprintf"  = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
@@ -518,11 +522,13 @@ ge = "opcode:i32.ge_s"
 [integer_cast_widths]
 char = { bits = 8, signed = false }
 uint8 = { bits = 8, signed = false }
+int8 = { bits = 8, signed = true }
 int16 = { bits = 16, signed = true }
+uint16 = { bits = 16, signed = false }
 int = { bits = 32, signed = true }
 uint32 = { bits = 32, signed = false }
 unsigned = { bits = 32, signed = false }
 "unsigned int" = { bits = 32, signed = false }
-"unsigned long" = { bits = 32, signed = false }
+"unsigned long" = {}
 long = {}
 

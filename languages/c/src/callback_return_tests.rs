@@ -54,8 +54,7 @@ fn record_callback_results_execute_standard_wasm_without_dynamic_inequality() {
             }
             let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
                 vybe_platform_wasm::WasmWriteOptions { include_vybe_metadata: false, include_name_section: true });
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes).unwrap();
+            vybe_platform_wasm::validate_binary(&bytes).unwrap();
             if let Some(expected) = &baseline { assert_eq!(&bytes, expected, "{source}"); }
             else { baseline = Some(bytes); }
             let mut vm = vybe_runtime::VM::new();

@@ -6494,6 +6494,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
 
     // string.h runtime helpers (strcoll/strxfrm/strpbrk/strspn/strcspn).
     out.extend(crate::emitter::string_runtime::runtime_helpers());
+    out.extend(crate::emitter::scan_runtime::runtime_helpers());
 
     // time.h runtime helpers live in their own adapter (shared libc surface).
     out.extend(crate::emitter::time_adapter::runtime_helpers());

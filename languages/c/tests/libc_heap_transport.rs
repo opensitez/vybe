@@ -63,8 +63,7 @@ fn finish(chunks: &mut Vec<Chunk>) -> Vec<u8> {
         vybe_platform_wasm::WasmWriteOptions {
             include_vybe_metadata: false, include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm).unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
     wasm
 }
 
@@ -170,15 +169,13 @@ fn heap_transport_debug_measurements() {
                     });
                 let mut calls = 0;
                 let mut operators = 0;
-                for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
-                    if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-                        let mut reader = body.get_operators_reader().unwrap();
-                        while !reader.eof() {
-                            if matches!(reader.read().unwrap(), wasmparser::Operator::Call { .. }) { calls += 1; }
-                            operators += 1;
-                        }
+                vybe_platform_wasm::inspection::CoreModule::new(&wasm).unwrap().function_bodies(|body| {
+                    for instruction in body.instructions()? {
+                        if instruction?.opcode == 0x10 { calls += 1; }
+                        operators += 1;
                     }
-                }
+                    Ok(())
+                }).unwrap();
                 if baseline {
                     before = Some((operators, calls));
                 } else {
@@ -227,8 +224,7 @@ fn heap_transport_c_fixture_equivalence() {
         vybe_platform_wasm::WasmWriteOptions {
             include_vybe_metadata: false, include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm).unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled).unwrap();
     assert_eq!(vm.pending_exit_code, 0);

@@ -15,11 +15,11 @@ fn compact_copy_matches_independent_pixels_and_preserves_source() {
                         for x in 0..width {
                             let start = row * pitch + x * 4;
                             let pixel = &source[start..start + 4];
-                            expected.extend_from_slice(if bgra {
-                                &[pixel[2], pixel[1], pixel[0], pixel[3]]
+                            if bgra {
+                                expected.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
                             } else {
-                                pixel
-                            });
+                                expected.extend_from_slice(pixel);
+                            }
                         }
                     }
                     assert_eq!(compact_rgba_rows(&source, width, rows, pitch, bgra), Some(expected));

@@ -75,23 +75,19 @@ fn saved_doom_reports_every_prefix_policy_decline() {
     let path = std::env::var("NYX_C_GOTO_DOOM_SOURCE").expect("set saved preprocessed C source path");
     let source = std::fs::read_to_string(path).unwrap();
     let module = crate::walker::with_unlowered_gotos_for_tests(|| crate::parse_optimized(&source)).unwrap();
-    let mut counts = [0usize; 4];
+    let mut counts = [0usize; 2];
     for statement in &module.body {
         if let vybe_ast::StmtKind::FunctionDecl { name, body, params, .. } = &statement.kind {
             let names = params.iter().map(|parameter| parameter.name.clone()).collect();
             match crate::goto_prefix_policy::prepare(body, &names) {
-                Ok(prepared) => counts[match prepared.path {
-                    crate::goto_prefix_policy::Path::Unchanged => 0,
-                    crate::goto_prefix_policy::Path::PrefixGraph => 1,
-                    crate::goto_prefix_policy::Path::ProvenTopTargets => 2,
-                }] += 1,
+                Ok(_) => counts[0] += 1,
                 Err(error) => {
-                    counts[3] += 1;
+                    counts[1] += 1;
                     eprintln!("declined function {name}: {} at {:?}", error.reason, error.span);
                 }
             }
         }
     }
-    eprintln!("unchanged/graph/top/declined={counts:?}; source_bytes={}", source.len());
-    assert_eq!(counts[3], 0, "all explicit declines must be reviewed before promotion");
+    eprintln!("prepared/declined={counts:?}; source_bytes={}", source.len());
+    assert_eq!(counts[1], 0, "all explicit declines must be reviewed before promotion");
 }

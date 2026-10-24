@@ -17,9 +17,10 @@ vybe_runtime = { workspace = true }
 vybe_platform_libc = { workspace = true }
 
 [dev-dependencies]
+# The tests seed a real browser into the registry, the way a binary does.
+webcore = { workspace = true }
 libc = { workspace = true }
 vybe_platform_web = { workspace = true }
-wasmparser = "0.244.0"
 vybe_platform_wasm = { workspace = true }
 vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }

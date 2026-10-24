@@ -232,8 +232,7 @@ mod frontend_capability_tests {
             let bytes = write(&accelerated.chunks);
             assert_eq!(write(&baseline.chunks), bytes);
             assert_eq!(write(&native.chunks), bytes);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
         }
     }

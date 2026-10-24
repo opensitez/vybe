@@ -91,8 +91,7 @@ fn c_byte_stores_preserve_operand_effects_and_wrapping() {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     let mut vm = VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
@@ -122,8 +121,7 @@ fn proven_byte_store_preserves_value_and_removes_two_conversions() {
                         include_name_section: true,
                     },
                 );
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&bytes)
+                vybe_platform_wasm::validate_binary(&bytes)
                     .unwrap();
                 assert_eq!(VM::new().run(chunks).unwrap().as_i32(), 0);
                 let reloaded = vybe_platform_wasm::read_wasm(&bytes).unwrap();

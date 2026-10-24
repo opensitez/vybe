@@ -649,109 +649,73 @@ fn indexed_record_addresses_preserve_singleton_and_array_aliases() {
 }
 
 fn canvas_import_signatures(bytes: &[u8]) -> Vec<(u32, String, usize, usize)> {
-        let mut canvas = Vec::new();
-        let mut signatures = Vec::new();
-        let mut import_index = 0;
-        for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-            match payload.unwrap() {
-                wasmparser::Payload::TypeSection(section) => {
-                    for group in section {
-                        for ty in group.unwrap().into_types() {
-                            signatures.push(match ty.composite_type.inner {
-                                wasmparser::CompositeInnerType::Func(f) =>
-                                    Some((f.params().len(), f.results().len())),
-                                _ => None,
-                            });
-                        }
-                    }
-                }
-                wasmparser::Payload::ImportSection(section) => {
-                    for import in section.into_imports() {
-                        let import = import.unwrap();
-                        if let wasmparser::TypeRef::Func(ty) | wasmparser::TypeRef::FuncExact(ty) = import.ty {
-                            if import.module == "web:canvas" {
-                                let (params, results) = signatures[ty as usize].unwrap();
-                                canvas.push((import_index, import.name.to_string(), params, results));
-                            }
-                            import_index += 1;
-                        }
-                    }
-                }
-                _ => {},
+    use vybe_platform_wasm::inspection::{CompositeType, CoreModule, ImportType};
+    let module = CoreModule::new(bytes).unwrap();
+    let types = module.types().unwrap();
+    let mut canvas = Vec::new();
+    let mut import_index = 0;
+    module.imports(|module, name, ty| {
+        if let ImportType::Func { type_index, .. } = ty {
+            if module == "web:canvas" {
+                let CompositeType::Func { params, results } =
+                    &types[*type_index as usize].definition().composite else {
+                    panic!("canvas import is not a function");
+                };
+                canvas.push((import_index, name.to_owned(), params.len(), results.len()));
             }
+            import_index += 1;
         }
-        canvas
+        Ok(())
+    }).unwrap();
+    canvas
 }
 
 fn validate_wasm_with_context(bytes: &[u8], chunks: &[vybe_runtime::Chunk]) {
-    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(bytes)
-    {
+    use vybe_platform_wasm::inspection::{CoreModule, ImportType};
+    let module = CoreModule::new(bytes).unwrap();
+    if let Err(error) = vybe_platform_wasm::validate_binary(bytes) {
         for (index, name, params, results) in canvas_import_signatures(bytes) {
             eprintln!("canvas import {index}: {name} ({params}, {results})");
         }
         let mut body_index = 0;
-        for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-                if body.range().contains(&error.offset()) {
-                    let mut reader = body.get_operators_reader().unwrap();
-                    let mut nearby = Vec::new();
-                    while !reader.eof() {
-                        let offset = reader.original_position();
-                        let operation = reader.read().unwrap();
-                        if offset + 40 >= error.offset() && offset <= error.offset() + 8 {
-                            nearby.push(format!("{offset}: {operation:?}"));
-                        }
-                    }
-                    let chunk = chunks.get(body_index);
-                    panic!("{error}; body {body_index}, chunk {:?}, signature {:?}, i64 locals {:?}, names {:?}: {}",
-                        chunk.map(|chunk| &chunk.name),
-                        chunk.map(|chunk| &chunk.func_sig),
-                        chunk.map(|chunk| &chunk.i64_locals),
-                        chunk.map(|chunk| &chunk.local_names), nearby.join("\n"));
-                }
-                body_index += 1;
+        module.function_bodies(|body| {
+            if let Some(offset) = error.offset().filter(|offset| body.range().contains(offset)) {
+                let nearby = body.instructions()?.collect::<Result<Vec<_>, _>>()?
+                    .into_iter().filter(|op| op.offset + 40 >= offset && op.offset <= offset + 8)
+                    .collect::<Vec<_>>();
+                let chunk = chunks.get(body_index);
+                panic!("{error}; body {body_index}, chunk {:?}, signature {:?}, i64 locals {:?}, names {:?}: {nearby:?}",
+                    chunk.map(|chunk| &chunk.name), chunk.map(|chunk| &chunk.func_sig),
+                    chunk.map(|chunk| &chunk.i64_locals), chunk.map(|chunk| &chunk.local_names));
             }
-        }
+            body_index += 1;
+            Ok(())
+        }).unwrap();
         panic!("{error}");
     }
     let mut abstract_imports = Vec::new();
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        match payload.unwrap() {
-            wasmparser::Payload::ImportSection(section) => {
-                for import in section.into_imports() {
-                    let import = import.unwrap();
-                    if matches!(import.ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_))
-                    {
-                        abstract_imports.push(import.module == "ecma:value"
-                            && matches!(import.name, "abstractEq" | "abstractNe"));
-                    }
-                }
-            }
-            wasmparser::Payload::CodeSectionEntry(body) => {
-                let mut reader = body.get_operators_reader().unwrap();
-                while !reader.eof() {
-                    let offset = reader.original_position();
-                    if let wasmparser::Operator::Call { function_index }
-                        | wasmparser::Operator::ReturnCall { function_index }
-                        | wasmparser::Operator::RefFunc { function_index } = reader.read().unwrap()
-                    {
-                        assert_ne!(abstract_imports.get(function_index as usize), Some(&true),
-                            "emitted WASM references abstract equality at byte {offset}, function {function_index}");
-                    }
-                }
-            }
-            wasmparser::Payload::CustomSection(section) => {
-                if let wasmparser::KnownCustom::Name(reader) = section.as_known() {
-                    for subsection in reader {
-                        subsection.expect("emitted debug name subsections must be well formed");
-                    }
-                }
-            }
-            _ => {}
+    module.imports(|module, name, ty| {
+        if matches!(ty, ImportType::Func { .. }) {
+            abstract_imports.push(module == "ecma:value" && matches!(name, "abstractEq" | "abstractNe"));
         }
-    }
+        Ok(())
+    }).unwrap();
+    module.function_bodies(|body| {
+        for instruction in body.instructions()? {
+            let instruction = instruction?;
+            if let Some(index) = instruction.function_index() {
+                assert_ne!(abstract_imports.get(index as usize), Some(&true),
+                    "emitted WASM references abstract equality at byte {}, function {index}", instruction.offset);
+            }
+        }
+        Ok(())
+    }).unwrap();
+    module.custom_sections(|name, payload| {
+        if name == "name" {
+            vybe_platform_wasm::inspection::name_subsections(payload, |subsection| subsection.validate())?;
+        }
+        Ok(())
+    }).expect("emitted debug name subsections must be well formed");
 }
 
 #[test]
@@ -834,8 +798,7 @@ fn sdl_boolean_constants_use_integer_values() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
@@ -852,8 +815,7 @@ fn mixed_pointer_result_field_transfer_preserves_linear_address() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
     vm.run(chunks).unwrap();
@@ -867,8 +829,7 @@ fn large_static_zero_initializer_exports_bounded_string_constants() {
         .join("../../tests/c/doom_startup/large_static_zero_initializer.c");
     let chunks = vybe_compiler::projects::load(&path).unwrap().compile().unwrap();
     let bytes = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
 }
 
 #[test]
@@ -894,8 +855,7 @@ fn character_array_initializers_and_copies_preserve_byte_storage() {
                 include_vybe_metadata: false,
                 include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap_or_else(|error| panic!("{name}: {error}"));
+        vybe_platform_wasm::validate_binary(&bytes).unwrap_or_else(|error| panic!("{name}: {error}"));
         let mut vm = vybe_runtime::VM::new();
         vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
         vm.run(chunks.clone()).unwrap_or_else(|error| panic!("{name}: {error}"));
@@ -915,8 +875,7 @@ fn sprite_frame_addresses_use_record_byte_stride() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
     vm.run(chunks).unwrap();
@@ -934,8 +893,7 @@ fn allocator_first_member_preserves_callback_table() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
     vm.run(chunks).unwrap();
@@ -1122,8 +1080,7 @@ fn linear_pointer_slots_preserve_indexed_backing() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
     let dump = vybe_runtime::debug::disassemble(main);
     assert!(!dump.contains("dyneq"), "dynamic pointer comparison: {dump}");
@@ -1166,8 +1123,7 @@ fn linear_character_search_emits_valid_wasm() {
                 include_vybe_metadata: false,
                 include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         let mut vm = vybe_runtime::VM::new();
         assert_eq!(vm.run(chunks).unwrap().as_i32(), expected);
     }
@@ -1846,8 +1802,7 @@ fn sdl_queue_wasm_reload_runs_without_metadata() {
     if let Some(path) = std::env::var_os("VYBE_SDL_RELOAD_ARTIFACT") {
         std::fs::write(path, &wasm).expect("save requested SDL reload artifact");
     }
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm).unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
     let reloaded = vybe_platform_wasm::read_wasm(&wasm).unwrap();
     let diagnostic = reloaded.clone();
     let strings = vybe_platform_wasm::writer::sections::collect_string_constants(&chunks);
@@ -1914,8 +1869,7 @@ fn pointer_distances_have_static_comparisons() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     for name in ["full", "before", "check_openings"] {
         let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(chunk);
@@ -2138,8 +2092,7 @@ fn player_commands_reach_heap_thinker_movement() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     for name in ["main", "tick", "movement", "add", "initialize_direct_list",
         "add_direct_node", "run_direct_thinkers",
         "check_direct_movement"] {
@@ -2189,8 +2142,7 @@ fn global_address_promotion_survives_function_compilation_order() {
             vybe_platform_wasm::WasmWriteOptions {
                 include_vybe_metadata: false, include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         let mut vm = vybe_runtime::VM::new();
         vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
         assert_eq!(vm.run(chunks).unwrap().as_f64(), 17.0);
@@ -2208,8 +2160,7 @@ fn keyboard_bindings_build_static_signed_commands() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     for name in ["main", "build", "bind_key"] {
         let chunk = chunks.iter().find(|chunk| chunk.name == name).unwrap();
         let dump = vybe_runtime::debug::disassemble(chunk);
@@ -2248,8 +2199,7 @@ fn pointer_ordering_uses_backing_coordinates_once() {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm).unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
     vm.run(chunks).unwrap();

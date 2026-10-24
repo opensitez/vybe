@@ -22,64 +22,16 @@ enum Recipe {
     Array(Vec<Recipe>),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ReplayWork {
-    pub(crate) literals: usize,
-    pub(crate) prefixes: usize,
-    pub(crate) arrays: usize,
-}
-
-thread_local! {
-    static REPLAY_OBSERVER: std::cell::Cell<Option<fn(ReplayWork)>> = const { std::cell::Cell::new(None) };
-}
-
-pub(crate) fn with_replay_observer<T>(observer: fn(ReplayWork), action: impl FnOnce() -> T) -> T {
-    struct Restore(Option<fn(ReplayWork)>);
-    impl Drop for Restore {
-        fn drop(&mut self) { REPLAY_OBSERVER.with(|slot| slot.set(self.0)); }
-    }
-    let _restore = Restore(REPLAY_OBSERVER.with(|slot| slot.replace(Some(observer))));
-    action()
-}
-
 impl Recipe {
     fn replay(&self, source: &str) -> Expression {
-        if let Some(observer) = REPLAY_OBSERVER.with(|slot| slot.get()) {
-            let work = self.replay_work();
-            let value = self.replay_unprofiled(source);
-            observer(work);
-            value
-        } else { self.replay_unprofiled(source) }
-    }
-
-    fn replay_work(&self) -> ReplayWork {
-        match self {
-            Self::Ident(_) => ReplayWork::default(),
-            Self::Literal { .. } => ReplayWork { literals: 1, ..Default::default() },
-            Self::Prefix { operand, .. } => {
-                let mut work = operand.replay_work();
-                work.prefixes += 1;
-                work
-            }
-            Self::Array(values) => values.iter().fold(ReplayWork { arrays: 1, ..Default::default() }, |mut total, value| {
-                let work = value.replay_work();
-                total.literals += work.literals;
-                total.prefixes += work.prefixes;
-                total.arrays += work.arrays;
-                total
-            }),
-        }
-    }
-
-    fn replay_unprofiled(&self, source: &str) -> Expression {
         match self {
             Self::Ident(span) => Expression::new(ExprKind::Ident(source[span.start..span.end].to_string())),
             Self::Literal { rule, span } => {
                 crate::walker::construct_literal(*rule, &source[span.start..span.end])
             }
-            Self::Array(values) => array(values.iter().map(|value| value.replay_unprofiled(source))),
+            Self::Array(values) => array(values.iter().map(|value| value.replay(source))),
             Self::Prefix { op, operand } =>
-                crate::walker::construct_numeric_prefix(op, operand.replay_unprofiled(source)),
+                crate::walker::construct_numeric_prefix(op, operand.replay(source)),
         }
     }
 
@@ -312,8 +264,6 @@ enum SyntaxOrigin { Primary, Syntax }
 pub(crate) struct PlainParameter<'a> {
     pub(crate) parameter: Param,
     pub(crate) specifiers: Pair<'a, Rule>,
-    pub(crate) declaration_span: Span,
-    pub(crate) declarator_span: Span,
 }
 
 #[derive(Clone, Copy)]
@@ -321,7 +271,6 @@ struct ParameterRecipe {
     name: Span,
     specifiers: CaptureHandle,
     specifier_span: Span,
-    declarator_span: Span,
 }
 
 struct CachedParameter { first: Option<Param>, recipe: ParameterRecipe }
@@ -846,9 +795,7 @@ pub(crate) fn take_plain_parameter<'a>(pair: &Pair<'a, Rule>) -> Option<PlainPar
         { return None; }
         let parameter = entry.first.take().unwrap_or_else(|| crate::walker::construct_plain_parameter(
             source[recipe.name.start..recipe.name.end].to_string()));
-        Some(PlainParameter { parameter, specifiers,
-            declaration_span: Span { start: span.start(), end: span.end() },
-            declarator_span: recipe.declarator_span })
+        Some(PlainParameter { parameter, specifiers })
     })
 }
 
@@ -1023,15 +970,6 @@ pub(crate) fn take_body<'a>(pair: &Pair<'a, Rule>) -> Option<Vec<BodyItem<'a>>> 
     let source = span.get_input();
     CACHE.with(|cache| cache.borrow_mut().as_mut()?
         .get_mut(&(source.as_ptr() as usize, source.len()))?.take_body(pair))
-}
-
-/// Read an initializer without spending the ordered walk's first owned value.
-/// The callback holds no TLS borrow, and reparse invalidation wins over return.
-pub(crate) fn with_initializer_list<T>(
-    pair: &Pair<'_, Rule>, read: impl FnOnce(&Expression) -> T,
-) -> Option<T> {
-    let lease = lease_initializer_list(pair)?;
-    Some(read(lease.as_ref()))
 }
 
 /// May be retained through source-order definition selection without a TLS
@@ -1257,6 +1195,16 @@ pub(crate) struct Initializers {
 }
 
 impl Initializers {
+    /// Committed captures across every cache: the coverage a parse retains.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len() + self.primaries.len() + self.syntax.len() + self.declarators.len()
+            + self.binaries.len() + self.parameters.len() + self.ifs.len() + self.loops.len()
+            + self.fors.len() + self.switches.len() + self.returns.len() + self.calls.len()
+            + self.indices.len() + self.members.len() + self.functions.len()
+            + self.statements.len() + self.bodies.len()
+    }
+
     fn append(&mut self, additions: Self) {
         debug_assert_eq!(self.input, additions.input);
         // Existing leases and repeated reads belong to the same generation.
@@ -1354,7 +1302,6 @@ impl Initializers {
         Some(entry.first.take().unwrap_or_else(|| entry.recipe.replay(source)))
     }
 
-    pub(crate) fn len(&self) -> usize { self.entries.len() }
 }
 
 /// Use in the same hybrid match that produces the walker's initializer anchors.
@@ -1804,8 +1751,7 @@ impl<'a> Direct<'a> {
                 && source.get(specs.end..plain.start).is_some_and(super::owned::plain_declarator_trivia)
                 && source.get(plain.end..span.end).is_some_and(super::owned::plain_declarator_trivia)
             {
-                let recipe = ParameterRecipe { name: *name, specifiers: *handle, specifier_span: *specs,
-                    declarator_span: Span { start: plain.start, end: span.end } };
+                let recipe = ParameterRecipe { name: *name, specifiers: *handle, specifier_span: *specs };
                 let plain_span = *plain;
                 let id = self.arena.list_with_metadata(children, |_| {
                     let value = crate::walker::construct_plain_parameter(source[recipe.name.start..recipe.name.end].to_string());

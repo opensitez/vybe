@@ -35,27 +35,24 @@ fn mapped_record_checksum_wasm_is_valid_and_reloadable() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes) {
+    if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
         let mut body_index = 0;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-                if body.range().contains(&error.offset()) {
-                    let mut reader = body.get_operators_reader().unwrap();
-                    let mut previous = std::collections::VecDeque::new();
-                    while !reader.eof() {
-                        let offset = reader.original_position();
-                        let operator = reader.read().unwrap();
-                        previous.push_back(format!("{offset}: {operator:?}"));
-                        if previous.len() > 12 { previous.pop_front(); }
-                        if offset >= error.offset() {
-                            panic!("WASM body {body_index}: {error}\n{}", previous.into_iter().collect::<Vec<_>>().join("\n"));
-                        }
+        vybe_platform_wasm::inspection::CoreModule::new(&bytes).unwrap().function_bodies(|body| {
+            if let Some(offset) = error.offset().filter(|offset| body.range().contains(offset)) {
+                let mut previous = std::collections::VecDeque::new();
+                for instruction in body.instructions()? {
+                    let instruction = instruction?;
+                    previous.push_back(format!("{}: {instruction:?}", instruction.offset));
+                    if previous.len() > 12 { previous.pop_front(); }
+                    if instruction.offset >= offset {
+                        panic!("WASM body {body_index}: {error}\n{}",
+                            previous.into_iter().collect::<Vec<_>>().join("\n"));
                     }
                 }
-                body_index += 1;
             }
-        }
+            body_index += 1;
+            Ok(())
+        }).unwrap();
         panic!("{error}");
     }
     let chunks = vybe_platform_wasm::read_wasm(&bytes).unwrap();

@@ -56,9 +56,7 @@ fn vectors(chunks: &[Chunk]) -> usize {
 
 fn run(chunks: Vec<Chunk>) -> VM {
     let native = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&native)
-        .unwrap();
+    vybe_platform_wasm::validate_binary(&native).unwrap();
     let mut vm = VM::new();
     primitives::platforms::register_platforms_all(&mut vm);
     vm.run(chunks).unwrap();

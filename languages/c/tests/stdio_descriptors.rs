@@ -5,34 +5,24 @@ use vybe_runtime::{Chunk, VM, Value, opcode::Op};
 fn validate(chunks: &[Chunk]) {
     let bytes = vybe_platform_wasm::write_wasm_with_options(chunks,
         vybe_platform_wasm::WasmWriteOptions { include_vybe_metadata: false, include_name_section: true });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
+    let module = vybe_platform_wasm::inspection::CoreModule::new(&bytes).unwrap();
     let mut abstract_imports = Vec::new();
-    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-        match payload.unwrap() {
-            wasmparser::Payload::ImportSection(section) => {
-                for import in section.into_imports() {
-                    let import = import.unwrap();
-                    if matches!(import.ty, wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)) {
-                        abstract_imports.push(import.module == "ecma:value"
-                            && matches!(import.name, "abstractEq" | "abstractNe"));
-                    }
-                }
-            }
-            wasmparser::Payload::CodeSectionEntry(body) => {
-                let mut reader = body.get_operators_reader().unwrap();
-                while !reader.eof() {
-                    if let wasmparser::Operator::Call { function_index }
-                        | wasmparser::Operator::ReturnCall { function_index }
-                        | wasmparser::Operator::RefFunc { function_index } = reader.read().unwrap()
-                    {
-                        assert_ne!(abstract_imports.get(function_index as usize), Some(&true));
-                    }
-                }
-            }
-            _ => {}
+    module.imports(|module, name, ty| {
+        if matches!(ty, vybe_platform_wasm::inspection::ImportType::Func { .. }) {
+            abstract_imports.push(module == "ecma:value"
+                && matches!(name, "abstractEq" | "abstractNe"));
         }
-    }
+        Ok(())
+    }).unwrap();
+    module.function_bodies(|body| {
+        for instruction in body.instructions()? {
+            if let Some(index) = instruction?.function_index() {
+                assert_ne!(abstract_imports.get(index as usize), Some(&true));
+            }
+        }
+        Ok(())
+    }).unwrap();
 }
 
 #[test]

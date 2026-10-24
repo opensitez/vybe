@@ -164,6 +164,38 @@ fn lit_str(s: &str) -> Expression {
     e(ExprKind::Lit(Literal::Str(s.to_string())))
 }
 
+/// Store scanned characters through a C character destination: bytes go
+/// through a linear or carray pointer, and only a managed string buffer is
+/// rebound. `%s` and scansets append the terminator; `%Nc` does not.
+fn store_c_chars(target: Expression, text: &str, terminate: bool) -> Expression {
+    let count = text.chars().count() as i64 + i64::from(terminate);
+    let through_pointer = e(ExprKind::Binary {
+        op: BinOp::Or,
+        left: Box::new(e(ExprKind::IsType {
+            expr: Box::new(target.clone()),
+            type_name: "number".into(),
+        })),
+        right: Box::new(vybe_compiler::primitives::pointers::is_carray_ptr_kind(target.clone())),
+    });
+    e(ExprKind::Ternary {
+        cond: Box::new(through_pointer),
+        then: Box::new(call(
+            ident("__libc_strncpy_carray"),
+            vec![target.clone(), lit_str(text), lit_int(count)],
+        )),
+        else_: Box::new(assign_expr(target, lit_str(text))),
+    })
+}
+
+/// Store one runtime `scanf` conversion. String conversions write their bytes
+/// and terminator through a C character destination; scalars assign.
+fn store_scanned(spec: char, target: Expression, value: Expression) -> Expression {
+    if !matches!(spec, 's' | '[') {
+        return assign_expr(target, value);
+    }
+    crate::emitter::build::write_c_string(target, value)
+}
+
 fn assign_expr(target: Expression, value: Expression) -> Expression {
     e(ExprKind::Assign {
         target: Box::new(target),
@@ -188,23 +220,22 @@ pub fn fprintf_to_puts(fmt: Expression, rest: Vec<Expression>) -> Expression {
     printf_to_puts(fmt, rest)
 }
 
-/// `sprintf(buf, fmt, args...)` → `buf = __c_sprintf(fmt, args...)`.
-/// The buffer target is returned as the assign target; the RHS is the call.
-pub fn sprintf_assign(buf: Expression, fmt: Expression, rest: Vec<Expression>) -> Expression {
+// A pure literal without conversions needs no formatter. Keep the existing
+// fputs path (including its return value), and never drop extra arguments.
+fn render_printf(fmt: Expression, rest: Vec<Expression>) -> Expression {
+    if rest.is_empty() && matches!(&fmt.kind,
+        ExprKind::Lit(Literal::Str(text)) if !text.contains('%') && !text.contains('\0'))
+    {
+        return fmt;
+    }
     let mut sprintf_args = vec![fmt];
     sprintf_args.extend(rest);
-    let rhs = call(ident(C_SPRINTF), sprintf_args);
-    e(ExprKind::Assign {
-        target: Box::new(buf),
-        value: Box::new(rhs),
-    })
+    call(ident(C_SPRINTF), sprintf_args)
 }
 
 /// C walker-compatible lowering: `printf(fmt, ...)` -> `__c_fputs_h(__c_sprintf(...), 1)`.
 pub fn printf_to_c_fputs(fmt: Expression, rest: Vec<Expression>) -> Expression {
-    let mut sprintf_args = vec![fmt];
-    sprintf_args.extend(rest);
-    let rendered = call(ident(C_SPRINTF), sprintf_args);
+    let rendered = render_printf(fmt, rest);
     call(ident("__c_fputs_h"), vec![rendered, lit_int(1)])
 }
 
@@ -398,10 +429,36 @@ pub fn printf_with_n_to_c_fputs(
 
 /// C walker-compatible lowering: `fprintf(file, fmt, ...)` -> `__c_fputs_h(__c_sprintf(...), file)`.
 pub fn fprintf_to_c_fputs(file: Expression, fmt: Expression, rest: Vec<Expression>) -> Expression {
-    let mut sprintf_args = vec![fmt];
-    sprintf_args.extend(rest);
-    let rendered = call(ident(C_SPRINTF), sprintf_args);
+    let rendered = render_printf(fmt, rest);
     call(ident("__c_fputs_h"), vec![rendered, file])
+}
+
+/// A literal format's `%n` conversions, for formatters that render to a
+/// string. Returns the format without them and, for each `%n` in order, the
+/// format text before it plus the index of its target among the variadic
+/// arguments; the targets are exactly the arguments the remaining format no
+/// longer consumes.
+pub fn split_printf_counts(format_text: &str) -> Option<(String, Vec<(String, usize)>)> {
+    let mut parser = PrintfNSplitter::new(format_text);
+    let mut format = String::new();
+    let mut counts = Vec::new();
+    let mut arg_index = 0usize;
+    while let Some(item) = parser.next_item() {
+        match item {
+            PrintfItem::Literal(text) => format.push_str(text),
+            PrintfItem::Conversion { text, consumes_arg } => {
+                format.push_str(text);
+                if consumes_arg {
+                    arg_index += 1;
+                }
+            }
+            PrintfItem::Count => {
+                counts.push((format.clone(), arg_index));
+                arg_index += 1;
+            }
+        }
+    }
+    (!counts.is_empty()).then_some((format, counts))
 }
 
 fn flush_printf_segment(
@@ -809,7 +866,7 @@ pub fn sscanf_literal(
                     let token: String = source_chars[source_index..end].iter().collect();
                     source_index = end;
                     if !suppress_assignment {
-                        stmts.push(assign_expr(target, lit_str(&token)));
+                        stmts.push(store_c_chars(target, &token, false));
                     }
                 }
                 if !suppress_assignment {
@@ -840,7 +897,7 @@ pub fn sscanf_literal(
                 }
                 let token: String = source_chars[start..source_index].iter().collect();
                 if !suppress_assignment {
-                    stmts.push(assign_expr(target, lit_str(&token)));
+                    stmts.push(store_c_chars(target, &token, true));
                     count += 1;
                 }
             }
@@ -882,7 +939,7 @@ pub fn sscanf_literal(
                 }
                 let token: String = source_chars[start..source_index].iter().collect();
                 if !suppress_assignment {
-                    stmts.push(assign_expr(target, lit_str(&token)));
+                    stmts.push(store_c_chars(target, &token, true));
                     count += 1;
                 }
             }
@@ -1521,7 +1578,7 @@ pub fn scanf(fmt: &str, targets: Vec<Expression>, tmp_id: u32) -> Expression {
             bin(BinOp::Integer(vybe_ast::IntOp::GtU, vybe_ast::BitLane::W32),
                 member(ident(&tok_var), "length"), lit_int(0)),
             e(ExprKind::Sequence(vec![
-                assign_expr(target, converted),
+                store_scanned(*spec, target, converted),
                 assign_expr(ident(&n_var), bin(
                     BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
                     ident(&n_var), lit_int(1))),
@@ -1650,7 +1707,7 @@ pub fn fscanf(fmt: &str, handle: Expression, targets: Vec<Expression>, tmp_id: u
                     member(ident(&tok_var), "length"), lit_int(0)),
             ),
             e(ExprKind::Sequence(vec![
-                assign_expr(target, converted),
+                store_scanned(*spec, target, converted),
                 assign_expr(ident(&n_var), bin(
                     BinOp::Integer(vybe_ast::IntOp::Add, vybe_ast::BitLane::W32),
                     ident(&n_var), lit_int(1))),

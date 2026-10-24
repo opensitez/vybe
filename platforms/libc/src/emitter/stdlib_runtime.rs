@@ -1,17 +1,14 @@
-//! C stdlib.h runtime helpers (libc surface): `qsort` / `bsearch`.
+//! C stdlib.h runtime helpers (libc surface): `qsort`, `qsort_r` and `bsearch`.
 //!
-//! Previously these rode the cross-language `__stdlib_*` helper bundle; per the
-//! libc-platform policy the C runtime lives here instead. The walker lowers
-//! `qsort(...)`/`bsearch(...)` to calls of these helpers (adapting the C
-//! function-pointer comparator to a 2-arg callable first); the bodies are
-//! injected once into the program prelude.
-//!
-//! `__c_qsort` is a stable insertion sort over the first `count` elements,
-//! sorting in place and returning the array (matches the prior bundled helper).
-//! `__c_bsearch` here is a linear scan returning the matching index or -1.
+//! The walker lowers each call to one of these helpers, passing the C
+//! comparator unchanged. The comparator receives element POINTERS, as C
+//! requires: a linear address `base + i * size` when the array lives in linear
+//! memory, otherwise a carray pointer `{__base, __idx}` over the managed
+//! backing. Swaps move whole elements in the same backing.
 
 use crate::emitter::build::*;
 use vybe_ast::{Argument, BinOp, ExprKind, Expression, Statement, StmtKind};
+use vybe_compiler::primitives::pointers;
 
 fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
     expr(ExprKind::Binary {
@@ -37,232 +34,294 @@ fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
     })
 }
 
+fn expr_stmt(value: Expression) -> Statement {
+    stmt(StmtKind::Expr(value))
+}
+
+fn set(name: &str, value: Expression) -> Statement {
+    expr_stmt(assign_expr(ident(name), value))
+}
+
 pub fn runtime_helpers() -> Vec<Statement> {
     vec![
+        c_sort_backing(),
+        c_sort_element(),
+        c_sort_compare(),
+        c_sort_swap(),
         c_qsort(),
-        c_bsearch_index(),
-        c_qsort_key(),
-        c_qsort_auto(),
-        c_bsearch_index_auto(),
+        c_bsearch(),
+        c_lfind(),
     ]
 }
 
-/// `__c_qsort(arr, count, cmp)` — bounded in-place bubble sort over the first
-/// `count` elements; `cmp(a, b) > 0` means `a` sorts after `b`. Returns `arr`.
-fn c_qsort() -> Statement {
-    let swap = vec![
-        var_decl_stmt("tmp", index_expr(ident("arr"), ident("j"))),
-        stmt(StmtKind::Expr(assign_expr(
-            index_expr(ident("arr"), ident("j")),
-            index_expr(ident("arr"), bin(BinOp::Add, ident("j"), int_lit(1))),
-        ))),
-        stmt(StmtKind::Expr(assign_expr(
-            index_expr(ident("arr"), bin(BinOp::Add, ident("j"), int_lit(1))),
-            ident("tmp"),
-        ))),
-    ];
-    let inner = while_stmt(
-        bin(
-            BinOp::Lt,
-            ident("j"),
-            bin(BinOp::Sub, ident("count"), int_lit(1)),
-        ),
+/// The element-pointer coordinates every sort helper shares:
+/// `[linear, base, offset]`. A linear array is its own address; a carray
+/// pointer contributes its base and element offset; a bare managed array
+/// starts at element 0.
+fn c_sort_backing() -> Statement {
+    let linear = expr(ExprKind::IsType {
+        expr: Box::new(ident("arr")),
+        type_name: "number".into(),
+    });
+    function_stmt(
+        "__c_sort_backing",
+        vec!["arr"],
         vec![
             if_stmt(
-                bin(
-                    BinOp::Gt,
-                    call(
-                        ident("__c_cmp_fn"),
-                        vec![
-                            index_expr(ident("arr"), ident("j")),
-                            index_expr(ident("arr"), bin(BinOp::Add, ident("j"), int_lit(1))),
-                        ],
-                    ),
-                    int_lit(0),
-                ),
-                swap,
+                linear,
+                vec![stmt(StmtKind::Return(Some(expr(ExprKind::Array(vec![
+                    array_item(int_lit(1)),
+                    array_item(ident("arr")),
+                    array_item(int_lit(0)),
+                ])))))],
                 None,
             ),
-            stmt(StmtKind::Expr(assign_expr(
-                ident("j"),
-                bin(BinOp::Add, ident("j"), int_lit(1)),
-            ))),
+            if_stmt(
+                pointers::is_carray_ptr_kind(ident("arr")),
+                vec![stmt(StmtKind::Return(Some(expr(ExprKind::Array(vec![
+                    array_item(int_lit(0)),
+                    array_item(member(ident("arr"), "__base")),
+                    array_item(member(ident("arr"), "__idx")),
+                ])))))],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(expr(ExprKind::Array(vec![
+                array_item(int_lit(0)),
+                array_item(ident("arr")),
+                array_item(int_lit(0)),
+            ]))))),
+        ],
+    )
+}
+
+fn array_item(value: Expression) -> vybe_ast::ArrayElement {
+    vybe_ast::ArrayElement {
+        key: None,
+        value,
+        spread: false,
+        by_ref: false,
+    }
+}
+
+fn backing_field(index: i64) -> Expression {
+    index_expr(ident("backing"), int_lit(index))
+}
+
+/// `__c_sort_element(backing, size, i)` — a C pointer to element `i`.
+fn c_sort_element() -> Statement {
+    function_stmt(
+        "__c_sort_element",
+        vec!["backing", "size", "i"],
+        vec![
+            if_stmt(
+                bin(BinOp::Eq, backing_field(0), int_lit(1)),
+                vec![stmt(StmtKind::Return(Some(bin(
+                    BinOp::Add,
+                    backing_field(1),
+                    bin(BinOp::Mul, ident("i"), ident("size")),
+                ))))],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(pointers::make_carray_ptr(
+                backing_field(1),
+                bin(BinOp::Add, backing_field(2), ident("i")),
+            )))),
+        ],
+    )
+}
+
+/// `__c_sort_compare(cmp, ctx, has_ctx, a, b)` — `cmp(a, b)` or, for
+/// `qsort_r`, `cmp(a, b, ctx)`.
+fn c_sort_compare() -> Statement {
+    function_stmt(
+        "__c_sort_compare",
+        vec!["cmp", "ctx", "has_ctx", "a", "b"],
+        vec![
+            if_stmt(
+                ident("has_ctx"),
+                vec![stmt(StmtKind::Return(Some(call(
+                    ident("cmp"),
+                    vec![ident("a"), ident("b"), ident("ctx")],
+                ))))],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(call(ident("cmp"), vec![ident("a"), ident("b")])))),
+        ],
+    )
+}
+
+/// `__c_sort_swap(backing, size, i, j)` — exchange elements `i` and `j`:
+/// `size` bytes in linear memory, or two managed slots.
+fn c_sort_swap() -> Statement {
+    let byte_at = |index: &str| {
+        bin(
+            BinOp::Add,
+            bin(BinOp::Add, backing_field(1), bin(BinOp::Mul, ident(index), ident("size"))),
+            ident("k"),
+        )
+    };
+    let load = |index: &str| call(ident("__c_ptr_i32_load8_u"), vec![byte_at(index)]);
+    let store = |index: &str, value: Expression| {
+        expr_stmt(call(ident("__c_ptr_i32_store8"), vec![byte_at(index), value]))
+    };
+    let slot = |index: &str| {
+        index_expr(backing_field(1), bin(BinOp::Add, backing_field(2), ident(index)))
+    };
+    function_stmt(
+        "__c_sort_swap",
+        vec!["backing", "size", "i", "j"],
+        vec![
+            var_decl_stmt("k", int_lit(0)),
+            var_decl_stmt("t", int_lit(0)),
+            if_stmt(
+                bin(BinOp::Eq, backing_field(0), int_lit(1)),
+                vec![
+                    while_stmt(
+                        bin(BinOp::Lt, ident("k"), ident("size")),
+                        vec![
+                            set("t", load("i")),
+                            store("i", load("j")),
+                            store("j", ident("t")),
+                            set("k", bin(BinOp::Add, ident("k"), int_lit(1))),
+                        ],
+                    ),
+                    stmt(StmtKind::Return(None)),
+                ],
+                None,
+            ),
+            set("t", slot("i")),
+            expr_stmt(assign_expr(slot("i"), slot("j"))),
+            expr_stmt(assign_expr(slot("j"), ident("t"))),
+        ],
+    )
+}
+
+/// `__c_qsort(arr, count, size, cmp, ctx, has_ctx)` — in-place shell sort;
+/// `cmp(a, b) > 0` means element `a` sorts after element `b`.
+fn c_qsort() -> Statement {
+    let element = |index: Expression| {
+        call(ident("__c_sort_element"), vec![ident("backing"), ident("size"), index])
+    };
+    let lower = bin(BinOp::Sub, ident("j"), ident("gap"));
+    let out_of_order = bin(
+        BinOp::Gt,
+        call(
+            ident("__c_sort_compare"),
+            vec![
+                ident("cmp"),
+                ident("ctx"),
+                ident("has_ctx"),
+                element(lower.clone()),
+                element(ident("j")),
+            ],
+        ),
+        int_lit(0),
+    );
+    let sift = while_stmt(
+        bin(BinOp::And, bin(BinOp::GtEq, ident("j"), ident("gap")), out_of_order),
+        vec![
+            expr_stmt(call(
+                ident("__c_sort_swap"),
+                vec![ident("backing"), ident("size"), lower.clone(), ident("j")],
+            )),
+            set("j", lower),
         ],
     );
-    let outer = while_stmt(
+    let pass = while_stmt(
         bin(BinOp::Lt, ident("i"), ident("count")),
         vec![
-            stmt(StmtKind::Expr(assign_expr(ident("j"), int_lit(0)))),
-            inner,
-            stmt(StmtKind::Expr(assign_expr(
-                ident("i"),
-                bin(BinOp::Add, ident("i"), int_lit(1)),
-            ))),
+            set("j", ident("i")),
+            sift,
+            set("i", bin(BinOp::Add, ident("i"), int_lit(1))),
         ],
     );
     function_stmt(
         "__c_qsort",
-        vec!["arr", "count", "__c_cmp_fn"],
+        vec!["arr", "count", "size", "cmp", "ctx", "has_ctx"],
         vec![
+            var_decl_stmt("backing", call(ident("__c_sort_backing"), vec![ident("arr")])),
+            var_decl_stmt("gap", bin(BinOp::Shr, ident("count"), int_lit(1))),
             var_decl_stmt("i", int_lit(0)),
             var_decl_stmt("j", int_lit(0)),
-            outer,
-            stmt(StmtKind::Return(Some(ident("arr")))),
+            while_stmt(
+                bin(BinOp::Gt, ident("gap"), int_lit(0)),
+                vec![
+                    set("i", ident("gap")),
+                    pass,
+                    set("gap", bin(BinOp::Shr, ident("gap"), int_lit(1))),
+                ],
+            ),
         ],
     )
 }
 
-/// `__c_bsearch_index(arr, count, key, cmp)` — linear scan; returns the first
-/// index where `cmp(key, arr[i]) == 0`, or -1.
-fn c_bsearch_index() -> Statement {
-    let loop_body = while_stmt(
-        bin(BinOp::Lt, ident("i"), ident("count")),
+/// `__c_bsearch(key, arr, count, size, cmp)` — binary search over a sorted
+/// array; returns a pointer to a matching element, or null.
+fn c_bsearch() -> Statement {
+    let probe = call(
+        ident("__c_sort_element"),
+        vec![ident("backing"), ident("size"), ident("mid")],
+    );
+    function_stmt(
+        "__c_bsearch",
+        vec!["key", "arr", "count", "size", "cmp"],
         vec![
-            if_stmt(
-                bin(
-                    BinOp::Eq,
-                    call(
-                        ident("__c_cmp_fn"),
-                        vec![ident("key"), index_expr(ident("arr"), ident("i"))],
+            var_decl_stmt("backing", call(ident("__c_sort_backing"), vec![ident("arr")])),
+            var_decl_stmt("low", int_lit(0)),
+            var_decl_stmt("high", ident("count")),
+            var_decl_stmt("mid", int_lit(0)),
+            var_decl_stmt("order", int_lit(0)),
+            while_stmt(
+                bin(BinOp::Lt, ident("low"), ident("high")),
+                vec![
+                    set("mid", bin(BinOp::Shr, bin(BinOp::Add, ident("low"), ident("high")), int_lit(1))),
+                    set("order", call(ident("cmp"), vec![ident("key"), probe.clone()])),
+                    if_stmt(
+                        bin(BinOp::Eq, ident("order"), int_lit(0)),
+                        vec![stmt(StmtKind::Return(Some(probe)))],
+                        None,
                     ),
-                    int_lit(0),
-                ),
-                vec![stmt(StmtKind::Return(Some(ident("i"))))],
-                None,
-            ),
-            stmt(StmtKind::Expr(assign_expr(
-                ident("i"),
-                bin(BinOp::Add, ident("i"), int_lit(1)),
-            ))),
-        ],
-    );
-    function_stmt(
-        "__c_bsearch_index",
-        vec!["arr", "count", "key", "__c_cmp_fn"],
-        vec![
-            var_decl_stmt("i", int_lit(0)),
-            loop_body,
-            stmt(StmtKind::Return(Some(int_lit(-1)))),
-        ],
-    )
-}
-
-/// `mode`: 0 = scalar/string value, 1 = `.k`, 2 = `.id`, 3 = referenced value.
-fn c_qsort_key() -> Statement {
-    function_stmt(
-        "__c_qsort_key",
-        vec!["v", "mode"],
-        vec![
-            if_stmt(
-                bin(BinOp::Eq, ident("mode"), int_lit(1)),
-                vec![stmt(StmtKind::Return(Some(member(ident("v"), "k"))))],
-                None,
-            ),
-            if_stmt(
-                bin(BinOp::Eq, ident("mode"), int_lit(2)),
-                vec![stmt(StmtKind::Return(Some(member(ident("v"), "id"))))],
-                None,
-            ),
-            if_stmt(
-                bin(BinOp::Eq, ident("mode"), int_lit(3)),
-                vec![stmt(StmtKind::Return(Some(expr(ExprKind::RefLoad(
-                    Box::new(ident("v")),
-                )))))],
-                None,
-            ),
-            stmt(StmtKind::Return(Some(ident("v")))),
-        ],
-    )
-}
-
-/// `__c_qsort_auto(arr, count, mode, order)` — bounded in-place bubble sort using a
-/// walker-selected key mode, avoiding fragile C comparator function callbacks.
-/// Negative order sorts descending; non-negative order sorts ascending.
-fn c_qsort_auto() -> Statement {
-    let next_j = bin(BinOp::Add, ident("j"), int_lit(1));
-    let left = index_expr(ident("arr"), ident("j"));
-    let right = index_expr(ident("arr"), next_j.clone());
-    let left_key = call(ident("__c_qsort_key"), vec![left.clone(), ident("mode")]);
-    let right_key = call(ident("__c_qsort_key"), vec![right.clone(), ident("mode")]);
-    let should_swap = expr(ExprKind::Ternary {
-        cond: Box::new(bin(BinOp::Lt, ident("order"), int_lit(0))),
-        then: Box::new(bin(BinOp::Lt, left_key.clone(), right_key.clone())),
-        else_: Box::new(bin(BinOp::Gt, left_key, right_key)),
-    });
-    let swap = vec![
-        stmt(StmtKind::Expr(assign_expr(ident("tmp"), left.clone()))),
-        stmt(StmtKind::Expr(assign_expr(left, right.clone()))),
-        stmt(StmtKind::Expr(assign_expr(right, ident("tmp")))),
-    ];
-    let inner = while_stmt(
-        bin(
-            BinOp::Lt,
-            ident("j"),
-            bin(BinOp::Sub, ident("count"), int_lit(1)),
-        ),
-        vec![
-            if_stmt(should_swap, swap, None),
-            stmt(StmtKind::Expr(assign_expr(
-                ident("j"),
-                bin(BinOp::Add, ident("j"), int_lit(1)),
-            ))),
-        ],
-    );
-    let outer = while_stmt(
-        bin(BinOp::Lt, ident("i"), ident("count")),
-        vec![
-            stmt(StmtKind::Expr(assign_expr(ident("j"), int_lit(0)))),
-            inner,
-            stmt(StmtKind::Expr(assign_expr(
-                ident("i"),
-                bin(BinOp::Add, ident("i"), int_lit(1)),
-            ))),
-        ],
-    );
-    function_stmt(
-        "__c_qsort_auto",
-        vec!["arr", "count", "mode", "order"],
-        vec![
-            var_decl_stmt("i", int_lit(0)),
-            var_decl_stmt("j", int_lit(0)),
-            var_decl_stmt("tmp", null_lit()),
-            outer,
-            stmt(StmtKind::Return(Some(ident("arr")))),
-        ],
-    )
-}
-
-/// `__c_bsearch_index_auto(arr, count, key, mode)` — linear scan over the
-/// same key modes used by `__c_qsort_auto`.
-fn c_bsearch_index_auto() -> Statement {
-    let loop_body = while_stmt(
-        bin(BinOp::Lt, ident("i"), ident("count")),
-        vec![
-            if_stmt(
-                bin(
-                    BinOp::Eq,
-                    call(ident("__c_qsort_key"), vec![ident("key"), ident("mode")]),
-                    call(
-                        ident("__c_qsort_key"),
-                        vec![index_expr(ident("arr"), ident("i")), ident("mode")],
+                    if_stmt(
+                        bin(BinOp::Lt, ident("order"), int_lit(0)),
+                        vec![set("high", ident("mid"))],
+                        Some(vec![set("low", bin(BinOp::Add, ident("mid"), int_lit(1)))]),
                     ),
-                ),
-                vec![stmt(StmtKind::Return(Some(ident("i"))))],
-                None,
+                ],
             ),
-            stmt(StmtKind::Expr(assign_expr(
-                ident("i"),
-                bin(BinOp::Add, ident("i"), int_lit(1)),
-            ))),
+            stmt(StmtKind::Return(Some(null_lit()))),
         ],
+    )
+}
+
+/// `__c_lfind(key, arr, count, size, cmp)` — linear search of an unsorted
+/// array; returns a pointer to the first element `cmp` reports equal, or null.
+fn c_lfind() -> Statement {
+    let probe = call(
+        ident("__c_sort_element"),
+        vec![ident("backing"), ident("size"), ident("i")],
     );
     function_stmt(
-        "__c_bsearch_index_auto",
-        vec!["arr", "count", "key", "mode"],
+        "__c_lfind",
+        vec!["key", "arr", "count", "size", "cmp"],
         vec![
+            var_decl_stmt("backing", call(ident("__c_sort_backing"), vec![ident("arr")])),
             var_decl_stmt("i", int_lit(0)),
-            loop_body,
-            stmt(StmtKind::Return(Some(int_lit(-1)))),
+            while_stmt(
+                bin(BinOp::Lt, ident("i"), ident("count")),
+                vec![
+                    if_stmt(
+                        bin(
+                            BinOp::Eq,
+                            call(ident("cmp"), vec![ident("key"), probe.clone()]),
+                            int_lit(0),
+                        ),
+                        vec![stmt(StmtKind::Return(Some(probe)))],
+                        None,
+                    ),
+                    set("i", bin(BinOp::Add, ident("i"), int_lit(1))),
+                ],
+            ),
+            stmt(StmtKind::Return(Some(null_lit()))),
         ],
     )
 }

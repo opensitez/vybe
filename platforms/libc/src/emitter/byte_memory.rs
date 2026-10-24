@@ -225,3 +225,40 @@ mod span_proof_tests {
         }
     }
 }
+
+/// Stack: [address] -> [double]. `float` slots widen exactly to the double
+/// lane every C floating value is evaluated in.
+pub fn emit_float_load(chunks: &mut [Chunk], current: usize, single: bool, line: u32) {
+    let c = &mut chunks[current];
+    if single {
+        c.emit_op(Op::F32_LOAD, line);
+        c.emit_op(Op::F64_PROMOTE_F32, line);
+    } else {
+        c.emit_op(Op::F64_LOAD, line);
+    }
+}
+
+/// Stack: [address, value] -> [stored value]. A `float` store rounds once,
+/// and the assignment yields that rounded value.
+pub fn emit_float_store(chunks: &mut [Chunk], current: usize, single: bool, line: u32) {
+    let c = &mut chunks[current];
+    let value = c.alloc_scratch(1);
+    let addr = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, value, line);
+    c.emit_op_u16(Op::LOCAL_SET, addr, line);
+    if single {
+        c.emit_op_u16(Op::LOCAL_GET, value, line);
+        c.emit_op(Op::F32_DEMOTE_F64, line);
+        c.emit_op(Op::F64_PROMOTE_F32, line);
+        c.emit_op_u16(Op::LOCAL_SET, value, line);
+        c.emit_op_u16(Op::LOCAL_GET, addr, line);
+        c.emit_op_u16(Op::LOCAL_GET, value, line);
+        c.emit_op(Op::F32_DEMOTE_F64, line);
+        c.emit_op(Op::F32_STORE, line);
+    } else {
+        c.emit_op_u16(Op::LOCAL_GET, addr, line);
+        c.emit_op_u16(Op::LOCAL_GET, value, line);
+        c.emit_op(Op::F64_STORE, line);
+    }
+    c.emit_op_u16(Op::LOCAL_GET, value, line);
+}

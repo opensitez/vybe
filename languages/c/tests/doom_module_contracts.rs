@@ -87,8 +87,7 @@ fn complete_doom_has_no_dynamic_equality_and_validates_as_wasm() {
     );
     drop(compiled);
     let validation_started = std::time::Instant::now();
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .unwrap();
     audit_serialized_equality(&wasm);
     eprintln!(
@@ -98,40 +97,23 @@ fn complete_doom_has_no_dynamic_equality_and_validates_as_wasm() {
 }
 
 fn audit_serialized_equality(wasm: &[u8]) {
+    let module = vybe_platform_wasm::inspection::CoreModule::new(wasm).unwrap();
     let mut abstract_imports = Vec::new();
-    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
-        match payload.unwrap() {
-            wasmparser::Payload::ImportSection(section) => {
-                for import in section.into_imports() {
-                    let import = import.unwrap();
-                    if matches!(
-                        import.ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                    ) {
-                        abstract_imports.push(
-                            import.module == "ecma:value"
-                                && matches!(import.name, "abstractEq" | "abstractNe"),
-                        );
-                    }
-                }
-            }
-            wasmparser::Payload::CodeSectionEntry(body) => {
-                let mut reader = body.get_operators_reader().unwrap();
-                while !reader.eof() {
-                    let offset = reader.original_position();
-                    if let wasmparser::Operator::Call { function_index }
-                    | wasmparser::Operator::ReturnCall { function_index }
-                    | wasmparser::Operator::RefFunc { function_index } = reader.read().unwrap()
-                    {
-                        assert_ne!(
-                            abstract_imports.get(function_index as usize),
-                            Some(&true),
-                            "abstract equality call/reference in serialized Doom WASM at {offset}"
-                        );
-                    }
-                }
-            }
-            _ => {}
+    module.imports(|module, name, ty| {
+        if matches!(ty, vybe_platform_wasm::inspection::ImportType::Func { .. }) {
+            abstract_imports.push(module == "ecma:value"
+                && matches!(name, "abstractEq" | "abstractNe"));
         }
-    }
+        Ok(())
+    }).unwrap();
+    module.function_bodies(|body| {
+        for instruction in body.instructions()? {
+            let instruction = instruction?;
+            if let Some(index) = instruction.function_index() {
+                assert_ne!(abstract_imports.get(index as usize), Some(&true),
+                    "abstract equality call/reference in serialized WASM at {}", instruction.offset);
+            }
+        }
+        Ok(())
+    }).unwrap();
 }

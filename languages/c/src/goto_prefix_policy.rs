@@ -4,12 +4,8 @@ use std::collections::{HashMap, HashSet};
 use vybe_ast::{BindingPattern, ExprKind, LambdaBody, Span, Statement, StmtKind};
 use crate::goto_lowering::{contains_unprepared_control, lower_function_gotos, LowerError};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Path { Unchanged, PrefixGraph, ProvenTopTargets }
-
 pub(crate) struct Prepared {
     pub(crate) body: Vec<Statement>,
-    pub(crate) path: Path,
 }
 
 pub(crate) struct Rejected {
@@ -22,7 +18,7 @@ pub(crate) struct Rejected {
 pub(crate) fn prepare_owned(body: Vec<Statement>, reserved_names: &HashSet<String>) -> Result<Prepared, Rejected> {
     if !contains_unprepared_control(&body, false) {
         return match crate::goto_lowering::validate_callable_control(&body) {
-            Ok(()) => Ok(Prepared { body, path: Path::Unchanged }),
+            Ok(()) => Ok(Prepared { body }),
             Err(error) => Err(Rejected { body, error }),
         };
     }
@@ -108,9 +104,8 @@ impl Flow {
 /// graph. Legacy fallback is permitted only after an independent full-function
 /// target proof, never because its output happened to erase an unknown goto.
 pub(crate) fn prepare(body: &[Statement], reserved_names: &HashSet<String>) -> Result<Prepared, LowerError> {
-    let has_goto = contains_unprepared_control(body, false);
     let graph_error = match lower_function_gotos(body, &HashSet::new(), reserved_names) {
-        Ok(body) => return Ok(Prepared { body, path: if has_goto { Path::PrefixGraph } else { Path::Unchanged } }),
+        Ok(body) => return Ok(Prepared { body }),
         Err(error) => error,
     };
     let mut flow = Flow::default();
@@ -142,7 +137,7 @@ pub(crate) fn prepare(body: &[Statement], reserved_names: &HashSet<String>) -> R
     if contains_unprepared_control(&lowered, false) {
         return Err(fail(&graph_error.span, "legacy C goto lowering left unresolved goto statements"));
     }
-    Ok(Prepared { body: lowered, path: Path::ProvenTopTargets })
+    Ok(Prepared { body: lowered })
 }
 
 #[cfg(test)]

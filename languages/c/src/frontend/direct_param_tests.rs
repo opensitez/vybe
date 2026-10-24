@@ -34,9 +34,6 @@ fn plain_parameters_own_shared_ordinary_ast_and_exact_specifier_anchors() {
             assert_eq!((value.specifiers.as_span().start(), value.specifiers.as_span().end(),
                 value.specifiers.as_str()), (reference_specifiers.as_span().start(),
                 reference_specifiers.as_span().end(), reference_specifiers.as_str()));
-            assert_eq!(value.declaration_span, Span { start: pair.as_span().start(), end: pair.as_span().end() });
-            let declarator = pair.clone().into_inner().find(|child| child.as_rule() == Rule::declarator).unwrap();
-            assert_eq!(value.declarator_span, Span { start: declarator.as_span().start(), end: declarator.as_span().end() });
             assert!(value.parameter.type_hint.is_none());
             assert!(value.parameter.default.is_none());
             let replay = take_plain_parameter(pair).unwrap();

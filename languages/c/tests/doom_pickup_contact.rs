@@ -12,8 +12,7 @@ fn normal_player_pickup_contact_preserves_health_caps_and_record_backing() {
         vybe_platform_wasm::WasmWriteOptions {
             include_vybe_metadata: false, include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm,
         &vybe_runtime::capabilities::Capabilities::all());

@@ -253,8 +253,7 @@ fn rewritten_stdio_hot_copy_has_no_dynamic_equality_in_main() {
                 include_name_section: true,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&wasm)
+        vybe_platform_wasm::validate_binary(&wasm)
             .unwrap();
         if let Some(dir) = std::env::var_os("C_STDIO_WASM_DIR") {
             std::fs::write(

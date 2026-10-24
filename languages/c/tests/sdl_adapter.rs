@@ -4,6 +4,8 @@
 //! are separate gates.
 //! `--nocapture inventory` prints each registered API's source-call fixtures
 //! and compatibility-stub status. Call presence is not a correctness claim.
+vybe_platform_web::browser_engine!(test_browser, "webcore", webcore);
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -119,8 +121,7 @@ fn validate(chunks: &[Chunk]) -> Result<(), String> {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    vybe_platform_wasm::validate_binary(&wasm)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -518,7 +519,7 @@ fn production_thread_receives_dom_keyboard_events() {
     }
 
     let _guard = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
-    vybe_platform_web::engine_select::choose(vybe_platform_web::engine_select::Engine::WebCore);
+    vybe_platform_web::engine_select::choose("webcore");
     let mut vm = runtime();
     let compiled = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .compile_path(&fixture("sdl_adapter_thread_keyboard"))

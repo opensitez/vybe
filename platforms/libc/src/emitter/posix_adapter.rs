@@ -2595,7 +2595,22 @@ fn obj(fields: Vec<(&str, Expression)>) -> Expression {
     ))
 }
 
+/// `array[index] = value` for a C `int` array: a linear address, a carray
+/// pointer, or a managed backing.
 fn array_slot_set(array: Expression, index: Expression, value: Expression) -> Expression {
+    let linear = expr(ExprKind::IsType {
+        expr: Box::new(array.clone()),
+        type_name: "number".into(),
+    });
+    let address = bin(BinOp::Add, array.clone(), bin(BinOp::Mul, index.clone(), int_lit(4)));
+    ternary(
+        linear,
+        call_expr(ident("__c_ptr_i32_store"), vec![address, value.clone()]),
+        array_slot_set_managed(array, index, value),
+    )
+}
+
+fn array_slot_set_managed(array: Expression, index: Expression, value: Expression) -> Expression {
     ternary(
         pointers::is_carray_ptr_kind(array.clone()),
         pointers::carray_deref_write(
@@ -3016,10 +3031,36 @@ pub fn read(fd: Expression, buf: Expression, count: Expression) -> Expression {
         index_expr(ident("__c_fd_content_by_fd"), fd.clone()),
         str_lit(""),
     );
-    let read_ok = expr(ExprKind::Sequence(vec![
-        assign_expr(buf, data),
-        count.clone(),
+    // A linear buffer receives min(count, available) bytes, the read's result.
+    let linear = expr(ExprKind::IsType {
+        expr: Box::new(buf.clone()),
+        type_name: "number".into(),
+    });
+    let available = ident("__c_read_data");
+    let copied = ident("__c_read_count");
+    let linear_read = expr(ExprKind::Sequence(vec![
+        assign_expr(available.clone(), data.clone()),
+        assign_expr(copied.clone(), ternary(
+            bin(BinOp::Lt, member(available.clone(), "length"), count.clone()),
+            member(available.clone(), "length"),
+            count.clone(),
+        )),
+        call_expr(ident("__c_string_byte_copy"), vec![buf.clone(), available, copied.clone()]),
+        copied,
     ]));
+    let assignable = matches!(
+        buf.kind,
+        ExprKind::Ident(_) | ExprKind::Index { .. } | ExprKind::Member { .. }
+    );
+    let read_ok = if assignable {
+        ternary(
+            linear,
+            linear_read,
+            expr(ExprKind::Sequence(vec![assign_expr(buf, data), count.clone()])),
+        )
+    } else {
+        linear_read
+    };
     ternary(
         nullish(index_expr(ident("__c_fd_nonblock"), fd.clone()), int_lit(0)),
         int_lit(-1),
@@ -4079,10 +4120,10 @@ pub fn getaddrinfo(
 pub fn getnameinfo(host: Expression, serv: Expression) -> Expression {
     let mut seq = Vec::new();
     if !matches!(host.kind, ExprKind::Lit(Literal::Null)) {
-        seq.push(assign_expr(arg_target(host), str_lit("127.0.0.1")));
+        seq.push(crate::emitter::build::write_c_string(arg_target(host), str_lit("127.0.0.1")));
     }
     if !matches!(serv.kind, ExprKind::Lit(Literal::Null)) {
-        seq.push(assign_expr(arg_target(serv), str_lit("80")));
+        seq.push(crate::emitter::build::write_c_string(arg_target(serv), str_lit("80")));
     }
     seq.push(int_lit(0));
     expr(ExprKind::Sequence(seq))

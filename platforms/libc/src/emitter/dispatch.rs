@@ -341,6 +341,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::byte_memory::emit_copy_column(chunks, current, line);
             true
         }
+        "libc.memory.f64_load" | "libc.memory.f32_load" => {
+            super::byte_memory::emit_float_load(chunks, current, name.ends_with("f32_load"), line);
+            true
+        }
+        "libc.memory.f64_store" | "libc.memory.f32_store" => {
+            super::byte_memory::emit_float_store(chunks, current, name.ends_with("f32_store"), line);
+            true
+        }
         "libc.memory.copy_column16" => {
             super::byte_memory::emit_copy_column_16(chunks, current, line);
             true

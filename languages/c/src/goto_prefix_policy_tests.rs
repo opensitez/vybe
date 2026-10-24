@@ -19,7 +19,6 @@ fn prefix_graph_admits_unmoved_nonscalar_prefix_without_any_binding_grants() {
         then_body: vec![label("nested"), stmt(StmtKind::Return(Some(number(0))))],
         elifs: Vec::new(), else_body: None })];
     let result = prepare(&body, &HashSet::new()).unwrap();
-    assert_eq!(result.path, Path::PrefixGraph);
     assert_eq!(format!("{:?}", result.body[0]), format!("{prefix:?}"));
     assert!(!contains_unprepared_control(&result.body, false));
 }
@@ -29,7 +28,6 @@ fn late_declaration_uses_legacy_only_when_every_destination_is_top_level() {
     let body = vec![go("after"), declaration("late", "int"), label("after"),
         stmt(StmtKind::Return(Some(number(0))))];
     let result = prepare(&body, &HashSet::new()).unwrap();
-    assert_eq!(result.path, Path::ProvenTopTargets);
     assert!(!contains_unprepared_control(&result.body, false));
 }
 
@@ -59,7 +57,6 @@ fn missing_duplicate_opaque_and_colliding_legacy_targets_reject() {
 fn no_goto_remains_identical_but_does_not_hide_expression_owned_control() {
     let body = vec![declaration("record", "Record"), stmt(StmtKind::Return(Some(number(0))))];
     let result = prepare(&body, &HashSet::new()).unwrap();
-    assert_eq!(result.path, Path::Unchanged);
     assert_eq!(format!("{:?}", result.body), format!("{body:?}"));
     let body = vec![stmt(StmtKind::Return(Some(vybe_ast::Expression::new(ExprKind::Lambda {
         params: Vec::new(), body: LambdaBody::Block(vec![go("hidden"), label("hidden")]),

@@ -126,6 +126,60 @@ fn insertion_redefinition_removal_and_nested_restoration_invalidate_all_entries(
 }
 
 #[test]
+fn absent_removal_preserves_cached_entries_and_replacement_work() {
+    let mut walker = Walker::default();
+    walker.insert_typedef_scalar_alias("T".into(), "int".into());
+    assert_eq!(
+        walker.resolve_typedef_scalar_aliases("const T *"),
+        "const int *"
+    );
+    let bytes = walker.typedef_scalar_memo.borrow().bytes;
+
+    walker.remove_typedef_scalar_alias("Record");
+    {
+        let memo = walker.typedef_scalar_memo.borrow();
+        assert_eq!(memo.values.len(), 1);
+        assert_eq!(memo.bytes, bytes);
+    }
+    assert_eq!(
+        walker.resolve_typedef_scalar_aliases("const T *"),
+        "const int *"
+    );
+    {
+        let memo = walker.typedef_scalar_memo.borrow();
+        assert_eq!(memo.hits, 1);
+        assert_eq!(memo.misses, 1);
+        assert_eq!(memo.replacement_passes, 1);
+    }
+
+    walker.remove_typedef_scalar_alias("T");
+    assert!(walker.typedef_scalar_memo.borrow().values.is_empty());
+    assert_eq!(walker.typedef_scalar_memo.borrow().bytes, 0);
+    assert_eq!(
+        walker.resolve_typedef_scalar_aliases("const T *"),
+        "const T *"
+    );
+}
+
+#[test]
+fn same_target_redefinition_still_invalidates_when_equal_length_order_changes() {
+    let mut walker = Walker::default();
+    walker.insert_typedef_scalar_alias("A".into(), "B".into());
+    walker.insert_typedef_scalar_alias("B".into(), "int".into());
+    assert_eq!(walker.resolve_typedef_scalar_aliases("A"), "int");
+    assert_eq!(walker.resolve_typedef_scalar_aliases("A"), "int");
+
+    // Reinsertion moves A after B, so its replacement is no longer rescanned by B.
+    walker.insert_typedef_scalar_alias("A".into(), "B".into());
+    assert!(walker.typedef_scalar_memo.borrow().values.is_empty());
+    assert_eq!(walker.resolve_typedef_scalar_aliases("A"), "B");
+    assert_eq!(
+        walker.resolve_typedef_scalar_aliases("A"),
+        uncached(&walker, "A")
+    );
+}
+
+#[test]
 fn alias_target_changes_invalidate_dependent_cached_spellings() {
     let mut walker = Walker::default();
     walker.insert_typedef_scalar_alias("Outer".into(), "Inner".into());
@@ -179,13 +233,11 @@ fn memo_retention_is_bounded_by_entry_count_and_text_bytes() {
     }
     let oversized = "q".repeat(TYPEDEF_SCALAR_MEMO_BYTES + 1);
     assert_eq!(walker.resolve_typedef_scalar_aliases(&oversized), oversized);
-    assert!(
-        !walker
-            .typedef_scalar_memo
-            .borrow()
-            .values
-            .contains_key(&oversized)
-    );
+    assert!(!walker
+        .typedef_scalar_memo
+        .borrow()
+        .values
+        .contains_key(&oversized));
     walker.insert_typedef_scalar_alias("T".into(), "q".repeat(TYPEDEF_SCALAR_MEMO_BYTES + 1));
     assert_eq!(
         walker.resolve_typedef_scalar_aliases("T").len(),

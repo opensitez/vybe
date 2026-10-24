@@ -1404,8 +1404,7 @@ mod tests {
             });
         let written = started.elapsed();
         eprintln!("complete_standard_wasm_phase serialized elapsed={written:?} bytes={}", bytes.len());
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         unit_compatibility::assert_no_dynamic_equality(&chunks, &bytes);
         if let Some(output) = std::env::var_os("VYBE_C_FRONTEND_WASM_ARTIFACT") {
             std::fs::write(output, &bytes).unwrap();

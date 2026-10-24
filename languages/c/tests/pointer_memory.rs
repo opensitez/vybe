@@ -42,8 +42,7 @@ fn check(case: u8) {
             include_name_section: true,
         },
     );
-    let validation = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    let validation = vybe_platform_wasm::validate_binary(&wasm)
         .map(|_| ())
         .map_err(|error| error.to_string());
     let execution = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
@@ -115,8 +114,7 @@ fn memchr_preserves_interior_views_and_unsigned_bytes() {
             include_name_section: true,
         },
     );
-    let validation = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
+    let validation = vybe_platform_wasm::validate_binary(&wasm)
         .map(|_| ())
         .map_err(|error| error.to_string());
     vm.record_runtime_perf(true);
@@ -172,8 +170,7 @@ fn memchr_linear_zero_count_and_access_trap() {
                 include_name_section: true,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&wasm)
+        vybe_platform_wasm::validate_binary(&wasm)
             .unwrap();
         let execution =
             vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm).run_compiled(compiled);

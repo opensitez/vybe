@@ -126,8 +126,7 @@ fn column_emission_validates_and_runs_without_metadata() {
                 include_name_section: true,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         assert_eq!(runtime().run(chunks).unwrap().as_i32(), 0, "{dump}");
         let reloaded = vybe_platform_wasm::read_wasm(&bytes).unwrap();

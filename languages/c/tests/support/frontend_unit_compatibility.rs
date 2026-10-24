@@ -138,8 +138,7 @@ pub(super) fn execute_standard_wasm_programs<'a>(
             );
             assert_eq!(bytes, streamed_bytes, "incremental emission: {source}");
             assert_no_dynamic_equality(&streamed, &streamed_bytes);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
             assert_no_dynamic_equality(&chunks, &bytes);
             if let Some(expected) = &baseline {
@@ -192,37 +191,23 @@ pub(super) fn assert_no_dynamic_equality(chunks: &[vybe_runtime::Chunk], bytes: 
             offset = next;
         }
     }
+    let module = vybe_platform_wasm::inspection::CoreModule::new(bytes).unwrap();
     let mut abstract_imports = Vec::new();
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        match payload.unwrap() {
-            wasmparser::Payload::ImportSection(section) => {
-                for import in section.into_imports() {
-                    let import = import.unwrap();
-                    if matches!(
-                        import.ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                    ) {
-                        abstract_imports.push(
-                            import.module == "ecma:value"
-                                && matches!(import.name, "abstractEq" | "abstractNe"),
-                        );
-                    }
-                }
-            }
-            wasmparser::Payload::CodeSectionEntry(body) => {
-                let mut operators = body.get_operators_reader().unwrap();
-                while !operators.eof() {
-                    match operators.read().unwrap() {
-                        wasmparser::Operator::Call { function_index }
-                        | wasmparser::Operator::ReturnCall { function_index }
-                        | wasmparser::Operator::RefFunc { function_index } => {
-                            assert_ne!(abstract_imports.get(function_index as usize), Some(&true));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
+    module.imports(|module, name, ty| {
+        if matches!(ty, vybe_platform_wasm::inspection::ImportType::Func { .. }) {
+            abstract_imports.push(module == "ecma:value"
+                && matches!(name, "abstractEq" | "abstractNe"));
         }
-    }
+        Ok(())
+    }).unwrap();
+    module.function_bodies(|body| {
+        for instruction in body.instructions()? {
+            let instruction = instruction?;
+            if let Some(index) = instruction.function_index() {
+                assert_ne!(abstract_imports.get(index as usize), Some(&true),
+                    "abstract equality call/reference in serialized WASM at {}", instruction.offset);
+            }
+        }
+        Ok(())
+    }).unwrap();
 }

@@ -62,8 +62,7 @@ fn finish_string_kernel(chunks: &mut Vec<Chunk>) {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
 }
 
 #[test]
@@ -180,8 +179,7 @@ fn string_linear_copy_debug_instruction_workloads() {
                     include_vybe_metadata: false,
                     include_name_section: true,
                 });
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes).unwrap();
+            vybe_platform_wasm::validate_binary(&bytes).unwrap();
             let address = vm.run(chunks).unwrap().as_i32() as usize;
             let count = report.lock().unwrap().live.instructions.load(Ordering::Relaxed);
             eprintln!("libc linear string copy: strdup={duplicate}, length={length}, instructions={count}");
@@ -231,8 +229,7 @@ fn existing_copy_fill_realloc_and_sdl_tick_paths_remain_valid() {
                 include_vybe_metadata: false,
                 include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
             .run_compiled(compiled).unwrap();
         assert_eq!(vm.pending_exit_code, 0, "{name}");
@@ -252,8 +249,7 @@ fn computed_string_copy_destinations_preserve_pointer_results() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled).unwrap();
     assert_eq!(vm.pending_exit_code, 0);
@@ -279,8 +275,7 @@ fn sdl_bulk_blit_preserves_overlap_bytes_and_conversion_fallbacks() {
                 include_vybe_metadata: false,
                 include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&wasm).unwrap();
+        vybe_platform_wasm::validate_binary(&wasm).unwrap();
         vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
             .run_compiled(compiled).unwrap();
         assert_eq!(vm.pending_exit_code, 0, "{name}");
@@ -318,8 +313,7 @@ fn column_bulk_preserves_forward_aliasing_and_unsigned_bytes() {
                 include_vybe_metadata: false,
                 include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         let mut vm = runtime();
         assert_eq!(vm.run(chunks).unwrap().as_i32(), 0);
         vm.memory.with_buffer(|bytes| assert_eq!(&bytes[..128], &expected));

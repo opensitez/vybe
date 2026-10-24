@@ -14,9 +14,7 @@ fn nested_command_array_assignment_preserves_linear_player_command() {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-        .unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let mut vm = vybe_runtime::VM::new();
     vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
     vm.run(chunks).unwrap();

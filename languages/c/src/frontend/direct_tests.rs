@@ -2,6 +2,12 @@ use super::*;
 use grameo::{CompileOptions, CompiledGrammar, MatchOptions, ParseError, engine};
 use std::sync::LazyLock;
 
+/// Read an initializer through a lease, leaving the walk's first owned value.
+fn with_initializer_list<T>(pair: &Pair<'_, Rule>, read: impl FnOnce(&Expression) -> T) -> Option<T> {
+    let lease = lease_initializer_list(pair)?;
+    Some(read(lease.as_ref()))
+}
+
 #[cfg(unix)]
 fn cpu_ns() -> u128 {
     let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
@@ -553,7 +559,7 @@ fn direct_plain_declarator_public_backends_execute_identical_standard_wasm() {
         let chunks = vybe_compiler::primitives::Compiler::with_profile(profile).compile(&module).unwrap();
         let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
             vybe_platform_wasm::WasmWriteOptions { include_vybe_metadata: false, include_name_section: true });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         if let Some(expected) = &baseline { assert_eq!(&bytes, expected, "backend {index}"); }
         else { baseline = Some(bytes); }
         let mut vm = vybe_runtime::VM::new();
@@ -1049,8 +1055,7 @@ fn direct_initializer_numeric_prefix_fixture_executes_identical_standard_wasm() 
             vybe_platform_wasm::WasmWriteOptions {
                 include_vybe_metadata: false, include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         if let Some(expected) = &baseline { assert_eq!(&bytes, expected); }
         else { baseline = Some(bytes); }
         let mut vm = vybe_runtime::VM::new();
@@ -1257,39 +1262,6 @@ fn direct_initializer_read_lease_keeps_first_ast_and_respects_reentrant_invalida
 }
 
 #[test]
-fn direct_initializer_replay_observer_counts_constructor_work_not_handoffs() {
-    thread_local! {
-        static WORK: std::cell::Cell<ReplayWork> = const { std::cell::Cell::new(
-            ReplayWork { literals: 0, prefixes: 0, arrays: 0 }) };
-    }
-    let source = "int a[3]={-1,+2,~3};";
-    let build = || build_captures(source, true, |builder|
-        engine::build_capture_program(&*GRAMMAR, "program", source, MatchOptions::default(), builder));
-    with_replay_observer(|work| WORK.with(|slot| {
-        let old = slot.get();
-        slot.set(ReplayWork { literals: old.literals + work.literals,
-            prefixes: old.prefixes + work.prefixes, arrays: old.arrays + work.arrays });
-    }), || with_cache_scope(|| {
-        let list = lists(build().unwrap().into_typed_pairs()).remove(0);
-        with_initializer_list(&list, |_| ()).unwrap();
-        take_initializer_list(&list).unwrap();
-        assert_eq!(WORK.with(|slot| slot.get()), ReplayWork::default(),
-            "lease and first move must not reconstruct literals");
-        take_initializer_list(&list).unwrap();
-        assert_eq!(WORK.with(|slot| slot.get()), ReplayWork { literals: 3, prefixes: 3, arrays: 1 });
-        take_initializer_list(&list).unwrap();
-        assert_eq!(WORK.with(|slot| slot.get()), ReplayWork { literals: 6, prefixes: 6, arrays: 2 });
-    }));
-    with_cache_scope(|| {
-        let list = lists(build().unwrap().into_typed_pairs()).remove(0);
-        take_initializer_list(&list).unwrap();
-        take_initializer_list(&list).unwrap();
-    });
-    assert_eq!(WORK.with(|slot| slot.get()), ReplayWork { literals: 6, prefixes: 6, arrays: 2 },
-        "observer must not escape its optional profile scope");
-}
-
-#[test]
 fn direct_initializer_sparse_undo_restores_nested_ownership_anchors() {
     let source = "{{1},2,{3}}";
     let mut builder = Direct::new(source);
@@ -1337,10 +1309,10 @@ fn direct_initializer_rollback_and_budget_errors_match_capture_reference() {
             match (control, actual) {
                 (Err(expected), Err(actual)) => {
                     assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
-                    assert_eq!(builder.into_initializers().len(), 0,
+                    assert_eq!(builder.into_initializers().entries.len(), 0,
                         "failed parent published a completed child");
                 }
-                (Ok(_), Ok(_)) => assert!(builder.into_initializers().len() > 0),
+                (Ok(_), Ok(_)) => assert!(builder.into_initializers().entries.len() > 0),
                 _ => panic!("capture/direct acceptance diverged: {source}, budget={max_steps}"),
             }
         }
@@ -1385,8 +1357,7 @@ fn direct_initializer_owned_nodes_match_complete_module_and_execute_standard_was
             vybe_platform_wasm::WasmWriteOptions {
                 include_vybe_metadata: false, include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         let mut vm = vybe_runtime::VM::new();
         vybe_runtime::init_all_registered(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
         vm.run(chunks).unwrap();

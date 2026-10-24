@@ -21,8 +21,7 @@ fn run_fixture_with_write_count(name: &str) -> (i32, String, usize) {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     let output = Arc::new(Mutex::new(Vec::new()));
     let captured = output.clone();

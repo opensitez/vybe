@@ -14,8 +14,7 @@ fn messagebox_constants_are_module_definitions_after_standard_wasm_reload() {
                 vybe_platform_wasm::WasmWriteOptions {
                     include_vybe_metadata: false, include_name_section: true,
                 });
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes).unwrap();
+            vybe_platform_wasm::validate_binary(&bytes).unwrap();
             let decoded = vybe_platform_wasm::read_wasm(&bytes).unwrap();
             assert!(!decoded.iter().flat_map(|chunk| &chunk.global_imports)
                 .any(|import| import.name.starts_with("SDL_MESSAGEBOX_")), "{header}");

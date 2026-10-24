@@ -84,8 +84,7 @@ int main(void) {
         assert!(!compiled.chunks.iter().any(|c| c.name == name));
     }
     let native = vybe_platform_wasm::write_wasm(&compiled.chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&native)
+    vybe_platform_wasm::validate_binary(&native)
         .unwrap();
     vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm)
         .run_compiled(compiled)

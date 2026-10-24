@@ -275,14 +275,36 @@ pub fn regfree() -> Expression {
 
 /// `regerror(errcode, &preg, errbuf, errbuf_size)` → write the standard message
 /// into `errbuf`, return its length + 1 (size including the NUL, per POSIX).
-pub fn regerror(errcode: Expression, errbuf_lval: Expression) -> Expression {
-    let store = assign_expr(
-        errbuf_lval.clone(),
-        call_expr(ident("__c_regerror_msg"), vec![errcode]),
+/// `regerror(code, preg, buf, size)`: write at most `size - 1` message bytes
+/// and a terminator through `buf` (nothing when `size` is 0) and yield the
+/// full message size including its terminator.
+pub fn regerror(errcode: Expression, errbuf: Expression, size: Expression) -> Expression {
+    let message = ident("__c_regerror_text");
+    let truncated = call_expr(
+        member(message.clone(), "substring"),
+        vec![int_lit(0), bin(BinOp::Sub, size.clone(), int_lit(1))],
     );
+    let through_pointer = bin(
+        BinOp::Or,
+        expr(ExprKind::IsType { expr: Box::new(errbuf.clone()), type_name: "number".into() }),
+        vybe_compiler::primitives::pointers::is_carray_ptr_kind(errbuf.clone()),
+    );
+    let write = expr(ExprKind::Ternary {
+        cond: Box::new(through_pointer),
+        then: Box::new(call_expr(
+            ident("__libc_strncpy_carray"),
+            vec![errbuf.clone(), truncated.clone(), size.clone()],
+        )),
+        else_: Box::new(assign_expr(errbuf, truncated)),
+    });
     expr(ExprKind::Sequence(vec![
-        store,
-        bin(BinOp::Add, member(errbuf_lval, "length"), int_lit(1)),
+        assign_expr(message.clone(), call_expr(ident("__c_regerror_msg"), vec![errcode])),
+        expr(ExprKind::Ternary {
+            cond: Box::new(bin(BinOp::Gt, size, int_lit(0))),
+            then: Box::new(write),
+            else_: Box::new(int_lit(0)),
+        }),
+        bin(BinOp::Add, member(message, "length"), int_lit(1)),
     ]))
 }
 
