@@ -246,6 +246,37 @@ pub enum ResourceRep {
     I64,
 }
 
+/// The four outeraliassort namespaces, not the larger set of export sorts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentOuterAliasKind {
+    CoreModule,
+    CoreType,
+    Type,
+    Component,
+}
+
+/// `count == 0` selects the current scope; `index` belongs to `kind`'s namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComponentOuterAlias {
+    pub kind: ComponentOuterAliasKind,
+    pub count: u32,
+    pub index: u32,
+}
+
+impl ComponentBinaryDef {
+    pub fn normalized_outer_alias(&self) -> Option<ComponentOuterAlias> {
+        match self {
+            Self::AliasOuter(alias) => Some(*alias),
+            Self::CoreAliasOuterType { count, index } => Some(ComponentOuterAlias {
+                kind: ComponentOuterAliasKind::CoreType,
+                count: *count,
+                index: *index,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// Ordered definitions of a component binary. Core modules retain their
 /// validated binary form; their index space is separate from core instances.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -253,12 +284,62 @@ pub struct ComponentBinary {
     pub definitions: Vec<ComponentBinaryDef>,
 }
 
+#[path = "component_drop.rs"]
+mod component_drop;
+
+/// Ordered name metadata; duplicate kinds remain available for validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentNameAttribute {
+    Implements(String),
+    VersionSuffix(String),
+    ExternalId(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentExternalName {
+    pub name: String,
+    pub attributes: Vec<ComponentNameAttribute>,
+}
+
+impl From<String> for ComponentExternalName {
+    fn from(name: String) -> Self { Self { name, attributes: Vec::new() } }
+}
+impl From<&str> for ComponentExternalName {
+    fn from(name: &str) -> Self { name.to_owned().into() }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ComponentExternalNameRef<'a> {
+    pub name: &'a str,
+    pub attributes: &'a [ComponentNameAttribute],
+}
+impl ComponentExternalName {
+    pub fn as_ref(&self) -> ComponentExternalNameRef<'_> {
+        ComponentExternalNameRef { name: &self.name, attributes: &self.attributes }
+    }
+}
+impl<'a> From<&'a str> for ComponentExternalNameRef<'a> {
+    fn from(name: &'a str) -> Self { Self { name, attributes: &[] } }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentNamedItemRef {
+    pub name: ComponentExternalName,
+    pub kind: ComponentItemKind,
+    pub index: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComponentBinaryDef {
+    CoreType(ComponentCoreType),
+    AliasOuter(ComponentOuterAlias),
+    /// Compatibility constructor; use `normalized_outer_alias` when consuming.
+    CoreAliasOuterType { count: u32, index: u32 },
     InterfaceType {
         is_component: bool,
         declarations: Vec<ComponentInterfaceDecl>,
     },
+    /// Compatibility constructor; codecs and validation normalize to `CoreType`.
     CoreFuncType {
         params: Vec<ComponentCoreValType>,
         results: Vec<ComponentCoreValType>,
@@ -268,6 +349,8 @@ pub enum ComponentBinaryDef {
         data: Vec<u8>,
     },
     ValueType(ValSpec),
+    ValueLiteral { ty: ValSpec, payload: Vec<u8> },
+    Start { function: u32, args: Vec<u32>, results: u32 },
     FuncType {
         params: Vec<(String, ValSpec)>,
         result: Option<ValSpec>,
@@ -308,7 +391,7 @@ pub enum ComponentBinaryDef {
     CanonWaitableSetPoll { memory: u32 },
     CanonWaitableSetDrop,
     CanonWaitableJoin,
-    CanonContext { set: bool, ty: ComponentCoreValType, slot: u32 },
+    CanonContext { set: bool, ty: ComponentCoreValueType, slot: u32 },
     CanonTaskCancel,
     CanonSubtaskCancel { is_async: bool },
     CanonSubtaskDrop,
@@ -325,6 +408,18 @@ pub enum ComponentBinaryDef {
         type_index: u32,
         table_index: u32,
     },
+    CanonThreadSpawnRef {
+        shared: bool,
+        type_index: u32,
+    },
+    CanonThreadSpawnIndirect {
+        shared: bool,
+        type_index: u32,
+        table_index: u32,
+    },
+    CanonThreadAvailableParallelism {
+        shared: bool,
+    },
     ImportFunc {
         name: String,
         type_index: u32,
@@ -332,6 +427,16 @@ pub enum ComponentBinaryDef {
     Import {
         name: String,
         ty: ComponentInterfaceRef,
+    },
+    NamedImport {
+        name: ComponentExternalName,
+        ty: ComponentInterfaceRef,
+    },
+    NamedExport {
+        name: ComponentExternalName,
+        kind: ComponentItemKind,
+        index: u32,
+        ty: Option<ComponentInterfaceRef>,
     },
     ExportFunc {
         name: String,
@@ -345,6 +450,7 @@ pub enum ComponentBinaryDef {
         args: Vec<ComponentItemRef>,
     },
     InstanceFromExports(Vec<ComponentItemRef>),
+    NamedInstanceFromExports(Vec<ComponentNamedItemRef>),
     AliasInstanceExport {
         instance: u32,
         name: String,
@@ -380,11 +486,51 @@ pub enum ComponentBinaryDef {
 /// local to this body; outer aliases explicitly cross its lexical boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComponentInterfaceDecl {
+    CoreType(ComponentCoreType),
+    AliasOuterCoreType { count: u32, index: u32 },
     Type(Box<ComponentBinaryDef>),
     AliasOuterType { count: u32, index: u32 },
     AliasInstanceExport { instance: u32, name: String, kind: ComponentItemKind },
     Import { name: String, ty: ComponentInterfaceRef },
     Export { name: String, ty: ComponentInterfaceRef },
+    NamedImport { name: ComponentExternalName, ty: ComponentInterfaceRef },
+    NamedExport { name: ComponentExternalName, ty: ComponentInterfaceRef },
+}
+
+impl ComponentInterfaceDecl {
+    /// String-based constructors normalize to an empty attribute list.
+    pub fn external(&self) -> Option<(bool, ComponentExternalNameRef<'_>, &ComponentInterfaceRef)> {
+        match self {
+            Self::Import { name, ty } => Some((true, name.as_str().into(), ty)),
+            Self::Export { name, ty } => Some((false, name.as_str().into(), ty)),
+            Self::NamedImport { name, ty } => Some((true, name.as_ref(), ty)),
+            Self::NamedExport { name, ty } => Some((false, name.as_ref(), ty)),
+            _ => None,
+        }
+    }
+}
+
+impl ComponentBinaryDef {
+    pub fn external_name(&self) -> Option<(ComponentExternalNameRef<'_>, bool)> {
+        match self {
+            Self::ImportFunc { name, .. } | Self::ExportFunc { name, .. }
+            | Self::ExportType { name, .. } | Self::ExportCoreModule { name, .. } => Some((name.as_str().into(), false)),
+            Self::Import { name, ty } => Some((name.as_str().into(), matches!(ty, ComponentInterfaceRef::Instance(_)))),
+            Self::ExportInstance { name, .. } => Some((name.as_str().into(), true)),
+            Self::NamedImport { name, ty } => Some((name.as_ref(), matches!(ty, ComponentInterfaceRef::Instance(_)))),
+            Self::NamedExport { name, kind, .. } => Some((name.as_ref(), *kind == ComponentItemKind::Instance)),
+            _ => None,
+        }
+    }
+
+    pub fn normalized_core_type(&self) -> Option<std::borrow::Cow<'_, ComponentCoreType>> {
+        match self {
+            Self::CoreType(ty) => Some(std::borrow::Cow::Borrowed(ty)),
+            Self::CoreFuncType { params, results } => Some(std::borrow::Cow::Owned(
+                ComponentCoreType::scalar_function(params.clone(), results.clone()))),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,12 +538,14 @@ pub enum ComponentInterfaceRef {
     Module(u32),
     Func(u32),
     Value(ValSpec),
+    ValueEq(u32),
     TypeEq(u32),
     TypeSubResource,
     Component(u32),
     Instance(u32),
 }
 
+/// Scalar-only canonical signatures and compatibility constructors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComponentCoreValType {
     I32,
@@ -405,6 +553,149 @@ pub enum ComponentCoreValType {
     F32,
     F64,
     V128,
+}
+
+/// Full source grammar; indexed references resolve only in the scoped graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentCoreValueType {
+    Scalar(ComponentCoreValType),
+    Ref(ComponentCoreRefType),
+}
+
+impl ComponentCoreValueType {
+    pub const I32: Self = Self::Scalar(ComponentCoreValType::I32);
+    pub const I64: Self = Self::Scalar(ComponentCoreValType::I64);
+    pub const F32: Self = Self::Scalar(ComponentCoreValType::F32);
+    pub const F64: Self = Self::Scalar(ComponentCoreValType::F64);
+    pub const V128: Self = Self::Scalar(ComponentCoreValType::V128);
+
+    pub fn scalar(self) -> Option<ComponentCoreValType> {
+        match self {
+            Self::Scalar(value) => Some(value),
+            Self::Ref(_) => None,
+        }
+    }
+}
+
+impl From<ComponentCoreValType> for ComponentCoreValueType {
+    fn from(value: ComponentCoreValType) -> Self { Self::Scalar(value) }
+}
+
+/// Unresolved core source indices, never Runtime's one-based type handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentCoreHeapType {
+    Concrete(u32),
+    Abstract(ComponentCoreAbstractHeapType),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentCoreAbstractHeapType {
+    Func, Extern, Any, None, NoExtern, NoFunc, Eq, Struct, Array, I31,
+    Exn, NoExn, Cont, NoCont,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComponentCoreRefType {
+    pub heap: ComponentCoreHeapType,
+    pub nullable: bool,
+    pub exact: bool,
+    pub shared: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentCoreStorageType {
+    I8,
+    I16,
+    Value(ComponentCoreValueType),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentCoreFieldType {
+    pub storage: ComponentCoreStorageType,
+    pub mutable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentCoreCompositeType {
+    Func { params: Vec<ComponentCoreValueType>, results: Vec<ComponentCoreValueType> },
+    Struct(Vec<ComponentCoreFieldType>),
+    Array(ComponentCoreFieldType),
+    Cont(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentCoreSubtype {
+    pub final_: bool,
+    pub supertypes: Vec<u32>,
+    pub shared: bool,
+    pub describes: Option<u32>,
+    pub descriptor: Option<u32>,
+    pub composite: ComponentCoreCompositeType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentCoreRecType {
+    /// Explicit singleton and empty groups retain their recursive boundary.
+    pub explicit: bool,
+    pub types: Vec<ComponentCoreSubtype>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentCoreType {
+    Rec(ComponentCoreRecType),
+    Module(Vec<ComponentCoreModuleDecl>),
+}
+
+impl ComponentCoreType {
+    /// Section vector rows and type-space entries are different counts.
+    pub fn type_count(&self) -> Option<u32> {
+        match self {
+            Self::Rec(group) => u32::try_from(group.types.len()).ok(),
+            Self::Module(_) => Some(1),
+        }
+    }
+
+    pub fn scalar_function(params: Vec<ComponentCoreValType>, results: Vec<ComponentCoreValType>) -> Self {
+        Self::function(params.into_iter().map(Into::into).collect(),
+            results.into_iter().map(Into::into).collect())
+    }
+
+    pub fn function(params: Vec<ComponentCoreValueType>, results: Vec<ComponentCoreValueType>) -> Self {
+        Self::Rec(ComponentCoreRecType {
+            explicit: false,
+            types: vec![ComponentCoreSubtype {
+                final_: true, supertypes: Vec::new(), shared: false,
+                describes: None, descriptor: None,
+                composite: ComponentCoreCompositeType::Func { params, results },
+            }],
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentCoreLimits {
+    pub initial: u64,
+    pub maximum: Option<u64>,
+    pub shared: bool,
+    pub index64: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentCoreExternType {
+    Func { type_index: u32, exact: bool },
+    Table { element: ComponentCoreRefType, limits: ComponentCoreLimits },
+    Memory { limits: ComponentCoreLimits, page_size_log2: Option<u32> },
+    Global { value: ComponentCoreValueType, mutable: bool, shared: bool },
+    Tag(u32),
+}
+
+/// Order and every binder are retained, including aliases and recursive groups.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentCoreModuleDecl {
+    Type(ComponentCoreType),
+    AliasOuterType { count: u32, index: u32 },
+    Import { module: String, name: String, ty: ComponentCoreExternType },
+    Export { name: String, ty: ComponentCoreExternType },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

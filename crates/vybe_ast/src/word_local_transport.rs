@@ -5,6 +5,11 @@ pub enum WordLocalTransport {
     #[default]
     Boxed,
     ProvenW32,
+    /// Bindings the native-storage proof admits live in a physical local of
+    /// their DECLARED lane (the caller resolves width and signedness from the
+    /// declaration's type). Values box to the exact carrier only where they
+    /// cross the value ABI. Width is a type fact, so this policy names none.
+    ProvenNative,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

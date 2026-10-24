@@ -4583,6 +4583,23 @@ pub enum ShutdownOrder {
     ReverseRegistration,
 }
 
+/// The leaves of [`Directives::array_wrapper`]: `wrap` maps the storage a
+/// collection literal builds to the collection value (stack:
+/// `[storage] -> [value]`); `storage` maps a collection value to its storage
+/// for a read and `storage_mut` for a write, which first gives a shared value
+/// storage of its own (stack: `[value] -> [storage]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrayWrapper {
+    pub wrap: String,
+    pub storage: String,
+    pub storage_mut: String,
+    /// The wrapper's struct type and its fields. The compiler declares it as
+    /// the module's first type, index 1, so an emitter holding only a chunk
+    /// can still name it.
+    pub type_name: String,
+    pub fields: Vec<String>,
+}
+
 /// Program termination policy. Callback entries are normalized as
 /// `[callable, argument, ...]` in the declared registry, independent of source
 /// language spelling. Languages can choose registration order or stack order.
@@ -4635,6 +4652,11 @@ pub struct Directives {
     /// STORE behaviour, which is what every language but php wants.
     pub reference_binding: Option<PassBy>,
 
+    /// Select nominal runtime identity or the compatible type/protocol test.
+    /// Unstated policy preserves existing compatibility checks. A producer
+    /// selecting Nominal must supply registered runtime types, not guest tags.
+    pub type_test_mode: Option<TypeTestMode>,
+
     /// What does the argument to the language's TERMINATE builtin mean?
     ///
     /// Every language binds its own spelling to `common:control_flow.exit` on
@@ -4662,6 +4684,20 @@ pub struct Directives {
     /// Flush remaining output buffers at program termination. Module-only
     /// policy, disabled unless the source language explicitly requests it.
     pub flush_output_buffers: Option<bool>,
+
+    /// A host function (`module:name`) the program runs at termination after
+    /// its shutdown callbacks and before the final output flush — PHP's
+    /// end-of-request destructor pass. It receives one i32: whether the
+    /// program ends by an explicit exit with its calling frames still live.
+    /// Module-only policy, like `shutdown_callbacks`.
+    pub shutdown_finalizer: Option<String>,
+
+    /// Collection values are struct wrappers over their ECMA storage. Shared
+    /// collection paths call `storage` on a collection value before an ECMA
+    /// collection operation reads it and `storage_mut` before one writes it,
+    /// and `wrap` on the storage every collection literal builds. Both name `common:` leaves of the module's
+    /// profile. PHP declares the leaves of its `$PhpArray` type.
+    pub array_wrapper: Option<ArrayWrapper>,
 
     /// Can a SPREAD argument carry NAMES as well as positions?
     ///
@@ -4706,11 +4742,24 @@ pub struct Directives {
     /// non-variadic method call to omit runtime callable-shape probes.
     pub method_bindings_live: Option<bool>,
 
+    /// After a member call, write a value receiver back to its source place.
+    /// Fortran type-bound procedures opt in. Unstated policy inherits from an
+    /// enclosing directive frame; the module/root default is disabled.
+    /// Some(false) explicitly disables inherited writeback in a nested region.
+    pub member_receiver_writeback: Option<bool>,
+
     /// Whether unconditional source-declared function bindings can be replaced.
     /// None preserves live lookup. Some(false) permits a direct native call
     /// only with an independently completed, declaration-owned entry receipt.
     /// This says nothing about mutable function variables or foreign callables.
     pub declared_function_bindings_live: Option<bool>,
+
+    /// Does a bare identifier CALLEE name a function binding rather than a
+    /// variable's value? Some(true) states that functions and variables live
+    /// in separate namespaces and that a callee value held in a variable
+    /// reaches the compiler as a `CallableRef`, never as a bare `Ident`. Such
+    /// a callee carries no bound receiver and no callable designator.
+    pub bare_callee_names_function: Option<bool>,
 
     /// Invocation semantics for statically callable values. An unstated policy
     /// preserves legacy dispatch; it does not assume every function is a
@@ -5312,6 +5361,10 @@ pub enum CaseAlphabet {
 }
 
 impl Directives {
+    /// Effective member-call value-receiver writeback in this directive frame.
+    pub fn member_receiver_writeback(&self) -> bool {
+        self.member_receiver_writeback.unwrap_or(false)
+    }
     /// Effective W64 value transport; unstated policy preserves Number behavior.
     pub fn wide_integer_transport(&self) -> WideIntegerTransport {
         self.wide_integer_transport.unwrap_or_default()
@@ -5375,11 +5428,20 @@ impl Directives {
         if other.flush_output_buffers.is_some() {
             self.flush_output_buffers = other.flush_output_buffers;
         }
+        if other.shutdown_finalizer.is_some() {
+            self.shutdown_finalizer = other.shutdown_finalizer.clone();
+        }
+        if other.array_wrapper.is_some() {
+            self.array_wrapper = other.array_wrapper.clone();
+        }
         if other.array_storage.is_some() {
             self.array_storage = other.array_storage;
         }
         if other.reference_binding.is_some() {
             self.reference_binding = other.reference_binding;
+        }
+        if other.type_test_mode.is_some() {
+            self.type_test_mode = other.type_test_mode;
         }
         if other.variable_case.is_some() {
             self.variable_case = other.variable_case;
@@ -5470,8 +5532,14 @@ impl Directives {
         if other.method_bindings_live.is_some() {
             self.method_bindings_live = other.method_bindings_live;
         }
+        if other.member_receiver_writeback.is_some() {
+            self.member_receiver_writeback = other.member_receiver_writeback;
+        }
         if other.declared_function_bindings_live.is_some() {
             self.declared_function_bindings_live = other.declared_function_bindings_live;
+        }
+        if other.bare_callee_names_function.is_some() {
+            self.bare_callee_names_function = other.bare_callee_names_function;
         }
         if other.callable_invocation.is_some() {
             self.callable_invocation = other.callable_invocation;
@@ -5571,6 +5639,20 @@ pub enum WideIntegerTransport {
     /// Preserve all 64 integer bits using an exact value carrier at ABI joins,
     /// bindings and calls. This does not turn raw Wasm i64s into boxed values.
     Exact,
+    /// [`Self::Exact`], with the carrier chosen by the value alone: a safe
+    /// integer (|v| <= 2^53 - 1, and an unsigned v < 2^53) is a Number, every
+    /// other word a BigInt. A value whose producers all box it is therefore
+    /// carried the same way by each, so number-typed consumers of a language's
+    /// ordinary integers keep working. Untyped BigInt arithmetic can still
+    /// yield a small BigInt; the word unboxes the same from either carrier.
+    Compact,
+}
+
+impl WideIntegerTransport {
+    /// Whether every 64-bit word crosses the value ABI unchanged.
+    pub fn preserves_all_bits(self) -> bool {
+        matches!(self, Self::Exact | Self::Compact)
+    }
 }
 
 /// What a shift or rotate count outside `[0, width)` does — see
@@ -5586,6 +5668,15 @@ pub enum ShiftOverflow {
     /// `ISHFT`/`SHIFTL`/`SHIFTR`: every bit has been shifted out, so nothing
     /// remains.
     Zero,
+}
+
+/// The identity contract of an explicit type test, independent of language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeTestMode {
+    /// Preserve registered-type, declared-name and collection compatibility.
+    Compatible,
+    /// Test registered non-null runtime subtype identity only.
+    Nominal,
 }
 
 /// How far a directive statement's effect reaches — itself a language quirk,
@@ -7298,5 +7389,36 @@ mod declared_function_binding_policy_tests {
         child.overlay(&Directives { declared_function_bindings_live: Some(true), ..Default::default() });
         assert_eq!(child.declared_function_bindings_live, Some(true));
         assert_eq!(parent.declared_function_bindings_live, Some(false));
+    }
+}
+
+#[cfg(test)]
+mod type_test_mode_tests {
+    use super::{Directives, TypeTestMode};
+
+    #[test]
+    fn unstated_type_test_policy_inherits() {
+        let mut directives = Directives {
+            type_test_mode: Some(TypeTestMode::Nominal),
+            ..Default::default()
+        };
+        directives.overlay(&Directives::default());
+        assert_eq!(directives.type_test_mode, Some(TypeTestMode::Nominal));
+        assert!(!directives.is_empty());
+    }
+
+    #[test]
+    fn explicit_compatible_override_preserves_parent() {
+        let parent = Directives {
+            type_test_mode: Some(TypeTestMode::Nominal),
+            ..Default::default()
+        };
+        let mut child = parent.clone();
+        child.overlay(&Directives {
+            type_test_mode: Some(TypeTestMode::Compatible),
+            ..Default::default()
+        });
+        assert_eq!(child.type_test_mode, Some(TypeTestMode::Compatible));
+        assert_eq!(parent.type_test_mode, Some(TypeTestMode::Nominal));
     }
 }
