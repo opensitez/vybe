@@ -210,10 +210,6 @@ pub struct LanguageProfile {
     /// than an error or a concatenation.
     pub array_arithmetic_elementwise: bool,
 
-    /// A method call on a value-type receiver writes the receiver back to its
-    /// source expression afterwards, so mutations inside the call are visible.
-    pub member_call_writes_receiver_back: bool,
-
     /// `TypeName(args)` with no `new` constructs a value-type instance, when the
     /// name is a declared type and not shadowed by a local binding.
     pub bare_name_constructs_value_type: bool,
@@ -1463,10 +1459,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("array_arithmetic_elementwise")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let member_call_writes_receiver_back = compiler
-        .get("member_call_writes_receiver_back")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let bare_name_constructs_value_type = compiler
         .get("bare_name_constructs_value_type")
         .and_then(|v| v.as_bool())
@@ -2447,7 +2439,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         array_bounds_declare_fixed_shape,
         out_params_default_initialized,
         array_arithmetic_elementwise,
-        member_call_writes_receiver_back,
         bare_name_constructs_value_type,
         interface_block_is_generic_alias,
         integer_cast_widths,

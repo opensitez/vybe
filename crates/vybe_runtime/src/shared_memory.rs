@@ -221,6 +221,10 @@ impl SharedMemory {
         self.max_pages = max_pages;
     }
 
+    pub(crate) fn max_pages(&self) -> Option<usize> {
+        self.max_pages
+    }
+
     pub fn len(&self) -> usize {
         self.buffer.lock().unwrap().len()
     }
@@ -549,6 +553,19 @@ impl SharedMemory {
     pub fn with_buffer_mut<R>(&self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
         let mut buf = self.buffer.lock().unwrap();
         f(&mut buf)
+    }
+
+    /// Restore an embedder baseline after guest execution has been quiesced.
+    /// Keep small working buffers, but do not pin a previous job's large heap.
+    pub(crate) fn restore_baseline(&self, bytes: &[u8]) {
+        let mut buffer = self.buffer.lock().unwrap();
+        let retained_limit = bytes.len().saturating_mul(4).max(16 * 1024 * 1024);
+        if buffer.capacity() > retained_limit {
+            *buffer = bytes.to_vec();
+        } else {
+            buffer.clear();
+            buffer.extend_from_slice(bytes);
+        }
     }
 
     /// Get full-buffer mutable access without locking when the memory buffer is
@@ -907,6 +924,42 @@ impl Default for SharedMemory {
 #[cfg(test)]
 mod allocation_bulk_regression_tests {
     use super::{MemoryTrap, SharedMemory};
+
+    #[test]
+    fn baseline_restore_releases_large_capacity_and_restores_aliases() {
+        let memory = SharedMemory::from_vec(vec![0x7b; 32 * 1024 * 1024]);
+        let alias = memory.clone();
+        memory.restore_baseline(&[1, 2, 3, 4]);
+        alias.with_buffer(|bytes| assert_eq!(bytes, &[1, 2, 3, 4]));
+        memory.with_buffer_mut(|bytes| assert!(bytes.capacity() <= 16 * 1024 * 1024));
+        memory.restore_baseline(&[]);
+        alias.with_buffer(|bytes| assert!(bytes.is_empty()));
+    }
+
+    #[test]
+    fn baseline_restore_reuses_bounded_working_capacity() {
+        let memory = SharedMemory::from_vec(vec![9; 16 * 1024 * 1024]);
+        let (address, capacity) = memory.with_buffer_mut(|b| (b.as_ptr() as usize, b.capacity()));
+        for _ in 0..20 {
+            memory.restore_baseline(&[42; 128]);
+            memory.with_buffer_mut(|bytes| {
+                assert_eq!(bytes.as_ptr() as usize, address);
+                assert_eq!(bytes.capacity(), capacity);
+                assert_eq!(&bytes[..], &[42; 128]);
+            });
+        }
+    }
+
+    #[test]
+    fn baseline_restore_does_not_expose_previous_job_bytes_after_growth() {
+        let memory = SharedMemory::from_vec(vec![0x7b; 2 * 1024 * 1024]);
+        memory.restore_baseline(&vec![0x42; 65536]);
+        assert_eq!(memory.grow(1), 1);
+        memory.with_buffer(|bytes| {
+            assert!(bytes[..65536].iter().all(|byte| *byte == 0x42));
+            assert!(bytes[65536..].iter().all(|byte| *byte == 0));
+        });
+    }
 
     #[test]
     fn scalar_accessors_reject_overflow_without_mutation() {

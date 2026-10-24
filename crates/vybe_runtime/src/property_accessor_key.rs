@@ -9,16 +9,25 @@ pub(super) enum AccessorKey {
 impl AccessorKey {
     #[inline]
     pub(super) fn getter(name: &str) -> Self {
-        const PREFIX: &str = "__get_";
-        if name.len() <= 64 - PREFIX.len() {
+        Self::prefixed("__get_", name)
+    }
+
+    #[inline]
+    pub(super) fn setter(name: &str) -> Self {
+        Self::prefixed("__set_", name)
+    }
+
+    #[inline]
+    fn prefixed(prefix: &str, name: &str) -> Self {
+        if name.len() <= 64 - prefix.len() {
             let mut bytes = [0; 64];
-            bytes[..PREFIX.len()].copy_from_slice(PREFIX.as_bytes());
-            let len = PREFIX.len() + name.len();
-            bytes[PREFIX.len()..len].copy_from_slice(name.as_bytes());
+            bytes[..prefix.len()].copy_from_slice(prefix.as_bytes());
+            let len = prefix.len() + name.len();
+            bytes[prefix.len()..len].copy_from_slice(name.as_bytes());
             Self::Inline { bytes, len }
         } else {
-            let mut key = String::with_capacity(PREFIX.len() + name.len());
-            key.push_str(PREFIX);
+            let mut key = String::with_capacity(prefix.len() + name.len());
+            key.push_str(prefix);
             key.push_str(name);
             Self::Owned(key)
         }
@@ -45,6 +54,9 @@ mod tests {
                 let name = unit.repeat(len);
                 let key = AccessorKey::getter(&name);
                 assert_eq!(key.as_str(), format!("__get_{name}"));
+                assert_eq!(matches!(key, AccessorKey::Inline { .. }), name.len() <= 58);
+                let key = AccessorKey::setter(&name);
+                assert_eq!(key.as_str(), format!("__set_{name}"));
                 assert_eq!(matches!(key, AccessorKey::Inline { .. }), name.len() <= 58);
             }
         }

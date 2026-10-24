@@ -138,7 +138,8 @@ fn response_bytes_arrive_before_script_completion() {
     let chunk = &mut chunks[0];
     // Insert the observation before RETURN, after the ordinary output transport.
     chunk.code.truncate(chunk.code.len() - 4);
-    chunk.lines.truncate(chunk.lines.len() - 4);
+    let retained_lines = chunk.lines.len() - 4;
+    chunk.lines.truncate(retained_lines);
     let checkpoint = chunk.add_import("serve:test", "checkpoint");
     chunk.emit_call(checkpoint, 0, 1);
     chunk.emit_op(vybe_runtime::Op::DROP, 1);

@@ -21,6 +21,7 @@
 //! → /path/to/program.go                one job per line, optional \tcompile
 //! ← ...the program's own output...
 //! ← ##vybe-result\tok                  or  ##vybe-result\terr\t<message>
+//! ← ##vybe-result\tretire-ok           or retire-err: reap before next job
 //! → /path/to/harness.js\tpreload       fold into the baseline (see below)
 //! ```
 //!
@@ -102,6 +103,10 @@ pub fn run(caps: Capabilities) -> ! {
             crate::warm::reset(&mut vm, &baseline);
             match run_job(&mut vm, path, "run", &caps) {
                 Ok(()) => {
+                    if let Err(error) = vm.ensure_threads_finished() {
+                        eprintln!("[worker] preload has live children: {error}; retiring worker");
+                        std::process::exit(1);
+                    }
                     baseline = vm.snapshot();
                     println!("{RESULT}\tok");
                 }
@@ -117,10 +122,23 @@ pub fn run(caps: Capabilities) -> ! {
             continue;
         }
 
-        crate::warm::reset(&mut vm, &baseline);
-
         let outcome = run_job(&mut vm, path, mode, &caps);
         let _ = std::io::stdout().flush();
+        let exit_code = vm.pending_exit_code;
+        // Normal results follow teardown. A retire result instead requires the
+        // supervisor to reap this process before publishing test completion.
+        // Never collect objects or reuse memory while a guest child can use it.
+        let retire = match crate::warm::try_reset(&mut vm, &baseline) {
+            Ok(()) => false,
+            Err(error) => {
+                eprintln!("[worker] {error}");
+                true
+            }
+        };
+        // Main may legitimately return while background children still run.
+        // Preserve its verdict, but require process teardown instead of reuse.
+        let ok = if retire { "retire-ok" } else { "ok" };
+        let err = if retire { "retire-err" } else { "err" };
         // The verdict is the EXIT CODE, so a program that called
         // `wasi:cli/exit` with a non-zero status failed even though `run`
         // returned `Ok`. Reading only the `Result` made warm mode disagree
@@ -128,11 +146,11 @@ pub fn run(caps: Capabilities) -> ! {
         // Python `sys.exit(3)` passed under the default pool and failed
         // everywhere else. `--cold` exists to catch exactly this.
         match outcome {
-            Ok(()) if vm.pending_exit_code != want_exit => println!(
-                "{RESULT}\terr\texited with status {} (expected {want_exit})",
-                vm.pending_exit_code
+            Ok(()) if exit_code != want_exit => println!(
+                "{RESULT}\t{err}\texited with status {} (expected {want_exit})",
+                exit_code
             ),
-            Ok(()) => println!("{RESULT}\tok"),
+            Ok(()) => println!("{RESULT}\t{ok}"),
             // An `Err` IS an exit code — cold `vybex <file>` exits 1 for it,
             // measured for both a trap and a compile error, so a test asking
             // for status 1 is asking for exactly this. Without the arm the
@@ -141,10 +159,13 @@ pub fn run(caps: Capabilities) -> ! {
             // divergence above: `vybe-test-exit: 1` could never express "traps
             // cleanly", which is the one assertion `run-fail` cannot make
             // (it accepts ANY non-zero, so an OOM abort passes it too).
-            Err(_) if want_exit == 1 => println!("{RESULT}\tok"),
-            Err(e) => println!("{RESULT}\terr\t{}", one_line(&e)),
+            Err(_) if want_exit == 1 => println!("{RESULT}\t{ok}"),
+            Err(e) => println!("{RESULT}\t{err}\t{}", one_line(&e)),
         }
         let _ = std::io::stdout().flush();
+        if retire {
+            std::process::exit(0);
+        }
     }
     std::process::exit(0)
 }

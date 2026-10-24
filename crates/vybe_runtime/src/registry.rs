@@ -411,6 +411,15 @@ pub struct LanguageHooks {
     /// Languages with reference-counted object finalization can decide whether
     /// another program-visible reference still owns the old value.
     pub rebind_finalizer: Option<fn(&mut Chunk, u32)>,
+    /// Release an old value whose own Destructor slot is not callable — an
+    /// array or plain object that may still own finalizable objects. Receives
+    /// the frame slot holding the old value; consumes nothing from the stack.
+    pub rebind_release: Option<fn(&mut Chunk, u16, u32)>,
+    /// Observe a newly constructed object. Stack: `[object] -> [object]`.
+    pub construct_tracker: Option<fn(&mut Chunk, u32)>,
+    /// Push an i32 condition: may any released value need finalizing now?
+    /// When false, rebind and return releases are skipped entirely.
+    pub rebind_gate: Option<fn(&mut Chunk, u32)>,
     /// See [`VariableNamespace`]. `None` (the default) = one namespace.
     pub variable_namespace: Option<&'static VariableNamespace>,
     /// ⛔ TAKES THE RECEIVER ABI. These emit CALLS — to a registered resolver

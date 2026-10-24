@@ -22,6 +22,23 @@ use crate::vm::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+enum FunctionResults {
+    Empty,
+    One(Value),
+    Two(Value, Value),
+    Many(Vec<Value>),
+}
+
+impl FunctionResults {
+    fn last(self) -> Value {
+        match self {
+            Self::Empty => Value::Null,
+            Self::One(value) | Self::Two(_, value) => value,
+            Self::Many(mut values) => values.pop().unwrap_or(Value::Null),
+        }
+    }
+}
+
 #[inline(always)]
 fn js_number_is_neg_zero(n: f64) -> bool {
     n == 0.0 && n.is_sign_negative()
@@ -13058,6 +13075,7 @@ impl VM {
 
         let child_chunks = self.chunks.clone();
         let child_decoded_ops = self.decoded_ops.clone();
+        let child_pending_entry_decode = self.pending_entry_decode.clone();
         let child_decoded_operands = self.decoded_operands.clone();
         let child_decoded_operands64 = self.decoded_operands64.clone();
         let child_native_call_sites = self.native_call_sites.clone();
@@ -13103,11 +13121,23 @@ impl VM {
         // short (all-asleep deadlock detection).
         child_memory.thread_started();
 
+        struct ThreadExit(crate::shared_memory::SharedMemory);
+        impl Drop for ThreadExit {
+            fn drop(&mut self) { self.0.thread_exited(); }
+        }
+        // Capture the reservation itself so a failed spawn releases it too.
+        let thread_exit = ThreadExit(child_memory.clone());
+        let child_native_threads = self.native_threads.clone();
         let handle = std::thread::spawn(move || {
+            // Declared first, dropped last: include VM teardown and unwinding
+            // in the shared-memory live-thread lifetime.
+            let _thread_exit = thread_exit;
             let mut child_vm = VM::new();
+            child_vm.native_threads = child_native_threads;
             child_vm.record_error_context(child_error_context);
             child_vm.chunks = child_chunks;
             child_vm.decoded_ops = child_decoded_ops;
+            child_vm.pending_entry_decode = child_pending_entry_decode;
             child_vm.decoded_operands = child_decoded_operands;
             child_vm.decoded_operands64 = child_decoded_operands64;
             child_vm.native_call_sites = child_native_call_sites;
@@ -13164,9 +13194,9 @@ impl VM {
                 .memory
                 .atomic_store_i32(status_addr, if ok { 1 } else { 2 });
             child_vm.memory.notify(status_addr, i32::MAX);
-            child_vm.memory.thread_exited();
             if ok { vec![0u8] } else { vec![1u8] }
         });
+        let handle = self.native_threads.register(handle);
         self.thread_handles.insert(tid, handle);
         Ok(tid)
     }
@@ -13804,15 +13834,55 @@ fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
 }
 
 impl VM {
-    /// Pop the current frame the way a tail call must: a `return_call` REPLACES
-    /// the frame, so that frame's structured state dies with it — its labels,
-    /// and, spec-visibly, its `try_table` handlers.
-    ///
-    /// `frames.pop()` alone left the caller's catch clauses ARMED for the
-    /// callee, so a tail call out of a protected body had its callee's throw
-    /// caught by a handler that no longer existed (`try_table.wast`
-    /// `return-call-in-try-catch`, which asserts the throw ESCAPES). This is the
-    /// same cleanup `Op::RETURN` does; only the tail-call arms were missing it.
+    fn take_function_results(&mut self, count: usize) -> FunctionResults {
+        match count {
+            0 => FunctionResults::Empty,
+            1 => FunctionResults::One(self.stack.pop().unwrap_or(Value::Null)),
+            2 => {
+                let b = self.stack.pop().expect("return result missing");
+                let a = self.stack.pop().expect("return result missing");
+                FunctionResults::Two(a, b)
+            }
+            _ => FunctionResults::Many(self.stack.split_off(self.stack.len().saturating_sub(count))),
+        }
+    }
+
+    fn deliver_function_results(
+        &mut self, base: usize, values: FunctionResults, min_depth: usize,
+        entry_fiber_id: u64, debug: Option<&crate::debugger::DebugHostCall>,
+    ) -> Result<Option<Value>, VMError> {
+        if self.frames.is_empty() {
+            if let Some(debug) = debug { debug.stage("vm:return continuation"); }
+            if let Some(ac) = self.active_continuations.pop() {
+                if let Some(debug) = debug { debug.stage("vm:return finish continuation"); }
+                if let Value::Object(ref object) = ac.cont {
+                    let object = object.lock().unwrap();
+                    if let ObjectKind::Continuation(state) = &object.kind {
+                        *state.state.lock().unwrap() = crate::value::ContinuationPhase::Done;
+                    }
+                }
+                if let Some(debug) = debug { debug.stage("vm:return resume fiber"); }
+                self.resume_fiber_with(ac.caller_fiber, Some(values.last()))?;
+                if ac.mode == ResumeMode::Iterator { self.push(Value::I32(0))?; }
+                return Ok(None);
+            }
+            return Ok(Some(values.last()));
+        }
+        if self.frames.len() < min_depth && self.cur_fiber_id == entry_fiber_id {
+            return Ok(Some(values.last()));
+        }
+        if let Some(debug) = debug { debug.stage("vm:return restore stack"); }
+        self.stack.truncate(base);
+        match values {
+            FunctionResults::Empty => {},
+            FunctionResults::One(value) => self.push_fast(value),
+            FunctionResults::Two(a, b) => { self.push_fast(a); self.push_fast(b); },
+            FunctionResults::Many(values) => { for value in values { self.push_fast(value); } },
+        }
+        Ok(None)
+    }
+
+    /// A tail call replaces its frame, including its labels and catch clauses.
     fn pop_frame_for_tail_call(&mut self) {
         let frame_label_base = self.frame().label_base;
         self.label_stack.truncate(frame_label_base);
@@ -16237,13 +16307,15 @@ impl VM {
         Ok(())
     }
 
-    /// Execute a Component Model canonical built-in (VM-implemented import
-    /// under module "canon" — see `ImportTarget::Canon`). Args and results
-    /// ride the operand stack; each builtin pops exactly its own args.
+    /// Test entry for a canonical built-in with no component result.
+    #[cfg(test)]
     pub(crate) fn exec_canon_builtin(&mut self, b: crate::vm::CanonBuiltin) -> Result<(), VMError> {
         self.exec_canon_builtin_with_result(b, false)
     }
 
+    /// Execute a Component Model canonical built-in (VM-implemented import
+    /// under module "canon" — see `ImportTarget::Canon`). Args and results
+    /// ride the operand stack; each builtin pops exactly its own args.
     pub(crate) fn exec_canon_builtin_with_result(
         &mut self,
         b: crate::vm::CanonBuiltin,
@@ -17633,7 +17705,9 @@ impl VM {
         let ObjectKind::StringViewIter { source, byte_offset, scalar_offset } = kind else { return None };
         let Some(Value::String(property_source)) = properties.get("__iter_str") else { return None };
         let Some(Value::I32(property_pos)) = properties.get("__iter_pos") else { return None };
-        if !Arc::ptr_eq(source, property_source) || *property_pos as usize != *scalar_offset {
+        // The compatibility property stores the low i32 bits. Do not discard
+        // a valid byte cursor just because the scalar position's high bit set.
+        if !Arc::ptr_eq(source, property_source) || *property_pos != *scalar_offset as i32 {
             return None;
         }
         let tail = &source[*byte_offset..];
@@ -18733,6 +18807,18 @@ impl VM {
         let entry_fiber_id = self.cur_fiber_id;
         let dbg_ac = self.dbg_ac;
         let mut dbg_last_op: Option<Op> = None; // TEMP diagnostics (VYBE_DEBUG_AC)
+        // A JIT callee may complete without installing its replacement frame.
+        // Deliver that value through the same boundary as an interpreted RETURN.
+        macro_rules! finish_inline_tail {
+            ($depth:expr, $base:expr, $count:expr, $fiber:expr) => {
+                if self.frames.len() + 1 == $depth && self.cur_fiber_id == $fiber {
+                    let values = self.take_function_results($count);
+                    if let Some(value) = self.deliver_function_results(
+                        $base, values, min_depth, entry_fiber_id, None,
+                    )? { return Ok(value); }
+                }
+            };
+        }
         loop {
             if dbg_ac && self.frames.is_empty() {
                 eprintln!(
@@ -18816,7 +18902,10 @@ impl VM {
             }
             macro_rules! cached_operand64 {
                 () => {
-                    unsafe { *decoded_operands64_ptr.add(cached_operand!() as usize) }
+                    {
+                        let index = cached_operand!() as usize;
+                        unsafe { *decoded_operands64_ptr.add(index) }
+                    }
                 };
             }
             macro_rules! cached_byte_operand {
@@ -19557,11 +19646,11 @@ impl VM {
                         // to a case-insensitive lookup for case-sensitive
                         // languages (C#, Dart) whose AST preserves
                         // PascalCase field names.
-                        let setter_key = format!("__set_{}", name);
+                        let setter_key = property_accessor_key::AccessorKey::setter(name);
                         let setter = {
                             let props = &o.lock().unwrap().properties;
                             props
-                                .get(&setter_key)
+                                .get(setter_key.as_str())
                                 .cloned()
                                 .or_else(|| {
                                     // ASCII names with no uppercase letters
@@ -19601,7 +19690,7 @@ impl VM {
                         } else {
                             // Set property in properties HashMap
                             let mut ob = o.lock().unwrap();
-                            ob.set(name.to_string(), val.clone());
+                            ob.set_borrowed(name, val.clone());
                             // For typed objects, also update the fields Vec if this property is a field
                             let type_id = ob.type_id;
                             if type_id > 0 {
@@ -20772,159 +20861,32 @@ impl VM {
                 Op::RETURN => {
                     let debug_return = self.debug_report().map(|report| {
                         crate::debugger::DebugHostCall::new(
-                            Some(report),
-                            "vm:return values".to_string(),
+                            Some(report), "vm:return values".to_string(),
                         )
                     });
                     let frame_chunk = self.frame().chunk_index;
-                    let frame_label_base = self.frame().label_base;
-                    let n = self.chunks[frame_chunk].result_arity as usize;
-                    let mut result = if n == 1 {
-                        if self.stack.is_empty() {
-                            None
-                        } else {
-                            Some(self.pop_fast())
-                        }
-                    } else {
-                        None
-                    };
-                    let mut result_pair = if n == 2 {
-                        let (a, b) = if self.stack.len() >= 2 {
-                            let b = self.pop_fast();
-                            let a = self.pop_fast();
-                            (a, b)
-                        } else {
-                            let b = self.stack.pop().expect("return result missing");
-                            let a = self.stack.pop().expect("return result missing");
-                            (a, b)
-                        };
-                        Some((a, b))
-                    } else {
-                        None
-                    };
-                    let mut results: Vec<Value> = if n > 2 {
-                        let split = self.stack.len().saturating_sub(n);
-                        self.stack.split_off(split)
-                    } else {
-                        Vec::new()
-                    };
+                    let label_base = self.frame().label_base;
                     let base = self.frame().base;
-                    if let Some(stage) = &debug_return {
-                        stage.stage("vm:return close_upvalues");
-                    }
+                    let values = self.take_function_results(self.chunks[frame_chunk].result_arity as usize);
+                    if let Some(debug) = &debug_return { debug.stage("vm:return close_upvalues"); }
                     self.close_upvalues(base);
-                    if let Some(stage) = &debug_return {
-                        stage.stage("vm:return labels");
-                    }
-                    self.label_stack.truncate(frame_label_base);
+                    if let Some(debug) = &debug_return { debug.stage("vm:return labels"); }
+                    self.label_stack.truncate(label_base);
                     self.frames.pop();
-                    if let Some(stage) = &debug_return {
-                        stage.stage("vm:return handlers");
-                    }
-                    // A returning frame's exception handlers die with the frame:
-                    // a JS async-wrapper `try_table`, or a `return` from inside a
-                    // `try`, leaves handlers that nothing else pops (a `return`
-                    // is a frame exit, not a structural `br`). Drop them here,
-                    // frame-scoped — matching how `save_fiber` partitions
-                    // handlers by frame depth. This replaces the async-wrapper
-                    // `TRY_END` the frontend used to emit before RETURN. The
-                    // empty-frames continuation-completion case below is owned by
-                    // the fiber/cont machinery, so leave its handlers alone.
+                    if let Some(debug) = &debug_return { debug.stage("vm:return handlers"); }
                     if !self.frames.is_empty() {
-                        let live = self.frames.len();
-                        self.prune_exception_handlers_to_live_frames(live);
+                        self.prune_exception_handlers_to_live_frames(self.frames.len());
                     }
-                    // Continuation completion: per the WASM stack-switching
-                    // proposal a continuation owns its stack; `save_fiber` drains
-                    // the caller's frames when the continuation is resumed, so
-                    // during its execution `frames` holds the continuation's
-                    // frames alone and a genuine body completion empties them.
-                    // Mark the cont Done and transfer control back to the
-                    // caller of RESUME/GEN_NEXT rather than exiting the VM.
-                    if self.frames.is_empty() {
-                        if let Some(stage) = &debug_return {
-                            stage.stage("vm:return continuation");
-                        }
-                        if dbg_ac {
-                            eprintln!(
-                                "[AC-DEBUG] empty-frames RETURN: chunk={} ip={} min_depth={} ac_len={} fiber={} stack_len={}",
-                                self.chunks[frame_chunk].name,
-                                opcode_start,
-                                min_depth,
-                                self.active_continuations.len(),
-                                self.cur_fiber_id,
-                                self.stack.len()
-                            );
-                        }
-                        if let Some(ac) = self.active_continuations.pop() {
-                            if let Some(stage) = &debug_return {
-                                stage.stage("vm:return finish continuation");
-                            }
-                            if let Value::Object(ref obj) = ac.cont {
-                                let o = obj.lock().unwrap();
-                                if let ObjectKind::Continuation(cs) = &o.kind {
-                                    *cs.state.lock().unwrap() =
-                                        crate::value::ContinuationPhase::Done;
-                                }
-                            }
-                            let ret_val = if n == 1 {
-                                result.take().unwrap_or(Value::Null)
-                            } else if n == 2 {
-                                result_pair.take().map(|(_, b)| b).unwrap_or(Value::Null)
-                            } else {
-                                results.pop().unwrap_or(Value::Null)
-                            };
-                            if let Some(stage) = &debug_return {
-                                stage.stage("vm:return resume fiber");
-                            }
-                            self.resume_fiber_with(ac.caller_fiber, Some(ret_val))?;
-                            if ac.mode == ResumeMode::Iterator {
-                                // has_more = 0 — generator is exhausted
-                                self.push(Value::I32(0))?;
-                            }
-                            continue;
-                        }
-                        let last = if n == 1 {
-                            result.take().unwrap_or(Value::Null)
-                        } else if n == 2 {
-                            result_pair.take().map(|(_, b)| b).unwrap_or(Value::Null)
-                        } else {
-                            results.pop().unwrap_or(Value::Null)
-                        };
-                        return Ok(last);
+                    if dbg_ac && self.frames.is_empty() {
+                        eprintln!(
+                            "[AC-DEBUG] empty-frames RETURN: chunk={} ip={} min_depth={} ac_len={} fiber={} stack_len={}",
+                            self.chunks[frame_chunk].name, opcode_start, min_depth,
+                            self.active_continuations.len(), self.cur_fiber_id, self.stack.len()
+                        );
                     }
-                    // `execute_until` boundary: a nested loop (e.g. a host
-                    // `invoke_callback`) returns when frames fall below its
-                    // floor — but ONLY while running on the same fiber it was
-                    // entered on. A continuation resumed from inside a callback
-                    // runs on a different fiber whose nested returns must NOT
-                    // trip the callback's (now-stale, pre-`save_fiber`) floor;
-                    // those take the normal-return path below.
-                    if self.frames.len() < min_depth && self.cur_fiber_id == entry_fiber_id {
-                        let last = if n == 1 {
-                            result.take().unwrap_or(Value::Null)
-                        } else if n == 2 {
-                            result_pair.take().map(|(_, b)| b).unwrap_or(Value::Null)
-                        } else {
-                            results.pop().unwrap_or(Value::Null)
-                        };
-                        return Ok(last);
-                    }
-                    if let Some(stage) = &debug_return {
-                        stage.stage("vm:return restore stack");
-                    }
-                    self.stack.truncate(base);
-                    if n == 1 {
-                        self.push_fast(result.take().unwrap_or(Value::Null));
-                    } else if n == 2 {
-                        let (a, b) = result_pair.take().unwrap_or((Value::Null, Value::Null));
-                        self.push_fast(a);
-                        self.push_fast(b);
-                    } else {
-                        for r in results {
-                            self.push_fast(r);
-                        }
-                    }
+                    if let Some(value) = self.deliver_function_results(
+                        base, values, min_depth, entry_fiber_id, debug_return.as_ref(),
+                    )? { return Ok(value); }
                 }
                 Op::REF_FUNC => {
                     let func_idx = cached_operand64!() as usize;
@@ -23733,9 +23695,7 @@ impl VM {
                 // declare — not something the opcode may add underneath it.
                 Op::REF_TEST => {
                     let ht = HeapType::from_sleb(self.read_leb_i32());
-                    let val = self.pop_fast();
-                    let result = self.ref_test(&val, ht);
-                    self.push_fast(wasm_bool(result));
+                    self.replace_ref_test_fast(ht);
                     self.skip_immediate_js_number_i32_wrappers(
                         frame_index,
                         code_len,
@@ -24189,16 +24149,15 @@ impl VM {
                     let view = self.pop_fast();
                     if let Some(value) = self.try_string_iter_cursor(&view, op, 0) {
                         self.push_fast(value);
-                        continue;
-                    }
-                    let (s, pos) = self.read_string_iter(&view)?;
-                    // nth already reports exhaustion. Counting the entire
-                    // string first rescanned its unused suffix on every step.
-                    if let Some(cp) = s.chars().nth(pos) {
-                        self.write_string_iter_pos(&view, pos + 1)?;
-                        self.push_fast(Value::I32(cp as i32));
                     } else {
-                        self.push_fast(Value::I32(-1));
+                        let (s, pos) = self.read_string_iter(&view)?;
+                        // Property-bag compatibility: nth reports exhaustion.
+                        if let Some(cp) = s.chars().nth(pos) {
+                            self.write_string_iter_pos(&view, pos + 1)?;
+                            self.push_fast(Value::I32(cp as i32));
+                        } else {
+                            self.push_fast(Value::I32(-1));
+                        }
                     }
                 }
                 Op::STRINGVIEW_ITER_ADVANCE => {
@@ -24206,25 +24165,25 @@ impl VM {
                     let view = self.pop_fast();
                     if let Some(value) = self.try_string_iter_cursor(&view, op, n) {
                         self.push_fast(value);
-                        continue;
+                    } else {
+                        let (s, pos) = self.read_string_iter(&view)?;
+                        let total = s.chars().count();
+                        let new_pos = pos.saturating_add(n).min(total);
+                        self.write_string_iter_pos(&view, new_pos)?;
+                        self.push_fast(Value::I32((new_pos - pos) as i32));
                     }
-                    let (s, pos) = self.read_string_iter(&view)?;
-                    let total = s.chars().count();
-                    let new_pos = pos.saturating_add(n).min(total);
-                    self.write_string_iter_pos(&view, new_pos)?;
-                    self.push_fast(Value::I32((new_pos - pos) as i32));
                 }
                 Op::STRINGVIEW_ITER_REWIND => {
                     let n = self.pop_i32_fast() as u32 as usize;
                     let view = self.pop_fast();
                     if let Some(value) = self.try_string_iter_cursor(&view, op, n) {
                         self.push_fast(value);
-                        continue;
+                    } else {
+                        let (_s, pos) = self.read_string_iter(&view)?;
+                        let new_pos = pos.saturating_sub(n);
+                        self.write_string_iter_pos(&view, new_pos)?;
+                        self.push_fast(Value::I32((pos - new_pos) as i32));
                     }
-                    let (_s, pos) = self.read_string_iter(&view)?;
-                    let new_pos = pos.saturating_sub(n);
-                    self.write_string_iter_pos(&view, new_pos)?;
-                    self.push_fast(Value::I32((pos - new_pos) as i32));
                 }
                 Op::STRINGVIEW_ITER_SLICE => {
                     // Substring of up to `n` codepoints from the cursor; does NOT
@@ -24233,11 +24192,11 @@ impl VM {
                     let view = self.pop_fast();
                     if let Some(value) = self.try_string_iter_cursor(&view, op, n) {
                         self.push_fast(value);
-                        continue;
+                    } else {
+                        let (s, pos) = self.read_string_iter(&view)?;
+                        let out: String = s.chars().skip(pos).take(n).collect();
+                        self.push_fast(Value::String(Arc::from(out)));
                     }
-                    let (s, pos) = self.read_string_iter(&view)?;
-                    let out: String = s.chars().skip(pos).take(n).collect();
-                    self.push_fast(Value::String(Arc::from(out)));
                 }
 
                 Op::REF_IS_NULL => {
@@ -24524,6 +24483,9 @@ impl VM {
 
                 // -- Tail call --
                 Op::RETURN_CALL => {
+                    let tail_depth = self.frames.len();
+                    let tail_fiber = self.cur_fiber_id;
+                    let tail_results = self.chunks[chunk_index].result_arity as usize;
                     let operand = cached_operand!();
                     if operand & DECODED_DEFINED_CALL != 0 {
                         let edge = self.chunks[chunk_index].direct_defined_calls.get(&opcode_start)
@@ -24543,6 +24505,7 @@ impl VM {
                         self.stack.truncate(old_base+argc);
                         self.pop_frame_for_tail_call();
                         self.call_chunk_function(target, argc as u8, argc)?;
+                        finish_inline_tail!(tail_depth, old_base, tail_results, tail_fiber);
                         continue;
                     }
                     let argc = (operand & 0xff) as usize;
@@ -24557,13 +24520,18 @@ impl VM {
                     // but in new convention there's no callee in the frame). Just truncate down to old_base
                     // and keep callee + args on top.
                     let callee_idx = self.stack.len() - argc - 1;
+                    let bytecode_callee = Self::bytecode_funcref_target(&self.stack[callee_idx]).is_some();
                     self.move_tail_call_window(old_base, callee_idx, argc + 1);
                     self.pop_frame_for_tail_call();
                     if !self.try_call_function_ref_fast(argc)? {
                         self.call_value(argc)?;
                     }
+                    if bytecode_callee { finish_inline_tail!(tail_depth, old_base, tail_results, tail_fiber); }
                 }
                 Op::RETURN_CALL_INDIRECT => {
+                    let tail_depth = self.frames.len();
+                    let tail_fiber = self.cur_fiber_id;
+                    let tail_results = self.chunks[chunk_index].result_arity as usize;
                     // Tail-call form of `call_indirect`: same immediate shape
                     // (argc, tableidx, expected results), same `wasm_tables`
                     // lookup and runtime type-shape check — but reuses the
@@ -24635,6 +24603,7 @@ impl VM {
                         } else {
                             self.call_chunk_function(chunk_index, arity, argc)?;
                         }
+                        finish_inline_tail!(tail_depth, old_base, tail_results, tail_fiber);
                         continue;
                     }
                     let funcref = funcref.expect("non-direct call_indirect target is cloned");
@@ -24649,6 +24618,9 @@ impl VM {
                     }
                 }
                 Op::RETURN_CALL_REF => {
+                    let tail_depth = self.frames.len();
+                    let tail_fiber = self.cur_fiber_id;
+                    let tail_results = self.chunks[chunk_index].result_arity as usize;
                     let operand = cached_operand!();
                     let argc = (operand & 0xff) as usize;
                     let _results = ((operand >> 8) & 0xff) as u8; // writer-facing functype info
@@ -24674,6 +24646,7 @@ impl VM {
                         } else {
                             self.call_chunk_function(chunk_index, arity, argc)?;
                         }
+                        finish_inline_tail!(tail_depth, old_base, tail_results, tail_fiber);
                         continue;
                     }
                     self.move_tail_call_window(old_base, callee_idx, argc + 1);
@@ -26998,7 +26971,7 @@ impl VM {
                 // -- Component Model --
                 // No opcodes: canon built-ins are (core func) DEFINITIONS in
                 // the CM spec, not instructions. They resolve as imports under
-                // module "canon" (ImportTarget::Canon → exec_canon_builtin)
+                // module "canon" (ImportTarget::Canon → exec_canon_builtin_with_result)
                 // and are reached via spec `call`. Prefix 0xF0 is empty.
 
                 // -- Shared-Everything Threads (shared GC objects) --
@@ -29903,7 +29876,7 @@ impl VM {
 
                 // -- CM3 canon built-ins (stream/future/task/waitable/
                 // backpressure/context) -- no opcodes; they are "canon"-module
-                // imports executed by exec_canon_builtin via the CALL arm.
+                // imports executed by exec_canon_builtin_with_result via the CALL arm.
 
                 // -- Iteration protocol --
                 // iter_get, iter_next: removed (non-WASM, were unused by compilers)

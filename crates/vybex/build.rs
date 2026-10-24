@@ -35,8 +35,61 @@ fn main() {
             println!("cargo:rustc-cfg=vybe_linked_plugin=\"{name}\"");
         }
     }
+    out.push_str(&seed_browsers(&manifest));
     let dest = std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("linked_plugins.rs");
     let mut f = std::fs::File::create(dest).expect("create linked_plugins.rs");
     f.write_all(out.as_bytes())
         .expect("write linked_plugins.rs");
+}
+
+/// Seed `platforms/web`'s registry with the browsers this binary provides.
+///
+/// They are listed in the manifest — `[package.metadata.vybe] browsers`, the
+/// first being the default — next to the dependencies that supply them. Each
+/// gets the one web engine (`browser_engine!`) and the one window launcher
+/// (`gui_launch_browser.rs`), compiled against that browser's API.
+fn seed_browsers(manifest: &str) -> String {
+    let mut in_meta = false;
+    let mut browsers: Vec<String> = Vec::new();
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_meta = trimmed == "[package.metadata.vybe]";
+            continue;
+        }
+        if in_meta {
+            if let Some(list) = trimmed.strip_prefix("browsers").and_then(|rest| rest.trim().strip_prefix('=')) {
+                browsers = list
+                    .trim()
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .split(',')
+                    .map(|name| name.trim().trim_matches('"').to_string())
+                    .filter(|name| !name.is_empty())
+                    .collect();
+            }
+        }
+    }
+    let mut out = String::new();
+    let mut arms = String::new();
+    for name in &browsers {
+        out.push_str(&format!(
+            "vybe_platform_web::browser_engine!(browser_{name}, \"{name}\", {name});\n\
+             pub mod launch_{name} {{\n\
+             \x20   use ::{name} as browser;\n\
+             \x20   use crate::browser_{name} as engine;\n\
+             \x20   include!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../vybex/src/gui_launch_browser.rs\"));\n\
+             }}\n"
+        ));
+        arms.push_str(&format!("        \"{name}\" => Some(launch_{name}::launch_gui),\n"));
+    }
+    if let Some(default) = browsers.first() {
+        out.push_str(&format!("vybe_platform_web::default_browser!(\"{default}\");\n"));
+    }
+    out.push_str(&format!(
+        "/// The window launcher for a browser this binary provides.\n\
+         pub(crate) fn browser_launcher(name: &str) -> Option<fn(vybe_runtime::VM)> {{\n\
+         \x20   match name {{\n{arms}        _ => None,\n    }}\n}}\n"
+    ));
+    out
 }

@@ -4,13 +4,6 @@ use vybe_runtime::value::Object;
 /// Verify that objects created by different language compilers are interoperable.
 use vybe_runtime::*;
 
-fn assert_wasm_true(value: &Value, message: &str) {
-    assert!(
-        matches!(value, Value::Bool(true) | Value::I32(1)),
-        "{message}"
-    );
-}
-
 /// Simulate what Python `{"name": "Rex", "age": 3}` compiles to
 fn make_python_dict() -> Value {
     let mut obj = Object::new();

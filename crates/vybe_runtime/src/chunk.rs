@@ -444,6 +444,11 @@ pub struct DirectDefinedCall {
     pub results: String,
 }
 
+/// The type-table rows that [`Chunk::typed_array_ops`] entries name, as
+/// `(row name, element type)`: each is a Wasm GC `(array (mut <element>))`.
+pub const TYPED_ARRAY_ROWS: [(&str, &str); 4] =
+    [("__i64_array", "i64"), ("__i32_array", "i32"), ("__f64_array", "f64"), ("__f32_array", "f32")];
+
 /// A compiled chunk of bytecode — one per function/script.
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -633,6 +638,12 @@ pub struct Chunk {
     /// Cached externref temporary used by the non-nested autoderef emitter.
     /// The compiler keeps this slot above the per-statement reclaim floor.
     pub autoderef_scratch_slot: Option<u16>,
+    /// Function-wide externref locals that hold a value computed once per
+    /// invocation, keyed by the emitter that owns them. A frame starts its
+    /// locals as null or undefined, so the owner tests for both to compute
+    /// the value on first use. The compiler keeps these slots above the
+    /// per-statement reclaim floor.
+    pub memo_slots: Vec<(String, u16)>,
     /// `call_indirect` / `return_call_indirect` bytecode offset → the DECLARED
     /// functype at that call site, as its source spelling (`"i32,f64->i32"`).
     ///
@@ -653,6 +664,11 @@ pub struct Chunk {
     /// offset, written by the compiler, read by the writer; the VM never looks
     /// at it.
     pub call_indirect_sigs: std::collections::HashMap<usize, String>,
+    /// `array.get` / `array.set` / `array.len` offset → the 1-based type-table
+    /// row of the typed GC array it accesses. The bytecode ops carry no type
+    /// immediate; the compiler states the array type here, the Wasm writer
+    /// reads it to emit the access on that type, and the VM never looks.
+    pub typed_array_ops: std::collections::HashMap<usize, u16>,
     /// Per `call_indirect` offset: the CANONICAL name of the declared functype.
     ///
     /// ⛔ SEPARATE FROM `call_indirect_sigs` ON PURPOSE. That table's strings
@@ -820,6 +836,10 @@ pub struct Chunk {
     /// `None` for chunks that are not wast functions — those never carry a
     /// declared WASM function type.
     pub func_sig: Option<(String, String)>,
+    /// A source-compiled body that carries a typed physical signature (a
+    /// language's typed entry). Its function values keep the source callable
+    /// carrier; only its own parameters and result are typed.
+    pub source_typed_entry: bool,
     pub native_func_type: Option<crate::native_gc::TypeIdentity>,
     /// The NAME of the function type this wast function was DECLARED with —
     /// `(func $f (type $t) …)` → `$t`, module-qualified.
@@ -996,7 +1016,9 @@ impl Chunk {
             i64_locals: std::collections::HashSet::new(),
             i64_scratch_slot: None,
             autoderef_scratch_slot: None,
+            memo_slots: Vec::new(),
             call_indirect_sigs: std::collections::HashMap::new(),
+            typed_array_ops: std::collections::HashMap::new(),
             call_indirect_canon: std::collections::HashMap::new(),
             type_imports: Vec::new(),
             type_exports: Vec::new(),
@@ -1021,6 +1043,7 @@ impl Chunk {
             is_method: false,
             param_count: 0,
             func_sig: None,
+            source_typed_entry: false,
             native_func_type: None,
             type_rec_shape: std::collections::HashMap::new(),
             declared_func_type: None,
@@ -1637,6 +1660,24 @@ impl Chunk {
         self.i64_scratch_slot = Some(slot);
         self.i64_locals.insert(slot);
         slot
+    }
+
+    /// The function-wide memo local for `key`; see [`Self::memo_slots`].
+    pub fn memo_slot(&mut self, key: &str) -> u16 {
+        if let Some(&(_, slot)) = self.memo_slots.iter().find(|(name, _)| name == key) {
+            return slot;
+        }
+        // The first-use test needs a slot no earlier temporary has written:
+        // allocate above every slot handed out so far.
+        self.local_count = self.local_count.max(self.scratch_high_water);
+        let slot = self.alloc_scratch(1);
+        self.memo_slots.push((key.to_string(), slot));
+        slot
+    }
+
+    /// The highest memo local, for the compiler's reclaim floor.
+    pub fn memo_slot_ceiling(&self) -> Option<u16> {
+        self.memo_slots.iter().map(|&(_, slot)| slot).max()
     }
 
     pub fn autoderef_scratch(&mut self) -> u16 {

@@ -1,12 +1,11 @@
 //! Launch or capture the document owned by the selected browser engine.
 
 use vybe_platform_web::engine::{self, WindowOp};
-use vybe_platform_web::engine_select::{self, Engine};
+use vybe_platform_web::engine_select;
 
 pub fn launch_gui(vm: vybe_runtime::VM) {
-    match engine_select::live() {
-        Some(Engine::WebCore) => crate::gui_launch_webcore::launch_gui(vm),
-        Some(Engine::OsBrowser) => crate::gui_launch_osbrowser::launch_gui(vm),
+    match engine_select::live().and_then(crate::browser_launcher) {
+        Some(launch) => launch(vm),
         None => eprintln!("Cannot launch GUI: no browser engine is installed"),
     }
 }
@@ -16,8 +15,8 @@ pub fn capture_gui(
     path: &str,
     control: Option<&str>,
 ) -> Result<(u32, u32), String> {
-    if engine_select::live() != Some(Engine::WebCore) {
-        return Err("headless capture requires the in-process WebCore engine".into());
+    if engine_select::live().is_none() {
+        return Err("headless capture needs a browser engine, and none is installed".into());
     }
 
     let (width, height) = crate::gui_document::viewport().unwrap_or((800, 600));

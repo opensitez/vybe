@@ -7,6 +7,7 @@ use crate::{Chunk, Op, VM, VMError};
 use std::mem::size_of;
 
 pub(crate) struct CodeMetadata {
+    pub(crate) deferred_entry: bool,
     pub(crate) ops: Vec<Op>,
     pub(crate) operands: Vec<u32>,
     pub(crate) wide: Vec<u64>,
@@ -34,10 +35,23 @@ impl PreparedLinkedCode {
     /// Prepare final owned code under a conservative retained-memory bound.
     /// `Err` means raw fallback, not a compilation or validation failure.
     pub fn prepare(chunks: Vec<Chunk>, max_metadata_bytes: usize) -> Result<Self, Vec<Chunk>> {
+        Self::prepare_with_entry_policy(chunks, max_metadata_bytes, false)
+    }
+
+    /// Validate and retain sparse relocation/import facts now; generate function
+    /// execution caches only on first entry. The script remains eagerly decoded.
+    /// Owned raw instructions remain complete and available to standard writers.
+    pub fn prepare_for_first_entry(chunks: Vec<Chunk>, max_metadata_bytes: usize) -> Result<Self, Vec<Chunk>> {
+        Self::prepare_with_entry_policy(chunks, max_metadata_bytes, true)
+    }
+
+    fn prepare_with_entry_policy(chunks: Vec<Chunk>, max_metadata_bytes: usize,
+        defer_functions: bool) -> Result<Self, Vec<Chunk>> {
         // Dense buffers have an exact code-derived size. Sparse records and
         // optional structured caches reserve the remaining budget on demand.
         let mut bound = chunks.len().checked_mul(size_of::<CodeMetadata>());
-        for chunk in &chunks {
+        for (index, chunk) in chunks.iter().enumerate() {
+            if defer_functions && index != 0 { continue; }
             bound = bound.and_then(|n| {
                 chunk
                     .code
@@ -67,9 +81,9 @@ impl PreparedLinkedCode {
         // neither their error phase nor their existing decoder behavior changes.
         let scanned = (|| {
             let mut metadata = Vec::with_capacity(chunks.len());
-            for chunk in &chunks {
+            for (index, chunk) in chunks.iter().enumerate() {
                 VM::validate_direct_defined_calls(chunk, &chunks)?;
-                metadata.push(scan(chunk, &mut budget)?);
+                metadata.push(scan(chunk, &mut budget, defer_functions && index != 0)?);
             }
             Ok(metadata)
         })();
@@ -176,11 +190,12 @@ impl MetadataBudget {
     }
 }
 
-fn scan(chunk: &Chunk, budget: &mut MetadataBudget) -> Result<CodeMetadata, PreparationFailure> {
+fn scan(chunk: &Chunk, budget: &mut MetadataBudget, deferred_entry: bool) -> Result<CodeMetadata, PreparationFailure> {
     let code = &chunk.code;
     let mut m = CodeMetadata {
-        ops: vec![Op::NOP; code.len().div_ceil(4)],
-        operands: vec![0; code.len().div_ceil(4)],
+        deferred_entry,
+        ops: if deferred_entry { Vec::new() } else { vec![Op::NOP; code.len().div_ceil(4)] },
+        operands: if deferred_entry { Vec::new() } else { vec![0; code.len().div_ceil(4)] },
         wide: Vec::new(),
         has_branch_table: false,
         br_tables: Vec::new(),
@@ -216,8 +231,10 @@ fn scan(chunk: &Chunk, budget: &mut MetadataBudget) -> Result<CodeMetadata, Prep
             "invalid opcode 0x{:04X} 0x{:04X} at offset {} in chunk '{}' — module rejected at load",
             group,sub,ip,chunk.name)))?;
         let operand_start = start + 4;
+        let operand = VM::mark_direct_call_operand(op, VM::decode_operand32(code, op, operand_start), is_direct);
+        if !deferred_entry {
         m.ops[start / 4] = op;
-        m.operands[start / 4] = VM::mark_direct_call_operand(op, VM::decode_operand32(code, op, operand_start), is_direct);
+        m.operands[start / 4] = operand;
         if op == Op::BLOCK && operand_start + 2 <= code.len() && m.operands[start / 4] == 0 {
             if void_len == 0 { void_start = start; }
             void_len += 1;
@@ -225,22 +242,23 @@ fn scan(chunk: &Chunk, budget: &mut MetadataBudget) -> Result<CodeMetadata, Prep
             VM::finish_void_block_run(&mut m.operands, void_start, void_len);
             void_len = 0;
         }
+        }
         m.has_branch_table |= op == Op::BR_TABLE;
         // Wide values are charged on demand, not as a dense per-bucket row.
         // The paired u32 operand stores the pool index for these opcodes only.
-        if op == Op::F64_CONST || op == Op::REF_FUNC {
+        if !deferred_entry && (op == Op::F64_CONST || op == Op::REF_FUNC) {
             m.operands[start / 4] = u32::try_from(m.wide.len())
                 .map_err(|_| PreparationFailure::Raw)?;
             budget.push(&mut m.wide, 0)?;
         }
-        if op == Op::F64_CONST && operand_start + 7 < code.len() {
+        if !deferred_entry && op == Op::F64_CONST && operand_start + 7 < code.len() {
             *m.wide.last_mut().unwrap() =
                 u64::from_le_bytes(code[operand_start..operand_start + 8].try_into().unwrap());
         }
         if op == Op::CALL && !is_direct {
             budget.push(
                 &mut m.calls,
-                (start, (m.operands[start / 4] & 0xffff) as usize),
+                (start, (operand & 0xffff) as usize),
             )?;
         }
         if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 3 < code.len() {
@@ -258,7 +276,7 @@ fn scan(chunk: &Chunk, budget: &mut MetadataBudget) -> Result<CodeMetadata, Prep
             }
             let relative = u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
             budget.push(&mut m.refs, (start, relative))?;
-            m.wide[m.operands[start / 4] as usize] = relative as u64;
+            if !deferred_entry { m.wide[m.operands[start / 4] as usize] = relative as u64; }
             ip += 4 + 2 + 1;
             if ip - 1 < code.len() {
                 ip += (code[ip - 1] & 0x7f) as usize * 3;
@@ -284,13 +302,13 @@ fn scan(chunk: &Chunk, budget: &mut MetadataBudget) -> Result<CodeMetadata, Prep
         }
         ip = operand_start + op.operand_format().size_in(code, operand_start);
     }
-    VM::finish_void_block_run(&mut m.operands, void_start, void_len);
+    if !deferred_entry { VM::finish_void_block_run(&mut m.operands, void_start, void_len); }
     if direct_starts != chunk.direct_defined_calls.len() {
         return Err(
             VMError::new("direct defined metadata is not on an instruction boundary").into(),
         );
     }
-    if block_entries_bound != 0 {
+    if !deferred_entry && block_entries_bound != 0 {
         let capacity = block_entries_bound
             .checked_mul(2)
             .ok_or(PreparationFailure::Raw)?
@@ -301,8 +319,8 @@ fn scan(chunk: &Chunk, budget: &mut MetadataBudget) -> Result<CodeMetadata, Prep
                 .ok_or(PreparationFailure::Raw)?,
         )?;
     }
-    m.blocks = crate::dispatch::build_block_entries(code);
-    if m.has_branch_table {
+    if !deferred_entry { m.blocks = crate::dispatch::build_block_entries(code); }
+    if !deferred_entry && m.has_branch_table {
         budget.charge(
             code.len()
                 .checked_mul(size_of::<Option<BrTableTargets>>())

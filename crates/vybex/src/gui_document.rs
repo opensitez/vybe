@@ -73,10 +73,8 @@ static PINNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// when this is false: the declaration covers a UI built later, from a timer or
 /// a handler, which no test at this instant can see.
 pub fn has_content() -> bool {
-    // Through `platforms/web`, so the answer is about the LIVE engine's
-    // document. `with_live` below still names the toolkit, which is why this
-    // no longer goes through it: under `--engine webcore` that asks the wrong
-    // tree and reports an empty UI for a form webcore laid out perfectly well.
+    // Through `platforms/web`, so the answer is about the LIVE browser's
+    // document.
     vybe_platform_web::present::has_content(active())
 }
 
@@ -322,12 +320,7 @@ pub fn controls() -> Vec<DomControl> {
 /// addressable: that is the handle `widgets` prints for it, and without it a
 /// form that builds its buttons in a loop can be listed but never clicked.
 pub fn node_by_id(name: &str) -> Option<NodeId> {
-    // Through the seam, so the inspector answers for whichever engine is live.
-    // This walked `widgets`' document directly, which is the toolkit
-    // whether or not the toolkit is running — so under `--engine webcore`
-    // every `css`/`attr`/`text` command reported "no control named X" for
-    // controls that were plainly in the tree. `html` was fixed first and made
-    // that obvious: the dump listed the element the next command denied.
+    // Through the seam, so the inspector answers for whichever browser is live.
     use vybe_platform_web::engine::{DomOp, DomValue, apply};
     match apply(active(), DomOp::GetElementById(name.to_string())) {
         DomValue::Node(node) => return Some(node),

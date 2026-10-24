@@ -38,10 +38,11 @@ vybe_platform_plib = { workspace = true }
 vybe_platform_ecma = { workspace = true }
 # Both browser implementations are available to the runtime selector. Selecting
 # Webcore does not route windowing, input, or scheduling through Widgets.
-vybe_platform_web = { workspace = true, features = ["engine-webcore", "engine-osbrowser"] }
+vybe_platform_web = { workspace = true }
 vybe_platform_wasi = { workspace = true }
 vybe_platform_node = { workspace = true }
 webcore = { workspace = true }
+osbrowser = { workspace = true }
 tiny-skia = "0.12"
 uuid = { workspace = true }
 tokio = { workspace = true }
@@ -56,3 +57,8 @@ indexmap = { workspace = true }
 mime_guess = { workspace = true }
 dashmap = { workspace = true }
 serde_json = { workspace = true }
+
+[package.metadata.vybe]
+# The browsers this binary provides, seeded into `platforms/web`'s registry by
+# `build.rs`. The first is the default.
+browsers = ["webcore", "osbrowser"]

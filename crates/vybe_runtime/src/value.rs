@@ -1183,6 +1183,18 @@ impl Object {
         }
         self.properties.insert(key, value);
     }
+
+    /// Update an ordinary property without allocating a replacement key.
+    /// Arrays retain the indexed-write and length rules of `set`.
+    pub fn set_borrowed(&mut self, key: &str, value: Value) {
+        if matches!(&self.kind, ObjectKind::Array(_)) {
+            self.set(key.to_owned(), value);
+        } else if let Some(slot) = self.properties.get_mut(key) {
+            *slot = value;
+        } else {
+            self.properties.insert(key.to_owned(), value);
+        }
+    }
 }
 
 /// A bytecode function (closure).
@@ -1198,6 +1210,36 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub struct Upvalue {
     pub location: UpvalueLocation,
+}
+
+#[cfg(test)]
+mod borrowed_property_write_tests {
+    use super::{Object, ObjectKind, Value};
+
+    #[test]
+    fn updates_keep_key_storage_and_insertion_order() {
+        let mut object = Object::new();
+        object.set("first".into(), Value::I32(1));
+        object.set("second".into(), Value::I32(2));
+        let key = object.properties.get_index(0).unwrap().0.as_ptr();
+        object.set_borrowed("first", Value::I32(3));
+        assert_eq!(object.properties.get_index(0).unwrap().0.as_ptr(), key);
+        assert!(matches!(object.get("first"), Value::I32(3)));
+        assert_eq!(object.properties.get_index(1).unwrap().0, "second");
+        object.set_borrowed("third", Value::I32(4));
+        assert_eq!(object.properties.get_index(2).unwrap().0, "third");
+    }
+
+    #[test]
+    fn arrays_preserve_index_and_length_rules() {
+        let mut object = Object::new_array(vec![Value::I32(1)]);
+        object.set_borrowed("02", Value::I32(7));
+        assert!(matches!(object.kind, ObjectKind::Array(ref values)
+            if values.len() == 3 && matches!(values[2], Value::I32(7))));
+        assert!(matches!(object.get("length"), Value::F64(value) if value == 3.0));
+        object.set_borrowed("label", Value::I32(9));
+        assert!(matches!(object.get("label"), Value::I32(9)));
+    }
 }
 
 #[derive(Debug, Clone)]

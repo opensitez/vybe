@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use vybe_runtime::value::{Function, Object, ObjectKind};
 use vybe_runtime::{Chunk, Op, VM, Value};

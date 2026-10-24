@@ -266,7 +266,7 @@ pub fn attach(vm: &mut VM) {
                 let rest: Vec<&str> = line.split_whitespace().skip(1).collect();
                 if rest.first() == Some(&"canvas") {
                     let on = rest.get(1) != Some(&"off");
-                    webcore::canvas::set_trace_enabled(on);
+                    vybe_platform_web::engine_select::set_canvas_trace(on);
                     eprintln!("  canvas tracing {}", if on { "on" } else { "off" });
                     continue;
                 }

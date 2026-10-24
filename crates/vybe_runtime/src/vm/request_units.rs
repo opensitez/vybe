@@ -112,11 +112,9 @@ impl VM {
     }
 }
 
-#[cfg(any(test,v6_resident_gate))]
+#[cfg(test)]
 #[path="request_unit_tests.rs"]
 mod tests;
-#[cfg(v6_resident_gate)]
-pub fn run_resident_native_gate(){tests::run_all()}
 
 impl VM {
     pub(super) fn install_linked_import_context(&mut self,script_idx:usize,resolved_imports:Vec<ImportTarget>){

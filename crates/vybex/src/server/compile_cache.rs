@@ -287,10 +287,6 @@ fn replay(outcome: &Outcome) -> Result<DynamicCompilation, String> {
     }
 }
 
-fn outcome_of(result: Result<&DynamicCompilation, &str>) -> Outcome {
-    outcome_of_chunks(result.map(|compiled| (compiled, compiled.chunks.as_slice())))
-}
-
 /// Opt-in allocation attribution for the retained, unrelocated cache copy.
 /// These are owned table capacities, not a total heap estimate: shared Arc
 /// payloads, private indexes, AST declarations and allocator rounding are excluded.
@@ -496,7 +492,7 @@ mod tests {
         let mut compiled = empty_compilation();
         compiled.component_source = true;
         compiled.component_binary = Some(Arc::new(vybe_compiler::ast::canon::ComponentBinary::default()));
-        let replayed = replay(&outcome_of(Ok(&compiled))).unwrap();
+        let replayed = replay(&outcome_of_chunks(Ok((&compiled, compiled.chunks.as_slice())))).unwrap();
         assert!(replayed.component_source);
         assert_eq!(replayed.component_binary, compiled.component_binary);
         assert!(Arc::ptr_eq(
@@ -511,7 +507,7 @@ mod tests {
         compiled.required_libraries.push(vybe_compiler::preparation::LibraryDependency {
             name: "LibraryType".into(), identity: "library:v1:LibraryType".into(),
         });
-        let replayed = replay(&outcome_of(Ok(&compiled))).unwrap();
+        let replayed = replay(&outcome_of_chunks(Ok((&compiled, compiled.chunks.as_slice())))).unwrap();
         assert_eq!(replayed.required_libraries, compiled.required_libraries);
     }
 
@@ -520,7 +516,7 @@ mod tests {
         let mut compiled = empty_compilation();
         compiled.source_declarations = vec![vybe_compiler::ast::Statement::new(
             vybe_compiler::ast::StmtKind::Expr(vybe_compiler::ast::Expression::ident("declaration")))].into();
-        let replayed = replay(&outcome_of(Ok(&compiled))).unwrap();
+        let replayed = replay(&outcome_of_chunks(Ok((&compiled, compiled.chunks.as_slice())))).unwrap();
         assert!(Arc::ptr_eq(&compiled.source_declarations, &replayed.source_declarations));
         assert_eq!(format!("{:?}", compiled.source_declarations), format!("{:?}", replayed.source_declarations));
     }

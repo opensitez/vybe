@@ -1,8 +1,9 @@
-//! Guest callbacks for Webcore's browser-owned native context.
+// The window launcher, compiled once per browser the binary provides (see
+// `build.rs`): `browser` is that browser's crate, `engine` its web engine.
 
 use std::time::Duration;
 
-use webcore::browser::{Browser, BrowserChrome, BrowserGuest, BrowserOptions};
+use browser::browser::{Browser, BrowserChrome, BrowserGuest, BrowserOptions};
 
 struct Guest {
     vm: vybe_runtime::VM,
@@ -81,9 +82,9 @@ impl BrowserGuest for Guest {
 
 pub fn launch_gui(vm: vybe_runtime::VM) {
     let Some(document) =
-        vybe_platform_web::engine_webcore::browser_document(crate::gui_document::active())
+        engine::engine::browser_document(crate::gui_document::active())
     else {
-        eprintln!("Cannot open Webcore GUI: the active document is closed");
+        eprintln!("Cannot open GUI: the active document is closed");
         return;
     };
     let (width, height) = crate::gui_document::viewport().unwrap_or((800, 600));
@@ -93,7 +94,8 @@ pub fn launch_gui(vm: vybe_runtime::VM) {
         width: width as f32,
         height: height as f32,
         chrome: BrowserChrome::NONE,
-        debug: webcore::browser::BrowserDebugOptions {
+        default_context_menu: false,
+        debug: browser::browser::BrowserDebugOptions {
             port: std::env::var("VYBE_BROWSER_DEBUG_PORT").ok().and_then(|value| value.parse().ok()),
             ..Default::default()
         },
@@ -102,13 +104,13 @@ pub fn launch_gui(vm: vybe_runtime::VM) {
     let mut browser = match Browser::open(options) {
         Ok(browser) => browser,
         Err(error) => {
-            eprintln!("Cannot open Webcore browser: {error}");
+            eprintln!("Cannot open browser: {error}");
             return;
         }
     };
     browser.attach_document(document);
     browser.set_guest(Guest { vm });
     if let Err(error) = browser.run() {
-        eprintln!("Webcore browser error: {error}");
+        eprintln!("Browser error: {error}");
     }
 }

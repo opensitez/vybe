@@ -541,6 +541,23 @@ impl VM {
         }
     }
 
+    /// A ref.test consumes one reference and produces one i32. Keep the
+    /// initialized stack slot, with one underflow check and no Vec resize.
+    #[inline(always)]
+    pub(crate) fn replace_ref_test_fast(&mut self, ht: crate::opcode::heaptype::HeapType) {
+        let len = self.stack.len();
+        if len == 0 {
+            panic!("stack underflow");
+        }
+        let index = len - 1;
+        let result = self.ref_test(unsafe { self.stack.get_unchecked(index) }, ht);
+        // ref_test only inspects the value/type registry and runs no callbacks.
+        // It cannot change stack length, so the same checked slot remains live.
+        unsafe {
+            *self.stack.get_unchecked_mut(index) = Value::I32(result as i32);
+        }
+    }
+
     /// `ref.test` against an ABSTRACT heap type (GC proposal §6.2).
     ///
     /// A pure shape test on the value: the abstract hierarchy is fixed by the
@@ -573,7 +590,11 @@ impl VM {
             // `func`: top of the function hierarchy.
             HT_FUNC => is_func(val),
             // `struct`: every non-array, non-func object.
-            HT_STRUCT => matches!(val, Value::Object(_)) && !is_array(val) && !is_func(val),
+            HT_STRUCT => match val {
+                Value::Object(object) => !matches!(object.lock().unwrap().kind,
+                    ObjectKind::Array(_) | ObjectKind::Function(_) | ObjectKind::HostFunction(_)),
+                _ => false,
+            },
             // `array`: top of the array hierarchy.
             HT_ARRAY => is_array(val),
             _ => false,

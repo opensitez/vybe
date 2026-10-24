@@ -17,8 +17,102 @@ mod module_storage;
 mod request_units;
 pub use request_units::{LoadedRequestUnit,RequestUnitDenial};
 mod native_cache_preparation;
+mod first_entry_preparation;
+
+#[cfg(test)]
+mod native_thread_reset_tests;
 
 const ERROR_HISTORY_LEN: usize = 32;
+
+/// Reset cannot proceed until every native descendant has finished teardown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResetError {
+    NativeThreadsActive { count: usize },
+}
+
+impl std::fmt::Display for ResetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NativeThreadsActive { count } => write!(f,
+                "cannot reset VM: {count} native thread(s) still active; retire the worker process"),
+        }
+    }
+}
+
+impl std::error::Error for ResetError {}
+
+#[derive(Default)]
+pub(crate) struct NativeThreadFamily {
+    handles: Mutex<Vec<Arc<NativeThread>>>,
+}
+
+struct NativeThreadState {
+    handle: Option<std::thread::JoinHandle<Vec<u8>>>,
+    outcome: Option<Result<Vec<u8>, ()>>,
+}
+
+pub(crate) struct NativeThread {
+    state: Mutex<NativeThreadState>,
+}
+
+impl NativeThread {
+    fn reap(state: &mut NativeThreadState) -> Result<Vec<u8>, ()> {
+        if let Some(handle) = state.handle.take() {
+            state.outcome = Some(handle.join().map_err(|_| ()));
+        }
+        state.outcome.clone().expect("native thread missing handle and outcome")
+    }
+
+    pub(crate) fn join(&self) -> Result<Vec<u8>, ()> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        Self::reap(&mut state)
+    }
+
+    fn try_reap(&self) -> bool {
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            // A guest join in progress must not block reset's refusal path.
+            Err(std::sync::TryLockError::WouldBlock) => return false,
+        };
+        if state.handle.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            return false;
+        }
+        let _ = Self::reap(&mut state);
+        true
+    }
+}
+
+impl NativeThreadFamily {
+    pub(crate) fn register(&self, handle: std::thread::JoinHandle<Vec<u8>>) -> Arc<NativeThread> {
+        let thread = Arc::new(NativeThread {
+            state: Mutex::new(NativeThreadState { handle: Some(handle), outcome: None }),
+        });
+        let mut handles = self.handles.lock().unwrap_or_else(|error| error.into_inner());
+        // Keep cached outcomes in guest lookups, not an ever-growing family.
+        handles.retain(|thread| !thread.try_reap());
+        handles.push(thread.clone());
+        thread
+    }
+
+    fn ensure_finished(&self) -> Result<(), ResetError> {
+        let mut handles = match self.handles.try_lock() {
+            Ok(handles) => handles,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(ResetError::NativeThreadsActive { count: 1 });
+            }
+        };
+        // Every spawning child is itself registered and remains unfinished
+        // until it has published its descendants and dropped its child VM.
+        let count = handles.iter().filter(|thread| !thread.try_reap()).count();
+        if count != 0 {
+            return Err(ResetError::NativeThreadsActive { count });
+        }
+        handles.clear();
+        Ok(())
+    }
+}
 
 pub(crate) struct ErrorStep {
     chunk_index: usize,
@@ -3269,6 +3363,8 @@ pub struct VM {
     /// Validation has already proven the current `ip` is an instruction
     /// boundary.
     pub(crate) decoded_ops: Vec<Vec<Op>>,
+    /// Unit-relative REF_FUNC base for validated bodies awaiting first decode.
+    pub(crate) pending_entry_decode: HashMap<usize, usize>,
     /// Per-chunk first-operand cache, indexed by opcode byte offset / 4.
     /// Internal four-byte opcodes occupy distinct buckets even when unaligned.
     /// This is intentionally a raw `u32`: hot fixed-width
@@ -3354,9 +3450,9 @@ pub struct VM {
     /// When an object's strong count reaches the weak+finalizer threshold,
     /// the callback is queued for execution.
     pub(crate) finalizers: Vec<FinalizerEntry>,
-    /// Active threads spawned by thread_spawn opcode.
-    /// Maps thread_id → JoinHandle that returns the serialized result.
-    pub(crate) thread_handles: HashMap<i32, std::thread::JoinHandle<Vec<u8>>>,
+    /// Guest join lookup; the family also retains all descendant handles.
+    pub(crate) thread_handles: HashMap<i32, Arc<NativeThread>>,
+    pub(crate) native_threads: Arc<NativeThreadFamily>,
     /// Next thread ID to assign.
     pub(crate) next_thread_id: i32,
     /// Execution trace: when true, print every opcode + stack top.
@@ -3463,7 +3559,7 @@ pub struct VM {
     pub current_thread: Option<u32>,
     /// The `$t` immediate of the canonical built-in currently executing, set
     /// by the dispatch arm just before the call. Carried on the VM rather than
-    /// threaded through `exec_canon_builtin` because only the typed copies read
+    /// threaded through `exec_canon_builtin_with_result` because only the typed copies read
     /// it, and every other built-in would have to ignore an extra parameter.
     pub(crate) canon_type_immediate: Option<u32>,
     /// Active CM3 tasks (keyed by task ID). Each async export invocation creates one.
@@ -3500,7 +3596,10 @@ pub struct VmSnapshot {
     globals: Vec<Value>,
     global_index: crate::global_name_index::GlobalNameIndex,
     memory: Vec<u8>,
+    memory_max_pages: Option<usize>,
     extra_memories: Vec<Vec<u8>>,
+    extra_memory_limits: Vec<Option<usize>>,
+    extra_memory_max_pages: Vec<Option<usize>>,
     wasm_tables: Vec<Vec<Value>>,
     dropped_data: HashSet<u32>,
     dropped_elems: HashSet<u32>,
@@ -4466,6 +4565,7 @@ impl VM {
             loop_superops: Vec::new(),
             br_table_targets: Vec::new(),
             decoded_ops: Vec::new(),
+            pending_entry_decode: HashMap::new(),
             decoded_operands: Vec::new(),
             decoded_operands64: Vec::new(),
             native_call_sites: Vec::new(),
@@ -4486,6 +4586,7 @@ impl VM {
             case_aliases: HashMap::new(),
             finalizers: Vec::new(),
             thread_handles: HashMap::new(),
+            native_threads: Arc::new(NativeThreadFamily::default()),
             next_thread_id: 1,
             trace,
             trace_chunk_filter: std::env::var("VYBE_TRACE_CHUNK").ok(),
@@ -4545,7 +4646,10 @@ impl VM {
             globals: self.globals.clone(),
             global_index: self.global_index.clone(),
             memory: self.memory.with_buffer(|b| b.to_vec()),
+            memory_max_pages: self.memory.max_pages(),
             extra_memories: self.extra_memories.iter().map(|m| m.with_buffer(|bytes| bytes.to_vec())).collect(),
+            extra_memory_limits: self.extra_memories.iter().map(|m| m.max_pages()).collect(),
+            extra_memory_max_pages: self.extra_memory_max_pages.clone(),
             wasm_tables: self.wasm_tables.clone(),
             dropped_data: self.dropped_data.clone(),
             dropped_elems: self.dropped_elems.clone(),
@@ -4609,6 +4713,23 @@ impl VM {
     /// creates: host fns and their registry, the boot chunks (prelude), the
     /// scheduler the embedder installed, and the debugger/eval/reload hooks.
     pub fn reset_to(&mut self, snap: &VmSnapshot) {
+        self.try_reset_to(snap).expect("VM reset requires native-thread quiescence");
+    }
+
+    /// Nonblocking quiescence check for reset or a new preload snapshot.
+    /// Joins finished descendants, including those whose parent VM exited.
+    /// Call only on the embedding root VM, with no concurrent root execution
+    /// or other quiescence checks in the same native-thread family.
+    /// On refusal the embedder must retire the process or arrange completion;
+    /// no native thread is cancelled or detached by this operation.
+    pub fn ensure_threads_finished(&mut self) -> Result<(), ResetError> {
+        self.native_threads.ensure_finished()
+    }
+
+    /// Refuse before changing heap, roots, host resources, or shared memory
+    /// when any native descendant is still running or being joined.
+    pub fn try_reset_to(&mut self, snap: &VmSnapshot) -> Result<(), ResetError> {
+        self.ensure_threads_finished()?;
         self.invalidate_request_units();
         self.jit = crate::jit::State::default();
         *self.string_lengths.borrow_mut() = crate::string_lengths::StringLengths::default();
@@ -4622,21 +4743,18 @@ impl VM {
         self.global_index = snap.global_index.clone();
         self.globals_assigned = vec![true; self.globals.len()];
         // 3. Wasm linear memory + tables + segment-drop state → boot.
-        self.memory.with_buffer_mut(|b| {
-            b.clear();
-            b.extend_from_slice(&snap.memory);
-        });
+        self.memory.restore_baseline(&snap.memory);
+        self.memory.set_max_pages(snap.memory_max_pages);
         self.extra_memories.truncate(snap.extra_memories.len());
         for (index, bytes) in snap.extra_memories.iter().enumerate() {
             if let Some(memory) = self.extra_memories.get(index) {
-                memory.with_buffer_mut(|buffer| {
-                    buffer.clear();
-                    buffer.extend_from_slice(bytes);
-                });
+                memory.restore_baseline(bytes);
             } else {
                 self.extra_memories.push(crate::shared_memory::SharedMemory::from_vec(bytes.clone()));
             }
+            self.extra_memories[index].set_max_pages(snap.extra_memory_limits[index]);
         }
+        self.extra_memory_max_pages = snap.extra_memory_max_pages.clone();
         self.wasm_tables = snap.wasm_tables.clone();
         self.dropped_data = snap.dropped_data.clone();
         self.dropped_elems = snap.dropped_elems.clone();
@@ -4670,6 +4788,7 @@ impl VM {
         //     keyed by index (funcref_cache) are cleared in step 5.
         self.chunks.truncate(snap.chunks_len);
         self.decoded_ops.truncate(snap.chunks_len);
+        self.pending_entry_decode.retain(|index, _| *index < snap.chunks_len);
         self.decoded_operands.truncate(snap.chunks_len);
         self.decoded_operands64.truncate(snap.chunks_len);
         self.native_call_sites.truncate(snap.chunks_len);
@@ -4758,8 +4877,7 @@ impl VM {
         self.label_stack.clear();
         self.active_continuations.clear();
         self.finalizers.clear();
-        // Detaches (does NOT join) any threads the script spawned — acceptable
-        // for reset-between-runs; a hung script thread is the embedder's concern.
+        // Family quiescence was established before any reset mutation.
         self.thread_handles.clear();
         self.funcref_cache.clear();
         // 6. Event loop: reset the SHARED RefCell contents in place so host fns
@@ -4784,6 +4902,29 @@ impl VM {
         self.try_group_counter = snap.try_group_counter;
         self.next_thread_id = snap.next_thread_id;
         self.next_cm_task_id = snap.next_cm_task_id;
+        // Retain small reusable scratch space, not the largest tenant's peak.
+        fn trim<T>(values: &mut Vec<T>) {
+            let limit = values.len().saturating_mul(4)
+                .max(64 * 1024 / std::mem::size_of::<T>().max(1));
+            if values.capacity() > limit {
+                values.shrink_to(limit);
+            }
+        }
+        trim(&mut self.stack);
+        trim(&mut self.frames);
+        trim(&mut self.exception_handlers);
+        trim(&mut self.label_stack);
+        trim(&mut self.chunks);
+        trim(&mut self.decoded_ops);
+        trim(&mut self.decoded_operands);
+        trim(&mut self.decoded_operands64);
+        trim(&mut self.native_call_sites);
+        trim(&mut self.native_result_fast_paths);
+        trim(&mut self.local_fast_paths);
+        trim(&mut self.block_targets);
+        trim(&mut self.loop_superops);
+        trim(&mut self.br_table_targets);
+        Ok(())
     }
 
     /// Enable or disable execution tracing. When enabled, every opcode
@@ -5044,6 +5185,9 @@ impl VM {
         // new body, and heap/globals/stack are untouched (Dart hot reload).
         let mut reloaded = Vec::new();
         for &i in &changed {
+            // Resolve the old body with its original module base before moving
+            // caches or replacing raw code. Never apply that base to new code.
+            self.prepare_first_entry_decode(i);
             reloaded.push(self.chunks[i].name.clone());
             if current_live.contains(&i) {
                 let old = self.chunks[i].clone();
@@ -8001,6 +8145,7 @@ impl VM {
         if self.local_fast_paths[chunk_index].len() == expected {
             return;
         }
+        self.prepare_first_entry_decode(chunk_index);
         self.prepare_native_call_sites_for_entry(chunk_index);
         let (locals, results) = Self::build_execution_fast_paths_for_chunk(
             &self.chunks[chunk_index],
@@ -8171,6 +8316,9 @@ impl VM {
                 for (chunk, row) in adjusted.iter().zip(rows.iter_mut()) {
                     // Relocation keeps the raw global walk unchanged. Read
                     // sparse actual operands after it, using THIS VM's base.
+                    if row.deferred_entry {
+                        self.pending_entry_decode.insert(self.decoded_ops.len(), script_idx);
+                    } else {
                     for &(start, _) in &row.globals {
                         row.operands[start / 4] = Self::decode_operand32(&chunk.code, row.ops[start / 4], start + 4);
                     }
@@ -8178,6 +8326,7 @@ impl VM {
                         let relative = u16::from_be_bytes([chunk.code[start + 4], chunk.code[start + 5]]) as usize;
                         let pool_index = row.operands[start / 4] as usize;
                         row.wide[pool_index] = script_idx.checked_add(relative).expect("ref.func chunk index exceeds usize") as u64;
+                    }
                     }
                     self.decoded_ops.push(std::mem::take(&mut row.ops));
                     self.decoded_operands.push(std::mem::take(&mut row.operands));
@@ -8196,7 +8345,9 @@ impl VM {
             let _stage = link_timing.as_ref().map(|timing| timing.stage("blocks"));
             if let Some(rows) = metadata.as_mut() {
                 for (chunk, row) in adjusted.iter().zip(rows.iter_mut()) {
-                    self.block_targets.push(std::sync::Arc::new(BlockTargetCache::from_entries(chunk.code.len(), std::mem::take(&mut row.blocks))));
+                    self.block_targets.push(std::sync::Arc::new(if row.deferred_entry {
+                        BlockTargetCache::default()
+                    } else { BlockTargetCache::from_entries(chunk.code.len(), std::mem::take(&mut row.blocks)) }));
                 }
             } else {
                 self.extend_block_targets_for_chunks(&adjusted);
@@ -10353,9 +10504,15 @@ impl VM {
                     let sites = row.raw_globals.as_ref().unwrap_or(&row.globals);
                     for &(start, old) in sites {
                         if let Some(&new_idx) = remap.get(old as usize) {
-                            if new_idx != old && row.ops.get(start / 4).copied().is_none_or(|op| {
-                                op != Op::GLOBAL_GET && op != Op::GLOBAL_SET
-                            }) {
+                            let actual_global = if row.deferred_entry {
+                                // Sparse records certify actual instruction starts;
+                                // raw_globals may also contain legacy phantom sites.
+                                row.globals.binary_search_by_key(&start, |&(at, _)| at).is_ok()
+                            } else {
+                                row.ops.get(start / 4).copied().is_some_and(|op|
+                                    op == Op::GLOBAL_GET || op == Op::GLOBAL_SET)
+                            };
+                            if new_idx != old && !actual_global {
                                 // Preserve payload/phantom writes if a future
                                 // raw cursor sees them, then use raw decoding.
                                 invalidate = true;

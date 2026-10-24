@@ -20,6 +20,10 @@
 
 use crate::component::ValType;
 
+#[path = "canon_layout/summary.rs"]
+pub mod summary;
+use summary::CanonicalLayout;
+
 /// `ptr_size(ptr_type)` for a 32-bit address space.
 ///
 /// 🐘 memory64 would make this 8 and widen `string` and unfixed `list` with
@@ -241,17 +245,20 @@ pub fn elem_size(t: &ValType) -> u32 {
     }
 }
 
-const MAX_COMPONENT_VALUE_SIZE: u64 = 1 << 28;
+#[cfg(test)]
 const VALUE_SIZE_ERROR: &str = "exceeds maximum byte size";
 
 /// Validate a component value definition using the proposal's memory64 size
 /// limit, even when this VM executes its canonical memory as memory32.
 pub fn validate_value_type_size(t: &ValType) -> Result<(), &'static str> {
-    validate_value_type_shape(t)?;
-    if checked_layout_i64(t)?.0 >= MAX_COMPONENT_VALUE_SIZE {
-        Err(VALUE_SIZE_ERROR)
-    } else {
-        Ok(())
+    match checked_layout_i64(t) {
+        Ok(layout) => layout.validate_value_size(),
+        Err(error) => {
+            // Shape errors took precedence before layout validation. Preserve
+            // that ordering without walking every valid inline type twice.
+            validate_value_type_shape(t)?;
+            Err(error)
+        }
     }
 }
 
@@ -292,78 +299,38 @@ fn validate_value_type_shape(t: &ValType) -> Result<(), &'static str> {
     }
 }
 
-fn checked_align_i64(size: u64, align: u64) -> Result<u64, &'static str> {
-    size.checked_add(align - 1)
-        .map(|n| n / align * align)
-        .ok_or(VALUE_SIZE_ERROR)
-}
-
-fn checked_variant_i64(cases: &[Option<&ValType>]) -> Result<(u64, u64), &'static str> {
-    if cases.is_empty() {
-        return Err("component variant requires a case");
-    }
-    let tag_size = discriminant_size(cases.len()) as u64;
-    let mut payload_align = 1u64;
-    let mut payload_size = 0u64;
-    for case in cases.iter().flatten() {
-        let (size, align) = checked_layout_i64(case)?;
-        payload_size = payload_size.max(size);
-        payload_align = payload_align.max(align);
-    }
-    let align = tag_size.max(payload_align);
-    let offset = checked_align_i64(tag_size, payload_align)?;
-    let size = checked_align_i64(
-        offset.checked_add(payload_size).ok_or(VALUE_SIZE_ERROR)?,
-        align,
-    )?;
-    Ok((size, align))
-}
-
-fn checked_layout_i64(t: &ValType) -> Result<(u64, u64), &'static str> {
+fn checked_layout_i64(t: &ValType) -> Result<CanonicalLayout, &'static str> {
     let layout = match t {
-        ValType::Bool | ValType::S8 | ValType::U8 | ValType::Any => (1, 1),
-        ValType::S16 | ValType::U16 => (2, 2),
-        ValType::I32 | ValType::U32 | ValType::F32 | ValType::Char => (4, 4),
-        ValType::I64 | ValType::U64 | ValType::F64 => (8, 8),
-        ValType::String => (16, 8),
-        ValType::Flags(labels) => {
-            if labels.is_empty() || labels.len() > 32 {
-                return Err("component flags require 1 to 32 labels");
-            }
-            let width = flags_bytes(labels.len()) as u64;
-            (width, width)
+        ValType::Bool | ValType::S8 | ValType::U8 | ValType::Any => CanonicalLayout::BYTE,
+        ValType::S16 | ValType::U16 => CanonicalLayout::WORD,
+        ValType::I32 | ValType::U32 | ValType::F32 | ValType::Char => CanonicalLayout::DWORD,
+        ValType::I64 | ValType::U64 | ValType::F64 => CanonicalLayout::QWORD,
+        ValType::String => CanonicalLayout::POINTER_PAIR,
+        ValType::List(inner) => {
+            validate_value_type_shape(inner)?;
+            CanonicalLayout::POINTER_PAIR
         }
-        ValType::List(_) => (16, 8),
-        ValType::ListFixed(elem, count) => {
-            if *count == 0 {
-                return Err("fixed-length list must not be empty");
-            }
-            let (size, align) = checked_layout_i64(elem)?;
-            (
-                size.checked_mul(*count as u64).ok_or(VALUE_SIZE_ERROR)?,
-                align,
-            )
+        ValType::Flags(labels) => CanonicalLayout::flags(labels.len())?,
+        ValType::ListFixed(elem, count) => checked_layout_i64(elem)?.fixed_list(*count)?,
+        ValType::Record(fields) => CanonicalLayout::record(
+            fields.iter().map(|(_, field)| checked_layout_i64(field)),
+        )?,
+        ValType::Option(inner) => CanonicalLayout::variant(
+            [None, Some(inner.as_ref())].into_iter()
+                .map(|case| case.map(checked_layout_i64).transpose()),
+        )?,
+        ValType::Result(ok, err) => CanonicalLayout::variant(
+            [ok.as_deref(), err.as_deref()].into_iter()
+                .map(|case| case.map(checked_layout_i64).transpose()),
+        )?,
+        ValType::Variant(cases) => CanonicalLayout::variant(
+            cases.iter().map(|(_, case)| case.as_ref().map(checked_layout_i64).transpose()),
+        )?,
+        ValType::Own(_) | ValType::Borrow(_) | ValType::ErrorContext => CanonicalLayout::DWORD,
+        ValType::Stream(inner) | ValType::Future(inner) => {
+            validate_value_type_shape(inner)?;
+            CanonicalLayout::DWORD
         }
-        ValType::Record(fields) => {
-            if fields.is_empty() {
-                return Err("component record requires a field");
-            }
-            let mut size = 0u64;
-            let mut align = 1u64;
-            for (_, field) in fields {
-                let (field_size, field_align) = checked_layout_i64(field)?;
-                size = checked_align_i64(size, field_align)?
-                    .checked_add(field_size)
-                    .ok_or(VALUE_SIZE_ERROR)?;
-                align = align.max(field_align);
-            }
-            (checked_align_i64(size, align)?, align)
-        }
-        ValType::Option(inner) => checked_variant_i64(&[None, Some(inner.as_ref())])?,
-        ValType::Result(ok, err) => checked_variant_i64(&[ok.as_deref(), err.as_deref()])?,
-        ValType::Variant(cases) => checked_variant_i64(&variant_cases(cases))?,
-        ValType::Own(_) | ValType::Borrow(_) | ValType::ErrorContext => (4, 4),
-        ValType::Stream(_) | ValType::Future(_) => (4, 4),
     };
     Ok(layout)
 }
@@ -457,6 +424,30 @@ mod tests {
             validate_value_type_size(&tuple(fixed(268_435_455), fixed(1))),
             Err(VALUE_SIZE_ERROR)
         );
+    }
+
+    #[test]
+    fn shape_errors_keep_precedence_over_layout_overflow() {
+        let overflow = ValType::ListFixed(
+            Box::new(ValType::ListFixed(Box::new(ValType::U64), u32::MAX)),
+            u32::MAX,
+        );
+        let record = ValType::Record(vec![
+            ("large".into(), overflow.clone()),
+            ("empty".into(), ValType::Record(vec![])),
+        ]);
+        assert_eq!(validate_value_type_size(&record), Err("component record requires a field"));
+        let variant = ValType::Variant(vec![
+            ("large".into(), Some(overflow.clone())),
+            ("bad".into(), Some(ValType::Flags(vec![]))),
+        ]);
+        assert_eq!(validate_value_type_size(&variant), Err("component flags require 1 to 32 labels"));
+        assert_eq!(validate_value_type_size(&ValType::ListFixed(
+            Box::new(ValType::Flags(vec![])), 0,
+        )), Err("fixed-length list must not be empty"));
+        // Dynamic children need valid shapes, not an inline layout calculation.
+        assert!(validate_value_type_size(&ValType::List(Box::new(overflow.clone()))).is_ok());
+        assert!(validate_value_type_size(&ValType::Future(Box::new(overflow))).is_ok());
     }
 
     #[test]

@@ -75,11 +75,17 @@ pub fn boot_with(
 /// Everything else a plugin allocates now lives in the VM-owned resource store
 /// and is dropped inside `reset_to` itself.
 ///
-/// Call this BEFORE running a job, never after. Cleaning up afterwards looks
-/// tidier and is wrong: the response half of a request may still be draining
-/// when the job function returns, and the reset drops the `wasi:http` tables it
-/// reads from.
+/// Reset only after all externally consumed output is finished. HTTP embedders
+/// reset before the next request because the prior response may still drain
+/// after the handler returns. CLI workers flush output, then reset before their
+/// completion marker so an idle worker does not retain the last tenant.
 pub fn reset(vm: &mut VM, baseline: &VmSnapshot) {
-    vm.reset_to(baseline);
+    try_reset(vm, baseline).expect("cannot reset a VM while guest threads are running");
+}
+
+/// Fallible reset for embedders that can retire a non-quiescent worker.
+pub fn try_reset(vm: &mut VM, baseline: &VmSnapshot) -> Result<(), vybe_runtime::vm::ResetError> {
+    vm.try_reset_to(baseline)?;
     vybe_platform_wasi::reset_host_globals();
+    Ok(())
 }

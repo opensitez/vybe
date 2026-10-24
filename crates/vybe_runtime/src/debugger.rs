@@ -1074,7 +1074,8 @@ impl Debugger {
         let host_stop = self.break_host.as_ref().and_then(|(wanted, bad_type_only)| {
             if op != Op::CALL { return None; }
             if *bad_type_only {
-                let valid_operand = if wanted == "wasm:js-number:toF64" {
+                let valid_operand = if matches!(wanted.as_str(),
+                    "wasm:js-number:toF64" | "wasm:js-number:toI32" | "wasm:js-number:toU32") {
                     matches!(vm.stack.last(), Some(
                         crate::Value::I32(_) | crate::Value::I64(_)
                         | crate::Value::F32(_) | crate::Value::F64(_)

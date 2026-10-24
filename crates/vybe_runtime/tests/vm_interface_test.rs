@@ -1,8 +1,7 @@
-use std::sync::Arc;
 use vybe_runtime::chunk::TypeEntry;
 use vybe_runtime::typedef::Method;
 /// Tests for cross-language interface sharing and constructor chaining.
-use vybe_runtime::{Chunk, Op, TypeDef, VM, Value};
+use vybe_runtime::TypeDef;
 
 // ── Interface Registration ──────────────────────────────────
 

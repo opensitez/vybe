@@ -65,6 +65,19 @@ pub struct RecGroup {
     fingerprint: u64,
 }
 
+impl Drop for RecGroup {
+    fn drop(&mut self) {
+        let mut pending = std::mem::take(&mut self.dependencies);
+        while let Some(identity) = pending.pop() {
+            if let Some(mut group) = Arc::into_inner(identity.group) {
+                // Empty the owned group before its Drop runs, bounding stack
+                // depth even when an escaped identity releases a long chain.
+                pending.append(&mut group.dependencies);
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for RecGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RecGroup")
@@ -112,6 +125,9 @@ impl std::fmt::Debug for TypeIdentity {
 }
 
 impl TypeIdentity {
+    pub fn group_types(&self) -> &[SubType] { &self.group.types }
+    pub fn group_dependencies(&self) -> &[TypeIdentity] { &self.group.dependencies }
+    pub fn position(&self) -> u32 { self.position }
     pub fn definition(&self) -> &SubType {
         &self.group.types[self.position as usize]
     }
@@ -216,6 +232,23 @@ mod tests {
         identities.insert(a.identity(0).unwrap(), 1);
         identities.insert(b.identity(0).unwrap(), 2);
         assert_eq!(identities.len(), 2);
+    }
+
+    #[test]
+    fn readonly_group_views_preserve_member_and_dependency_identity() {
+        let base = RecGroup::new(vec![structure(StorageType::I8)], vec![]);
+        let dependency = base.identity(0).unwrap();
+        let members = vec![structure(StorageType::I8), structure(StorageType::I16)];
+        let group = RecGroup::new(members.clone(), vec![dependency.clone()]);
+        let second = group.identity(1).unwrap();
+        assert_eq!(second.position(), 1);
+        assert_eq!(second.group_types(), members);
+        assert_eq!(second.group_dependencies(), &[dependency]);
+        assert_eq!(second.definition(), &second.group_types()[1]);
+        drop(group);
+        drop(base);
+        assert_eq!(second.group_dependencies()[0].definition().composite,
+            structure(StorageType::I8).composite);
     }
 
     #[test]

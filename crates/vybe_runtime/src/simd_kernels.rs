@@ -362,6 +362,7 @@ mod wide_bitmask_tests {
     }
 }
 
+#[cfg(any(test, not(all(target_endian = "little", target_arch = "aarch64"))))]
 #[inline(always)]
 fn swizzle_scalar(source: &[u8; 16], indices: &[u8; 16]) -> [u8; 16] {
     #[cfg(all(target_arch = "x86_64", target_endian = "little"))]

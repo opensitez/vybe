@@ -290,11 +290,15 @@ impl Op {
             // not exceed it; the caller applies that stricter rule.
             (0xFE, 0x00 | 0x01) => Some(4), // notify, wait32
             (0xFE, 0x02) => Some(8),        // wait64
-            (0xFE, 0x10) => Some(4),        // i32.atomic.load
-            (0xFE, 0x11) => Some(8),        // i64.atomic.load
-            (0xFE, 0x12 | 0x17) => Some(1), // i32/i64 atomic load8_u
-            (0xFE, 0x13 | 0x18) => Some(2), // …load16_u
-            (0xFE, 0x14) => Some(4),        // i64.atomic.load32_u
+            // Load/store and each RMW family use the same seven-width order:
+            // i32, i64, i32.8, i32.16, i64.8, i64.16, i64.32.
+            (0xFE, sub @ 0x10..=0x4E) => match (sub - 0x10) % 7 {
+                0 | 6 => Some(4),
+                1 => Some(8),
+                2 | 4 => Some(1),
+                3 | 5 => Some(2),
+                _ => unreachable!(),
+            },
             _ => None,
         }
     }
@@ -860,6 +864,23 @@ pub(crate) use opcode_category;
 #[cfg(test)]
 mod operand_size_tests {
     use super::Op;
+
+    #[test]
+    fn atomic_memory_widths_cover_every_standard_family() {
+        let widths = [4, 8, 1, 2, 1, 2, 4];
+        for base in [0x10, 0x17, 0x1e, 0x25, 0x2c, 0x33, 0x3a, 0x41, 0x48] {
+            for (index, width) in widths.into_iter().enumerate() {
+                let op = Op::decode(0xfe, base + index as u16).unwrap();
+                assert_eq!(op.natural_align_bytes(), Some(width), "{}", op.wasm_name());
+            }
+        }
+        for (op, width) in [(Op::MEMORY_ATOMIC_NOTIFY, 4),
+            (Op::MEMORY_ATOMIC_WAIT32, 4), (Op::MEMORY_ATOMIC_WAIT64, 8)] {
+            assert_eq!(op.natural_align_bytes(), Some(width));
+        }
+        assert_eq!(Op::ATOMIC_FENCE.natural_align_bytes(), None);
+        assert_eq!(Op::new(0xfe, 0x4f).natural_align_bytes(), None);
+    }
 
     #[test]
     fn paired_leb_shortcut_preserves_truncated_and_multibyte_sizes() {

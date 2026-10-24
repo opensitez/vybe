@@ -5,7 +5,7 @@
 //! component wires into a core instance's imports — functions, NOT
 //! instructions. The VM matches that shape: every canon built-in is a
 //! VM-implemented import under module "canon" (`ImportTarget::Canon` →
-//! `exec_canon_builtin`), reached via spec `call` (0x00 0x10) — exactly
+//! `exec_canon_builtin_with_result`), reached via spec `call` (0x00 0x10) — exactly
 //! like the jspi / wasi-threads VM-implemented imports.
 //!
 //! The 0xF0 instruction prefix that used to carry them is retired with

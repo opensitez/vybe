@@ -9,6 +9,9 @@ use std::mem::size_of;
 
 use super::{LocalFastPath, NativeResultFastPath, VM};
 
+#[path = "emission_census.rs"]
+mod emission_census;
+
 fn write_rows<T>(
     output: &mut String,
     name: &str,
@@ -51,6 +54,7 @@ impl VM {
         let _ = writeln!(output,
             "cache_census chunks={} code_bytes={code_bytes} code_capacity_bytes={code_capacity_bytes} excludes_nested_entry_allocations=true excludes_shared_block_targets=true",
             self.chunks.len());
+        emission_census::write_groups(&mut output, &self.chunks);
         let mut total = 0usize;
         macro_rules! table {
             ($field:ident, $populated:expr) => {

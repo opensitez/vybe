@@ -131,9 +131,7 @@ pub fn capture_to_png(path: &str, control: Option<&str>, scale: f32) -> Result<(
     let (w, h) = crate::gui_document::viewport().ok_or_else(|| {
         format!(
             "no live document to capture — engine `{}` holds: {}",
-            vybe_platform_web::engine_select::live()
-                .map(|e| e.as_str())
-                .unwrap_or("none"),
+            vybe_platform_web::engine_select::live().unwrap_or("none"),
             crate::gui_document::engine_html()
         )
     })?;

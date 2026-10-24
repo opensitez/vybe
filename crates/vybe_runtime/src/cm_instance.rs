@@ -206,7 +206,6 @@ mod tests {
 
 #[cfg(test)]
 mod guard_coverage_tests {
-    use super::*;
     use crate::vm::CanonBuiltin as B;
 
     /// The exemption list is a claim about the SPEC, so pin it. Each of these
