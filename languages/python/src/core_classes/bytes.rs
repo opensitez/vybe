@@ -12,10 +12,6 @@ use vybe_ast::{
 
 type Expr = vybe_ast::Expression;
 
-fn i(n: i64) -> Expr {
-    Expr::int(n)
-}
-
 fn op(o: BinOp, l: Expr, r: Expr) -> Expr {
     binary(o, l, r)
 }

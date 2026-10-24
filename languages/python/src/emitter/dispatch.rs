@@ -11,6 +11,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         crate::emitter::runtime_adapter::emit_py_value_eq(chunks, current, line);
         return true;
     }
+    if dispatch_numeric_operator(name, chunks, current, line) {
+        return true;
+    }
     if let Some(exc_name) = name.strip_prefix("python.exc.") {
         if exc_name == "JSONDecodeError" {
             crate::emitter::json_adapter::emit_json_decode_error(chunks, current, argc, line);
@@ -1891,12 +1894,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.pyneg" => crate::emitter::runtime_adapter::emit_pyneg(chunks, current, line),
         "python.pypos" => crate::emitter::runtime_adapter::emit_pypos(chunks, current, line),
-        "python.pylt" => crate::emitter::runtime_adapter::emit_pylt(chunks, current, line),
-        "python.pygt" => crate::emitter::runtime_adapter::emit_pygt(chunks, current, line),
-        "python.pyle" => crate::emitter::runtime_adapter::emit_pyle(chunks, current, line),
-        "python.pyge" => crate::emitter::runtime_adapter::emit_pyge(chunks, current, line),
-        "python.pyadd" => crate::emitter::runtime_adapter::emit_pyadd(chunks, current, line),
-        "python.pymul" => crate::emitter::runtime_adapter::emit_pymul(chunks, current, line),
+        "python.range_bound" => crate::emitter::runtime_adapter::emit_range_bound(chunks, current, line),
         "python.notimplemented" => {
             crate::emitter::runtime_adapter::emit_py_notimplemented(chunks, current, line)
         }
@@ -1905,7 +1903,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.pybitor" => crate::emitter::runtime_adapter::emit_pybitor(chunks, current, line),
         "python.pybitxor" => crate::emitter::runtime_adapter::emit_pybitxor(chunks, current, line),
         "python.pyinvert" => crate::emitter::runtime_adapter::emit_pyinvert(chunks, current, line),
-        "python.pysub" => crate::emitter::runtime_adapter::emit_pysub(chunks, current, line),
         "python.pytruediv" => {
             crate::emitter::runtime_adapter::emit_pytruediv(chunks, current, line)
         }
@@ -1979,5 +1976,31 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── COBOL adapters ──
         _ => return false,
     }
+    true
+}
+
+/// `python.pyadd` and the other operators with a number fast path. A
+/// `.left_number` or `.right_number` suffix says the walker proved that
+/// operand is a number, so only the other one is tested.
+fn dispatch_numeric_operator(name: &str, chunks: &mut [Chunk], current: usize, line: u32) -> bool {
+    use crate::emitter::runtime_adapter::{self as adapter, KnownNumber};
+    let (base, known) = if let Some(base) = name.strip_suffix(".left_number") {
+        (base, KnownNumber::Left)
+    } else if let Some(base) = name.strip_suffix(".right_number") {
+        (base, KnownNumber::Right)
+    } else {
+        (name, KnownNumber::Neither)
+    };
+    let emit: fn(&mut [Chunk], usize, KnownNumber, u32) = match base {
+        "python.pyadd" => adapter::emit_pyadd,
+        "python.pysub" => adapter::emit_pysub,
+        "python.pymul" => adapter::emit_pymul,
+        "python.pylt" => adapter::emit_pylt,
+        "python.pygt" => adapter::emit_pygt,
+        "python.pyle" => adapter::emit_pyle,
+        "python.pyge" => adapter::emit_pyge,
+        _ => return false,
+    };
+    emit(chunks, current, known, line);
     true
 }

@@ -92,9 +92,6 @@ impl Cached {
         }
         replay_expression(&self.replay, source, start)
     }
-    fn take(&mut self, source: &str, start: usize) -> ExprKind {
-        self.take_expression(source, start).kind
-    }
 }
 fn replay_expression(replay: &[Replay], source: &str, start: usize) -> Expression {
     let mut stack = Vec::new();
@@ -1673,10 +1670,10 @@ mod tests {
         let mut cache = builder.finish();
         let ((_, start, end), cached) = cache.iter_mut().next().unwrap();
         let text = &source[*start..*end];
-        let first = cached.take(text, *start);
+        let first = cached.take_expression(text, *start).kind;
         assert!(cached.first.is_none());
-        let second = cached.take(text, *start);
-        let third = cached.take(text, *start);
+        let second = cached.take_expression(text, *start).kind;
+        let third = cached.take_expression(text, *start).kind;
         assert_eq!(format!("{first:?}"), format!("{second:?}"));
         assert_eq!(format!("{second:?}"), format!("{third:?}"));
     }

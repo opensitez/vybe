@@ -258,13 +258,13 @@ pub fn emit_py_value_eq(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let c = &mut chunks[current];
     let b = c.alloc_scratch(1);
     let a = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_SET, b, line);
-    c.emit_op_u16(Op::LOCAL_SET, a, line);
+    emit_numbers_first(c, a, b, Op::F64_EQ, true, KnownNumber::Neither, line);
     c.emit_op_u16(Op::REF_FUNC, idx as u16, line);
     c.emit(0, line);
     c.emit_op_u16(Op::LOCAL_GET, a, line);
     c.emit_op_u16(Op::LOCAL_GET, b, line);
     vybe_compiler::primitives::callable::emit_direct_invoke_chunk(c, 2, line);
+    c.emit_end(line);
 }
 
 fn ensure_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
@@ -451,7 +451,6 @@ fn emit_map_eq_body(c: &mut Chunk, self_idx: usize, a: u16, b: u16, line: u32) {
 
 /// Legs 3 and 4, unchanged from the original inline emitter.
 fn emit_structural_or_identity(chunk: &mut Chunk, a: u16, b: u16, line: u32) {
-    let typeof_fn = chunk.add_import("ecma:value", "typeof");
     let is_array = chunk.add_import("ecma:array", "isArray");
     let has_own = chunk.add_import("ecma:object", "hasOwn");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
@@ -464,9 +463,7 @@ fn emit_structural_or_identity(chunk: &mut Chunk, a: u16, b: u16, line: u32) {
     chunk.emit_call(is_array, 1, line);
     chunk.emit_call(cast_bool, 1, line); // i32: 1 if array
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
-    chunk.emit_call(typeof_fn, 1, line);
-    chunk.emit_string_const("object", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
+    vybe_compiler::primitives::reflection::emit_typeof_is(chunk, "object", line); // i32: 1 if object
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if not null
@@ -568,14 +565,13 @@ pub fn emit_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) 
 }
 
 /// Python `+` operator: array→concat, else→dynamic add.
-pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, known: KnownNumber, line: u32) {
     let chunk = &mut chunks[current];
     let is_array = chunk.add_import("ecma:array", "isArray");
     let concat = chunk.add_import("ecma:array", "concat");
     let b_slot = chunk.alloc_scratch(1);
     let a_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_numbers_first(chunk, a_slot, b_slot, Op::F64_ADD, false, known, line);
     // if isArray(a)
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(is_array, 1, line);
@@ -603,6 +599,7 @@ pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
         emit_py_add_numeric,
         line,
     );
+    chunk.emit_end(line);
     chunk.emit_end(line);
 }
 
@@ -766,46 +763,110 @@ pub fn emit_pypos(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_unary_dunder_or(chunk, a_slot, "__pos__", emit_identity, line);
 }
 
+/// Which operand of a binary operator the caller already knows is a number.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum KnownNumber {
+    Neither,
+    Left,
+    Right,
+}
+
+/// Store the operands `[a, b]` into `a_slot` and `b_slot`, then open the
+/// numeric fast path: when both operands are numbers, apply the f64 operation
+/// `op` directly — the result every other path below also reaches for two
+/// numbers — and skip the datetime, set, sequence and dunder checks that only
+/// other types need. Only the operands `known` leaves open are tested.
+/// `to_bool` materializes a relational result as the language-visible Bool.
+/// Leaves an `else` open; the caller emits the general path and closes it with
+/// one more `end`.
+/// Stack: `[a, b]` → `[]` (inside a value-typed `if`).
+fn emit_numbers_first(
+    chunk: &mut Chunk,
+    a_slot: u16,
+    b_slot: u16,
+    op: Op,
+    to_bool: bool,
+    known: KnownNumber,
+    line: u32,
+) {
+    let test_number = chunk.add_import("wasm:js-number", "test");
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    match known {
+        KnownNumber::Neither => {
+            chunk.emit_op_u16(Op::LOCAL_TEE, a_slot, line);
+            chunk.emit_call(test_number, 1, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+            chunk.emit_call(test_number, 1, line);
+            chunk.emit_op(Op::I32_AND, line);
+        }
+        KnownNumber::Right => {
+            chunk.emit_op_u16(Op::LOCAL_TEE, a_slot, line);
+            chunk.emit_call(test_number, 1, line);
+        }
+        KnownNumber::Left => {
+            chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+            chunk.emit_call(test_number, 1, line);
+        }
+    }
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_op(op, line);
+    if to_bool {
+        vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
+    }
+    chunk.emit_else(line);
+}
+
 /// `<`, `>`, `<=`, `>=`. Datetime values order by the instant or duration
 /// they denote; an object may define the matching dunder; everything else
 /// gets exactly the comparison the shared emitter already performed.
-pub fn emit_pylt(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_pylt(chunks: &mut [Chunk], current: usize, known: KnownNumber, line: u32) {
     emit_relational(
         chunks,
         current,
         "__lt__",
         vybe_compiler::primitives::ops::emit_dyn_lt,
         emit_boxed_relational_lt,
+        Op::F64_LT,
+        known,
         line,
     );
 }
-pub fn emit_pygt(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_pygt(chunks: &mut [Chunk], current: usize, known: KnownNumber, line: u32) {
     emit_relational(
         chunks,
         current,
         "__gt__",
         vybe_compiler::primitives::ops::emit_dyn_gt,
         emit_boxed_relational_gt,
+        Op::F64_GT,
+        known,
         line,
     );
 }
-pub fn emit_pyle(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_pyle(chunks: &mut [Chunk], current: usize, known: KnownNumber, line: u32) {
     emit_relational(
         chunks,
         current,
         "__le__",
         vybe_compiler::primitives::ops::emit_dyn_le,
         emit_boxed_relational_le,
+        Op::F64_LE,
+        known,
         line,
     );
 }
-pub fn emit_pyge(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_pyge(chunks: &mut [Chunk], current: usize, known: KnownNumber, line: u32) {
     emit_relational(
         chunks,
         current,
         "__ge__",
         vybe_compiler::primitives::ops::emit_dyn_ge,
         emit_boxed_relational_ge,
+        Op::F64_GE,
+        known,
         line,
     );
 }
@@ -837,13 +898,14 @@ fn emit_relational(
     dunder: &str,
     cmp: fn(&mut Chunk, u32),
     boxed_fallback: fn(&mut Chunk, u32),
+    number_cmp: Op,
+    known: KnownNumber,
     line: u32,
 ) {
     let chunk = &mut chunks[current];
     let b_slot = chunk.alloc_scratch(1);
     let a_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_numbers_first(chunk, a_slot, b_slot, number_cmp, true, known, line);
 
     crate::emitter::datetime_adapter::emit_is_datetime(chunk, a_slot, line);
     chunk.emit_if_value(line);
@@ -869,12 +931,90 @@ fn emit_relational(
     chunk.emit_if_value(line);
     emit_seq_relational(chunk, a_slot, b_slot, dunder, line);
     chunk.emit_else(line);
+    // Only an object can define the dunder; two primitives order only as
+    // two strings or two numbers.
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    vybe_compiler::primitives::reflection::emit_typeof_is(chunk, "object", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    vybe_compiler::primitives::reflection::emit_typeof_is(chunk, "object", line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
     emit_object_binop_or(chunk, a_slot, b_slot, dunder, boxed_fallback, line);
+    chunk.emit_else(line);
+    emit_primitive_order_or_type_error(chunks, current, a_slot, b_slot, dunder, boxed_fallback, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     // The user dunder returns ANY; preserve it in value position. Each
     // numeric/Bool fallback already materialized its language-visible Bool.
+}
+
+/// Two primitives in `a_slot` and `b_slot`: two strings or two numbers
+/// (`bool` and big ints included) take `order`; any other pair raises
+/// CPython's `TypeError: '<' not supported between instances of 'str' and
+/// 'int'`. Stack: `[]` → `[result]`.
+fn emit_primitive_order_or_type_error(
+    chunks: &mut [Chunk],
+    current: usize,
+    a_slot: u16,
+    b_slot: u16,
+    dunder: &str,
+    order: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let symbol = match dunder {
+        "__lt__" => "<",
+        "__gt__" => ">",
+        "__le__" => "<=",
+        _ => ">=",
+    };
+    let chunk = &mut chunks[current];
+    let test_string = chunk.add_import("wasm:js-string", "test");
+    let test_number = chunk.add_import("wasm:js-number", "test");
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    let is_number = |chunk: &mut Chunk, slot: u16| {
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_call(test_number, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_call(test_bool, 1, line);
+        chunk.emit_op(Op::I32_OR, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_call(test_bigint, 1, line);
+        chunk.emit_op(Op::I32_OR, line);
+    };
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(test_string, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(test_string, 1, line);
+    chunk.emit_op(Op::I32_AND, line);
+    is_number(chunk, a_slot);
+    is_number(chunk, b_slot);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    order(chunk, line);
+    chunk.emit_else(line);
+    class_slots::emit_class_alloc(chunk, line);
+    chunk.emit_dup(line);
+    chunk.emit_string_const(&format!("'{symbol}' not supported between instances of '"), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    emit_py_type_name(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_string_const("' and '", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    emit_py_type_name(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_string_const("'", line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 5, line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "TypeError", line);
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
 }
 
 fn emit_is_array(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -1084,7 +1224,6 @@ fn emit_object_binop_or(
     fallback: fn(&mut Chunk, u32),
     line: u32,
 ) {
-    let typeof_fn = chunk.add_import("ecma:value", "typeof");
     let reflected = reflected_dunder(dunder);
     let key_name = protocol_key_for(dunder);
     let key =
@@ -1093,9 +1232,7 @@ fn emit_object_binop_or(
     // Only real objects (typeof == "object") can carry the dunder; STRUCT_GET on
     // a primitive traps, so gate the lookup behind the type check.
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
-    chunk.emit_call(typeof_fn, 1, line);
-    chunk.emit_string_const("object", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
+    vybe_compiler::primitives::reflection::emit_typeof_is(chunk, "object", line); // i32: 1 if object
     chunk.emit_if_value(line);
     // object: dispatch to the dunder if present, else fallback
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
@@ -2202,7 +2339,7 @@ fn emit_bytes_repeat_slots(chunk: &mut Chunk, seq_slot: u16, count_slot: u16, li
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
-pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_pymul(chunks: &mut [Chunk], current: usize, known: KnownNumber, line: u32) {
     let chunk = &mut chunks[current];
     let is_array = chunk.add_import("ecma:array", "isArray");
     let is_view = chunk.add_import("ecma:arraybuffer", "isView");
@@ -2210,8 +2347,7 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     let test_str = chunk.add_import("wasm:js-string", "test");
     let b_slot = chunk.alloc_scratch(1);
     let a_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_numbers_first(chunk, a_slot, b_slot, Op::F64_MUL, false, known, line);
 
     // Sequence repetition is commutative in Python: `seq * n` == `n * seq`. The
     // sequence may be either operand, so probe both sides before the numeric
@@ -2279,6 +2415,7 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line); // string(a)
     chunk.emit_end(line); // isView(a)
     chunk.emit_end(line); // isArray(a)
+    chunk.emit_end(line); // numbers
 }
 
 /// Numeric `*` fallback (`[a, b] → [a*b]`), for `emit_object_binop_or`.
@@ -3033,21 +3170,21 @@ pub fn emit_delattr(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `__type` stamp is `"Set"`, which covers both `set` and `frozenset`), else
 /// `0`. Guarded by the typeof check because `STRUCT_GET` traps on primitives.
 fn emit_is_set(chunk: &mut Chunk, slot: u16, line: u32) {
-    let typeof_fn = chunk.add_import("ecma:value", "typeof");
     let cs_slot_2 = class_slots::resolve_interned(
         chunk,
         &ClassSlot::Internal(("__type").to_string()),
         &PlainNames,
     );
+    // Both questions compare a string with a literal, so they are string
+    // equality, not Python `==` with its dunder and numeric dispatch.
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunk.emit_call(typeof_fn, 1, line);
-    chunk.emit_string_const("object", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
+    vybe_compiler::primitives::reflection::emit_typeof_is(chunk, "object", line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot_2, Dest::Stack, line);
-    chunk.emit_string_const("Set", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // i32: 1 if __type == "Set"
+    let type_tag = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, type_tag, line);
+    vybe_compiler::primitives::ops::emit_string_slot_eq_literal(chunk, type_tag, "Set", line);
     chunk.emit_else(line);
     chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
@@ -3222,12 +3359,11 @@ fn emit_id_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `ecma:set` because those stay bitwise BinOps, but the walker desugars `-`
 /// to `__pysub__`, so the same set check lives here. When both operands are
 /// sets, call `ecma:set.difference`; otherwise dispatch `__sub__`/numeric.
-pub fn emit_pysub(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_pysub(chunks: &mut [Chunk], current: usize, known: KnownNumber, line: u32) {
     let chunk = &mut chunks[current];
     let b_slot = chunk.alloc_scratch(1);
     let a_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_numbers_first(chunk, a_slot, b_slot, Op::F64_SUB, false, known, line);
 
     emit_is_set(chunk, a_slot, line);
     emit_is_set(chunk, b_slot, line);
@@ -3244,6 +3380,7 @@ pub fn emit_pysub(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
         emit_arith_dunder(chunk, "__sub__", emit_py_sub_numeric, line);
     }
+    chunk.emit_end(line);
     chunk.emit_end(line);
 }
 
@@ -3474,6 +3611,66 @@ pub fn emit_count(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 /// The common one-argument form is emitted inline as a WASM loop. The
 /// multi-argument forms still fall back to the shared runtime helper for
 /// now because they need Python's nullable-argument reshaping semantics.
+/// One bound of a counted `range` loop, checked the way `range()` checks it.
+///
+/// An int (a bool is one) or a bigint passes as its integer value; anything
+/// else raises `TypeError: '<type>' object cannot be interpreted as an
+/// integer`, as CPython does. Stack: `[value]` → `[number]`.
+pub fn emit_range_bound(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let test_number = chunk.add_import("wasm:js-number", "test");
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    let is_integer = chunk.add_import("ecma:number", "isInteger");
+    let number = chunk.add_import("ecma:number", "Number");
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_call(test_number, 1, line);
+    chunk.emit_if_value(line);
+    {
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_call(is_integer, 1, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_else(line);
+        emit_throw_python_exception(
+            chunk,
+            "TypeError",
+            "'float' object cannot be interpreted as an integer",
+            line,
+        );
+        chunk.emit_end(line);
+    }
+    chunk.emit_else(line);
+    {
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_call(test_bool, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_call(test_bigint, 1, line);
+        chunk.emit_op(Op::I32_OR, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_call(number, 1, line);
+        chunk.emit_else(line);
+        class_slots::emit_class_alloc(chunk, line);
+        chunk.emit_dup(line);
+        chunk.emit_string_const("'", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        emit_py_type_name(chunks, current, line);
+        let chunk = &mut chunks[current];
+        chunk.emit_string_const("' object cannot be interpreted as an integer", line);
+        vybe_compiler::primitives::strings::emit_concat(chunk, 3, line);
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "TypeError", line);
+        vybe_compiler::primitives::errors::emit_throw(chunk, line);
+        chunk.emit_end(line);
+    }
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+}
+
 pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // Stash the arguments before the shared emitter consumes them, then stamp
     // them back onto the resulting object: CPython reprs a range as

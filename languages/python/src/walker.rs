@@ -333,6 +333,9 @@ pub(crate) fn parse_with_backend(source: &str, direct: bool, recipes: bool) -> R
     let uses_bytes = source_uses_bytes(&gate);
     let uses_ellipsis = source_uses_ellipsis(&gate);
     let uses_object = gate.contains("object()");
+    __w.py_scope_declared_names = py_scope_declared_names(&gate);
+    __w.py_rebinds_by_reflection = py_source_words(&gate)
+        .any(|word| matches!(word, "globals" | "vars" | "exec" | "eval"));
     // ⛔ The `core_classes` names are registered BEFORE the source walk, not
     // when their declarations are spliced in afterwards. The walker decides how
     // to lower `a = IPv4Address(…)` — and every later `a.attr` — from
@@ -882,6 +885,9 @@ pub(crate) fn parse_with_backend(source: &str, direct: bool, recipes: bool) -> R
         body.splice(0..0, decls);
     }
     __w.py_string_const_shadows.pop();
+    for stmt in body.iter_mut() {
+        stmt.walk_exprs_mut(&mut py_mark_known_number_operand);
+    }
     Ok(Module {
         canon: Default::default(),
         name: "main".into(),
@@ -12560,14 +12566,23 @@ fn walk_while(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> 
         });
     };
 
-    // Python `while C: BODY else: ELSE` runs ELSE only on a NORMAL exit
-    // (condition false), never on `break`. The shared While emitter runs
-    // else_body unconditionally, so normalize into common-AST primitives that
-    // route through the common loop emitter (loops.rs), the same plain-`while`
-    // path every language uses:
-    //   __while_else_N = False
-    //   while C: BODY'                 (loop-level break → __while_else_N = True; break)
-    //   if not __while_else_N: ELSE
+    Ok(StmtKind::Block(py_while_else_statements(__w, cond, body, else_stmts)))
+}
+
+/// Python `while C: BODY else: ELSE` runs ELSE only on a NORMAL exit
+/// (condition false), never on `break`. The shared While emitter runs
+/// else_body unconditionally, so normalize into common-AST primitives that
+/// route through the common loop emitter (loops.rs), the same plain-`while`
+/// path every language uses:
+///   __while_else_N = False
+///   while C: BODY'                 (loop-level break → __while_else_N = True; break)
+///   if not __while_else_N: ELSE
+fn py_while_else_statements(
+    __w: &mut PyWalker,
+    cond: Expression,
+    body: Vec<Statement>,
+    else_stmts: Vec<Statement>,
+) -> Vec<Statement> {
     let n = {
         let __n = __w.while_else_counter;
         __w.while_else_counter += 1;
@@ -12594,7 +12609,7 @@ fn walk_while(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> 
         elifs: Vec::new(),
         else_body: None,
     });
-    Ok(StmtKind::Block(vec![flag_init, while_stmt, else_guard]))
+    vec![flag_init, while_stmt, else_guard]
 }
 
 // ── For ─────────────────────────────────────────────────────────────────────
@@ -12650,6 +12665,7 @@ fn walk_for(__w: &mut PyWalker, pair: Pair<Rule>, is_async: bool) -> Result<Stmt
         }
     }
 
+    let single_target = var_names.len() == 1;
     // If multiple targets (tuple unpacking: `for i, v in enumerate(...)`),
     // use a temp var and prepend destructuring assignments to the body.
     let var = if var_names.len() > 1 {
@@ -12713,6 +12729,12 @@ fn walk_for(__w: &mut PyWalker, pair: Pair<Rule>, is_async: bool) -> Result<Stmt
     };
     let iter = py_enum_iterable_expr(__w, &iter).unwrap_or(iter);
 
+    if single_target && !is_async {
+        if let Some(lowered) = py_counted_range_loop(__w, &var, &iter, &mut body, &mut else_body) {
+            return Ok(lowered);
+        }
+    }
+
     Ok(StmtKind::ForIn {
         var,
         key: None,
@@ -12722,6 +12744,344 @@ fn walk_for(__w: &mut PyWalker, pair: Pair<Rule>, is_async: bool) -> Result<Stmt
         else_body,
         is_async,
     })
+}
+
+/// `for v in range(...)` as the counted loop it is.
+///
+/// `range` yields integers, so the loop needs no sequence: a hidden counter
+/// walks from the start toward the stop, and `v` is bound to it at the top of
+/// each iteration. The counter advances before the body runs, so `continue`
+/// still reaches the next value, `break` and the `else` clause keep their
+/// meaning, and `v` holds its last value after the loop. The bounds are
+/// evaluated once, left to right, and checked as `range()` checks them; the
+/// counters are declared `int` and only ever hold integers, so their compare
+/// and step are plain numeric operations.
+///
+/// Applies to a plain-name target and a builtin `range` call with one to three
+/// positional arguments whose step, if given, is a nonzero integer literal, in
+/// a body that does not suspend; anything else keeps the general iteration.
+fn py_counted_range_loop(
+    __w: &mut PyWalker,
+    var: &str,
+    iter: &Expression,
+    body: &mut Vec<Statement>,
+    else_body: &mut Option<Vec<Statement>>,
+) -> Option<StmtKind> {
+    let is_name = !var.is_empty()
+        && var.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && var.chars().all(|c| c.is_alphanumeric() || c == '_');
+    if !is_name {
+        return None;
+    }
+    // A body that suspends (`yield`, `await`) keeps the general iteration: the
+    // generator machinery resumes through that shape.
+    let mut suspends = vybe_ast::statements_contain_yield_outside_nested_scopes(body);
+    for stmt in body.iter() {
+        stmt.walk_exprs(&mut |expr| {
+            if matches!(expr.kind, ExprKind::Await(_)) {
+                suspends = true;
+            }
+        });
+    }
+    if suspends {
+        return None;
+    }
+    let ExprKind::Call { callee, args, .. } = &iter.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "range")
+        || __w.py_defined_functions.contains("range")
+        || args.iter().any(|arg| arg.name.is_some() || arg.spread || arg.by_ref)
+    {
+        return None;
+    }
+    let literal_int = |expr: &Expression| -> Option<i64> {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Int(n)) => Some(*n),
+            ExprKind::Unary { op: UnaryOp::Neg, expr } => match expr.kind {
+                ExprKind::Lit(Literal::Int(n)) => n.checked_neg(),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let (start, stop, step) = match args.as_slice() {
+        [stop] => (Expression::int(0), stop.value.clone(), 1),
+        [start, stop] => (start.value.clone(), stop.value.clone(), 1),
+        [start, stop, step] => (start.value.clone(), stop.value.clone(), literal_int(&step.value)?),
+        _ => return None,
+    };
+    if step == 0 {
+        return None;
+    }
+    let bound = |expr: Expression| match literal_int(&expr) {
+        Some(n) => Expression::int(n),
+        None => call_ident("__py_range_bound__", vec![expr]),
+    };
+    let n = __w.py_range_loops;
+    __w.py_range_loops += 1;
+    let counter = format!("__py_range_k_{n}");
+    let limit = format!("__py_range_stop_{n}");
+    let declare = |name: &str, init: Expression| VarDeclarator {
+        pattern: BindingPattern::Ident(name.to_string()),
+        type_hint: Some(TypeHint::checked("int")),
+        init: Some(init),
+        array_bounds: None,
+        with_events: false,
+    };
+    let declarations = vec![declare(&counter, bound(start)), declare(&limit, bound(stop))];
+    let compare = if step > 0 { BinOp::Lt } else { BinOp::Gt };
+    let cond = Expression::new(ExprKind::Binary {
+        op: compare,
+        left: Box::new(Expression::ident(&counter)),
+        right: Box::new(Expression::ident(&limit)),
+    });
+    let mut loop_body = vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(var)],
+            value: Expression::ident(&counter),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::CompoundAssign {
+            target: Expression::ident(&counter),
+            op: CompoundOp::Add,
+            value: Expression::int(step),
+        }),
+    ];
+    // When nothing in the body can rebind the target, every read of it in the
+    // body equals the counter, which is a checked int: the body reads the
+    // counter instead and integer arithmetic on it compiles to plain numeric
+    // operations. The counter then advances at the end of the body and before
+    // each `continue` of this loop.
+    let reads_counter = !__w.py_rebinds_by_reflection
+        && !__w.py_scope_declared_names.contains(var)
+        && py_range_body_keeps_target(body, var);
+    if reads_counter {
+        let advance = loop_body.pop().expect("the counter step");
+        for stmt in body.iter_mut() {
+            stmt.walk_exprs_mut(&mut |expr| {
+                if matches!(&expr.kind, ExprKind::Ident(name) if name == var) {
+                    expr.kind = ExprKind::Ident(counter.clone());
+                }
+                py_fold_counted_int_operator(expr);
+            });
+        }
+        py_advance_before_continue(body, &advance);
+        loop_body.append(body);
+        loop_body.push(advance);
+    } else {
+        loop_body.append(body);
+    }
+    let mut statements =
+        vec![Statement::new(StmtKind::VarDecl { declarations, kind: VarDeclKind::Let })];
+    match else_body.take() {
+        None => statements.push(Statement::new(StmtKind::While { cond, body: loop_body, else_body: None })),
+        Some(else_stmts) => statements.extend(py_while_else_statements(__w, cond, loop_body, else_stmts)),
+    }
+    Some(StmtKind::Block(statements))
+}
+
+/// The identifier-shaped words of `text`, in order.
+fn py_source_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|word| !word.is_empty())
+}
+
+/// Every name a `global` or `nonlocal` statement declares, wherever the
+/// statement sits on its line (`def f(): global n`).
+fn py_scope_declared_names(gate: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for line in gate.lines() {
+        let mut words = py_source_words(line);
+        while let Some(word) = words.next() {
+            if matches!(word, "global" | "nonlocal") {
+                names.extend(words.by_ref().map(str::to_string));
+            }
+        }
+    }
+    names
+}
+
+/// Can nothing in a counted loop's body rebind its target `var`? The body
+/// may only hold statements whose bindings the local-name collector sees,
+/// and no expression that binds or opens a scope.
+fn py_range_body_keeps_target(body: &[Statement], var: &str) -> bool {
+    let mut assigned = HashSet::new();
+    let mut opened = HashSet::new();
+    collect_python_function_local_names_body(body, &mut assigned, &mut opened);
+    if assigned.contains(var) || opened.contains(var) {
+        return false;
+    }
+    fn plain(stmts: &[Statement]) -> bool {
+        stmts.iter().all(|stmt| match &stmt.kind {
+            StmtKind::Expr(_)
+            | StmtKind::Assign { .. }
+            | StmtKind::CompoundAssign { .. }
+            | StmtKind::VarDecl { .. }
+            | StmtKind::Return(_)
+            | StmtKind::Break(_)
+            | StmtKind::Continue(_)
+            | StmtKind::Empty
+            | StmtKind::Throw { .. }
+            | StmtKind::Assert { .. } => true,
+            StmtKind::If { then_body, elifs, else_body, .. } => {
+                plain(then_body)
+                    && elifs.iter().all(|(_, body)| plain(body))
+                    && else_body.as_deref().is_none_or(plain)
+            }
+            StmtKind::While { body, else_body, .. } | StmtKind::ForIn { body, else_body, .. } => {
+                plain(body) && else_body.as_deref().is_none_or(plain)
+            }
+            StmtKind::Block(body) => plain(body),
+            StmtKind::Try { body, catches, else_body, finally } => {
+                plain(body)
+                    && catches.iter().all(|catch| plain(&catch.body))
+                    && else_body.as_deref().is_none_or(plain)
+                    && finally.as_deref().is_none_or(plain)
+            }
+            _ => false,
+        })
+    }
+    if !plain(body) {
+        return false;
+    }
+    let mut keeps = true;
+    for stmt in body {
+        stmt.walk_exprs(&mut |expr| match &expr.kind {
+            ExprKind::Lambda { .. }
+            | ExprKind::FunctionExpr(_)
+            | ExprKind::ClassExpr { .. }
+            | ExprKind::Comprehension { .. }
+            | ExprKind::Walrus { .. }
+            | ExprKind::Delete(_)
+            | ExprKind::Destructure(_) => keeps = false,
+            ExprKind::Assign { target, .. }
+                if matches!(&target.kind, ExprKind::Ident(name) if name == var) =>
+            {
+                keeps = false
+            }
+            _ => {}
+        });
+    }
+    keeps
+}
+
+/// An operand a counted loop proves to be an integer: a loop counter, an
+/// integer literal, or `+`, `-`, `*` over such operands.
+fn py_is_counted_int(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => name.starts_with("__py_range_k_"),
+        ExprKind::Lit(Literal::Int(_)) => true,
+        ExprKind::Binary { op: BinOp::Add | BinOp::Sub | BinOp::Mul, left, right } => {
+            py_is_counted_int(left) && py_is_counted_int(right)
+        }
+        _ => false,
+    }
+}
+
+/// `__pyadd__(a, b)` and the other integer operators become the plain binary
+/// operation when both operands are counted integers: the adapter would reach
+/// the same numeric result after testing both operand types.
+fn py_fold_counted_int_operator(expr: &mut Expression) {
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    let op = match &callee.kind {
+        ExprKind::Ident(name) => match name.as_str() {
+            "__pyadd__" => BinOp::Add,
+            "__pysub__" => BinOp::Sub,
+            "__pymul__" => BinOp::Mul,
+            "__pylt__" => BinOp::Lt,
+            "__pygt__" => BinOp::Gt,
+            "__pyle__" => BinOp::LtEq,
+            "__pyge__" => BinOp::GtEq,
+            _ => return,
+        },
+        _ => return,
+    };
+    if args.len() != 2
+        || args.iter().any(|arg| arg.name.is_some() || arg.spread || arg.by_ref)
+        || !args.iter().all(|arg| py_is_counted_int(&arg.value))
+    {
+        return;
+    }
+    let right = args.pop().expect("two arguments").value;
+    let left = args.pop().expect("two arguments").value;
+    expr.kind = ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) };
+}
+
+/// An operand the walker knows is a number: a numeric literal or a counted
+/// integer.
+fn py_is_known_number(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_) | Literal::Float(_)) => true,
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => {
+            matches!(expr.kind, ExprKind::Lit(Literal::Int(_) | Literal::Float(_)))
+        }
+        _ => py_is_counted_int(expr),
+    }
+}
+
+/// `__pyadd__(x, 1)` becomes `__pyadd_right_number__(x, 1)`: the operator's
+/// number fast path then tests only the operand that may not be a number.
+fn py_mark_known_number_operand(expr: &mut Expression) {
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    let ExprKind::Ident(name) = &mut callee.kind else {
+        return;
+    };
+    let Some(op) = name.strip_prefix("__py").and_then(|rest| rest.strip_suffix("__")) else {
+        return;
+    };
+    if !matches!(op, "add" | "sub" | "mul" | "lt" | "gt" | "le" | "ge")
+        || args.len() != 2
+        || args.iter().any(|arg| arg.name.is_some() || arg.spread || arg.by_ref)
+    {
+        return;
+    }
+    let side = match (py_is_known_number(&args[0].value), py_is_known_number(&args[1].value)) {
+        (true, false) => "left",
+        (false, true) => "right",
+        _ => return,
+    };
+    *name = format!("__py{op}_{side}_number__");
+}
+
+/// Put `advance` before each `continue` of the enclosing loop; a nested loop
+/// keeps its own.
+fn py_advance_before_continue(body: &mut [Statement], advance: &Statement) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::Continue(_) => {
+                let resume = stmt.clone();
+                stmt.kind = StmtKind::Block(vec![advance.clone(), resume]);
+            }
+            StmtKind::If { then_body, elifs, else_body, .. } => {
+                py_advance_before_continue(then_body, advance);
+                for (_, body) in elifs {
+                    py_advance_before_continue(body, advance);
+                }
+                if let Some(body) = else_body {
+                    py_advance_before_continue(body, advance);
+                }
+            }
+            StmtKind::Block(body) => py_advance_before_continue(body, advance),
+            StmtKind::Try { body, catches, else_body, finally } => {
+                py_advance_before_continue(body, advance);
+                for catch in catches {
+                    py_advance_before_continue(&mut catch.body, advance);
+                }
+                if let Some(body) = else_body {
+                    py_advance_before_continue(body, advance);
+                }
+                if let Some(body) = finally {
+                    py_advance_before_continue(body, advance);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // ── Try ─────────────────────────────────────────────────────────────────────
@@ -18244,13 +18604,23 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
             _ => None,
         };
         if let Some(op) = set_binop {
+            // `x -= v` computes exactly what `x - v` does, through the same
+            // helper: it handles sets, datetimes, dunders and numbers.
+            let helper = match op {
+                BinOp::Sub => Some("__pysub__"),
+                BinOp::BitOr => Some("__pybitor__"),
+                BinOp::BitAnd => Some("__pybitand__"),
+                BinOp::BitXor => Some("__pybitxor__"),
+                _ => None,
+            };
             let combined =
-                py_set_binary_op(__w, op, &target, &value).unwrap_or_else(|| {
-                    Expression::new(ExprKind::Binary {
+                py_set_binary_op(__w, op, &target, &value).unwrap_or_else(|| match helper {
+                    Some(helper) => call_ident(helper, vec![target.clone(), value]),
+                    None => Expression::new(ExprKind::Binary {
                         op,
                         left: Box::new(target.clone()),
                         right: Box::new(value),
-                    })
+                    }),
                 });
             return Ok(StmtKind::Assign {
                 targets: vec![target],
@@ -21556,6 +21926,14 @@ struct PyTypeVarInfo {
 
 #[derive(Default)]
 pub(crate) struct PyWalker {
+    /// Unique suffix for the hidden counters of lowered `range` loops.
+    py_range_loops: usize,
+    /// Names some `global` or `nonlocal` statement in the program declares: a
+    /// function called from a loop body may rebind any of them.
+    py_scope_declared_names: HashSet<String>,
+    /// The program calls `globals`, `vars`, `exec` or `eval`, any of which can
+    /// rebind a module variable without naming it.
+    py_rebinds_by_reflection: bool,
     direct_input: Option<(usize, usize)>,
     direct_lists: HashMap<(Rule, usize, usize), direct_ast::Cached>,
     direct_statements: HashMap<(usize, usize), direct_ast::CachedStatement>,
@@ -56861,14 +57239,9 @@ fn py_bytearray_pop_assignment_stmt(
     Some(StmtKind::Block(statements))
 }
 
-// Return true when this is a line-output call, including when no rewrite is
-// needed. The old construction cloned every argument before discovering that
-// ordinary values need no adaptation. This owns each changed value and leaves
-// all other argument storage in place.
-fn normalize_python_line_value_expr(__w: &mut PyWalker, expr: &mut Expression) -> bool {
-    normalize_python_line_value_expr_result(__w, expr).0
-}
-
+// Returns (is a line-output call, changed). A line-output call reports true
+// even when no rewrite is needed. Each changed value is owned in place and all
+// other argument storage is left untouched.
 fn normalize_python_line_value_expr_result(__w: &mut PyWalker, expr: &mut Expression) -> (bool, bool) {
     let ExprKind::Call { callee, args, optional } = &mut expr.kind else {
         return (false, false);
@@ -58716,15 +59089,15 @@ mod line_value_ownership_tests {
                 };
                 let mut legacy = input.clone();
                 legacy_line_value_expr(&mut walker, &mut legacy);
-                assert!(normalize_python_line_value_expr(&mut walker, &mut input));
+                assert!(normalize_python_line_value_expr_result(&mut walker, &mut input).0);
                 assert_eq!(format!("{input:?}"), format!("{legacy:?}"));
             }
         }
         let mut other = Expression::ident("__line");
-        assert!(!normalize_python_line_value_expr(
+        assert!(!normalize_python_line_value_expr_result(
             &mut PyWalker::default(),
             &mut other
-        ));
+        ).0);
     }
 
     #[test]
@@ -58744,7 +59117,7 @@ mod line_value_ownership_tests {
             ],
             optional: false,
         });
-        assert!(normalize_python_line_value_expr(&mut walker, &mut input));
+        assert!(normalize_python_line_value_expr_result(&mut walker, &mut input).0);
         let ExprKind::Call { args, .. } = &input.kind else {
             unreachable!()
         };
@@ -58759,7 +59132,7 @@ mod line_value_ownership_tests {
 mod bytes_postorder_reuse_tests {
     use super::*;
     fn legacy_recursive_bytes_expr(__w: &mut PyWalker, expr: &mut Expression) {
-        if normalize_python_line_value_expr(__w, expr) {
+        if normalize_python_line_value_expr_result(__w, expr).0 {
             return;
         }
         let replacement = match &expr.kind {

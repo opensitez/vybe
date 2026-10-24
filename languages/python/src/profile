@@ -280,6 +280,22 @@ __pybitor__     = { emit = "common:python.pybitor",          min_args = 2, max_a
 __pybitxor__    = { emit = "common:python.pybitxor",         min_args = 2, max_args = 2 }
 __pyinvert__    = { emit = "common:python.pyinvert",         min_args = 1, max_args = 1 }
 __pysub__       = { emit = "common:python.pysub",            min_args = 2, max_args = 2 }
+# The walker proved the left or right operand is a number: only the other
+# one is tested on the number fast path.
+__pyadd_left_number__     = { emit = "common:python.pyadd.left_number", min_args = 2, max_args = 2 }
+__pyadd_right_number__    = { emit = "common:python.pyadd.right_number", min_args = 2, max_args = 2 }
+__pysub_left_number__     = { emit = "common:python.pysub.left_number", min_args = 2, max_args = 2 }
+__pysub_right_number__    = { emit = "common:python.pysub.right_number", min_args = 2, max_args = 2 }
+__pymul_left_number__     = { emit = "common:python.pymul.left_number", min_args = 2, max_args = 2 }
+__pymul_right_number__    = { emit = "common:python.pymul.right_number", min_args = 2, max_args = 2 }
+__pylt_left_number__      = { emit = "common:python.pylt.left_number", min_args = 2, max_args = 2 }
+__pylt_right_number__     = { emit = "common:python.pylt.right_number", min_args = 2, max_args = 2 }
+__pygt_left_number__      = { emit = "common:python.pygt.left_number", min_args = 2, max_args = 2 }
+__pygt_right_number__     = { emit = "common:python.pygt.right_number", min_args = 2, max_args = 2 }
+__pyle_left_number__      = { emit = "common:python.pyle.left_number", min_args = 2, max_args = 2 }
+__pyle_right_number__     = { emit = "common:python.pyle.right_number", min_args = 2, max_args = 2 }
+__pyge_left_number__      = { emit = "common:python.pyge.left_number", min_args = 2, max_args = 2 }
+__pyge_right_number__     = { emit = "common:python.pyge.right_number", min_args = 2, max_args = 2 }
 __pytruediv__   = { emit = "common:python.pytruediv",        min_args = 2, max_args = 2 }
 __pyfloordiv__  = { emit = "common:python.pyfloordiv",       min_args = 2, max_args = 2 }
 __pymod__       = { emit = "common:python.pymod",            min_args = 2, max_args = 2 }
@@ -464,6 +480,7 @@ __py_memoryview_cast_bytes = { emit = "common:python.memoryview_cast_bytes", min
 __glob_match    = { emit = "common:str_glob_match",        min_args = 2, max_args = 2 }
 len             = { emit = "common:python.length",         min_args = 1, max_args = 1, slot = "len" }
 range           = { emit = "common:python.range",         min_args = 1, max_args = 3 }
+__py_range_bound__ = { emit = "common:python.range_bound", min_args = 1, max_args = 1 }
 list            = { emit = "common:python.iter_array",      min_args = 0, max_args = 1 }
 tuple           = { emit = "common:python.tuple_from_iter", min_args = 0, max_args = 1 }
 dict            = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
