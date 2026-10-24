@@ -1,4 +1,6 @@
 //! Actual VB project, real browser hit testing and the registered guest callbacks.
+vybe_platform_web::browser_engine!(test_browser, "webcore", webcore);
+
 use vybe_platform_web::{
     engine::{self, DocumentId, DomOp, DomValue, NodeId},
     html,
@@ -108,10 +110,9 @@ fn shifted((y, m): (i32, i32), step: i32) -> (i32, i32) {
 #[test]
 fn actual_vb_calendar_day_navigation_and_live_settings() {
     assert!(
-        vybe_platform_web::engine_select::Engine::WebCore.is_available(),
+        vybe_platform_web::engine_select::choose("webcore"),
         "regression requires actual webcore engine, not substitute hosts"
     );
-    vybe_platform_web::engine_select::choose(vybe_platform_web::engine_select::Engine::WebCore);
     vybe_language_vb::register();
     vybe_platform_dotnet::register();
     let repo = root();
@@ -238,8 +239,7 @@ fn actual_vb_calendar_day_navigation_and_live_settings() {
 
 #[test]
 fn actual_allcontrols_calendar_click_reaches_real_retained_control() {
-    assert!(vybe_platform_web::engine_select::Engine::WebCore.is_available());
-    vybe_platform_web::engine_select::choose(vybe_platform_web::engine_select::Engine::WebCore);
+    assert!(vybe_platform_web::engine_select::choose("webcore"));
     vybe_language_vb::register();
     vybe_platform_dotnet::register();
     let project = root().join("examples/vb/allcontrols/allcontrols.vbproj");
@@ -261,7 +261,7 @@ fn actual_allcontrols_calendar_click_reaches_real_retained_control() {
     let document = html::active_document();
     // Allcontrols places mc1 at y760. Give the real headless browser the
     // corresponding visible client area; no DOM nodes/events are substituted.
-    vybe_platform_web::with_browser(document, |doc| doc.set_viewport(800., 1100.))
+    test_browser::engine::with_document(document, |doc| doc.set_viewport(800., 1100.))
         .expect("real webcore document");
     let calendar = node(document, "#mc1");
     let initial = period(document, calendar);

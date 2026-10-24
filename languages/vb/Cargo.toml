@@ -18,6 +18,8 @@ chrono = "0.4"
 vybe_platform_dotnet = { workspace = true }
 
 [dev-dependencies]
+# The tests seed a real browser into the registry, the way a binary does.
+webcore = { workspace = true }
 vybe_platform_web = { workspace = true }
 vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
