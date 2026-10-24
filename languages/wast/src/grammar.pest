@@ -112,9 +112,9 @@ vec_type = @{ "v128" }
 // first so PEG's ordered choice never stops at a prefix (e.g. `nullexternref`
 // before `nullref`). Each is a `(ref null <heaptype>)` shorthand per WASM 3.0.
 ref_type = @{
-    "nullexternref" | "nullfuncref" | "nullexnref" | "nullref"
+    "nullexternref" | "nullfuncref" | "nullexnref" | "nullcontref" | "nullref"
   | "funcref" | "externref" | "anyref" | "eqref" | "i31ref"
-  | "structref" | "arrayref" | "exnref" | "stringref"
+  | "structref" | "arrayref" | "exnref" | "contref" | "stringref"
 }
 // All value types
 val_type = @{ "i32" | "i64" | "f32" | "f64" | "v128" | ref_type }
@@ -146,7 +146,9 @@ typeuse = {
 }
 
 // Extends val_type with GC reference types: (ref null? heaptype)
-any_val_type = { "(" ~ "ref" ~ "null"? ~ (exact_heap_type | heap_type) ~ ")" | val_type }
+any_val_type = { "(" ~ "ref" ~ "null"? ~ (exact_heap_type | shared_heap_type | heap_type) ~ ")" | shared_ref_type | val_type }
+shared_heap_type = { "(" ~ "shared" ~ heap_type ~ ")" }
+shared_ref_type = { "(" ~ "shared" ~ ref_type ~ ")" }
 
 // The type list may be EMPTY — `(func (param))` and `(func (result))` are the
 // spec's explicit spellings of "no params" / "no results" (func_ptrs, type).
@@ -448,7 +450,7 @@ table_field = {
 // A table, like a memory, may state its INDEX type (`(table i64 1 funcref)` —
 // memory64). Same bare-literal treatment as `mem_type`: the limits are what the
 // walker reads, and the keyword must not be mistaken for one.
-table_type = { addr_type? ~ integer ~ integer? ~ ref_val_type }
+table_type = { shared_kw? ~ addr_type? ~ integer ~ integer? ~ ref_val_type }
 
 // `i64` = the memory64 proposal's 64-bit index space, `i32` = the default.
 // CAPTURED, not silent: the walker records it on the declaration so every
@@ -470,7 +472,8 @@ inline_memory_data = { "(" ~ "data" ~ string* ~ ")" }
 // Optional address-type keyword (`i64` = memory64 proposal, `i32` = default),
 // then the min (and optional max) page limits. The keyword is a bare literal so
 // it doesn't appear as a captured pair — the walker still reads just the limits.
-mem_type = { addr_type? ~ integer ~ integer? }
+mem_type = { addr_type? ~ integer ~ integer? ~ shared_kw? ~ core_pagesize? }
+core_pagesize = { "(" ~ "pagesize" ~ integer ~ ")" }
 
 // ── Global ────────────────────────────────────────────────────────────────────
 
@@ -479,7 +482,8 @@ global_field = {
 }
 
 global_type = {
-    "(" ~ "mut" ~ any_val_type ~ ")"
+    "(" ~ "shared" ~ "mut"? ~ any_val_type ~ ")"
+  | "(" ~ "mut" ~ any_val_type ~ ")"
   | any_val_type
 }
 
@@ -606,7 +610,7 @@ cont_type      = { "(" ~ "cont" ~ index ~ ")" }
 field_def      = { "(" ~ "field" ~ (id ~ storage_type | storage_type*) ~ ")" }
 storage_type   = { "(" ~ "mut" ~ (val_type | packed_type | ref_val_type) ~ ")" | val_type | packed_type | ref_val_type }
 packed_type    = @{ "i8" | "i16" }
-ref_val_type   = { "(" ~ "ref" ~ "null"? ~ (exact_heap_type | heap_type) ~ ")" | ref_type }
+ref_val_type   = { "(" ~ "ref" ~ "null"? ~ (exact_heap_type | shared_heap_type | heap_type) ~ ")" | shared_ref_type | ref_type }
 // `(exact $T)` — Custom Descriptors §"Exact Types". An exact reference is a
 // subtype of its base heap type but NOT a supertype of that type's declared
 // subtypes, which is what makes `struct.new_desc`'s descriptor operand sound.
@@ -615,7 +619,7 @@ ref_val_type   = { "(" ~ "ref" ~ "null"? ~ (exact_heap_type | heap_type) ~ ")" |
 exact_heap_type = { "(" ~ "exact" ~ index ~ ")" }
 // A heap type is an abstract name, a `$id`, or a NUMERIC type index — `(ref 0)`
 // and `(param (ref 1))` address the type section positionally (ref, type-rec).
-heap_type      = @{ "func" | "extern" | "exn" | "any" | "eq" | "i31" | "data" | "struct" | "array" | "string" | "none" | "noextern" | "nofunc" | "noexn" | id | integer }
+heap_type      = @{ "func" | "extern" | "exn" | "any" | "eq" | "i31" | "data" | "struct" | "array" | "string" | "none" | "noextern" | "nofunc" | "noexn" | "nocont" | "cont" | id | integer }
 func_type      = { "(" ~ "func" ~ param* ~ result* ~ ")" }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
@@ -913,6 +917,7 @@ component_definition = {
     core_module_def
   | core_instance_def
   | core_type_def
+  | core_rec_group
   | core_func_inline_alias
   | core_func_inline_lower
   | core_func_inline_builtin
@@ -932,7 +937,14 @@ component_definition = {
 // A `(core module …)` body is a plain core module — same fields, same walker.
 core_module_def   = { "(" ~ "core" ~ "module" ~ module_definition_kw? ~ id? ~ (module_field | rec_group)* ~ ")" }
 core_instance_def = { "(" ~ "core" ~ "instance" ~ id? ~ core_instanceexpr ~ ")" }
-core_type_def     = { "(" ~ "core" ~ "type" ~ id? ~ (core_moduletype | sub_type | composite_type) ~ ")" }
+core_type_def     = { "(" ~ "core" ~ "type" ~ id? ~ core_type_body ~ ")" }
+core_rec_group    = { "(" ~ "core" ~ "rec" ~ core_member_type* ~ ")" }
+core_member_type  = { "(" ~ "type" ~ id? ~ core_type_body ~ ")" }
+core_type_body    = { core_moduletype | core_source_subtype | core_source_composite }
+core_source_subtype = { "(" ~ "sub" ~ core_final_kw? ~ index* ~ core_source_composite ~ ")" }
+core_final_kw    = { "final" ~ !name_char }
+core_source_composite = { desc_clauses ~ (core_shared_composite | composite_type) }
+core_shared_composite = { "(" ~ "shared" ~ desc_clauses ~ composite_type ~ ")" }
 core_func_inline_alias = { "(" ~ "core" ~ "func" ~ id? ~ "(" ~ "alias" ~ "core" ~ "export" ~ index ~ string ~ ")" ~ ")" }
 core_func_inline_lower = { "(" ~ "core" ~ "func" ~ id? ~ "(" ~ "canon" ~ canon_lower_inline ~ ")" ~ ")" }
 core_func_inline_builtin = { "(" ~ "core" ~ "func" ~ id? ~ "(" ~ "canon" ~ canon_builtin ~ ")" ~ ")" }
@@ -974,12 +986,14 @@ comp_alias = {
   | "(" ~ "alias" ~ "outer"  ~ index ~ index                  ~ "(" ~ outeraliassort ~ id? ~ ")" ~ ")"
 }
 
-outeraliassort = { "core" ~ ("module" | "type") | "component" | "type" }
+outeraliassort = { core_outer_type_sort | "core" ~ "module" | "component" | "type" }
+core_outer_type_sort = { "core" ~ "type" }
 
 // ── §7 core:moduletype ───────────────────────────────────────────────────────
 
 core_moduletype  = { "(" ~ "module" ~ core_moduledecl* ~ ")" }
-core_moduledecl  = { core_importdecl | core_exportdecl | core_alias_outer | type_field }
+core_moduledecl  = { core_importdecl | core_exportdecl | core_alias_outer | core_member_type | core_module_rec_group }
+core_module_rec_group = { "(" ~ "rec" ~ core_member_type* ~ ")" }
 core_importdecl  = { "(" ~ "import" ~ string ~ string ~ import_desc ~ ")" }
 // strip-id: an exportdecl's externtype carries NO binder.
 core_exportdecl  = { "(" ~ "export" ~ string ~ import_desc ~ ")" }
@@ -1050,7 +1064,7 @@ comp_inline_alias = { "(" ~ "alias" ~ "export" ~ index ~ externnamelit ~ ")" }
 componenttype = { "(" ~ "component" ~ id? ~ componentdecl* ~ ")" }
 instancetype  = { "(" ~ "instance"  ~ id? ~ instancedecl*  ~ ")" }
 componentdecl = { importdecl | instancedecl }
-instancedecl  = { core_type_def | comp_type | comp_alias | exportdecl }
+instancedecl  = { core_type_def | core_rec_group | comp_type | comp_alias | exportdecl }
 importdecl    = { "(" ~ "import" ~ externnamelit ~ attribute* ~ externtype ~ ")" }
 exportdecl    = { "(" ~ "export" ~ externnamelit ~ attribute* ~ externtype ~ ")" }
 
@@ -1068,7 +1082,7 @@ exportdecl    = { "(" ~ "export" ~ externnamelit ~ attribute* ~ externtype ~ ")"
 externtype = {
     core_module_type_ref
   | "(" ~ "core" ~ "module" ~ id? ~ core_moduledecl* ~ ")"
-  | "(" ~ "value" ~ id? ~ valuebound ~ ")"                 // 🪙
+  | "(" ~ "value" ~ (id ~ &valuebound)? ~ valuebound ~ ")"  // 🪙
   | "(" ~ "type"  ~ id? ~ typebound  ~ ")"
   | "(" ~ comp_sort_kw ~ id? ~ "(" ~ "type" ~ index ~ ")" ~ ")"
   | functype_c
@@ -1218,7 +1232,7 @@ canon_avail_par_op   = @{ "thread.available-parallelism" ~ !name_char }
 
 // ── §11 value 🪙 ─────────────────────────────────────────────────────────────
 
-comp_value = { "(" ~ "value" ~ id? ~ valtype ~ comp_val ~ ")" }
+comp_value = { "(" ~ "value" ~ (id ~ &(valtype ~ comp_val))? ~ valtype ~ comp_val ~ ")" }
 
 comp_val = {
     comp_val_kw
@@ -1231,6 +1245,7 @@ comp_val = {
   | "(" ~ "tuple"   ~ comp_val+ ~ ")"
   | "(" ~ "flags"   ~ labellit* ~ ")"
   | "(" ~ "enum"    ~ labellit ~ ")"
+  | "(" ~ "map"     ~ comp_entryval* ~ ")"
   | "(" ~ "binary"  ~ string+ ~ ")"
   | char_lit
   | float
@@ -1238,10 +1253,12 @@ comp_val = {
   | string
 }
 
+comp_entryval = { "(" ~ "entry" ~ comp_val ~ comp_val ~ ")" }
+
 // `nan` is a <f64canon> spelling, not an identifier — the guard keeps it from
 // eating the head of a `none`-like label.
 comp_val_kw = @{ ("false" | "true" | "none" | "nan" | "ok" | "error") ~ !name_char }
-char_lit    = @{ "'" ~ ("\\" ~ ANY | !"'" ~ ANY) ~ "'" }
+char_lit    = @{ "'" ~ !"'" ~ string_char ~ "'" }
 
 // ── §12 start 🪙 ─────────────────────────────────────────────────────────────
 

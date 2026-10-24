@@ -28,7 +28,6 @@ vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_platform_ecma = { workspace = true }
-wasmparser = "0.261.0"
 
 
 [build-dependencies]

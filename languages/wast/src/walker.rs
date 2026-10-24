@@ -29,8 +29,22 @@
 use super::{Rule, WastParser};
 #[path = "walker/component_interfaces.rs"]
 mod component_interfaces;
+#[path = "walker/component_values.rs"]
+mod component_values;
+#[path = "walker/component_source_scope.rs"]
+mod component_source_scope;
+#[cfg(test)]
+#[path = "walker/component_value_text_tests.rs"]
+mod component_value_text_tests;
+#[cfg(test)]
+#[path = "walker/component_worker_tests.rs"]
+mod component_worker_tests;
 #[path = "walker/component_instances.rs"]
 mod component_instances;
+#[path = "walker/component_core_scopes.rs"]
+mod component_core_scopes;
+#[path = "walker/component_core_types.rs"]
+mod component_core_types;
 
 use grameo::compat::Pair;
 use std::collections::HashMap;
@@ -47,6 +61,7 @@ use vybe_ast::*;
 /// what makes those two different things.
 #[derive(Default)]
 struct WastWalker {
+    component_core_rows: HashMap<(usize, usize), component_core_types::Row>,
     component_projection: HashMap<(usize, usize), ComponentProjection>,
     component_interface_binaries: HashMap<(usize, usize), std::sync::Arc<vybe_ast::canon::ComponentBinary>>,
     func_index_arities: Vec<usize>,
@@ -3198,35 +3213,10 @@ fn simple_component_binary_at(
         };
         let binary_source = def.clone();
         match def.as_rule() {
-            Rule::core_type_def => {
-                use vybe_ast::canon::ComponentCoreValType as T;
-                let name = def.clone().into_inner()
-                    .find(|part| part.as_rule() == Rule::id)
-                    .map(|part| part.as_str()[1..].to_string());
-                let composite = def.into_inner()
-                    .find(|part| part.as_rule() == Rule::composite_type)?;
-                let mut parts = composite.into_inner();
-                let func = parts.next()?;
-                if func.as_rule() != Rule::func_type || parts.next().is_some() {
-                    return None;
-                }
-                let signature = sig_from_params(&func, &HashMap::new())?;
-                let value_type = |value| match value {
-                    Vt::Num("i32") => Some(T::I32),
-                    Vt::Num("i64") => Some(T::I64),
-                    Vt::Num("f32") => Some(T::F32),
-                    Vt::Num("f64") => Some(T::F64),
-                    Vt::Num("v128") => Some(T::V128),
-                    _ => None,
-                };
-                binary.definitions.push(ComponentBinaryDef::CoreFuncType {
-                    params: signature.params.into_iter().map(value_type).collect::<Option<_>>()?,
-                    results: signature.results.into_iter().map(value_type).collect::<Option<_>>()?,
-                });
-                if let Some(name) = name {
-                    core_type_names.insert(name, core_type_count);
-                }
-                core_type_count += 1;
+            Rule::core_type_def | Rule::core_rec_group => {
+                let row = component_core_types::row(__w, &def).ok()?;
+                binary.definitions.push(component_core_types::project_binary(row,
+                    &mut core_type_names, &mut core_type_count).ok()?);
             }
             Rule::comp_func => {
                 let mut bind = None;
@@ -3588,7 +3578,7 @@ fn simple_component_binary_at(
                         _ => return None,
                     };
                     binary.definitions.push(ComponentBinaryDef::CanonContext {
-                        set: decl.builtin == "context.set", ty, slot: *slot,
+                        set: decl.builtin == "context.set", ty: ty.into(), slot: *slot,
                     });
                     core_func_count += 1;
                 } else if matches!(decl.builtin.as_str(), "task.cancel" | "subtask.cancel"
@@ -3642,7 +3632,12 @@ fn simple_component_binary_at(
                 } else if decl.builtin == "thread.index" {
                     binary.definitions.push(ComponentBinaryDef::CanonThreadIndex);
                     core_func_count += 1;
-                } else if decl.builtin == "thread.new-indirect" {
+                } else if decl.builtin == "thread.available-parallelism" {
+                    binary.definitions.push(ComponentBinaryDef::CanonThreadAvailableParallelism {
+                        shared: decl.shared,
+                    });
+                    core_func_count += 1;
+                } else if matches!(decl.builtin.as_str(), "thread.new-indirect" | "thread.spawn-indirect" | "thread.spawn-ref") {
                     let resolve_ref = |rule, names: &HashMap<String, u32>, count| {
                         let reference = find_rule(&def, rule)?;
                         let index = if reference.as_str().starts_with('(') {
@@ -3658,10 +3653,18 @@ fn simple_component_binary_at(
                         let index = resolve_idx(&index, "core worker reference", names).ok()?;
                         (index < count).then_some(index)
                     };
-                    binary.definitions.push(ComponentBinaryDef::CanonThreadNewIndirect {
-                        type_index: resolve_ref(Rule::core_typeidx_ref, &core_type_names, core_type_count)?,
-                        table_index: resolve_ref(Rule::core_tableidx_ref, &core_table_names, core_table_count)?,
-                    });
+                    let type_index = resolve_ref(Rule::core_typeidx_ref, &core_type_names, core_type_count)?;
+                    let operation = if decl.builtin == "thread.spawn-ref" {
+                        ComponentBinaryDef::CanonThreadSpawnRef { shared: decl.shared, type_index }
+                    } else {
+                        let table_index = resolve_ref(Rule::core_tableidx_ref, &core_table_names, core_table_count)?;
+                        if decl.builtin == "thread.spawn-indirect" {
+                            ComponentBinaryDef::CanonThreadSpawnIndirect { shared: decl.shared, type_index, table_index }
+                        } else {
+                            ComponentBinaryDef::CanonThreadNewIndirect { type_index, table_index }
+                        }
+                    };
+                    binary.definitions.push(operation);
                     core_func_count += 1;
                 } else if decl.builtin == "lower" {
                     let callee = find_rule(&def, Rule::funcidx_ref)?;
@@ -3881,6 +3884,12 @@ fn simple_component_binary_at(
                 component_instance_count += 1;
             }
             Rule::comp_alias => {
+                if component_core_types::is_outer_alias(&def) {
+                    let row = component_core_types::row(__w, &def).ok()?;
+                    binary.definitions.push(component_core_types::project_binary(row,
+                        &mut core_type_names, &mut core_type_count).ok()?);
+                    continue;
+                }
                 if def.clone().into_inner().any(|part| part.as_rule() == Rule::core_sort) {
                     let mut instance = None;
                     let mut name = None;
@@ -4124,7 +4133,7 @@ mod component_binary_scope_tests {
             .expect("component grammar")
             .next()
             .expect("component pair");
-        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        let binary = simple_component_binary(pair, &mut walker).expect("typed binary definitions");
         let ComponentBinaryDef::CoreModule(module) = &binary.definitions[0] else {
             panic!("expected core module definition");
         };
@@ -4153,7 +4162,7 @@ mod component_binary_scope_tests {
             .expect("component grammar")
             .next()
             .expect("component pair");
-        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        let binary = simple_component_binary(pair, &mut walker).expect("typed binary definitions");
         assert!(matches!(binary.definitions[2], ComponentBinaryDef::FuncType { .. }));
         assert!(matches!(binary.definitions[3], ComponentBinaryDef::CoreAliasInstanceExport { .. }));
         assert!(matches!(binary.definitions[4], ComponentBinaryDef::CanonLift { .. }));
@@ -4182,7 +4191,7 @@ mod component_binary_scope_tests {
             .expect("component grammar")
             .next()
             .expect("component pair");
-        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        let binary = simple_component_binary(pair, &mut walker).expect("typed binary definitions");
         assert!(matches!(binary.definitions[4], ComponentBinaryDef::CanonLift {
             core_func: 0, ..
         }));
@@ -4215,7 +4224,7 @@ mod component_binary_scope_tests {
             .expect("component grammar")
             .next()
             .expect("component pair");
-        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        let binary = simple_component_binary(pair, &mut walker).expect("typed binary definitions");
         assert!(matches!(binary.definitions[3], ComponentBinaryDef::CoreInstance {
             module: 1, ref args
         } if args == &[("m".into(), 0)]));
@@ -4245,7 +4254,7 @@ mod component_binary_scope_tests {
             .expect("component grammar")
             .next()
             .expect("component pair");
-        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        let binary = simple_component_binary(pair, &mut walker).expect("typed binary definitions");
         assert_eq!(
             binary.definitions,
             vec![
@@ -4287,7 +4296,7 @@ mod component_binary_scope_tests {
             .expect("component grammar")
             .next()
             .expect("component pair");
-        let binary = simple_component_binary(pair, &walker).expect("typed binary definitions");
+        let binary = simple_component_binary(pair, &mut walker).expect("typed binary definitions");
         assert_eq!(
             binary.definitions,
             vec![
@@ -4446,7 +4455,7 @@ mod component_binary_scope_tests {
         };
         let mut walker = WastWalker::default();
         walker.comp_types = vec![func_type.clone(), func_type];
-        let binary = simple_component_binary(pair, &walker).expect("ordered binary definitions");
+        let binary = simple_component_binary(pair, &mut walker).expect("ordered binary definitions");
         assert!(matches!(
             binary.definitions.get(2),
             Some(ComponentBinaryDef::NestedComponent(_))
@@ -4479,8 +4488,34 @@ fn component_name(raw: &str, context: &str) -> Result<String, String> {
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let _line_index = vybe_ast::line_index::LineIndex::install(source);
-    let pairs =
-        WastParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
+    let pairs: Vec<_> =
+        WastParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?.collect();
+    let commands: Vec<_> = pairs.iter().cloned().flat_map(|p| {
+        if p.as_rule() == Rule::program { p.into_inner().collect::<Vec<_>>() } else { vec![p] }
+    }).filter(|p| p.as_rule() != Rule::EOI).collect();
+    let primary = commands.iter().find(|p| is_component_command(p) && component_values::concrete((*p).clone()));
+    if let Some(command) = primary {
+        if commands.len() != 1 {
+            return Err("primary component value text in executable scripts is not supported".into());
+        }
+        let component = if command.as_rule() == Rule::script_cmd {
+            command.clone().into_inner().next().ok_or("empty component command")?
+        } else { command.clone() };
+        let mut walker = WastWalker::default();
+        component_interfaces::normalize(component.clone(), &mut walker)?;
+        let binary = component_interfaces::take(component, &mut walker).ok_or("missing primary component AST")?;
+        vybe_platform_wasm::write_component_binary(&binary)?;
+        return Ok(Module {
+            name: "main".into(), language: Lang::Unknown, body: Vec::new(), imports: Vec::new(),
+            canon: vybe_ast::canon::ComponentSection { component_source: true,
+                binary: Some(std::sync::Arc::new(binary)), ..Default::default() },
+            directives: vybe_ast::Directives {
+                add_concatenates_strings: Some(true), functions_are_objects: Some(false),
+                type_resolution: Some(vybe_ast::TypeResolution::Static),
+                operator_dispatch: Some(vybe_ast::OperatorDispatch::StaticBuiltin), ..Default::default()
+            },
+        });
+    }
 
     // Every registry this walk keeps, created here and dropped when `parse`
     // returns — including on the `?` paths below. A wast SCRIPT accumulates
@@ -4858,6 +4893,9 @@ fn walk_component(
     pair: Pair<Rule>,
     body: &mut Vec<Statement>,
 ) -> Result<ComponentWalk, String> {
+    if component_values::concrete(pair.clone()) {
+        return Err("primary component value text requires the typed binary path, not script execution".into());
+    }
     let span = pair.as_span();
     let projection_key = (span.start(), span.end());
     let binary_source = pair.clone();
@@ -5086,7 +5124,7 @@ fn walk_component_definition<'i>(
         Rule::comp_alias => walk_comp_alias(__w, pair),
         Rule::comp_type => walk_comp_type(__w, pair),
         Rule::comp_func => walk_comp_func(__w, pair),
-        Rule::core_type_def => walk_core_type(__w, pair),
+        Rule::core_type_def | Rule::core_rec_group => walk_core_type(__w, pair),
         Rule::core_func_inline_alias => {
             let parts: Vec<_> = pair.into_inner().collect();
             let instance = parts
@@ -6362,6 +6400,9 @@ fn resolve_component_func_reference(
 }
 
 fn walk_comp_alias(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
+    if component_core_types::is_outer_alias(&pair) {
+        return component_core_types::walk(__w, pair);
+    }
     let text = pair.as_str();
     let mut inner = pair.clone().into_inner();
     let Some(iref) = inner.next() else {
@@ -6881,14 +6922,8 @@ fn validate_declared_type_names(pair: Pair<Rule>) -> Result<(), String> {
             | Rule::deftype
             | Rule::externtype
             | Rule::comp_type => validate_declared_type_names(declaration)?,
-            Rule::core_type_def => {
-                if let Some(module_type) = declaration
-                    .into_inner()
-                    .find(|part| part.as_rule() == Rule::core_moduletype)
-                {
-                    validate_core_module_type(&module_type)?;
-                }
-            }
+            // These schemas are retained and checked by native normalization.
+            Rule::core_type_def | Rule::core_rec_group => {}
             _ => {}
         }
     }
@@ -7260,120 +7295,9 @@ fn val_spec_inner(__w: &mut WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::cano
 /// `(core type <id>? …)` — the CORE type space, which `thread.new-indirect`
 /// and the spawn rows index. A different space from `walk_comp_type`'s.
 fn walk_core_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> {
-    let module_type = pair
-        .clone()
-        .into_inner()
-        .find(|c| c.as_rule() == Rule::core_moduletype);
-    let kind = if let Some(ref module_type) = module_type {
-        validate_core_module_type(module_type)?;
-        CoreTypeKind::Module
-    } else if let Some(signature) = find_rule(&pair, Rule::func_type)
-        .and_then(|function| sig_from_params(&function, &HashMap::new()))
-        .filter(|signature| signature.results.is_empty())
-    {
-        match signature.params.as_slice() {
-            [Vt::Num("i32")] => CoreTypeKind::Worker(vybe_ast::canon::ComponentCoreValType::I32),
-            [Vt::Num("i64")] => CoreTypeKind::Worker(vybe_ast::canon::ComponentCoreValType::I64),
-            _ => CoreTypeKind::Other,
-        }
-    } else {
-        CoreTypeKind::Other
-    };
-    let idx = __w.core_type_space;
-    __w.core_type_space += 1;
-    __w.core_type_kinds.push(kind);
-    if let Some(id) = pair.into_inner().find(|c| c.as_rule() == Rule::id) {
-        __w.core_type_index
-            .insert(id.as_str()[1..].to_string(), idx);
-    }
-    Ok(())
+    component_core_types::walk(__w, pair)
 }
 
-fn validate_core_module_type(module: &Pair<Rule>) -> Result<(), String> {
-    let mut type_sigs: Vec<Option<FnSig>> = Vec::new();
-    let mut type_names = HashMap::new();
-    let mut imports = std::collections::HashSet::new();
-    let mut exports = std::collections::HashSet::new();
-    for declaration in module.clone().into_inner() {
-        if declaration.as_rule() != Rule::core_moduledecl {
-            continue;
-        }
-        let Some(field) = declaration.into_inner().next() else {
-            continue;
-        };
-        match field.as_rule() {
-            Rule::type_field | Rule::core_alias_outer => {
-                let sig = find_rule(&field, Rule::func_type)
-                    .and_then(|func| sig_from_params(&func, &type_names));
-                if let Some(name) = field
-                    .clone()
-                    .into_inner()
-                    .find(|part| part.as_rule() == Rule::id)
-                {
-                    type_names.insert(name.as_str().to_string(), type_sigs.len());
-                }
-                type_sigs.push(sig);
-            }
-            Rule::core_importdecl | Rule::core_exportdecl => {
-                let names: Vec<String> = field
-                    .clone()
-                    .into_inner()
-                    .filter(|part| part.as_rule() == Rule::string)
-                    .map(|part| component_name(part.as_str(), "core module type"))
-                    .collect::<Result<_, _>>()?;
-                if field.as_rule() == Rule::core_importdecl {
-                    if let [module, name] = names.as_slice() {
-                        let key = format!("{module}:{name}");
-                        if !imports.insert(key.clone()) {
-                            return Err(format!("duplicate import name `{key}`"));
-                        }
-                    }
-                } else if let Some(name) = names.first() {
-                    if !exports.insert(name.clone()) {
-                        return Err(format!("export name `{name}` already defined"));
-                    }
-                }
-                if let Some(typeuse) = find_rule(&field, Rule::typeuse) {
-                    if let Some(index) = typeuse
-                        .clone()
-                        .into_inner()
-                        .find(|part| part.as_rule() == Rule::index)
-                    {
-                        let name = index.as_str();
-                        if name
-                            .parse::<usize>()
-                            .is_ok_and(|idx| idx >= type_sigs.len())
-                            || (name.starts_with('$') && !type_names.contains_key(name))
-                        {
-                            return Err("type index out of bounds".into());
-                        }
-                    } else if let Some(sig) = sig_from_params(&typeuse, &type_names) {
-                        let exists = type_sigs.iter().flatten().any(|prior| {
-                            prior.params == sig.params && prior.results == sig.results
-                        });
-                        if !exists {
-                            type_sigs.push(Some(sig));
-                        }
-                    }
-                }
-                if let Some(memory) = find_rule(&field, Rule::mem_type) {
-                    let memory64 = memory.as_str().trim_start().starts_with("i64");
-                    let max_pages = if memory64 { 1u128 << 48 } else { 65536 };
-                    for limit in memory
-                        .into_inner()
-                        .filter(|part| part.as_rule() == Rule::integer)
-                    {
-                        if parse_wat_u128(limit.as_str()).is_some_and(|n| n > max_pages) {
-                            return Err(format!("memory size must be at most {max_pages}"));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
 
 // ── The canon section ────────────────────────────────────────────────────────
 
@@ -7388,16 +7312,7 @@ fn resolve_idx(
     space_name: &str,
     names: &HashMap<String, u32>,
 ) -> Result<u32, String> {
-    let raw = pair.as_str().trim();
-    match raw.strip_prefix('$') {
-        Some(name) => names.get(name).copied().ok_or_else(|| {
-            format!("canon: `${name}` is not bound in the {space_name} index space")
-        }),
-        None => raw
-            .replace('_', "")
-            .parse::<u32>()
-            .map_err(|_| format!("canon: `{raw}` is not a {space_name} index")),
-    }
+    component_source_scope::resolve_idx(pair, space_name, names)
 }
 
 /// The `index` inside a `(core func $i "name")`-style reference, or a bare one.
@@ -20456,7 +20371,12 @@ fn walk_assert_invalid(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stateme
     for child in children {
         if child.as_rule() == Rule::component {
             examined = true;
-            reason = walk_component(&mut WastWalker::default(), child, &mut Vec::new()).err();
+            reason = if component_values::contains(child.clone()) {
+                component_values::produce(child)
+                    .and_then(|binary| vybe_platform_wasm::write_component_binary(&binary).map(|_| ())).err()
+            } else {
+                walk_component(&mut WastWalker::default(), child, &mut Vec::new()).err()
+            };
             break;
         }
         // The expected diagnostic. ⛔ It used to be parsed and DROPPED, which
@@ -22007,8 +21927,7 @@ mod component_constant_tests {
                 .compile(&module)
                 .unwrap();
             let binary = vybe_platform_wasm::write_wasm(&chunks);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&binary)
+            vybe_platform_wasm::validate_binary(&binary)
                 .expect("standard Wasm");
             let mut vm = vybe_runtime::VM::new();
             vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
@@ -22130,8 +22049,7 @@ mod component_constant_tests {
             .expect("flags assertion should compile");
         assert!(!chunks.is_empty());
         let binary = vybe_platform_wasm::write_wasm(&chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary)
+        vybe_platform_wasm::validate_binary(&binary)
             .expect("flags assertion must emit standard Wasm");
     }
 

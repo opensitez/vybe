@@ -234,8 +234,7 @@ mod tests {
         let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
             .compile(&module)
             .expect("nested component compiles");
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .expect("nested component caller emits standard Wasm");
         let mut vm = vybe_runtime::VM::new();
         vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
@@ -253,8 +252,7 @@ mod tests {
         let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
             .compile(&module)
             .expect("inline alias compiles");
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .expect("inline alias caller emits standard Wasm");
         let mut vm = vybe_runtime::VM::new();
         vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
@@ -299,8 +297,7 @@ mod tests {
         let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
             .compile(&module)
             .expect("nested lower compiles");
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .expect("nested lower caller emits standard Wasm");
         let mut vm = vybe_runtime::VM::new();
         vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
@@ -599,8 +596,7 @@ mod tests {
             .compile(&module)
             .expect("aliased core memory should compile");
         let binary = vybe_platform_wasm::write_wasm(&chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary)
+        vybe_platform_wasm::validate_binary(&binary)
             .expect("aliased memory fixture must emit standard Wasm");
         let mut vm = vybe_runtime::VM::new();
         vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
@@ -647,8 +643,7 @@ mod tests {
             .compile(&module)
             .expect("canonical record-list round-trip should compile");
         let binary = vybe_platform_wasm::write_wasm(&chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary)
+        vybe_platform_wasm::validate_binary(&binary)
             .expect("round-trip must emit standard Wasm");
         let mut vm = vybe_runtime::VM::new();
         vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);

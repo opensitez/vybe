@@ -36,15 +36,26 @@ pub(super) fn alias_type(walker: &mut WastWalker, source: u32) -> Result<u32, St
 fn type_definitions(definitions: &[Def]) -> Result<Vec<Option<usize>>, String> {
     let mut types = Vec::new();
     for (position, definition) in definitions.iter().enumerate() {
+        if let Some(alias) = definition.normalized_outer_alias() {
+            if alias.kind == vybe_ast::canon::ComponentOuterAliasKind::Type {
+                types.push(if alias.count == 0 {
+                    *types.get(alias.index as usize).ok_or("component outer type alias index out of bounds")?
+                } else { None });
+            }
+            continue;
+        }
         match definition {
             Def::InterfaceType { .. } | Def::FuncType { .. } | Def::ValueType(_)
             | Def::ResourceType { .. } => types.push(Some(position)),
             Def::ExportType { index, .. }
-            | Def::Import { ty: Ref::TypeEq(index), .. } => {
+            | Def::NamedExport { kind: vybe_ast::canon::ComponentItemKind::Type, index, .. }
+            | Def::Import { ty: Ref::TypeEq(index), .. }
+            | Def::NamedImport { ty: Ref::TypeEq(index), .. } => {
                 types.push(*types.get(*index as usize)
                     .ok_or("component type alias index out of bounds")?);
             }
-            Def::Import { ty: Ref::TypeSubResource, .. } => types.push(None),
+            Def::Import { ty: Ref::TypeSubResource, .. }
+            | Def::NamedImport { ty: Ref::TypeSubResource, .. } => types.push(None),
             Def::AliasInstanceExport { kind: vybe_ast::canon::ComponentItemKind::Type, .. } =>
                 types.push(None),
             _ => {}
@@ -111,7 +122,36 @@ fn project(walker: &mut WastWalker, payload: u32) -> Result<(), String> {
     let mut exports = Vec::new();
     let mut exported_types = HashMap::new();
     for declaration in declarations {
+        if let Some((false, name, ty)) = declaration.external() {
+            // This is only an execution/link-key projection. InstanceType keeps
+            // the complete attributed binary in its Arc<ComponentBinary>.
+            match ty {
+                Ref::Func(index) => {
+                    let global = *slots.get(index).ok_or("instance interface function type out of bounds")?;
+                    if !matches!(walker.comp_types.get(global as usize), Some(TypeDecl::Func { .. })) {
+                        return Err("instance interface export does not reference a function type".into());
+                    }
+                    exports.push((name.name.to_owned(), global));
+                }
+                Ref::TypeEq(index) => {
+                    let global = *slots.get(index).ok_or("instance interface exported type out of bounds")?;
+                    if !matches!(walker.comp_types.get(global as usize), Some(TypeDecl::Value(_))) {
+                        return Err("instance interface: non-value type export requires identity substitution".into());
+                    }
+                    exported_types.insert(name.name.to_owned(), global);
+                    slots.insert(local_count, global);
+                    local_count += 1;
+                }
+                // An unaliased value field has no runtime occurrence to lower.
+                // Its full bound/equality metadata stays in InstanceType's binary;
+                // concrete value aliases use the native binary producer instead.
+                Ref::Value(_) | Ref::ValueEq(_) => {}
+                _ => return Err("instance interface: non-function export requires typed projection".into()),
+            }
+            continue;
+        }
         match declaration {
+            Decl::CoreType(_) | Decl::AliasOuterCoreType { .. } => {}
             Decl::Type(definition) => {
                 let mapped = |spec| binary_valspec(spec, &slots)
                     .ok_or_else(|| "instance interface: value type reference out of bounds".to_string());
@@ -135,22 +175,6 @@ fn project(walker: &mut WastWalker, payload: u32) -> Result<(), String> {
             Decl::AliasOuterType { count: 1, index } => {
                 let global = *source.outer.get(index)
                     .ok_or("instance interface: outer type index out of bounds")?;
-                slots.insert(local_count, global);
-                local_count += 1;
-            }
-            Decl::Export { name, ty: Ref::Func(index) } => {
-                let global = *slots.get(index).ok_or("instance interface function type out of bounds")?;
-                if !matches!(walker.comp_types.get(global as usize), Some(TypeDecl::Func { .. })) {
-                    return Err("instance interface export does not reference a function type".into());
-                }
-                exports.push((name.clone(), global));
-            }
-            Decl::Export { name, ty: Ref::TypeEq(index) } => {
-                let global = *slots.get(index).ok_or("instance interface exported type out of bounds")?;
-                if !matches!(walker.comp_types.get(global as usize), Some(TypeDecl::Value(_))) {
-                    return Err("instance interface: non-value type export requires identity substitution".into());
-                }
-                exported_types.insert(name.clone(), global);
                 slots.insert(local_count, global);
                 local_count += 1;
             }
