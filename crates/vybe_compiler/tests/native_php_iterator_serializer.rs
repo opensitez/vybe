@@ -42,7 +42,7 @@ fn parsed_iterator_key_value_and_null_serializer() {
     let source_path=concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/native_php_iterator_serializer.php");
     assert_eq!(vm.invoke(&size,&[Value::String(source_path.into())]).unwrap(),Value::F64(source.len() as f64));
     let native=vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&native).unwrap();
+    vybe_platform_wasm::validate_binary(&native).unwrap();
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn actual_dynamic_runtime_string_callback_controls() {
     let mut service=vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm);
     let compiled=service.compile_source_by_name(source,"php","native-callback-controls.php").unwrap();
     let native=vybe_platform_wasm::write_wasm(&compiled.chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&native).unwrap();
+    vybe_platform_wasm::validate_binary(&native).unwrap();
     let value=service.run_compiled(compiled).unwrap();
     let Value::Object(object)=value else{panic!("callback control array")};let object=object.lock().unwrap();let ObjectKind::Array(values)=&object.kind else{panic!("array kind")};
     assert_eq!(values,&vec![Value::F64(7.),Value::F64(11.)]);

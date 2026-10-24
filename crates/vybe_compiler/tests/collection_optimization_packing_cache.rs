@@ -2,7 +2,7 @@
 use std::sync::{Arc, Mutex};
 use vybe_compiler::primitives::{bundle, globals, packing, platforms};
 use vybe_runtime::value::{Function, Object, ObjectKind};
-use vybe_runtime::{Chunk, Op, Value, VM};
+use vybe_runtime::{Chunk, Op, VM, Value};
 #[path = "fixtures/collection_optimization_packing_number_store.rs"]
 mod baseline;
 #[path = "fixtures/collection_optimization_bitconverter_caller.rs"]
@@ -143,71 +143,16 @@ fn program(mode: u8, width: u8, little: bool, calls: usize) -> Vec<Chunk> {
     globals::normalize_global_table(&mut chunks);
     chunks
 }
+#[path = "fixtures/native_validation_diagnostic.rs"]
+mod native_validation_diagnostic;
+
 // Keep failure diagnostics at the exact exported function/operator boundary.
-fn native_diagnostic(chunks: &[Chunk], bytes: &[u8], error: &wasmparser::BinaryReaderError) {
-    let mut names = std::collections::BTreeMap::new();
-    let named_bytes = vybe_platform_wasm::write_wasm_with_options(
-        chunks,
-        vybe_platform_wasm::WasmWriteOptions {
-            include_name_section: true,
-            ..Default::default()
-        },
-    );
-    for payload in wasmparser::Parser::new(0).parse_all(&named_bytes) {
-        if let wasmparser::Payload::CustomSection(section) = payload.unwrap() {
-            if let wasmparser::KnownCustom::Name(reader) = section.as_known() {
-                for name in reader {
-                    if let wasmparser::Name::Function(map) = name.unwrap() {
-                        for entry in map {
-                            let entry = entry.unwrap();
-                            names.insert(entry.index, entry.name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let mut function = 0;
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        if let wasmparser::Payload::ImportSection(section) = payload.unwrap() {
-            for import in section.into_imports() {
-                if matches!(
-                    import.unwrap().ty,
-                    wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                ) {
-                    function += 1;
-                }
-            }
-        }
-    }
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-            if body.range().contains(&error.offset()) {
-                eprintln!(
-                    "native failure function={function} name={:?} range={:?} error={error}",
-                    names.get(&function),
-                    body.range()
-                );
-                let mut operators = body.get_operators_reader().unwrap();
-                while !operators.eof() {
-                    let (operator, offset) = operators.read_with_offset().unwrap();
-                    if offset + 100 >= error.offset() && offset <= error.offset() + 30 {
-                        eprintln!("  wasm@{offset}: {operator:?}");
-                        if let wasmparser::Operator::Call { function_index } = operator {
-                            eprintln!("    target={:?}", names.get(&function_index));
-                        }
-                    }
-                }
-            }
-            function += 1;
-        }
-    }
+fn native_diagnostic(chunks: &[Chunk], bytes: &[u8], error: &vybe_platform_wasm::WasmError) {
+    native_validation_diagnostic::report(chunks, bytes, error, 100, 30);
 }
 fn validate(chunks: &[Chunk]) {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-    {
+    if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
         native_diagnostic(chunks, &bytes, &error);
         panic!("packing native validation: {error}");
     }
@@ -464,10 +409,7 @@ fn parsed_csharp_bitconverter_preserves_all_dispatch_results_and_checked_numeric
             .compile(&module)
             .unwrap();
         let wasm = vybe_platform_wasm::write_wasm(&chunks);
-        if let Err(error) =
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&wasm)
-        {
+        if let Err(error) = vybe_platform_wasm::validate_binary(&wasm) {
             native_diagnostic(&chunks, &wasm, &error);
             std::fs::write(
                 format!("/private/tmp/vybe-packing-csharp-{label}.wasm"),
@@ -497,14 +439,11 @@ fn frozen_getbytes_caller_records_existing_void_branch_native_gap_and_vm_results
     globals::declare_free_globals(&mut chunks);
     globals::normalize_global_table(&mut chunks);
     let bytes = vybe_platform_wasm::write_wasm(&chunks);
-    let failure = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    let failure = vybe_platform_wasm::validate_binary(&bytes)
         .err()
         .expect("frozen GetBytes caller must retain its known native block-type defect");
     assert!(
-        failure
-            .message()
-            .contains("values remaining on stack at end of block"),
+        failure.message.contains("block leaves extra operands"),
         "unexpected frozen caller validation failure: {failure}"
     );
     native_diagnostic(&chunks, &bytes, &failure);

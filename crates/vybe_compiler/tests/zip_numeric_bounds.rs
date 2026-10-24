@@ -23,7 +23,7 @@ fn modes_lengths_tuple_tags_and_values_are_preserved(){
 #[test]
 fn native_validation_and_size(){
     let mut rows=vec![];
-    for(mode,label)in[(ZipLen::First,"first"),(ZipLen::Shortest,"shortest"),(ZipLen::Longest,"longest")]{for n in[1,2,3,8]{let mut sizes=vec![];for fast in[false,true]{let code=program(fast,n,mode);let wasm=vybe_platform_wasm::write_wasm(&code);wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&wasm).unwrap();sizes.push((code.iter().map(|c|c.code.len()).sum::<usize>(),wasm.len(),code[1].local_count));}assert!(sizes[1].0<sizes[0].0);assert!(sizes[1].1<sizes[0].1);rows.push(serde_json::json!({"mode":label,"arity":n,"before":sizes[0],"after":sizes[1]}));}}
+    for(mode,label)in[(ZipLen::First,"first"),(ZipLen::Shortest,"shortest"),(ZipLen::Longest,"longest")]{for n in[1,2,3,8]{let mut sizes=vec![];for fast in[false,true]{let code=program(fast,n,mode);let wasm=vybe_platform_wasm::write_wasm(&code);vybe_platform_wasm::validate_binary(&wasm).unwrap();sizes.push((code.iter().map(|c|c.code.len()).sum::<usize>(),wasm.len(),code[1].local_count));}assert!(sizes[1].0<sizes[0].0);assert!(sizes[1].1<sizes[0].1);rows.push(serde_json::json!({"mode":label,"arity":n,"before":sizes[0],"after":sizes[1]}));}}
     if let Ok(path)=std::env::var("ZIP_GATES_PATH"){std::fs::write(path,serde_json::to_vec_pretty(&rows).unwrap()).unwrap();}
 }
 #[test]#[ignore="Seven paired opt0 zip materialization batches"]

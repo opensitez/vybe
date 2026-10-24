@@ -326,8 +326,7 @@ fn size_and_native_exports() {
                 include_vybe_metadata: false,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         if std::env::var_os("VYBE_PRIMITIVE_MAP_CLONE_EXPORT").is_some() {
             native_export::export_chunks(&cs, &format!("map-clone-{}", u8::from(fast)));
@@ -455,34 +454,19 @@ fn map_from_entries_import_has_one_parameter() {
             include_vybe_metadata: false,
         },
     );
-    let mut params = vec![];
+    use vybe_platform_wasm::inspection::{CompositeType, CoreModule, ImportType};
+    let module = CoreModule::new(&bytes).unwrap();
+    let types = module.types().unwrap();
     let mut found = false;
-    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-        match payload.unwrap() {
-            wasmparser::Payload::TypeSection(types) => {
-                for group in types {
-                    for ty in group.unwrap().into_types() {
-                        params.push(match ty.composite_type.inner {
-                            wasmparser::CompositeInnerType::Func(f) => Some(f.params().len()),
-                            _ => None,
-                        });
-                    }
-                }
-            }
-            wasmparser::Payload::ImportSection(imports) => {
-                for import in imports.into_imports() {
-                    let i = import.unwrap();
-                    if i.module == "ecma:map" && i.name == "fromEntries" {
-                        let wasmparser::TypeRef::Func(t) = i.ty else {
-                            panic!("function")
-                        };
-                        assert_eq!(params[t as usize], Some(1));
-                        found = true;
-                    }
-                }
-            }
-            _ => {}
+    module.imports(|module, name, ty| {
+        if module == "ecma:map" && name == "fromEntries" {
+            let ImportType::Func { type_index, .. } = ty else { panic!("function") };
+            let CompositeType::Func { params, .. } = &types[*type_index as usize].definition().composite
+                else { panic!("function type") };
+            assert_eq!(params.len(), 1);
+            found = true;
         }
-    }
+        Ok(())
+    }).unwrap();
     assert!(found);
 }

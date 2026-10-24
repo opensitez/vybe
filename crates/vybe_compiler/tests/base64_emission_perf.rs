@@ -80,8 +80,7 @@ fn program(old: bool, reverse: bool, slice: Option<(i32, i32)>, calls: usize) ->
     finish(chunks)
 }
 fn validate(chunks: &[Chunk]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
         .unwrap();
 }
 fn items(value: Value) -> Vec<Value> {
@@ -245,8 +244,7 @@ fn python_base64_frontend_preserves_byte_arrays() {
             .unwrap();
         let binary = vybe_platform_wasm::write_wasm(&chunks);
         if let Err(error) =
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&binary)
+            vybe_platform_wasm::validate_binary(&binary)
         {
             std::fs::write(
                 std::env::temp_dir().join("base64-frontend-invalid.wasm"),

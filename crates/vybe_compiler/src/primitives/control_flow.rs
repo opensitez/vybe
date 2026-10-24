@@ -93,6 +93,9 @@ impl Compiler {
         {
             self.emit_run_shutdown_callbacks(&registry, order);
         }
+        if let Some(target) = self.directives().shutdown_finalizer.clone() {
+            self.emit_shutdown_finalizer(&target, true);
+        }
 
         if self.directives().flush_output_buffers == Some(true) {
             let current = self.current;
@@ -906,6 +909,24 @@ impl Compiler {
             if p.is_rest {
                 crate::primitives::references::emit_bind_late_bound_rest_arguments(
                     &mut self.chunks, self.current, slot, alias, self.line);
+            } else if !alias
+                && self.local_store_dereferences(&p.name)
+                && !self.is_frame_number_local(&p.name)
+            {
+                // A by-value parameter that is never bound to a reference
+                // holds the plain value its reads expect. Only an object can
+                // be an argument carrier or a reference, so one test guards
+                // both steps.
+                let line = self.line;
+                self.emit_u16(Op::LOCAL_GET, slot);
+                crate::primitives::instructions::recipes::is_object(self.chunk(), line);
+                self.chunk().emit_if(line);
+                crate::primitives::references::emit_bind_late_bound_object_argument(
+                    &mut self.chunks, self.current, slot, alias, line);
+                self.emit_u16(Op::LOCAL_GET, slot);
+                self.emit_autoderef_pointer_cell();
+                self.emit_u16(Op::LOCAL_SET, slot);
+                self.chunk().emit_end(line);
             } else {
                 crate::primitives::references::emit_bind_late_bound_argument(
                     &mut self.chunks, self.current, slot, alias, self.line);
@@ -1286,6 +1307,7 @@ impl Compiler {
         index: &Expression,
     ) -> Result<(), String> {
         self.compile_expr(object)?;
+        self.emit_array_storage_mut_of_stack();
         let base_slot = self.define_local("__ref_index_base");
         self.emit_u16(Op::LOCAL_SET, base_slot);
 
@@ -1557,6 +1579,12 @@ impl Compiler {
         if let Some(i64_slot) = self.chunks[cur].i64_scratch_slot {
             floor = floor.max(i64_slot + 1);
         }
+        if let Some(&i64_slot) = self.chunks[cur].i64_locals.iter().max() {
+            floor = floor.max(i64_slot + 1);
+        }
+        if let Some(memo_slot) = self.chunks[cur].memo_slot_ceiling() {
+            floor = floor.max(memo_slot + 1);
+        }
         if self.chunks[cur].local_count < floor {
             self.chunks[cur].local_count = floor;
         }
@@ -1639,15 +1667,26 @@ impl Compiler {
             // object remains reachable while the local holding it is cleared.
             let mut seen = std::collections::HashSet::new();
             // Emission can add compiler temporaries to the scope. Snapshot
-            // only the source slots that need releasing, in the same reverse
-            // declaration order, rather than cloning every local's name.
-            let slots: Vec<u16> = self.scope().defined_names.iter().rev()
+            // only the source slots that need releasing, in declaration order
+            // (the order a function's variables are freed), rather than
+            // cloning every local's name.
+            let slots: Vec<u16> = self.scope().defined_names.iter()
                 .filter(|local| local.is_source()
                     && self.is_variable_name(&local.name)
+                    && !self.is_frame_number_local(&local.name)
                     && seen.insert(local.slot))
                 .map(|local| local.slot)
                 .collect();
             let mut release_slot = None;
+            // One gate for the whole release: when nothing can need
+            // finalizing, the frame's bindings die with it.
+            let gate = vybe_runtime::registry::hooks(&self.profile.name).rebind_gate;
+            let gated = gate.is_some() && !slots.is_empty();
+            if let (true, Some(gate)) = (gated, gate) {
+                let line = self.line;
+                gate(self.chunk(), line);
+                self.chunk().emit_if(line);
+            }
             for slot in slots {
                 // Each finalizer consumes the spill before the next release.
                 // Keep its compiler origin, but reserve one slot per return
@@ -1660,6 +1699,10 @@ impl Compiler {
                 self.emit_null();
                 self.emit_u16(Op::LOCAL_SET, slot);
                 self.emit_rebound_value_finalizer(old, emit_finalizer);
+            }
+            if gated {
+                let line = self.line;
+                self.chunk().emit_end(line);
             }
         }
         self.emit(Op::RETURN);

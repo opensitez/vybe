@@ -637,11 +637,28 @@ impl Compiler {
     /// `a <op> b` derived from the sign of the three-way compare — §2f: bind
     /// `Compare`, and `Lt`/`Le`/`Gt`/`Ge` follow from it rather than each
     /// carrying its own copy of the language's comparison rules.
-    fn emit_relational_from_compare3(&mut self, target: &str, cmp_fn: fn(&mut Chunk, u32)) {
-        self.emit_compare3(target);
+    fn emit_relational_from_compare3(
+        &mut self, target: &str, cmp_fn: fn(&mut Chunk, u32), signed_i32_op: Op,
+    ) {
+        // The resolved producer, not its name or a source type hint, proves
+        // whether the comparison result can feed a native signed-i32 test.
+        let raw_i32 = if let Some(name) = target.strip_prefix("common:") {
+            use vybe_runtime::registry::emitter_results::{EmitRequest, ResultRepresentation};
+            let (representation, _) = self.emit_common_with_emit_request(
+                name, 2, self.line, EmitRequest::I32Word,
+            );
+            representation == ResultRepresentation::RawI32Word
+        } else {
+            self.emit_compare3(target);
+            false
+        };
         self.emit_const(Value::I32(0));
         let line = self.line;
-        cmp_fn(self.chunk(), line);
+        if raw_i32 {
+            self.emit(signed_i32_op);
+        } else {
+            cmp_fn(self.chunk(), line);
+        }
         if std::mem::take(&mut self.want_i32_condition) {
             self.gave_i32_condition = true;
             return;
@@ -938,6 +955,21 @@ impl Compiler {
                 }
             }
             _ => {}
+        }
+        if let ExprKind::Ident(name) = &expr.kind
+            && self.is_frame_number_local(name)
+        {
+            return true;
+        }
+        if let ExprKind::Binary {
+            op: BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr | BinOp::UShr,
+            left,
+            right,
+        } = &expr.kind
+            && self.expr_is_provably_number(left)
+            && self.expr_is_provably_number(right)
+        {
+            return true;
         }
         if let ExprKind::Cast { expr: inner, type_name ,} = &expr.kind {
             // A numeric conversion proves its result even when ordinary
@@ -1364,10 +1396,9 @@ impl Compiler {
             return;
         }
         // Both expressions already ran; a Boolean literal is emitted as Bool.
-        // Keep this within the strict ECMA primitive: other profiles may bind
-        // their general equality through an observable comparison helper.
-        if self.uses_ecma_operator_coercion()
-            && !operands.is_some_and(|(left, right)| [left, right].iter().any(|expr|
+        // Strict equality with a Boolean literal holds exactly when the other
+        // operand is that Boolean, in every language that spells it.
+        if !operands.is_some_and(|(left, right)| [left, right].iter().any(|expr|
                 matches!(&expr.kind, ExprKind::Lit(Literal::Str(_)) | ExprKind::TypeOf(_))))
         {
             let facts = operands.map(|(left, right)| {
@@ -1697,9 +1728,11 @@ impl Compiler {
                         // non-string operand down the ToNumber ladder, so a C#
                         // `bool` in a string printed `1`/`0`.
                         let bool_text = self.directives().bool_text;
+                        let exact_words =
+                            self.directives().wide_integer_transport().preserves_all_bits();
                         self.emit_rich_binop(vybe_ast::ProtocolSlot::Add, move |chunk, line| {
                             crate::primitives::ops::emit_dyn_add_with_bool_text(
-                                chunk, bool_text, line,
+                                chunk, bool_text, exact_words, line,
                             );
                         });
                         return;
@@ -1713,9 +1746,12 @@ impl Compiler {
                         // `Directives::bool_text` is `None` everywhere that
                         // wants ECMA's ladder, so nothing else moves.
                         let bool_text = self.directives().bool_text;
+                        let exact_words =
+                            self.directives().wide_integer_transport().preserves_all_bits();
                         crate::primitives::ops::emit_dyn_add_with_bool_text(
                             self.chunk(),
                             bool_text,
+                            exact_words,
                             line,
                         );
                     };
@@ -2166,6 +2202,7 @@ impl Compiler {
                     self.emit_relational_from_compare3(
                         &target,
                         crate::primitives::ops::emit_dyn_lt,
+                        Op::I32_LT_S,
                     );
                     return;
                 }
@@ -2226,6 +2263,7 @@ impl Compiler {
                     self.emit_relational_from_compare3(
                         &target,
                         crate::primitives::ops::emit_dyn_gt,
+                        Op::I32_GT_S,
                     );
                     return;
                 }
@@ -2280,6 +2318,7 @@ impl Compiler {
                     self.emit_relational_from_compare3(
                         &target,
                         crate::primitives::ops::emit_dyn_le,
+                        Op::I32_LE_S,
                     );
                     return;
                 }
@@ -2334,6 +2373,7 @@ impl Compiler {
                     self.emit_relational_from_compare3(
                         &target,
                         crate::primitives::ops::emit_dyn_ge,
+                        Op::I32_GE_S,
                     );
                     return;
                 }

@@ -71,8 +71,7 @@ fn address_of_pointer_value_retains_an_independent_binding_cell() {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .expect("pointer storage must emit standard Wasm");
     let mut vm = vybe_runtime::VM::new();
     vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);

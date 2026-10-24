@@ -29,8 +29,7 @@ fn finish(mut chunks: Vec<Chunk>) -> Vec<Chunk> {
     chunks
 }
 fn validate(chunks: &[Chunk]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
         .unwrap();
 }
 fn runtime(values: &[(&str, Value)]) -> VM {

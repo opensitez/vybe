@@ -46,8 +46,7 @@ fn result(worker: &mut (VM, Value), input: &str) -> Result<Vec<i32>, String> {
 fn fused_base64_bytes_preserves_values_errors_and_fresh_arrays() {
     #[cfg(feature = "native-gates")]
     for fast in [false, true] {
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks(fast)))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks(fast)))
             .unwrap();
     }
     let mut workers = [worker(false), worker(true)];

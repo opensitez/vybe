@@ -437,7 +437,7 @@ pub fn emit_retype_object_dynamic(
         line,
     );
     chunks[current].emit_dup(line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    crate::primitives::delegates::emit_stack_is_nullish(chunks, current, line);
     // ⛔ THIS BLOCK TAKES PARAMS. Stack in is `[this, types_or_null, is_null]`
     // and both exits leave `[this, array_or_types]`, so the block reaches TWO
     // deep and leaves ONE. The VM does not isolate a block's operand stack, so

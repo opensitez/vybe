@@ -65,8 +65,7 @@ fn native(cs: &[Chunk]) -> Vec<u8> {
             include_vybe_metadata: false,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&b)
+    vybe_platform_wasm::validate_binary(&b)
         .unwrap();
     b
 }

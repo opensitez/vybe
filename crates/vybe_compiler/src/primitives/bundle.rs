@@ -310,6 +310,7 @@ fn inline_private_call(chunk: &mut Chunk, export: &str, offset: usize, slot: u16
         chunk.call_indirect_canon.len(),
         chunk.stack_switch_handlers.len(),
         chunk.direct_defined_calls.len(),
+        chunk.typed_array_ops.len(),
     );
     // Append against the actual caller so constants/imports and scratch slots
     // remain in its existing index spaces, then move only the emitted bytes.
@@ -373,7 +374,8 @@ fn inline_private_call(chunk: &mut Chunk, export: &str, offset: usize, slot: u16
             chunk.call_indirect_sigs.len(),
             chunk.call_indirect_canon.len(),
             chunk.stack_switch_handlers.len(),
-            chunk.direct_defined_calls.len()
+            chunk.direct_defined_calls.len(),
+            chunk.typed_array_ops.len()
         ),
         "private inline body added offset metadata requiring relocation"
     );
@@ -443,6 +445,10 @@ fn inline_private_call(chunk: &mut Chunk, export: &str, offset: usize, slot: u16
     }
     chunk.direct_defined_calls = std::mem::take(&mut chunk.direct_defined_calls)
         .into_iter().map(|(key,value)|(remap_offset(key,offset,end,replacement_len),value)).collect();
+    chunk.typed_array_ops = std::mem::take(&mut chunk.typed_array_ops)
+        .into_iter()
+        .map(|(key, value)| (remap_offset(key, offset, end, replacement_len), value))
+        .collect();
     chunk.call_indirect_sigs = std::mem::take(&mut chunk.call_indirect_sigs)
         .into_iter()
         .map(|(key, value)| (remap_offset(key, offset, end, replacement_len), value))

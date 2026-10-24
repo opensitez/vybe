@@ -15,8 +15,8 @@ use vybe_runtime::{Chunk,Op,profile::LanguageProfile,registry::{ParseFn,EmitDisp
   build:fn(&mut Vec<Chunk>,u32)->usize,
  },
  /// Same checked, caller-local-free direct edge, with an exact producer
- /// declaration of the physical Boolean result on every normal return.
- /// The body must also preserve its operation's normal value-position ABI.
+ /// declaration of the physical result on every normal return. Boxed Boolean
+ /// bodies retain their value ABI; raw i32 bodies admit only word requests.
  /// No representation is inferred from a name, hint, or signature shape.
  ContextualTypedDirectCallAppendOnlyUnit {
   key:fn(&[Chunk],u32)->Vec<u8>,
@@ -101,12 +101,17 @@ impl Owner{
   let Some((namespace,_))=name.split_once('.')else{return None};
   let Some(i)=self.definitions.iter().position(|d|d.operation==name&&d.namespace==namespace&&d.version>0&&d.arity==argc&&std::ptr::fn_addr_eq(d.parser,parser)&&std::ptr::fn_addr_eq(d.producer,producer))else{return None};let d=&self.definitions[i];
   let result=match d.contract {
-   Contract::ContextualTypedDirectCallAppendOnlyUnit {result:result @ ResultRepresentation::BoxedBoolean,..}=>Some(result),
+   Contract::ContextualTypedDirectCallAppendOnlyUnit {result:result @ (ResultRepresentation::BoxedBoolean | ResultRepresentation::RawI32Word),..}=>Some(result),
    Contract::ContextualTypedDirectCallAppendOnlyUnit {..}=>return None,
    _=>None,
   };
-  if !matches!(request,EmitRequest::Value)
-    && !(request==EmitRequest::I32Condition && result.is_some()){return None;}
+  let admitted=match result {
+   Some(ResultRepresentation::BoxedBoolean)=>matches!(request,EmitRequest::Value | EmitRequest::I32Condition),
+   Some(ResultRepresentation::RawI32Word)=>request==EmitRequest::I32Word,
+   None=>request==EmitRequest::Value,
+   _=>false,
+  };
+  if !admitted{return None;}
   let contextual=match d.contract {
    Contract::StandaloneExistingFrameAppendOnlyUnit=>None,
    Contract::ContextualAppendOnlyUnit {key,build,invoke}=>Some((i,key,build,Some(invoke))),
@@ -178,7 +183,11 @@ impl Owner{
    if direct {
     // The existing checked emitter writes no caller local or scratch slot.
     // On denial it writes no code/metadata; undo only this append-only build.
-    if chunks[index].takes_receiver || !super::functions::try_emit_direct_helper_call(chunks,current,index,argc,line){
+    let emitted=if chunks[index].takes_receiver {false}
+     else if result==Some(ResultRepresentation::RawI32Word) {
+      super::functions::try_emit_direct_i32_helper_call(chunks,current,index,argc,line)
+     }else{super::functions::try_emit_direct_helper_call(chunks,current,index,argc,line)};
+    if !emitted {
      chunks.truncate(rollback_chunks);self.contextual.truncate(rollback_entries);return None;
     }
     if let Some(existing)=existing{replay_contextual_diagnostics(&self.contextual[existing],chunks);}
@@ -445,6 +454,13 @@ mod tests {
         body.emit_bool_const(true,line);body.emit_op(Op::RETURN,line);
         let index=chunks.len();chunks.push(body);index
     }
+    fn typed_word_body(chunks:&mut Vec<Chunk>,line:u32)->usize {
+        let index=typed_bool_body(chunks,line);
+        chunks[index].func_sig=Some((String::new(),"i32".into()));
+        chunks[index].code.clear();chunks[index].lines.clear();
+        chunks[index].emit_i32_const(-1,line);chunks[index].emit_op(Op::RETURN,line);
+        index
+    }
     fn forbidden_typed_build(_: &mut Vec<Chunk>,_:u32)->usize{panic!("denied request/declaration built a helper")}
     fn typed_definition(result:ResultRepresentation,build:fn(&mut Vec<Chunk>,u32)->usize)->&'static[Definition]{
         Box::leak(vec![Definition{contract:Contract::ContextualTypedDirectCallAppendOnlyUnit{key:direct_key,build,result},operation:"test.value",namespace:"test",version:1,parser:parse,producer:dispatch,arity:0,helper_name:"__typed_owned_bool",factory:body,caller:no_adapter}].into_boxed_slice())
@@ -459,6 +475,22 @@ mod tests {
             assert_eq!(chunks.len(),2);assert_eq!(chunks[0].local_count,11);assert_eq!(chunks[0].scratch_high_water,17);assert_eq!(chunks[0].direct_defined_calls.len(),2);
             assert!(chunks[0].lines.contains(&13)&&chunks[0].lines.contains(&29));
         }
+    }
+    #[test]fn typed_word_receipt_reuses_native_body_without_caller_locals(){
+        let(p,d)=fixture();let c=Context{profile:&p,directives:&d,receiver:Default::default(),own:false,prototype:false};
+        let mut o=Owner::new(typed_definition(ResultRepresentation::RawI32Word,typed_word_body),Arc::new(Pool::default()));
+        let mut chunks=vec![Chunk::new("caller")];chunks[0].local_count=11;chunks[0].scratch_high_water=17;
+        for line in [13,29]{assert_eq!(o.emit_with_result("test.value",parse,dispatch,0,EmitRequest::I32Word,&c,&mut chunks,0,line),Some(EmissionReceipt{frame:FramePolicy::NoCallerLocals,result:Some(ResultRepresentation::RawI32Word)}));}
+        assert_eq!(chunks.len(),2);assert_eq!(chunks[0].local_count,11);assert_eq!(chunks[0].scratch_high_water,17);
+        assert_eq!(chunks[0].direct_defined_calls.len(),2);
+        assert!(chunks[0].direct_defined_calls.values().all(|call|!call.source&&call.results=="i32"));
+    }
+    #[test]fn typed_word_requires_explicit_native_i32_signature_and_rolls_back(){
+        let(p,d)=fixture();let c=Context{profile:&p,directives:&d,receiver:Default::default(),own:false,prototype:false};
+        let mut o=Owner::new(typed_definition(ResultRepresentation::RawI32Word,typed_bool_body),Arc::new(Pool::default()));
+        let mut chunks=vec![Chunk::new("caller")];let before=format!("{chunks:?}");
+        assert!(o.emit_with_result("test.value",parse,dispatch,0,EmitRequest::I32Word,&c,&mut chunks,0,13).is_none());
+        assert_eq!(format!("{chunks:?}"),before);assert!(o.contextual.is_empty());
     }
     #[test]fn typed_direct_unsupported_requests_decline_before_build_without_effects(){
         let(p,d)=fixture();let c=Context{profile:&p,directives:&d,receiver:Default::default(),own:false,prototype:false};

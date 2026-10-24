@@ -38,8 +38,7 @@ fn normalized(result: Result<Value, vybe_runtime::VMError>) -> Result<u64, Strin
     }
 }
 fn validate(chunks: &[Chunk]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
         .unwrap();
 }
 
@@ -54,8 +53,7 @@ fn bounded_factorial_preserves_exact_f64_results_and_special_branches() {
         let new = program(false, logarithm);
         validate(&new);
         assert!(
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(&old))
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&old))
                 .is_err(),
             "captured gamma uses void branches carrying f64 results"
         );

@@ -6,6 +6,9 @@
 use super::*;
 use crate::primitives::class_slots;
 
+/// Whether a read of an alias-bound name is known to leave a plain value.
+const DEREF_PROOF: bool = false;
+
 /// The enclosing frame's closure bookkeeping, held across a nested
 /// function-like frame. See [`Compiler::enter_closure_frame`].
 pub(super) struct ClosureFrameBooks {
@@ -14,6 +17,8 @@ pub(super) struct ClosureFrameBooks {
     capture_locals: HashMap<u8, u16>,
     shared_env_slot: Option<u16>,
     shared_env_names: Vec<String>,
+    reference_names: Option<Arc<HashSet<String>>>,
+    number_locals: Arc<HashSet<String>>,
 }
 
 /// Why a bare name is being loaded. The two uses resolve identically except
@@ -146,7 +151,11 @@ impl Compiler {
             if let Some(env_slot) = self.shared_env_slot {
                 let l = self.line;
                 crate::primitives::closures::emit_env_get(self.chunk(), env_slot, idx, l);
-                if self.binding_uses_pointer_cell(name) || self.profile.name == "php" { self.emit_autoderef_pointer_cell(); }
+                if self.binding_uses_pointer_cell(name)
+                    || self.directives().reference_binding == Some(PassBy::Alias)
+                {
+                    self.emit_autoderef_pointer_cell();
+                }
                 return;
             }
         }
@@ -162,9 +171,12 @@ impl Compiler {
             return;
         }
         // Local
+        if self.emit_native_word_get(name) {
+            return;
+        }
         if let Some(slot) = self.scope().resolve(name) {
             self.emit_u16(Op::LOCAL_GET, slot);
-            if self.binding_uses_pointer_cell(name) || self.profile.name == "php" {
+            if self.local_read_may_be_reference(name) {
                 // Not `emit_cell_load` — a binding can hold EITHER reference
                 // shape (`&$x` gives a cell, `&$a[1]` gives a carray) and the
                 // cell-only load read `__value` off a carray, i.e. undefined.
@@ -178,7 +190,11 @@ impl Compiler {
                 let idx = self.closure_env_index(name);
                 let l = self.line;
                 crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
-                if self.captured_binding_uses_pointer_cell(name) || self.profile.name == "php" { self.emit_autoderef_pointer_cell(); }
+                if self.captured_binding_uses_pointer_cell(name)
+                    || self.directives().reference_binding == Some(PassBy::Alias)
+                {
+                    self.emit_autoderef_pointer_cell();
+                }
                 return;
             }
         }
@@ -481,6 +497,17 @@ impl Compiler {
         self.emit(Op::DROP);
     }
 
+    /// Call the module-declared termination host function (`module:name`)
+    /// with one i32: whether the program ends by an explicit exit, while its
+    /// calling frames are still live. Discards the result.
+    pub(super) fn emit_shutdown_finalizer(&mut self, target: &str, explicit_exit: bool) {
+        let (module, name) = target.rsplit_once(':').unwrap_or(("", target));
+        let host = self.import(module, name);
+        self.emit_const(Value::I32(explicit_exit as i32));
+        self.emit_host_call(host, 1);
+        self.emit(Op::DROP);
+    }
+
     /// Run the module-declared callback registry in its declared order,
     /// then clear the list so a later `exit` cannot run them twice.
     ///
@@ -778,6 +805,9 @@ impl Compiler {
             return;
         }
         // Local
+        if self.emit_native_word_set_from_value(name) {
+            return;
+        }
         if let Some(slot) = self.scope().resolve(name) {
             if through_reference && self.binding_uses_pointer_cell(name) {
                 let value_slot = self.define_local("__ref_cell_set_value");
@@ -799,6 +829,8 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 common::collections::emit_set(&mut self.chunks, self.current, self.line);
                 self.emit(Op::DROP);
+            } else if through_reference {
+                self.emit_plain_local_store(name, slot);
             } else {
                 self.emit_u16(Op::LOCAL_SET, slot);
             }
@@ -986,6 +1018,90 @@ impl Compiler {
     /// inside line up with the parent's shared-env array. Pass the parent's
     /// `shared_env_names` (or `&[]` when the frame has no such parent — the
     /// capture factory, whose only locals are the by-value captures).
+    /// Record which names this function body can bind to a reference. Only
+    /// alias binding needs the answer; other languages keep `None`.
+    pub(super) fn scan_frame_reference_names(&mut self, body: &[Statement]) {
+        if self.directives().reference_binding != Some(PassBy::Alias) {
+            return;
+        }
+        let mut names = HashSet::new();
+        let this = &*self;
+        crate::primitives::collect_reference_bound_idents(
+            body,
+            &|callee| {
+                this.function_param_modes
+                    .get(this.canon_lookup(callee).as_ref())
+                    .is_some_and(|modes| modes.iter().any(|mode| {
+                        matches!(mode, PassBy::Ref | PassBy::Out | PassBy::Alias)
+                            || (this.profile.args_pass_by_reference
+                                && matches!(mode, PassBy::Const))
+                    }))
+            },
+            &mut names,
+        );
+        self.frame_number_locals = Arc::new(crate::primitives::collect_number_locals(body, &names));
+        self.frame_reference_names = Some(Arc::new(names));
+    }
+
+    /// Is `name` a frame local that holds a number at every read?
+    pub(super) fn is_frame_number_local(&self, name: &str) -> bool {
+        self.frame_number_locals.contains(name)
+            && self.scope().resolve(name).is_some()
+            && self.shared_env_index(name).is_none()
+    }
+
+    /// Does a read of the local `name` need the runtime reference test?
+    fn local_read_may_be_reference(&self, name: &str) -> bool {
+        if self.binding_uses_pointer_cell(name) {
+            return true;
+        }
+        self.directives().reference_binding == Some(PassBy::Alias)
+            && self.frame_reference_names.as_ref().is_none_or(|names| names.contains(name))
+    }
+
+    /// Does reading `name` load a frame slot that holds plain values only?
+    /// Mirrors the order [`Self::emit_name_get`] resolves a name in.
+    pub(super) fn ident_reads_plain_local(&self, name: &str) -> bool {
+        self.shared_env_index(name).is_none()
+            && self.static_local_binding(name).is_none()
+            && self.scope().resolve(name).is_some()
+            && self.local_store_dereferences(name)
+    }
+
+    /// Does reading `name` already leave a dereferenced value? Under alias
+    /// binding every frame, shared-env and static read of a name goes through
+    /// the reference read, and an alias reference never holds another
+    /// reference, so the value it leaves is never a reference wrapper.
+    pub(super) fn ident_read_dereferences(&self, name: &str) -> bool {
+        DEREF_PROOF
+            && self.directives().reference_binding == Some(PassBy::Alias)
+            && !self.binding_uses_pointer_cell(name)
+            && (self.shared_env_index(name).is_some_and(|_| self.shared_env_slot.is_some())
+                || self.static_local_binding(name).is_some()
+                || self.scope().resolve(name).is_some())
+    }
+
+    /// Does a store into the local `name` dereference its value? A local that
+    /// can never be bound to a reference holds plain values only.
+    pub(super) fn local_store_dereferences(&self, name: &str) -> bool {
+        self.directives().reference_binding == Some(PassBy::Alias)
+            && self.frame_reference_names.as_ref().is_some_and(|names| !names.contains(name))
+            && !self.binding_uses_pointer_cell(name)
+    }
+
+    /// Store the stack value into a plain local slot, dereferencing it first
+    /// when the local holds plain values only.
+    pub(super) fn emit_plain_local_store(&mut self, name: &str, slot: u16) {
+        if self.local_store_dereferences(name) && !self.is_frame_number_local(name) {
+            if self.store_value_nonreference {
+                self.emit_nonreference_temporary_deref();
+            } else {
+                self.emit_autoderef_pointer_cell();
+            }
+        }
+        self.emit_u16(Op::LOCAL_SET, slot);
+    }
+
     pub(super) fn enter_closure_frame(&mut self, seed_env_names: &[String]) -> ClosureFrameBooks {
         let books = ClosureFrameBooks {
             closure_captured: std::mem::take(&mut self.current_closure_captured_locals),
@@ -993,6 +1109,8 @@ impl Compiler {
             capture_locals: std::mem::take(&mut self.capture_locals),
             shared_env_slot: self.shared_env_slot.take(),
             shared_env_names: std::mem::take(&mut self.shared_env_names),
+            reference_names: self.frame_reference_names.take(),
+            number_locals: std::mem::take(&mut self.frame_number_locals),
         };
         if !seed_env_names.is_empty() {
             self.closure_env_names = seed_env_names.to_vec();
@@ -1010,6 +1128,8 @@ impl Compiler {
         self.capture_locals = books.capture_locals;
         self.shared_env_slot = books.shared_env_slot;
         self.shared_env_names = books.shared_env_names;
+        self.frame_reference_names = books.reference_names;
+        self.frame_number_locals = books.number_locals;
     }
 
     pub(super) fn capture_local_slot(&mut self, uv_idx: u8) -> u16 {

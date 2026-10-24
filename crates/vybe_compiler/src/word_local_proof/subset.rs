@@ -371,3 +371,331 @@ impl<F: Fn(&str) -> Option<WordInterpretation>> Analysis<'_, F> {
         Ok(())
     }
 }
+
+/// A binding admitted to physical storage in its declared lane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeBindingProof {
+    pub name: String,
+    pub lane: BitLane,
+    pub interpretation: WordInterpretation,
+}
+
+#[derive(Debug, Default)]
+pub struct NativeSubsetProof {
+    pub eligible: Vec<NativeBindingProof>,
+    pub rejected: Vec<RejectedBinding>,
+}
+
+/// The native-storage lane. A name is eligible when EVERY binding of that name
+/// in `params` and `body` (at any depth, so loop-header declarations count) is
+/// a checked ordinary declaration resolving to one lane and interpretation,
+/// and every access to it is a plain read, a whole-binding assignment or its
+/// declaration. Address/reference escape, capture, pattern binding, in-place
+/// increments and statements outside the modeled set reject the name.
+/// Producers are not certified here: the emitter converts each stored value
+/// to the declared lane at its store, which is the declaration's own Checked
+/// guarantee, so any producer of the declared type is admissible.
+/// W32 analysis ([`prove_subset`]) is unaffected.
+pub fn prove_native_subset(
+    directives: &Directives,
+    params: &[vybe_ast::Param],
+    body: &[Statement],
+    resolve: impl Fn(&TypeHint) -> Option<(BitLane, WordInterpretation)>,
+) -> NativeSubsetProof {
+    let mut result = NativeSubsetProof::default();
+    if directives.word_local_transport() != WordLocalTransport::ProvenNative {
+        return result;
+    }
+    let mut native = Native {
+        resolve: &resolve,
+        candidates: Vec::new(),
+        rejected: Vec::new(),
+    };
+    for param in params {
+        let declared = (param.pass_by == vybe_ast::PassBy::Value
+            && !param.is_rest
+            && !param.is_kwargs
+            && param.default.is_none())
+        .then_some(param.type_hint.as_ref())
+        .flatten();
+        native.declare(&param.name, declared);
+    }
+    native.body(body);
+    for (name, lane, interpretation) in native.candidates {
+        match native.rejected.iter().find(|(other, _)| *other == name) {
+            Some((_, reason)) => result.rejected.push(RejectedBinding { name, reason: *reason }),
+            None => result.eligible.push(NativeBindingProof { name, lane, interpretation }),
+        }
+    }
+    result
+}
+
+/// An assignment target that binds names it mentions (a tuple or array
+/// pattern). An element or field target only READS the names in its object
+/// and index expressions.
+fn writes_through_pattern(target: &Expression) -> bool {
+    !matches!(
+        &target.kind,
+        ExprKind::Ident(_) | ExprKind::Index { .. } | ExprKind::Member { .. } | ExprKind::RefLoad(_)
+    ) && !matches!(&target.kind, ExprKind::Unary { op: UnaryOp::Deref, .. })
+}
+
+struct Native<'a, F> {
+    resolve: &'a F,
+    candidates: Vec<(String, BitLane, WordInterpretation)>,
+    rejected: Vec<(String, Rejection)>,
+}
+
+impl<F: Fn(&TypeHint) -> Option<(BitLane, WordInterpretation)>> Native<'_, F> {
+    fn reject(&mut self, name: &str, reason: Rejection) {
+        if !self.rejected.iter().any(|(other, _)| other == name) {
+            self.rejected.push((name.to_owned(), reason));
+        }
+    }
+
+    /// Reject every candidate `test` reports, with `reason`.
+    fn reject_where(&mut self, reason: Rejection, test: impl Fn(&str) -> bool) {
+        let names: Vec<String> = self
+            .candidates
+            .iter()
+            .map(|(name, ..)| name.clone())
+            .filter(|name| test(name))
+            .collect();
+        for name in names {
+            self.reject(&name, reason);
+        }
+    }
+
+    fn declare(&mut self, name: &str, hint: Option<&TypeHint>) {
+        let resolved = hint
+            .filter(|hint| {
+                hint.binding == TypeBinding::Checked
+                    && hint.access == Some(StorageAccess::Ordinary)
+            })
+            .and_then(|hint| (self.resolve)(hint));
+        let known = self.candidates.iter().find(|(other, ..)| other == name).cloned();
+        match (resolved, known) {
+            (Some((lane, interpretation)), None) => {
+                if !self.rejected.iter().any(|(other, _)| other == name) {
+                    self.candidates.push((name.to_owned(), lane, interpretation));
+                }
+            }
+            (Some((lane, interpretation)), Some((_, known_lane, known_interpretation)))
+                if lane == known_lane && interpretation == known_interpretation => {}
+            (_, Some(_)) => self.reject(name, Rejection::ShadowedBinding),
+            // A non-candidate binding of this name: a later candidate of the
+            // same name would share one name-level proof with it.
+            (None, None) => self.reject(name, Rejection::ShadowedBinding),
+        }
+    }
+
+    fn mentions(&self, statement: &Statement) -> Vec<String> {
+        let mut found = Vec::new();
+        statement.walk_exprs(&mut |value| {
+            for (name, ..) in &self.candidates {
+                if contains(value, name) && !found.contains(name) {
+                    found.push(name.clone());
+                }
+            }
+        });
+        found
+    }
+
+    fn expression(&mut self, value: &Expression) {
+        let candidates: Vec<String> = self.candidates.iter().map(|(name, ..)| name.clone()).collect();
+        let mut escapes: Vec<(String, Rejection)> = Vec::new();
+        let mut bodies: Vec<Statement> = Vec::new();
+        value.walk_exprs(&mut |node| {
+            let mut escape = |scope: &Expression, reason: Rejection| {
+                for name in &candidates {
+                    if contains(scope, name) {
+                        escapes.push((name.clone(), reason));
+                    }
+                }
+            };
+            match &node.kind {
+                ExprKind::Assign { target, .. } if writes_through_pattern(target) => {
+                    escape(target, Rejection::IncompatibleProducer)
+                }
+                ExprKind::RefOf(_) | ExprKind::Unary { op: UnaryOp::AddrOf, .. } => {
+                    escape(node, Rejection::AddressOrReferenceEscape)
+                }
+                ExprKind::Unary {
+                    op: UnaryOp::PostInc | UnaryOp::PreInc | UnaryOp::PostDec | UnaryOp::PreDec,
+                    ..
+                } => escape(node, Rejection::IncompatibleProducer),
+                ExprKind::Call { args, .. } => {
+                    for arg in args.iter().filter(|arg| arg.by_ref) {
+                        escape(&arg.value, Rejection::AddressOrReferenceEscape);
+                    }
+                }
+                ExprKind::Lambda { body, .. } => {
+                    escape(node, Rejection::Capture);
+                    match body {
+                        vybe_ast::LambdaBody::Expr(value) => escape(value, Rejection::Capture),
+                        vybe_ast::LambdaBody::Block(statements) => bodies.extend(statements.iter().cloned()),
+                    }
+                }
+                ExprKind::FunctionExpr(statement) => bodies.push((**statement).clone()),
+                ExprKind::Walrus { .. }
+                | ExprKind::Destructure(_)
+                | ExprKind::Comprehension { .. }
+                | ExprKind::Atomic(_)
+                | ExprKind::Async(_)
+                | ExprKind::Yield(_)
+                | ExprKind::YieldFrom(_)
+                | ExprKind::Await(_) => escape(node, Rejection::UnsupportedExpression),
+                _ => {}
+            }
+        });
+        for statement in &bodies {
+            for name in self.mentions(statement) {
+                escapes.push((name, Rejection::Capture));
+            }
+        }
+        for (name, reason) in escapes {
+            self.reject(&name, reason);
+        }
+    }
+
+    /// An expression whose value is not observed: a step of a bare name
+    /// writes that name with a word of its own lane.
+    fn discarded(&mut self, value: &Expression) {
+        match &value.kind {
+            ExprKind::Unary {
+                op: UnaryOp::PostInc | UnaryOp::PreInc | UnaryOp::PostDec | UnaryOp::PreDec,
+                expr,
+            } if matches!(&expr.kind, ExprKind::Ident(_)) => {}
+            ExprKind::Sequence(parts) => {
+                for part in parts {
+                    self.discarded(part);
+                }
+            }
+            _ => self.expression(value),
+        }
+    }
+
+    fn pattern(&mut self, pattern: &BindingPattern) {
+        self.reject_where(Rejection::ShadowedBinding, |name| pattern_contains(pattern, name));
+    }
+
+    fn body(&mut self, body: &[Statement]) {
+        for statement in body {
+            self.statement(statement);
+        }
+    }
+
+    fn statement(&mut self, statement: &Statement) {
+        match &statement.kind {
+            StmtKind::VarDecl { declarations, kind } => {
+                for declaration in declarations {
+                    if let Some(value) = &declaration.init {
+                        self.expression(value);
+                    }
+                    match &declaration.pattern {
+                        BindingPattern::Ident(name) => {
+                            let ordinary = !matches!(kind, VarDeclKind::Static | VarDeclKind::FunctionScoped)
+                                && declaration.array_bounds.is_none()
+                                && !declaration.with_events;
+                            self.declare(name, declaration.type_hint.as_ref().filter(|_| ordinary));
+                        }
+                        pattern => self.pattern(pattern),
+                    }
+                }
+            }
+            StmtKind::Expr(value) => self.discarded(value),
+            StmtKind::Return(Some(value)) => self.expression(value),
+            StmtKind::Throw { expr, cause } => {
+                for value in [expr, cause].into_iter().flatten() {
+                    self.expression(value);
+                }
+            }
+            StmtKind::Assign { targets, value, by_ref } => {
+                self.expression(value);
+                let whole = targets.len() == 1
+                    && !*by_ref
+                    && matches!(&targets[0].kind, ExprKind::Ident(_));
+                if !whole {
+                    self.reject_where(Rejection::IncompatibleProducer, |name| {
+                        targets.iter().any(|target| {
+                            matches!(&target.kind, ExprKind::Ident(other) if other == name)
+                                || (writes_through_pattern(target) && contains(target, name))
+                        })
+                    });
+                }
+                for target in targets {
+                    self.expression(target);
+                }
+            }
+            StmtKind::Return(None)
+            | StmtKind::Break(_)
+            | StmtKind::Continue(_)
+            | StmtKind::Empty => {}
+            StmtKind::Block(body) => self.body(body),
+            StmtKind::Labeled { body, .. } => self.statement(body),
+            StmtKind::If { cond, then_body, elifs, else_body } => {
+                self.expression(cond);
+                self.body(then_body);
+                for (cond, body) in elifs {
+                    self.expression(cond);
+                    self.body(body);
+                }
+                if let Some(body) = else_body {
+                    self.body(body);
+                }
+            }
+            StmtKind::While { cond, body, else_body: None }
+            | StmtKind::DoWhile { body, cond, until: false } => {
+                self.expression(cond);
+                self.body(body);
+            }
+            StmtKind::For { init, cond, update, body } => {
+                if let Some(init) = init {
+                    self.statement(init);
+                }
+                if let Some(cond) = cond {
+                    self.expression(cond);
+                }
+                if let Some(update) = update {
+                    self.discarded(update);
+                }
+                self.body(body);
+            }
+            StmtKind::ForIn { var, key, iter, body, else_body: None, .. } => {
+                self.reject_where(Rejection::ShadowedBinding, |name| {
+                    var == name || key.as_deref() == Some(name)
+                });
+                self.expression(iter);
+                self.body(body);
+            }
+            StmtKind::Switch { expr, cases, default } => {
+                self.expression(expr);
+                for case in cases {
+                    for condition in &case.conditions {
+                        match condition {
+                            vybe_ast::CaseCondition::Value(value)
+                            | vybe_ast::CaseCondition::Comparison { expr: value, .. } => {
+                                self.expression(value)
+                            }
+                            vybe_ast::CaseCondition::Range { from, to } => {
+                                self.expression(from);
+                                self.expression(to);
+                            }
+                        }
+                    }
+                    self.body(&case.body);
+                }
+                if let Some(body) = default {
+                    self.body(body);
+                }
+            }
+            // Statements outside the modeled set may access a binding by a
+            // path this analysis does not see; any mention rejects it.
+            _ => {
+                for name in self.mentions(statement) {
+                    self.reject(&name, Rejection::UnsupportedControlFlow);
+                }
+            }
+        }
+    }
+}

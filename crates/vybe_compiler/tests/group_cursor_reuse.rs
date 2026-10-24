@@ -148,8 +148,7 @@ fn values_sizes_work() {
                     include_vybe_metadata: false,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&b)
+            vybe_platform_wasm::validate_binary(&b)
                 .unwrap();
             native_export::export_chunks(&cs, &format!("group-cursor-{ascii}-{fast}"));
             sizes.push(serde_json::json!({"body":cs[1].code.len(),"locals":cs[1].local_count,"native":b.len()}));

@@ -29,10 +29,10 @@ fn exact_frozen_public_emission_changes_only_two_native_result_markers(){
 #[test]
 fn complete_candidate_native_module_validates_and_frozen_gap_is_explicit(){
  let old=vybe_platform_wasm::write_wasm(&kernel(0,false));
- let old_error=wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&old).err().expect("known frozen value-join raw-IF defect");
+ let old_error=vybe_platform_wasm::validate_binary(&old).err().expect("known frozen value-join raw-IF defect");
  eprintln!("frozen reflection native gap: {old_error}");assert!(old_error.to_string().contains("expected i32"),"{old_error}");
  let new=vybe_platform_wasm::write_wasm(&kernel(1,false));
- wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&new).unwrap_or_else(|e|panic!("candidate native: {e}"));
+ vybe_platform_wasm::validate_binary(&new).unwrap_or_else(|e|panic!("candidate native: {e}"));
 }
 fn object(fields:Vec<(&str,Value)>)->Value{let mut o=vybe_runtime::value::Object::new();for(k,v)in fields{o.properties.insert(k.into(),v);}Value::Object(vybe_runtime::heap::alloc(o))}
 fn array(items:Vec<Value>)->Value{let mut o=vybe_runtime::value::Object::new();o.kind=vybe_runtime::value::ObjectKind::Array(items);Value::Object(vybe_runtime::heap::alloc(o))}

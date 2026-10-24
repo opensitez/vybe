@@ -231,8 +231,7 @@ fn actual_lowerings_values_and_sizes() {
                     include_vybe_metadata: false,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
             let mut exported = cs.clone();
             let aliases: Vec<_> = exported

@@ -21,7 +21,7 @@ fn expected(s:&str)->String{
  let mut at=0;let mut ops=0;let mut names=std::collections::BTreeMap::new();
  while at<h.code.len(){let op=Op::from_code_at(&h.code,at);*names.entry(format!("{op:?}")).or_insert(0u32)+=1;ops+=1;at+=4+op.operand_format().size_in(&h.code,at+4);}
  let bytes=vybe_platform_wasm::write_wasm(&c);
- if let Err(e)=wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes){std::fs::write(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("whole-native-failure.wasm"),bytes).unwrap();panic!("unwaived completebin2hex: {e}");}
+ if let Err(e)=vybe_platform_wasm::validate_binary(&bytes){std::fs::write(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("whole-native-failure.wasm"),bytes).unwrap();panic!("unwaived completebin2hex: {e}");}
  println!("inventory {}",serde_json::json!({"bytes":h.code.len(),"ops":ops,"locals":h.local_count,"wasm":bytes.len(),"opcodeCounts":names}));
 }
 #[test] fn all_bytes_bmp_and_surrogate_pair_legacy_boundaries(){

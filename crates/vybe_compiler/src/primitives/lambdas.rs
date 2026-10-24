@@ -342,6 +342,7 @@ impl Compiler {
                 if Self::stmts_have_use_strict_directive(stmts) {
                     self.in_strict = true;
                 }
+                self.scan_frame_reference_names(stmts);
                 crate::primitives::collect_closure_captured_idents(
                     stmts,
                     &mut self.current_closure_captured_locals,
@@ -400,6 +401,13 @@ impl Compiler {
         // min(upvalues.len(), capture_count) values, so a reserved-but-unused
         // slot costs one local and nothing else.
         self.closure_env_slot();
+        // A method or block lambda proves its native word bindings exactly as
+        // a declared function does; the proof itself is gated on the region's
+        // `word_local_transport`.
+        if let LambdaBodyRef::Block(stmts) = body {
+            self.admit_native_words(params, stmts);
+            self.bind_native_word_params(params);
+        }
         // Snapshot the receiver as a local BEFORE shared env creation so inner
         // arrows can capture it via the shared env / upvalue chain. This site
         // compiles OBJECT-LITERAL methods — one decision, one place, see

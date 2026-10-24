@@ -18,9 +18,7 @@ fn canonical_allocator_emits_valid_wasm() {
     vybe_compiler::primitives::globals::declare_free_globals(&mut chunks);
     vybe_compiler::primitives::globals::normalize_global_table(&mut chunks);
     let wasm = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
-        .unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
 }
 
 #[test]
@@ -44,9 +42,7 @@ fn canonical_byte_append_emits_valid_wasm() {
     vybe_compiler::primitives::globals::declare_free_globals(&mut chunks);
     vybe_compiler::primitives::globals::normalize_global_table(&mut chunks);
     let wasm = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
-        .unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
 }
 
 #[test]
@@ -63,9 +59,7 @@ fn canonical_utf8_store_emits_valid_wasm() {
     vybe_compiler::primitives::globals::declare_free_globals(&mut chunks);
     vybe_compiler::primitives::globals::normalize_global_table(&mut chunks);
     let wasm = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
-        .unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
 }
 
 #[test]
@@ -85,7 +79,5 @@ fn canonical_byte_array_store_emits_valid_wasm() {
     vybe_compiler::primitives::globals::declare_free_globals(&mut chunks);
     vybe_compiler::primitives::globals::normalize_global_table(&mut chunks);
     let wasm = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&wasm)
-        .unwrap();
+    vybe_platform_wasm::validate_binary(&wasm).unwrap();
 }

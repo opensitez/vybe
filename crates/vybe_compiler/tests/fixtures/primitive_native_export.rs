@@ -41,14 +41,16 @@ fn sections(b: &[u8]) -> Vec<(u8, Range<usize>, usize)> {
     rows
 }
 fn validate(bytes: &[u8]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(bytes)
-        .expect("complete primitive native module");
+    vybe_platform_wasm::validate_binary(bytes).expect("complete primitive native module");
 }
 pub fn export_chunks(chunks: &[vybe_runtime::Chunk], side: &str) {
     export_chunks_with_validator(chunks, side, validate);
 }
-pub fn export_chunks_with_validator(chunks: &[vybe_runtime::Chunk], side: &str, validate: fn(&[u8])) {
+pub fn export_chunks_with_validator(
+    chunks: &[vybe_runtime::Chunk],
+    side: &str,
+    validate: fn(&[u8]),
+) {
     assert!(
         !side.is_empty()
             && side
@@ -67,49 +69,37 @@ pub fn export_chunks_with_validator(chunks: &[vybe_runtime::Chunk], side: &str, 
     let mut imported_functions = 0;
     let mut inventory = vec![];
     let mut function_types = vec![];
-    let mut types = vec![];
+    use vybe_platform_wasm::inspection::{CompositeType, CoreModule, ImportType};
+    let module = CoreModule::new(&original).unwrap();
+    let types = module.types().unwrap();
     let mut defined_tags = 0;
-    for payload in wasmparser::Parser::new(0).parse_all(&original) {
-        match payload.unwrap() {
-            wasmparser::Payload::ImportSection(s) => {
-                for row in s.into_imports() {
-                    let i = row.unwrap();
-                    let detail = match i.ty {
-                        wasmparser::TypeRef::Func(t) | wasmparser::TypeRef::FuncExact(t) => {
-                            imported_functions += 1;
-                            serde_json::json!({"kind":"function","type":t})
-                        }
-                        wasmparser::TypeRef::Global(g) => {
-                            serde_json::json!({"kind":"global","mutable":g.mutable,"type":format!("{:?}",g.content_type)})
-                        }
-                        wasmparser::TypeRef::Tag(t) => {
-                            serde_json::json!({"kind":"tag","type":t.func_type_idx})
-                        }
-                        other => panic!("unsupported diagnostic import: {other:?}"),
-                    };
-                    inventory
-                        .push(serde_json::json!({"module":i.module,"name":i.name,"detail":detail}));
-                }
+    module.imports(|module, name, ty| {
+        let detail = match ty {
+            ImportType::Func { type_index, .. } => {
+                imported_functions += 1;
+                serde_json::json!({"kind":"function","type":type_index})
             }
-            wasmparser::Payload::FunctionSection(s) => {
-                function_types.extend(s.into_iter().map(Result::unwrap))
+            ImportType::Global(global) => {
+                serde_json::json!({"kind":"global","mutable":global.mutable,"type":format!("{:?}",global.value_type)})
             }
-            wasmparser::Payload::TypeSection(s) => {
-                for group in s {
-                    for ty in group.unwrap().into_types() {
-                        types.push(match ty.composite_type.inner {
-                            wasmparser::CompositeInnerType::Func(f) => {
-                                Some((f.params().to_vec(), f.results().to_vec()))
-                            }
-                            _ => None,
-                        });
-                    }
-                }
-            }
-            wasmparser::Payload::TagSection(s) => defined_tags += s.count() as usize,
-            _ => (),
-        }
-    }
+            ImportType::Tag(type_index) => serde_json::json!({"kind":"tag","type":type_index}),
+            other => panic!("unsupported diagnostic import: {other:?}"),
+        };
+        inventory.push(serde_json::json!({"module":module,"name":name,"detail":detail}));
+        Ok(())
+    }).unwrap();
+    module
+        .defined_functions(|index| {
+            function_types.push(index);
+            Ok(())
+        })
+        .unwrap();
+    module
+        .defined_tags(|_| {
+            defined_tags += 1;
+            Ok(())
+        })
+        .unwrap();
     assert!(function_types.len() >= chunks.len());
     let mut names = std::collections::BTreeMap::new();
     for (id, range, payload) in sections(&original) {
@@ -170,8 +160,12 @@ pub fn export_chunks_with_validator(chunks: &[vybe_runtime::Chunk], side: &str, 
             data.extend(name.bytes());
             data.push(0);
             data.extend(leb(imported_functions + index));
-            let signature = types[function_types[index] as usize].as_ref().unwrap();
-            exports.push(serde_json::json!({"name":chunk.name,"export":name,"chunk":index,"params":signature.0.iter().map(|t|format!("{t:?}")).collect::<Vec<_>>(),"results":signature.1.iter().map(|t|format!("{t:?}")).collect::<Vec<_>>() }));
+            let CompositeType::Func { params, results } =
+                &types[function_types[index] as usize].definition().composite
+            else {
+                panic!("exported chunk type is not a function");
+            };
+            exports.push(serde_json::json!({"name":chunk.name,"export":name,"chunk":index,"params":params.iter().map(|t|format!("{t:?}")).collect::<Vec<_>>(),"results":results.iter().map(|t|format!("{t:?}")).collect::<Vec<_>>() }));
         }
         for tag in 0..defined_tags {
             let name = format!("guest_exception_tag_{tag}");

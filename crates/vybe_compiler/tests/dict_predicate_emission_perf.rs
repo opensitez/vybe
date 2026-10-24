@@ -47,8 +47,7 @@ fn runtime(input: Value, key: &str) -> VM {
 }
 fn validate(chunks: &[Chunk]) {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap_or_else(|error| panic!("{}: {error}", chunks[0].name));
 }
 
@@ -83,10 +82,7 @@ fn dict_predicates_preserve_tracked_nulls_fallbacks_and_delete_results() {
                     let chunks = program(old, false);
                     if old {
                         assert!(
-                            wasmparser::Validator::new_with_features(
-                                wasmparser::WasmFeatures::all()
-                            )
-                            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+                            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                             .is_err(),
                             "captured void branches carry values"
                         );
@@ -111,8 +107,7 @@ fn dict_predicates_preserve_tracked_nulls_fallbacks_and_delete_results() {
             let chunks = program(old, true);
             if old {
                 assert!(
-                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                        .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+                    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                         .is_err(),
                     "captured void branch carries a Boolean result"
                 );

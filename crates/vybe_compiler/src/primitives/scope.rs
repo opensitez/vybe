@@ -75,6 +75,15 @@ pub struct Scope {
     pub locals: Vec<Local>,
     /// Whole-body certified boxed signed-word bindings. No raw local ABI.
     pub normalized_word_bindings: std::collections::HashSet<String>,
+    /// Names the native-storage proof admitted for this function, with the
+    /// declared lane and interpretation. A binding of such a name gets a
+    /// native slot.
+    pub native_word_bindings: std::collections::HashMap<String, NativeWord>,
+    /// Slots that physically hold a native i64 word, by declared lane and
+    /// reading. A W32 word is held extended by its reading.
+    pub native_word_slots: std::collections::HashMap<u16, NativeWord>,
+    /// This function returns a raw word of this reading (a typed entry).
+    pub native_result: Option<vybe_ast::word_local_transport::WordInterpretation>,
     // Latest active binding for an exact spelling. Folded lookup remains a
     // separate fallback so exact spellings retain their existing precedence.
     local_indices: std::collections::HashMap<String, usize, vybe_runtime::chunk::FxBuildHasher>,
@@ -125,6 +134,19 @@ pub struct Scope {
     pending_origin: vybe_runtime::chunk::LocalOrigin,
 }
 
+/// The declared shape of a native word binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeWord {
+    pub lane: vybe_ast::BitLane,
+    pub reading: vybe_ast::word_local_transport::WordInterpretation,
+}
+
+impl NativeWord {
+    pub fn signed(self) -> bool {
+        self.reading == vybe_ast::word_local_transport::WordInterpretation::Signed
+    }
+}
+
 impl Scope {
     /// `fold` is required rather than defaulted: a scope that silently stopped
     /// folding would mis-resolve every vb/pascal/cobol/fortran/powershell
@@ -134,6 +156,9 @@ impl Scope {
         Self {
             locals: Vec::new(),
             normalized_word_bindings: Default::default(),
+            native_word_bindings: Default::default(),
+            native_word_slots: Default::default(),
+            native_result: None,
             local_indices: Default::default(),
             folded_membership: std::sync::OnceLock::new(),
             upvalues: Vec::new(),
@@ -202,6 +227,15 @@ impl Scope {
 
     pub fn define(&mut self, name: &str) -> u16 {
         self.define_typed(name, None)
+    }
+
+    /// The native word slot `name` resolves to, with its declared lane and reading.
+    pub fn native_word_slot(&self, name: &str) -> Option<(u16, NativeWord)> {
+        if self.native_word_slots.is_empty() {
+            return None;
+        }
+        let slot = self.resolve(name)?;
+        self.native_word_slots.get(&slot).map(|word| (slot, *word))
     }
 
     pub fn is_normalized_signed_word(&self, name: &str) -> bool {

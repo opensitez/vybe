@@ -123,8 +123,7 @@ fn native_size_and_validation() {
         for fast in [false, true] {
             let code = program(fast, op);
             let wasm = vybe_platform_wasm::write_wasm(&code);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&wasm)
+            vybe_platform_wasm::validate_binary(&wasm)
                 .unwrap();
             sizes.push((code[1].code.len(), wasm.len(), code[1].local_count));
         }

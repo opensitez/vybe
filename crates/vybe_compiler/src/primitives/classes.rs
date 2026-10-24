@@ -24,6 +24,20 @@ pub fn ctor_global_for(prefix: &str, arity: usize) -> String {
     format!("{prefix}$arity{arity}")
 }
 
+/// Temporary eager emission state. Not exported, cloneable, or a deferred
+/// body receipt; captures/local counts are certified only by completion.
+struct ReservedFunctionDeclaration {
+    cname:String,
+    binds_in_enclosing_scope:bool,
+    enclosing_fn_slot:Option<u16>,
+    uses_js_arguments:bool,
+    has_rest:bool,
+    generator_control_arity:usize,
+    universal_receiver:bool,
+    arity:u8,
+    func_idx:usize,
+}
+
 impl Compiler {
     /// Host-side A/B control; no guest-visible opcode or language policy.
     #[cfg(feature = "primitive-benchmarks")]
@@ -1848,6 +1862,15 @@ impl Compiler {
         handles: &[String],
         is_async: bool,
     ) -> Result<(), String> {
+        let reservation=self.reserve_function_declaration(name,params,return_type,body,is_generator,is_async);
+        self.complete_reserved_function_declaration(reservation,name,params,return_type,body,is_generator,handles,is_async)
+    }
+
+    // Immediate eager continuation only. This reservation is NOT a completed
+    // callable ABI or permission to publish/execute a placeholder chunk.
+    fn reserve_function_declaration(&mut self,name:&str,params:&[Param],
+        return_type:&Option<String>,body:&[Statement],is_generator:bool,is_async:bool,
+    )->ReservedFunctionDeclaration {
         let cname = self.canon(name);
         // A function declaration BINDS its name in the enclosing scope — which
         // is what `collect_declared_names` (mod.rs:1038) already reports it as.
@@ -1988,11 +2011,45 @@ impl Compiler {
             chunk.result_arity = n;
         }
         self.chunks.push(chunk);
+        ReservedFunctionDeclaration {cname,binds_in_enclosing_scope,enclosing_fn_slot,
+            uses_js_arguments,has_rest,generator_control_arity,universal_receiver,arity,func_idx}
+    }
+
+    fn complete_reserved_function_declaration(&mut self,reservation:ReservedFunctionDeclaration,
+        _source_name:&str,params:&[Param],return_type:&Option<String>,body:&[Statement],
+        is_generator:bool,handles:&[String],is_async:bool,
+    )->Result<(),String> {
+        let ReservedFunctionDeclaration {cname,binds_in_enclosing_scope,enclosing_fn_slot,
+            uses_js_arguments,has_rest,generator_control_arity,universal_receiver,arity,func_idx}=reservation;
+        // The original method already shadows the source spelling with
+        // canonical cname before this boundary. Keep that exact choice;
+        // raw spelling remains an explicit argument, never canonicalized again.
+        let name=&cname;
         self.scopes
             .push(Scope::new_function(self.directives().variable_fold()));
         self.static_local_bindings.push(HashMap::new());
         let saved = self.current;
         self.current = func_idx;
+        let native_entry = (!binds_in_enclosing_scope
+            && !uses_js_arguments
+            && !has_rest
+            && !is_generator
+            && !is_async
+            && self.scopes.len() == 2
+            && self.chunks[func_idx].result_arity == 1
+            && self.profile.function_return != ReturnStyle::ResultSlot)
+            .then(|| self.native_entry_shape(params, return_type, body))
+            .flatten()
+            .map(|(shape, result)| {
+                let entry = super::native_words::NativeEntry { chunk: func_idx, params: shape, result };
+                self.chunks[func_idx].func_sig = Some(Self::native_entry_signature(
+                    &entry.params, entry.result, universal_receiver,
+                ));
+                self.chunks[func_idx].source_typed_entry = true;
+                self.native_function_entries.insert(cname.clone(), entry.clone());
+                self.scope_mut().native_result = entry.result;
+                entry
+            });
         // Runtime TRY_END counts are per-FRAME: a nested chunk must not
         // inherit the enclosing async body's try depth, or its returns pop
         // the caller's handlers off the shared runtime handler stack.
@@ -2025,6 +2082,7 @@ impl Compiler {
         let parent_shared_env_slot = self.shared_env_slot;
         let parent_shared_env_names = self.shared_env_names.clone();
         let frame_books = self.enter_closure_frame(&parent_shared_env_names);
+        self.scan_frame_reference_names(body);
         let closure_receiver_fact = if self.fused_closure_analysis {
             Some(super::closure_analysis::analyze(
                 body,
@@ -2048,6 +2106,7 @@ impl Compiler {
                     && !self.current_closure_captured_locals.contains(&binding.name)
             }).map(|binding| binding.name).collect();
         self.scopes.last_mut().unwrap().normalized_word_bindings.extend(word_bindings);
+        self.admit_native_words(params, body);
         // ECMA-262 §11.2.2: inherit strict mode and additionally enable it on
         // a `"use strict"` directive prologue in this function's body.
         let saved_strict = self.in_strict;
@@ -2141,6 +2200,10 @@ impl Compiler {
                 aliased_params.insert(p.name.clone(), (slot, index));
                 aliased_indices.insert(index, slot);
             }
+        }
+        if let Some(entry) = &native_entry {
+            let shape = entry.params.clone();
+            self.bind_native_entry_params(params, &shape);
         }
 
         // Fixed synchronous continuation entry receives control at its final
@@ -2277,6 +2340,7 @@ impl Compiler {
         // paragraph is compiled HERE, and fixing only the enclosing lambda
         // moved the collision into the paragraph instead of removing it.
         self.closure_env_slot();
+        self.bind_native_word_params(params);
 
         let generator_control_slot = early_generator_control_slot.or_else(||
             is_generator.then(|| self.define_local("__generator_entry_control")));
@@ -2464,6 +2528,10 @@ impl Compiler {
         } else if self.current_ref_out_params.is_some() {
             self.emit_null();
             self.emit_return_through_finally(1)?;
+        } else if self.scope().native_result.is_some() {
+            let line = self.line;
+            self.chunk().emit_i64_const(0, line);
+            self.emit_return();
         } else {
             self.emit_null();
             self.emit_return();
@@ -2496,6 +2564,12 @@ impl Compiler {
         self.static_local_bindings.pop();
         self.current = saved;
         self.function_label_base = saved_label_base;
+        // A typed body is reached directly by typed call sites; every value
+        // use of the function binds its value-ABI wrapper.
+        let func_idx = match &native_entry {
+            Some(entry) => self.build_native_entry_wrapper(name, entry, arity, universal_receiver)?,
+            None => func_idx,
+        };
         self.complete_immutable_function_entry(name, params, body, func_idx,
             binds_in_enclosing_scope || uses_js_arguments || has_rest);
 
@@ -3381,6 +3455,7 @@ impl Compiler {
             // inline spelling this replaces had drifted — it forgot
             // `capture_locals`, the exact bug class one shared ritual ends.)
             let frame_books = cc.enter_closure_frame(&enclosing_shared_env_names);
+            cc.scan_frame_reference_names(&m.body);
             crate::primitives::collect_closure_captured_idents(
                 &m.body,
                 &mut cc.current_closure_captured_locals,
@@ -3576,6 +3651,12 @@ impl Compiler {
                     cc.chunks[cc.current].emit_end(branch_line);
                 }
             }
+
+            // A method proves its native word bindings exactly as a declared
+            // function does; the proof itself is gated on the region's
+            // `word_local_transport`.
+            cc.admit_native_words(user_params, &m.body);
+            cc.bind_native_word_params(user_params);
 
             // An arrow in this body captures the method's `this` lexically
             // (§10.2.11), and the capture works by NAME through the shared env.
@@ -4553,6 +4634,7 @@ impl Compiler {
                         )?;
                     }
                 }
+                self.emit_construct_tracker(this_slot, line);
                 crate::primitives::classes::emit_constructor_return(self.chunk(), this_slot, line);
                 } else {
                 let is_child = parent.is_some();
@@ -5266,6 +5348,7 @@ impl Compiler {
                         line,
                     );
                 }
+                self.emit_construct_tracker(this_slot, line);
                 crate::primitives::classes::emit_constructor_return(self.chunk(), this_slot, line);
             }
 
@@ -6753,8 +6836,7 @@ pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, types_s, line);
     // if types present → types.includes(class_name); else obj["__type"] == class_name
-    chunks[current].emit_op_u16(Op::LOCAL_GET, types_s, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    crate::primitives::delegates::emit_slot_is_nullish(chunks, current, types_s, line);
     chunks[current].emit_op(Op::I32_EQZ, line); // 1 when __types is present
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, types_s, line);
@@ -7191,12 +7273,30 @@ impl Compiler {
     /// Finalize a value only if the language's runtime finds no remaining
     /// program-visible owner. The old value is held in a compiler spill slot;
     /// that slot is excluded from the root walk.
+    /// Let the language observe a fully constructed instance, on every path
+    /// that runs a class constructor (`new`, reflection, host instantiation).
+    fn emit_construct_tracker(&mut self, this_slot: u16, line: u32) {
+        if let Some(track) = vybe_runtime::registry::hooks(&self.profile.name).construct_tracker {
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            track(self.chunk(), line);
+            self.emit(Op::DROP);
+            self.sync_scope_slots_with_chunk();
+        }
+    }
+
     pub(crate) fn emit_rebound_value_finalizer(
         &mut self,
         old: u16,
         emit_finalizer: fn(&mut Chunk, u32),
     ) {
-        self.emit_u16(Op::LOCAL_GET, old);
+        let hooks = vybe_runtime::registry::hooks(&self.profile.name);
+        let line = self.line;
+        if let Some(gate) = hooks.rebind_gate {
+            gate(self.chunk(), line);
+            self.chunk().emit_if(line);
+        }
+        // Only a referent whose Destructor slot holds a callable has anything
+        // to finalise; every other value skips the language finalizer.
         self.emit_u16(Op::LOCAL_GET, old);
         let key = self.resolve_slot_interned(&class_slots::ClassSlot::Slot(
             vybe_ast::ProtocolSlot::Destructor,
@@ -7209,7 +7309,21 @@ impl Compiler {
             class_slots::Dest::Stack,
             line,
         );
+        let destructor = self.define_local("__rebound_destructor");
+        self.emit_u16(Op::LOCAL_TEE, destructor);
+        crate::primitives::instructions::recipes::is_func(self.chunk(), line);
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, old);
+        self.emit_u16(Op::LOCAL_GET, destructor);
         emit_finalizer(self.chunk(), line);
+        if let Some(release) = hooks.rebind_release {
+            self.chunk().emit_else(line);
+            release(self.chunk(), old, line);
+        }
+        self.chunk().emit_end(line);
+        if hooks.rebind_gate.is_some() {
+            self.chunk().emit_end(line);
+        }
         // A language finalizer may reserve private spill locals. Keep later
         // source declarations above them instead of reusing their slot IDs.
         self.sync_scope_slots_with_chunk();

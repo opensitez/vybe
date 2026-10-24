@@ -7,6 +7,37 @@ const CASES:[(&str,&str);4]=[("a=[3,1,2]\na.sort()\nanswer=a\n","[1,2,3]"),("ans
 #[test]fn actual_python_negative_index(){check(CASES[1].0,CASES[1].1)}
 #[test]fn actual_python_list_range(){check(CASES[2].0,CASES[2].1)}
 #[test]fn actual_python_list_map(){check(CASES[3].0,CASES[3].1)}
-#[test]#[ignore="strict entire Source validation; no function pruning"]fn complete_sources_native(){let mut failures=vec![];for(s,_)in CASES{let c=compile(s);let b=vybe_platform_wasm::write_wasm(&c);if let Err(e)=wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&b){eprintln!("source {s:?}: {e}");let mut code_index=0;for part in wasmparser::Parser::new(0).parse_all(&b){if let wasmparser::Payload::CodeSectionEntry(body)=part.unwrap(){if body.range().contains(&e.offset()){eprintln!("function {:?} range {:?}",c.get(code_index).map(|x|x.name.as_str()),body.range());let mut ops=body.get_operators_reader().unwrap();let mut window=std::collections::VecDeque::new();while !ops.eof(){let at=ops.original_position();let op=ops.read().unwrap();window.push_back((at,format!("{op:?}")));if window.len()>16{window.pop_front();}if at>=e.offset(){eprintln!("native window {window:?}");break;}}}code_index+=1;}}failures.push(e.to_string());}}assert!(failures.is_empty(),"{failures:?}");}
+#[test]
+#[ignore = "strict entire Source validation; no function pruning"]
+fn complete_sources_native() {
+    let mut failures = Vec::new();
+    for (source, _) in CASES {
+        let chunks = compile(source);
+        let bytes = vybe_platform_wasm::write_wasm(&chunks);
+        if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
+            eprintln!("source {source:?}: {error}");
+            let mut code_index = 0;
+            vybe_platform_wasm::inspection::CoreModule::new(&bytes).unwrap().function_bodies(|body| {
+                if let Some(offset) = error.offset().filter(|offset| body.range().contains(offset)) {
+                    eprintln!("function {:?} range {:?}", chunks.get(code_index).map(|c| c.name.as_str()), body.range());
+                    let mut window = std::collections::VecDeque::new();
+                    for instruction in body.instructions()? {
+                        let instruction = instruction?;
+                        window.push_back((instruction.offset, format!("{instruction:?}")));
+                        if window.len() > 16 { window.pop_front(); }
+                        if instruction.offset >= offset {
+                            eprintln!("native window {window:?}");
+                            break;
+                        }
+                    }
+                }
+                code_index += 1;
+                Ok(())
+            }).unwrap();
+            failures.push(error.to_string());
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+}
 #[test]#[ignore="exact emitted route diagnostic, no production behavior waiver"]fn negative_index_opcode_diagnostic(){let c=compile(CASES[1].0);let root=&c[0];let mut p=0;while p<root.code.len(){let op=vybe_runtime::Op::from_code_at(&root.code,p);let end=p+4+op.operand_format().size_in(&root.code,p+4);if p<650{eprintln!("{p} {op:?} {:?}",&root.code[p+4..end]);}p=end;}eprintln!("imports {:?} constants {:?}",root.imports,root.constants);}
 #[test]fn actual_python_len_builtin_scalar_units_and_user_slot(){check("answer=[len([]),len([1,2]),len(''),len('a😀b'),len({}),len({'a':1})]\n","[0,2,0,3,0,1]");check("events=[]\nclass Probe:\n    def __len__(self):\n        events.append('len')\n        return 3\np=Probe()\nanswer=[len(p),events]\n","[3,[\"len\"]]");}

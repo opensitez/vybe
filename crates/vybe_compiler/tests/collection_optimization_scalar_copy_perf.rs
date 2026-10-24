@@ -66,8 +66,7 @@ fn vm(input: Value) -> VM {
 }
 fn validate(chunks: &[Chunk]) {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    if let Err(error) = vybe_platform_wasm::validate_binary(&bytes)
     {
         let path = format!("/private/tmp/{}.wasm", chunks[0].name);
         std::fs::write(&path, &bytes).unwrap();

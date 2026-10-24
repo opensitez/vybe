@@ -713,12 +713,10 @@ impl Bundle {
                 production.validate_owned()?;
                 let result=match module {
                     std::borrow::Cow::Owned(module)=>{
-                        let mut emission=compiler.begin_owned_statement_emission_prepared(module,context.language.parse)?;
-                        while emission.emit_next()?.is_some(){}emission.finish()?
+                        compiler.begin_owned_manifest_emission_prepared(module,context.language.parse)?.finish()?
                     },
                     std::borrow::Cow::Borrowed(module)=>{
-                        let mut emission=compiler.begin_borrowed_manifest_emission_prepared(module,context.language.parse)?;
-                        while emission.emit_next()?.is_some(){}emission.finish()?
+                        compiler.begin_emission_prepared(module,context.language.parse)?.finish()?
                     },
                 };
                 (result,required)

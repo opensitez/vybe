@@ -22,9 +22,7 @@ fn u16_at(c: &Chunk, at: usize) -> u16 {
 }
 fn validate(chunks: &[Chunk]) -> usize {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-        .unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     bytes.len()
 }
 fn vm() -> VM {
@@ -644,9 +642,7 @@ fn benchmark_base64_ascii_predicate() {
 }
 
 fn validate_wasm_bytes(bytes: &[u8]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(bytes)
-        .unwrap();
+    vybe_platform_wasm::validate_binary(bytes).unwrap();
 }
 fn leb(mut n: usize) -> Vec<u8> {
     let mut out = vec![];
@@ -692,56 +688,63 @@ fn native_export(chunks: &[Chunk], callee: usize, export: &str) -> Vec<u8> {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
     validate_wasm_bytes(&bytes);
     let (mut imports, mut defined, mut bodies) = (0usize, vec![], 0);
-    let mut signatures = vec![];
+    use vybe_platform_wasm::inspection::{CompositeType, CoreModule, ExportKind, ImportType};
+    use vybe_runtime::native_gc::{HeapType, ValueType};
+    let module = CoreModule::new(&bytes).unwrap();
+    let signatures = module.types().unwrap();
     let mut exports = vec![];
-    for p in wasmparser::Parser::new(0).parse_all(&bytes) {
-        match p.unwrap() {
-            wasmparser::Payload::TypeSection(section) => {
-                for group in section {
-                    for ty in group.unwrap().into_types() {
-                        signatures.push(match ty.composite_type.inner {
-                            wasmparser::CompositeInnerType::Func(f) => {
-                                Some((f.params().to_vec(), f.results().to_vec()))
-                            }
-                            _ => None,
-                        });
-                    }
-                }
+    module
+        .imports(|_, _, ty| {
+            if matches!(ty, ImportType::Func { .. }) {
+                imports += 1;
             }
-            wasmparser::Payload::ImportSection(section) => {
-                for i in section.into_imports() {
-                    if matches!(
-                        i.unwrap().ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                    ) {
-                        imports += 1;
-                    }
-                }
-            }
-            wasmparser::Payload::FunctionSection(section) => {
-                defined.extend(section.into_iter().map(Result::unwrap))
-            }
-            wasmparser::Payload::CodeSectionEntry(_) => bodies += 1,
-            wasmparser::Payload::ExportSection(section) => {
-                exports.extend(section.into_iter().map(Result::unwrap))
-            }
-            _ => (),
-        }
-    }
+            Ok(())
+        })
+        .unwrap();
+    module
+        .defined_functions(|ty| {
+            defined.push(ty);
+            Ok(())
+        })
+        .unwrap();
+    module
+        .function_bodies(|_| {
+            bodies += 1;
+            Ok(())
+        })
+        .unwrap();
+    module
+        .exports(|export| {
+            exports.push(export);
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(defined.len(), chunks.len());
     assert_eq!(bodies, chunks.len());
     for adjacent in defined.windows(2) {
         assert_eq!(adjacent[1], adjacent[0] + 1);
     }
-    let (params, results) = signatures[defined[callee] as usize].as_ref().unwrap();
+    let CompositeType::Func { params, results } =
+        &signatures[defined[callee] as usize].definition().composite
+    else {
+        panic!("callee type is not a function");
+    };
+    let externref = ValueType::Ref {
+        nullable: true,
+        exact: false,
+        heap: HeapType::Abstract {
+            kind: 0x6f,
+            shared: false,
+        },
+    };
     assert_eq!(params.len(), chunks[callee].arity as usize);
-    assert!(params.iter().all(|p| *p == wasmparser::ValType::EXTERNREF));
-    assert_eq!(results, &[wasmparser::ValType::EXTERNREF]);
+    assert!(params.iter().all(|p| *p == externref));
+    assert_eq!(results, &[externref]);
     assert!(!exports.iter().any(|e| e.name == export));
     assert!(
         exports
             .iter()
-            .any(|e| e.name == "_start" && e.kind == wasmparser::ExternalKind::Func)
+            .any(|e| e.name == "_start" && e.kind == ExportKind::Function)
     );
     let before = sections(&bytes);
     let mut out = bytes[..8].to_vec();

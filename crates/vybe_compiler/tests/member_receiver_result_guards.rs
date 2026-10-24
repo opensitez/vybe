@@ -29,8 +29,7 @@ fn normalized(r: Result<Value, vybe_runtime::VMError>) -> Result<Value, String> 
 }
 fn validate(c: &[Chunk]) -> Result<usize, String> {
     let bytes = vybe_platform_wasm::write_wasm(c);
-    match wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    match vybe_platform_wasm::validate_binary(&bytes)
     {
         Ok(_) => Ok(bytes.len()),
         Err(e) => Err(e.to_string()),
@@ -39,10 +38,10 @@ fn validate(c: &[Chunk]) -> Result<usize, String> {
 fn parsed(source: &str, writeback: bool) -> Vec<Chunk> {
     static REGISTER: std::sync::Once = std::sync::Once::new();
     REGISTER.call_once(vybe_language_php::register);
-    let ast = vybe_language_php::parse(&format!("<?php {source}")).unwrap();
-    let mut profile =
+    let mut ast = vybe_language_php::parse(&format!("<?php {source}")).unwrap();
+    let profile =
         vybe_compiler::profile::parse_profile(vybe_language_php::profile_source()).unwrap();
-    profile.member_call_writes_receiver_back = writeback;
+    ast.directives.member_receiver_writeback = Some(writeback);
     vybe_compiler::Compiler::with_profile(profile)
         .compile(&ast)
         .unwrap()
@@ -103,8 +102,8 @@ fn actual_php_argument_order_and_shadowed_split_method() {
 }
 #[test]
 fn fortran_feature_receiver_writeback_and_carried_result() {
-    // This actual common compiler feature is enabled by the real Fortran
-    // profile. PHP syntax supplies an actual AST; no Fortran parser claim.
+    // Fortran's walker enables this common directive. PHP syntax supplies
+    // an actual AST with the same policy; no Fortran parser claim here.
     positive(
         "class Counter{public $v=1;function bump(){$this->v=$this->v+1;return ['a','b','c'];}}function count_subject($h){return $h->bump();}$counter=new Counter();$r=count_subject($counter);return implode(':',$r).':'.$counter->v;",
         true,
@@ -192,4 +191,26 @@ fn actual_js_symbol_split_source_invokes_protocol_once_in_order() {
             validate(&chunks)
         );
     }
+}
+
+#[test]
+fn disabled_writeback_directive_emits_no_empty_receiver_guards() {
+    let chunks = parsed(
+        "class Counter{function bump(){return 7;}}$c=new Counter();return $c->bump();",
+        false,
+    );
+    let empty_guard = [
+        Op::LOCAL_GET, Op::REF_IS_NULL, Op::IF, Op::ELSE, Op::LOCAL_GET,
+        Op::CALL, Op::IF, Op::ELSE, Op::END, Op::END,
+    ];
+    for chunk in &chunks {
+        let emitted: Vec<_> = ops(chunk).into_iter().map(|(_, op)| op).collect();
+        assert!(
+            !emitted.windows(empty_guard.len()).any(|ops| ops == empty_guard),
+            "disabled receiver writeback emitted its empty guard in {}",
+            chunk.name,
+        );
+    }
+    assert_eq!(normalized(vm().run(chunks.clone())), Ok(Value::F64(7.0)));
+    assert!(validate(&chunks).is_ok());
 }

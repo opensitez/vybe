@@ -27,23 +27,14 @@ fn validate(chunks: &[Chunk]) {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-        .unwrap();
-    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-        if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-            let mut reader = body.get_operators_reader().unwrap();
-            while !reader.eof() {
-                assert!(
-                    !matches!(
-                        reader.read().unwrap(),
-                        wasmparser::Operator::F64ConvertI64S | wasmparser::Operator::F64ConvertI64U
-                    ),
-                    "whole-word floating conversion in exact bridge"
-                );
-            }
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
+    vybe_platform_wasm::inspection::CoreModule::new(&bytes).unwrap().function_bodies(|body| {
+        for instruction in body.instructions()? {
+            assert!(!matches!(instruction?.opcode, 0xb9 | 0xba),
+                "whole-word floating conversion in exact bridge");
         }
-    }
+        Ok(())
+    }).unwrap();
 }
 
 fn runtime() -> VM {
@@ -239,8 +230,7 @@ fn value_memory_word_bridges_preserve_declared_transport_and_native_bits() {
                         include_name_section: true,
                     },
                 );
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&bytes)
+                vybe_platform_wasm::validate_binary(&bytes)
                     .unwrap();
                 let mut vm = runtime();
                 let callable = vm.run(chunks).unwrap();

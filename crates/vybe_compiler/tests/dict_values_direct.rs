@@ -295,8 +295,7 @@ fn size_and_native_exports() {
                 include_vybe_metadata: false,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         if std::env::var_os("VYBE_PRIMITIVE_VALUES_EXPORT").is_some() {
             native_export::export_chunks(&cs, &format!("dict-values-{}", u8::from(fast)));

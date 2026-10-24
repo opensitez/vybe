@@ -14,8 +14,7 @@ fn base64_character_predicate_preserves_both_alphabets_and_signed_boundaries() {
         assert!(body.imports.is_empty());
         body.emit_op(Op::RETURN, 0);
         let native = vybe_platform_wasm::write_wasm(&[body.clone()]);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&native).unwrap();
+        vybe_platform_wasm::validate_binary(&native).unwrap();
 
         let mut owner = Chunk::new("predicate-owner");
         primitives::functions::emit_ref_func(&mut owner, 1, 0, 0);

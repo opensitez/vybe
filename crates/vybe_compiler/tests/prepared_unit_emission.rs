@@ -50,8 +50,7 @@ fn assert_same(expected: &CompileResult, actual: &CompileResult) {
     let actual = vybe_platform_wasm::write_wasm_with_options(&actual.chunks,
         vybe_platform_wasm::WasmWriteOptions { include_vybe_metadata: false, include_name_section: true });
     assert_eq!(actual, expected);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&actual).unwrap();
+    vybe_platform_wasm::validate_binary(&actual).unwrap();
 }
 
 #[test]

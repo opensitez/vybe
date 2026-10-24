@@ -118,6 +118,8 @@ macro_rules! fn_call {
 mod arrays;
 pub mod async_ops;
 mod bindings;
+mod native_words;
+mod typed_arrays;
 mod builtins;
 pub mod helper_templates;
 pub mod argument_emission;
@@ -730,6 +732,10 @@ pub struct Compiler {
     /// can never leak into a nested operand, where the boxed value is what the
     /// surrounding expression is entitled to.
     has_discarded_builtin_emits: bool,
+    /// The value an `Ident` assignment is storing has a nonreference producer
+    /// proof, so a plain local store needs no dereference ladder. Set only
+    /// around that assignment's `emit_var_set`.
+    store_value_nonreference: bool,
     want_i32_condition: bool,
     /// The request above was honoured: the value on the stack is an i32.
     /// Written by `emit_i32_to_bool_or_report` or a terminal typed builtin
@@ -759,6 +765,8 @@ pub struct Compiler {
     /// See [`vybe_runtime::chunk::FxBuildHasher`].
     pub(crate) defined_functions: body_symbols::FunctionSymbols,
     immutable_function_bindings: immutable_calls::Bindings,
+    /// Module-level functions with a typed physical entry, by canonical name.
+    pub(crate) native_function_entries: HashMap<String, native_words::NativeEntry>,
     /// Whether this compiled module owns whole-program end-of-module hooks.
     ///
     /// Normal entry modules do. Dynamic fragments/includes do not: they run in
@@ -1048,6 +1056,13 @@ pub struct Compiler {
     /// Cloned/normalized/generated bodies never inherit a source receipt.
     source_atomic_free_bodies: HashSet<(usize, usize)>,
     current_closure_captured_locals: HashSet<String>,
+    /// Names the current function body can bind to a reference under alias
+    /// binding (`collect_reference_bound_idents`). `None` outside a scanned
+    /// function body, where every local read keeps its reference test.
+    frame_reference_names: Option<Arc<HashSet<String>>>,
+    /// Locals of the current function body that hold a number at every read
+    /// (`collect_number_locals`). Empty outside a scanned function body.
+    frame_number_locals: Arc<HashSet<String>>,
 
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
     /// of the same arity. Populated by a pre-pass before any function is
@@ -1418,6 +1433,394 @@ fn compound_op_to_binop(op: &CompoundOp) -> Option<BinOp> {
 /// open their own scopes and are pre-scanned when compiled. Used to promote
 /// address-taken bindings to a pointer cell at declaration time (once), instead
 /// of re-wrapping at every `&name` use (which corrupts the cell inside loops).
+/// Collect the names a function body can bind to a REFERENCE under alias
+/// binding: `$b = &$a` (both names), `&$x` anywhere, by-reference arguments
+/// and array elements, by-reference statement bindings such as `global $x`,
+/// scope declarations, closure captures, and arguments of callees whose
+/// declared parameters `callee_binds_reference` reports as aliasing. Every
+/// other local holds a plain value: it is dereferenced once when stored and
+/// read without a reference test.
+pub(crate) fn collect_reference_bound_idents(
+    stmts: &[Statement],
+    callee_binds_reference: &dyn Fn(&str) -> bool,
+    out: &mut HashSet<String>,
+) {
+    fn root(expr: &Expression) -> Option<&str> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name),
+            ExprKind::Index { object, .. } | ExprKind::Member { object, .. } => root(object),
+            _ => None,
+        }
+    }
+    fn place_root(place: &PlaceExpr) -> Option<&str> {
+        match place {
+            PlaceExpr::Ident(name) => Some(name),
+            PlaceExpr::Index { object, .. } | PlaceExpr::Member { object, .. } => root(object),
+            PlaceExpr::Deref(_) => None,
+        }
+    }
+    fn is_reference_value(expr: &Expression) -> bool {
+        matches!(
+            &expr.kind,
+            ExprKind::RefOf(_) | ExprKind::Unary { op: UnaryOp::AddrOf, .. }
+        )
+    }
+    fn statements(
+        stmts: &[Statement],
+        callee_binds_reference: &dyn Fn(&str) -> bool,
+        out: &mut HashSet<String>,
+    ) {
+        for stmt in stmts {
+            statement(stmt, callee_binds_reference, out);
+        }
+    }
+    fn statement(
+        stmt: &Statement,
+        callee_binds_reference: &dyn Fn(&str) -> bool,
+        out: &mut HashSet<String>,
+    ) {
+        let nested = |body: &[Statement], out: &mut HashSet<String>| {
+            statements(body, callee_binds_reference, out)
+        };
+        match &stmt.kind {
+            StmtKind::Assign { targets, value, by_ref } => {
+                if *by_ref || is_reference_value(value) {
+                    out.extend(targets.iter().filter_map(root).map(str::to_string));
+                }
+            }
+            StmtKind::ScopeDecl { names, .. } => out.extend(names.iter().cloned()),
+            StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => nested(body, out),
+            StmtKind::Labeled { body, .. } => statement(body, callee_binds_reference, out),
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    nested(&arm.body, out);
+                }
+                if let Some(body) = default {
+                    nested(body, out);
+                }
+            }
+            StmtKind::If { then_body, elifs, else_body, .. } => {
+                nested(then_body, out);
+                for (_, body) in elifs {
+                    nested(body, out);
+                }
+                if let Some(body) = else_body {
+                    nested(body, out);
+                }
+            }
+            StmtKind::For { init, body, .. } => {
+                if let Some(init) = init {
+                    statement(init, callee_binds_reference, out);
+                }
+                nested(body, out);
+            }
+            StmtKind::ForIn { body, else_body, .. } | StmtKind::While { body, else_body, .. } => {
+                nested(body, out);
+                if let Some(body) = else_body {
+                    nested(body, out);
+                }
+            }
+            StmtKind::DoWhile { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::Using { body, .. }
+            | StmtKind::Lock { body, .. } => nested(body, out),
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases {
+                    nested(&case.body, out);
+                }
+                if let Some(body) = default {
+                    nested(body, out);
+                }
+            }
+            StmtKind::Try { body, catches, else_body, finally } => {
+                nested(body, out);
+                for catch in catches {
+                    nested(&catch.body, out);
+                }
+                for body in [else_body, finally].into_iter().flatten() {
+                    nested(body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Statement kinds above recurse through nested bodies; `walk_exprs`
+    // already reaches every nested expression, so it runs once per top-level
+    // statement.
+    statements(stmts, callee_binds_reference, out);
+    for stmt in stmts {
+        stmt.walk_exprs(&mut |expr| match &expr.kind {
+            ExprKind::Assign { target, value } if is_reference_value(value) => {
+                out.extend(root(target).map(str::to_string));
+            }
+            ExprKind::RefOf(place) => out.extend(place_root(place).map(str::to_string)),
+            ExprKind::Unary { op: UnaryOp::AddrOf, expr } => {
+                out.extend(root(expr).map(str::to_string));
+            }
+            ExprKind::Call { callee, args, .. } => {
+                let aliases_all = matches!(&callee.kind,
+                    ExprKind::Ident(name) if callee_binds_reference(name));
+                for arg in args {
+                    if arg.by_ref || aliases_all {
+                        out.extend(root(&arg.value).map(str::to_string));
+                    }
+                }
+            }
+            ExprKind::Array(elements) => {
+                for element in elements.iter().filter(|element| element.by_ref) {
+                    out.extend(root(&element.value).map(str::to_string));
+                }
+            }
+            ExprKind::Lambda { captures, .. } => out.extend(captures.iter().cloned()),
+            _ => {}
+        });
+    }
+}
+
+/// Locals of a function body that hold a number at every read: each is
+/// assigned before any other mention at the body's top level, every write to
+/// it stores a provably numeric value (a numeric literal, another such local,
+/// arithmetic or bitwise operators over them, or a step), and it is not in
+/// `excluded` (names that can be bound to a reference). Any other write form
+/// disqualifies the name.
+pub(crate) fn collect_number_locals(
+    stmts: &[Statement],
+    excluded: &HashSet<String>,
+) -> HashSet<String> {
+    enum Write {
+        Value(Expression),
+        Compound(CompoundOp, Expression),
+        Step,
+        Opaque,
+    }
+    fn idents_in(expr: &Expression, out: &mut Vec<String>) {
+        expr.walk_exprs(&mut |e| {
+            if let ExprKind::Ident(name) = &e.kind {
+                out.push(name.clone());
+            }
+        });
+    }
+    fn record_target(target: &Expression, write: Write,
+        writes: &mut HashMap<String, Vec<Write>>)
+    {
+        if let ExprKind::Ident(name) = &target.kind {
+            writes.entry(name.clone()).or_default().push(write);
+        } else {
+            let mut names = Vec::new();
+            idents_in(target, &mut names);
+            for name in names {
+                writes.entry(name).or_default().push(Write::Opaque);
+            }
+        }
+    }
+    fn statement_writes(stmt: &Statement, writes: &mut HashMap<String, Vec<Write>>,
+        opaque_forms: &mut bool)
+    {
+        let mut nested = |body: &[Statement], writes: &mut HashMap<String, Vec<Write>>,
+            opaque_forms: &mut bool| {
+            for stmt in body {
+                statement_writes(stmt, writes, opaque_forms);
+            }
+        };
+        match &stmt.kind {
+            StmtKind::Assign { targets, value, by_ref } => {
+                for target in targets {
+                    let write = if *by_ref { Write::Opaque } else { Write::Value(value.clone()) };
+                    record_target(target, write, writes);
+                }
+            }
+            StmtKind::CompoundAssign { target, op, value } => {
+                record_target(target, Write::Compound(*op, value.clone()), writes);
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for declaration in declarations {
+                    match (&declaration.pattern, &declaration.init) {
+                        (BindingPattern::Ident(name), Some(init)) => {
+                            writes.entry(name.clone()).or_default().push(Write::Value(init.clone()));
+                        }
+                        (BindingPattern::Ident(name), None) => {
+                            writes.entry(name.clone()).or_default().push(Write::Opaque);
+                        }
+                        _ => *opaque_forms = true,
+                    }
+                }
+            }
+            StmtKind::ForIn { var, key, body, else_body, .. } => {
+                for name in std::iter::once(var).chain(key.iter()) {
+                    writes.entry(name.clone()).or_default().push(Write::Opaque);
+                }
+                nested(body, writes, opaque_forms);
+                if let Some(body) = else_body {
+                    nested(body, writes, opaque_forms);
+                }
+            }
+            StmtKind::Try { body, catches, else_body, finally } => {
+                nested(body, writes, opaque_forms);
+                for catch in catches {
+                    for name in catch.var_name.iter().chain(catch.stack_var.iter()) {
+                        writes.entry(name.clone()).or_default().push(Write::Opaque);
+                    }
+                    nested(&catch.body, writes, opaque_forms);
+                }
+                for body in [else_body, finally].into_iter().flatten() {
+                    nested(body, writes, opaque_forms);
+                }
+            }
+            StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+                nested(body, writes, opaque_forms)
+            }
+            StmtKind::Labeled { body, .. } => statement_writes(body, writes, opaque_forms),
+            StmtKind::If { then_body, elifs, else_body, .. } => {
+                nested(then_body, writes, opaque_forms);
+                for (_, body) in elifs {
+                    nested(body, writes, opaque_forms);
+                }
+                if let Some(body) = else_body {
+                    nested(body, writes, opaque_forms);
+                }
+            }
+            StmtKind::For { init, body, .. } => {
+                if let Some(init) = init {
+                    statement_writes(init, writes, opaque_forms);
+                }
+                nested(body, writes, opaque_forms);
+            }
+            StmtKind::While { body, else_body, .. } => {
+                nested(body, writes, opaque_forms);
+                if let Some(body) = else_body {
+                    nested(body, writes, opaque_forms);
+                }
+            }
+            StmtKind::DoWhile { body, .. } => nested(body, writes, opaque_forms),
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases {
+                    nested(&case.body, writes, opaque_forms);
+                }
+                if let Some(body) = default {
+                    nested(body, writes, opaque_forms);
+                }
+            }
+            StmtKind::Expr(_) | StmtKind::Return(_) | StmtKind::Echo(_) | StmtKind::Throw { .. }
+            | StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Empty
+            | StmtKind::ScopeDecl { .. } | StmtKind::FunctionDecl { .. }
+            | StmtKind::ClassDecl { .. } => {}
+            _ => *opaque_forms = true,
+        }
+    }
+    fn is_number(expr: &Expression, proven: &HashSet<String>) -> bool {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Int(_) | Literal::Float(_)) => true,
+            ExprKind::Ident(name) => proven.contains(name),
+            ExprKind::Binary { op, left, right } => {
+                matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::IDiv
+                    | BinOp::Mod | BinOp::Pow | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+                    | BinOp::Shl | BinOp::Shr | BinOp::UShr | BinOp::FloorDiv
+                    | BinOp::Integer(..))
+                    && is_number(left, proven)
+                    && is_number(right, proven)
+            }
+            ExprKind::Unary { op, expr } => match op {
+                UnaryOp::Neg | UnaryOp::Pos | UnaryOp::BitNot => is_number(expr, proven),
+                UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec => {
+                    matches!(&expr.kind, ExprKind::Ident(name) if proven.contains(name))
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    let mut writes: HashMap<String, Vec<Write>> = HashMap::new();
+    let mut opaque_forms = false;
+    for stmt in stmts {
+        statement_writes(stmt, &mut writes, &mut opaque_forms);
+        stmt.walk_exprs(&mut |expr| match &expr.kind {
+            ExprKind::Assign { target, value } => {
+                record_target(target, Write::Value((**value).clone()), &mut writes)
+            }
+            ExprKind::Unary {
+                op: UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec,
+                expr: target,
+            } => record_target(target, Write::Step, &mut writes),
+            ExprKind::Destructure(_) | ExprKind::Walrus { .. } | ExprKind::Comprehension { .. } => {
+                opaque_forms = true;
+            }
+            _ => {}
+        });
+    }
+    if opaque_forms {
+        return HashSet::new();
+    }
+
+    // Definite assignment before any other mention, at the top level only.
+    let mut mentioned = HashSet::new();
+    let mut initialized = HashSet::new();
+    let mut mention = |stmt_or_expr: &mut dyn FnMut(&mut dyn FnMut(&Expression)),
+        initialized: &HashSet<String>, mentioned: &mut HashSet<String>| {
+        stmt_or_expr(&mut |e| {
+            if let ExprKind::Ident(name) = &e.kind {
+                if !initialized.contains(name) {
+                    mentioned.insert(name.clone());
+                }
+            }
+        });
+    };
+    for stmt in stmts {
+        let assigned = match &stmt.kind {
+            StmtKind::Expr(Expression { kind: ExprKind::Assign { target, value }, .. }) => {
+                Some((target, value))
+            }
+            StmtKind::For { init: Some(init), .. } => match &init.kind {
+                StmtKind::Expr(Expression { kind: ExprKind::Assign { target, value }, .. }) => {
+                    Some((target, value))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((target, value)) = assigned
+            && let ExprKind::Ident(name) = &target.kind
+        {
+            mention(&mut |f| value.walk_exprs(f), &initialized, &mut mentioned);
+            if !mentioned.contains(name) {
+                initialized.insert(name.clone());
+            }
+        }
+        mention(&mut |f| stmt.walk_exprs(f), &initialized, &mut mentioned);
+    }
+
+    let mut proven: HashSet<String> = writes
+        .iter()
+        .filter(|(name, list)| {
+            initialized.contains(*name)
+                && !excluded.contains(*name)
+                && list.iter().all(|write| !matches!(write, Write::Opaque))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    loop {
+        let before = proven.len();
+        let snapshot = proven.clone();
+        proven.retain(|name| {
+            writes[name].iter().all(|write| match write {
+                Write::Value(value) => is_number(value, &snapshot),
+                Write::Compound(op, value) => {
+                    matches!(op, CompoundOp::Add | CompoundOp::Sub | CompoundOp::Mul
+                        | CompoundOp::Div | CompoundOp::IDiv | CompoundOp::Mod | CompoundOp::Pow
+                        | CompoundOp::BitAnd | CompoundOp::BitOr | CompoundOp::BitXor
+                        | CompoundOp::Shl | CompoundOp::Shr | CompoundOp::UShr)
+                        && is_number(value, &snapshot)
+                }
+                Write::Step => true,
+                Write::Opaque => false,
+            })
+        });
+        if proven.len() == before {
+            return proven;
+        }
+    }
+}
+
 fn collect_addr_taken_idents(stmts: &[Statement], out: &mut HashSet<String>) {
     for stmt in stmts {
         collect_addr_taken_in_stmt(stmt, out);
@@ -3264,12 +3667,14 @@ impl Compiler {
             component_instance_links: None,
             in_typeof_operand: false,
             has_discarded_builtin_emits: profile.builtins.values().any(|def| def.discarded_emit.is_some()),
+            store_value_nonreference: false,
             want_i32_condition: false,
             gave_i32_condition: false,
             gave_i32_word: false,
             program_lexical_names: HashSet::new(),
             defined_functions: body_symbols::FunctionSymbols::new(),
             immutable_function_bindings: immutable_calls::Bindings::default(),
+            native_function_entries: HashMap::default(),
             run_module_end_hooks: true,
             function_param_modes: HashMap::default(),
             function_param_types: HashMap::default(),
@@ -3356,6 +3761,8 @@ impl Compiler {
             source_atomic_free_bodies: HashSet::new(),
             module_atomic_word_globals: HashSet::new(),
             current_closure_captured_locals: HashSet::new(),
+            frame_reference_names: None,
+            frame_number_locals: Arc::default(),
 
             multi_return_functions: HashMap::new(),
             generator_functions: HashSet::new(),
@@ -3678,7 +4085,8 @@ impl Compiler {
     }
 
     /// Consumes a caller-owned AST; unregistered parsers retain legacy normalization.
-    pub(crate) fn compile_with_imports_owned(self, module: Module,
+    #[cfg(feature = "service-verification")]
+    fn compile_with_imports_owned(self, module: Module,
         parser: vybe_runtime::registry::ParseFn) -> Result<CompileResult, String> {
         self.begin_emission_owned_prepared(module, parser)?.finish()
     }
@@ -3690,6 +4098,26 @@ impl Compiler {
             && crate::languages::find_by_name(&self.profile.name).is_some_and(|language|
                 std::ptr::fn_addr_eq(language.parse, parser));
         let callback = matches_profile.then(||crate::frontend_preparation::snapshot(parser).capabilities.deferred_class_bodies).flatten();
+        self.prepare_source_emission(&module, std::borrow::Cow::Owned(body), callback)
+    }
+
+    /// Consume the exact compiler-owned statement manifest without adapting it
+    /// to an independent callback stream. Source-body donation still requires
+    /// the existing structural admission; installed-library-only metadata uses
+    /// its separate complete Owner proof. Other units retain ordinary lowering.
+    pub(crate) fn begin_owned_manifest_emission_prepared(self, mut module: Module,
+        parser: vybe_runtime::registry::ParseFn) -> Result<PreparedEmission<'static>, String> {
+        let matches_profile = self.profile.uses_normalize_class
+            && crate::languages::find_by_name(&self.profile.name).is_some_and(|language|
+                std::ptr::fn_addr_eq(language.parse, parser));
+        let callback = matches_profile
+            .then(|| crate::frontend_preparation::snapshot(parser).capabilities.deferred_class_bodies)
+            .flatten()
+            .filter(|_| (deferred_class_bodies::has_candidate_class_headers(&module.body)
+                && crate::dynamic::independent_lowering(&module))
+                || deferred_class_bodies::has_installed_library_owned_candidate(
+                    &module.body, self.profile.case_sensitive));
+        let body = std::mem::take(&mut module.body);
         self.prepare_source_emission(&module, std::borrow::Cow::Owned(body), callback)
     }
 
@@ -3765,6 +4193,14 @@ impl Compiler {
         // a multi-language program is compiled on its own terms, so Pascal
         // never inherits what PHP declared.
         self.directives = vec![module.directives.clone()];
+        if let Some(wrapper) = &module.directives.array_wrapper {
+            let index = crate::primitives::classes::reserve_type_slot(&mut self.chunks, &wrapper.type_name);
+            assert_eq!(index, 1, "array wrapper type `{}` must be the module's first type", wrapper.type_name);
+            let entry = &mut self.chunks[0].types[0];
+            if entry.fields.is_empty() {
+                entry.fields = wrapper.fields.clone();
+            }
+        }
         // Lower the receiver DIRECTIVE to the receiver ABI, once, onto the
         // module chunk. The emitters that need this answer are free functions
         // holding `&mut [Chunk]` or the imports chunk, never a `Compiler` — so
@@ -4160,6 +4596,12 @@ impl Compiler {
                 let saved = self.current;
                 self.current = 0;
                 self.emit_run_shutdown_callbacks(&registry, order);
+                self.current = saved;
+            }
+            if let Some(target) = self.directives().shutdown_finalizer.clone() {
+                let saved = self.current;
+                self.current = 0;
+                self.emit_shutdown_finalizer(&target, false);
                 self.current = saved;
             }
         }

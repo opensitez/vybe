@@ -41,6 +41,52 @@ pub fn emit_box_i64(chunks: &mut [Chunk], current: usize, signed: bool, line: u3
     }
 }
 
+/// Stack `[native i64]` -> the region's exact carrier: a BigInt under
+/// `Exact`; under `Compact` a Number for a safe integer and a BigInt otherwise.
+pub fn emit_box_i64_as(
+    chunks: &mut [Chunk],
+    current: usize,
+    signed: bool,
+    transport: vybe_ast::WideIntegerTransport,
+    line: u32,
+) {
+    if transport != vybe_ast::WideIntegerTransport::Compact {
+        emit_box_i64(chunks, current, signed, line);
+        return;
+    }
+    let chunk = &mut chunks[current];
+    align_scratch(chunk);
+    let word = chunk.alloc_scratch(1);
+    chunk.i64_locals.insert(word);
+    chunk.emit_op_u16(Op::LOCAL_SET, word, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, word, line);
+    if signed {
+        chunk.emit_i64_const(SAFE_INTEGER, line);
+        chunk.emit_op(Op::I64_ADD, line);
+        chunk.emit_i64_const(2 * SAFE_INTEGER, line);
+        chunk.emit_op(Op::I64_LE_U, line);
+    } else {
+        chunk.emit_i64_const(SAFE_INTEGER, line);
+        chunk.emit_op(Op::I64_LE_U, line);
+    }
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, word, line);
+    chunk.emit_op(if signed { Op::F64_CONVERT_I64_S } else { Op::F64_CONVERT_I64_U }, line);
+    call(chunk, "wasm:js-number", "fromF64", 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, word, line);
+    emit_box_i64(chunks, current, signed, line);
+    chunks[current].emit_end(line);
+}
+
+/// `Number.MAX_SAFE_INTEGER`, 2^53 - 1.
+const SAFE_INTEGER: i64 = (1 << 53) - 1;
+
+/// Whether the `Compact` carrier of this constant word is a Number.
+pub fn compact_number(word: i64, signed: bool) -> bool {
+    if signed { (-SAFE_INTEGER..=SAFE_INTEGER).contains(&word) } else { (0..=SAFE_INTEGER).contains(&word) }
+}
+
 /// Stack `[BigInt value]` -> `[native i64]`, retaining the low 64 bits exactly.
 /// Signed and unsigned carriers have the same bit-pattern inverse. This is not
 /// an implicit conversion from arbitrary floating-point or object values.
@@ -92,6 +138,80 @@ pub fn emit_normalize_value(chunks: &mut [Chunk], current: usize, signed: bool, 
         super::bigint::emit_as_int_n(chunk, 64, line);
     } else {
         super::bigint::emit_as_uint_n(chunk, 64, line);
+    }
+}
+
+/// Stack `[numeric value]` -> `[native i64]` at the declared reading: a BigInt
+/// keeps its low 64 bits; a Number truncates toward zero. A signed Number
+/// saturates at the i64 range; an unsigned Number at or above 2^63 converts
+/// unsigned, and a negative one keeps its two's-complement bits.
+pub fn emit_value_to_i64(chunks: &mut [Chunk], current: usize, signed: bool, line: u32) {
+    let chunk = &mut chunks[current];
+    align_scratch(chunk);
+    let value = chunk.alloc_scratch(1);
+    let word = chunk.alloc_scratch(1);
+    chunk.i64_locals.insert(word);
+    crate::primitives::instructions::core_wasm::local_tee(chunk, line, value);
+    call(chunk, "wasm:js-bigint", "test", 1, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_unbox_i64(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, word, line);
+    chunk.emit_else(line);
+    if signed {
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        call(chunk, "ecma:number", "Number", 1, line);
+        chunk.emit_op(Op::I64_TRUNC_SAT_F64_S, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, word, line);
+    } else {
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        call(chunk, "ecma:number", "Number", 1, line);
+        chunk.emit_f64_const(9_223_372_036_854_775_808.0, line);
+        chunk.emit_op(Op::F64_GE, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        call(chunk, "ecma:number", "Number", 1, line);
+        chunk.emit_op(Op::I64_TRUNC_SAT_F64_U, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, word, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        call(chunk, "ecma:number", "Number", 1, line);
+        chunk.emit_op(Op::I64_TRUNC_SAT_F64_S, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, word, line);
+        chunk.emit_end(line);
+    }
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, word, line);
+}
+
+/// [`emit_integer_binary`] over the region's carrier: `Compact` operands may
+/// be Numbers as well as BigInts.
+pub fn emit_integer_binary_as(
+    chunks: &mut [Chunk],
+    current: usize,
+    operation: vybe_ast::IntOp,
+    signed_result: bool,
+    transport: vybe_ast::WideIntegerTransport,
+    line: u32,
+) {
+    if transport != vybe_ast::WideIntegerTransport::Compact {
+        emit_integer_binary(chunks, current, operation, signed_result, line);
+        return;
+    }
+    let chunk = &mut chunks[current];
+    align_scratch(chunk);
+    let right = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, right, line);
+    emit_value_to_i64(chunks, current, true, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right, line);
+    emit_value_to_i64(chunks, current, true, line);
+    chunks[current].emit_op(
+        super::bits::integer_opcode(vybe_ast::BitLane::W64, operation),
+        line,
+    );
+    if !operation.is_comparison() {
+        emit_box_i64_as(chunks, current, signed_result, transport, line);
     }
 }
 

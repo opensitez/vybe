@@ -51,8 +51,7 @@ fn program(mode: u8, n: u8, warm: bool, locals: u16) -> Vec<Chunk> {
 }
 fn validate(chunks: &[Chunk]) {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    if let Err(e) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    if let Err(e) = vybe_platform_wasm::validate_binary(&bytes)
     {
         let out = "/Users/youness/www/html/vybe/tools/primitive_experiments/path_combine";
         std::fs::write(format!("{out}/native-failure.wasm"), bytes).unwrap();

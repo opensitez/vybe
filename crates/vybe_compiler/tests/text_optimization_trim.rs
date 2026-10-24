@@ -159,8 +159,7 @@ fn static_ascii_membership_preserves_utf16_boundaries_and_explicit_sets() {
     for old in [true, false] {
         for explicit in [true, false] {
             for defaults in [Some(DEFAULT), Some("\u{fffd}")] {
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&vybe_platform_wasm::write_wasm(&program(
+                vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&program(
                         old,
                         explicit,
                         strings::TrimOptions::both(defaults),

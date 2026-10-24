@@ -311,8 +311,8 @@ pub fn emit_linear_i64_value_load(chunks: &mut [Chunk], current: usize, signed: 
 
 fn emit_i64_value(chunks: &mut [Chunk], current: usize, signed: bool,
     transport: vybe_ast::WideIntegerTransport, line: u32) {
-    if transport == vybe_ast::WideIntegerTransport::Exact {
-        super::exact_integer::emit_box_i64(chunks, current, signed, line);
+    if transport.preserves_all_bits() {
+        super::exact_integer::emit_box_i64_as(chunks, current, signed, transport, line);
     } else {
         chunks[current].emit_op(if signed { Op::F64_CONVERT_I64_S } else { Op::F64_CONVERT_I64_U }, line);
     }
@@ -321,7 +321,9 @@ fn emit_i64_value(chunks: &mut [Chunk], current: usize, signed: bool,
 /// Convert only the value operand; preserve the address and assignment result.
 pub fn emit_linear_i64_value_store(chunks: &mut [Chunk], current: usize, signed: bool,
     transport: vybe_ast::WideIntegerTransport, line: u32) {
-    if transport == vybe_ast::WideIntegerTransport::Exact {
+    if transport == vybe_ast::WideIntegerTransport::Compact {
+        super::exact_integer::emit_value_to_i64(chunks, current, signed, line);
+    } else if transport == vybe_ast::WideIntegerTransport::Exact {
         super::exact_integer::emit_normalize_value(chunks, current, signed, line);
         super::exact_integer::emit_unbox_i64(chunks, current, line);
     } else if signed {

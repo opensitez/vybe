@@ -823,6 +823,7 @@ impl Compiler {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn predeclare_function_names(&mut self, body: &[Statement]) {
         let mut preparation = super::function_preparation::FunctionRegistrationPreparation::default();
         preparation.consume(body);

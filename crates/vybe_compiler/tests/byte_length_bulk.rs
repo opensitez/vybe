@@ -8,8 +8,8 @@ mod candidate;
 #[path = "fixtures/primitive_native_export.rs"]
 mod native_export;
 fn validate_native(bytes: &[u8]) {
-    // wasmparser does not implement stringref. Validate the complete module
-    // with V8's genuine proposal implementation, before native execution.
+    // Independently validate the complete stringref module with V8's genuine
+    // proposal implementation before native execution.
     use std::io::Write;
     let mut child=std::process::Command::new("node")
         .args(["--experimental-wasm-stringref","-e","const fs=require('node:fs');new WebAssembly.Module(fs.readFileSync(0),{builtins:['js-string'],importedStringConstants:'wasm:string-constants'});"])

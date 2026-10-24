@@ -264,8 +264,7 @@ fn transforms_reduce_emission_and_validate_complete_exports() {
             );
             assert!(sizes[1] < sizes[0]);
             for module in wasm {
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&module)
+                vybe_platform_wasm::validate_binary(&module)
                     .unwrap();
             }
         }
@@ -349,8 +348,7 @@ fn shared_transform_bodies_link_once_and_preserve_module_facts() {
                 );
                 assert_eq!(helpers[0].module_members_on_prototype, prototype_members);
                 let before = vybe_platform_wasm::write_wasm(&chunks);
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&before)
+                vybe_platform_wasm::validate_binary(&before)
                     .unwrap();
                 bundle::finalize_with_runtime_helpers(&mut chunks);
                 assert_eq!(before, vybe_platform_wasm::write_wasm(&chunks));

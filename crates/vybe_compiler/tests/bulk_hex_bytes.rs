@@ -37,7 +37,7 @@ fn result(worker:&mut (VM,Value),input:&str)->Result<Vec<i32>,String>{
 }
 #[test]
 fn fused_hex_bytes_preserves_values_errors_and_fresh_arrays(){
- for fast in [false,true] {wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&vybe_platform_wasm::write_wasm(&chunks(fast))).unwrap();}
+ for fast in [false,true] {vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks(fast))).unwrap();}
  let mut workers=[worker(false),worker(true)];
  let all=(0..=255).map(|b|format!("{b:02x}")).collect::<String>();
  for w in &mut workers {assert_eq!(result(w,&all),Ok((0..=255).collect()));}

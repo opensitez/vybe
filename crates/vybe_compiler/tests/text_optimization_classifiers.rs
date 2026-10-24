@@ -86,8 +86,7 @@ fn ascii_ranges_preserve_every_ascii_character_and_unicode_fallback() {
             );
         }
         for old in [true, false] {
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(&program(old, class, 3)))
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&program(old, class, 3)))
                 .unwrap();
         }
     }

@@ -184,6 +184,13 @@ fn visit_binding_statement_nodes(statement: &Statement, walk: &mut BindingWalk, 
         StmtKind::ClassDecl { members, decorators, .. } | StmtKind::StructDecl { members, decorators, .. } =>
             decorators.iter().all(|value| visit_binding_expression(value, walk, visit))
                 && visit_binding_members(members, true, walk, visit),
+        // Interface signatures do not emit executable declarations. Admit only
+        // the complete method-only shape: decorators/default expressions or
+        // unexamined member kinds must retain conservative whole-unit fallback.
+        StmtKind::InterfaceDecl { members, decorators, .. } => decorators.is_empty()
+            && members.iter().all(|member| matches!(member,
+                InterfaceMember::Method { params, .. }
+                    if params.iter().all(|parameter| parameter.default.is_none()))),
         // Current AST visitors cover status already. The expression-root guard
         // avoids a second walk while retaining explicit coverage of this slot.
         StmtKind::Exit { status } => status.as_ref()
@@ -293,6 +300,7 @@ fn visit_binding_members(members: &[ClassMember], expressions_walked: bool, walk
 }
 
 impl Bindings {
+    #[cfg(test)]
     fn prepare(body: &[Statement], canon: impl Fn(&str) -> String) -> Self {
         Self::prepare_with_aliases(body, canon, |_| Vec::new())
     }
@@ -355,7 +363,11 @@ impl Bindings {
                         excluded.insert(canon(var));
                         if let Some(key)=key { excluded.insert(canon(key)); }
                     }
-                    StmtKind::ClassDecl {name,..} | StmtKind::StructDecl {name,..} => {
+                    StmtKind::ClassDecl {name,..} | StmtKind::StructDecl {name,..}
+                    | StmtKind::InterfaceDecl {name,..} => {
+                        // Interfaces do not publish a runtime function, but a
+                        // same-spelled type can participate in call resolution.
+                        // Do not grant that binding a direct function receipt.
                         excluded.insert(canon(name));
                     }
                     _ => {},
@@ -882,5 +894,57 @@ mod tests {
         let bindings=Bindings::prepare_with_aliases(&statements,str::to_owned,|_|vec!["shared".into()]);
         assert!(bindings.excluded.contains("shared"));
         assert!(!bindings.by_binding.contains_key("nested"));
+    }
+
+    fn signature_interface(name: &str) -> Statement {
+        Statement::new(StmtKind::InterfaceDecl {name:name.into(),parents:vec![],decorators:vec![],
+            members:vec![InterfaceMember::Method {name:"target".into(),params:vec![parameter("value","int32")],
+                return_type:Some("int32".into()),is_sub:false,signature_source:None}]})
+    }
+    #[test]
+    fn signature_only_interface_preserves_actual_function_producer_receipts() {
+        let body=vec![signature_interface("Registry"),target(),caller("")];
+        let snapshot=format!("{body:?}");
+        let bindings=Bindings::prepare(&body,str::to_owned);
+        assert_eq!(bindings.by_binding.get("target"),Some(&1));
+        assert!(bindings.excluded.contains("Registry"));
+        assert_eq!(snapshot,format!("{body:?}"));
+        let chunks=compile(&module(Some(false),body));
+        let target=chunks.iter().position(|chunk|chunk.name=="target").unwrap();
+        let caller=chunks.iter().find(|chunk|chunk.name=="caller").unwrap();
+        assert_eq!(caller.direct_defined_calls.values().next().map(|edge|edge.target as usize),Some(target));
+    }
+    #[test]
+    fn interface_type_name_collision_keeps_dynamic_function_fallback() {
+        let body=vec![signature_interface("target"),target(),caller("")];
+        let bindings=Bindings::prepare(&body,str::to_owned);
+        assert!(!bindings.by_binding.contains_key("target"));
+        assert!(bindings.excluded.contains("target"));
+        let chunks=compile(&module(Some(false),body));
+        assert!(chunks.iter().find(|chunk|chunk.name=="caller").unwrap().direct_defined_calls.is_empty());
+    }
+    #[test]
+    fn executable_or_unexamined_interface_shapes_still_decline_whole_inventory() {
+        for mode in 0..4 {
+            let mut interface=signature_interface("Registry");
+            let StmtKind::InterfaceDecl{members,decorators,..}=&mut interface.kind else{unreachable!()};
+            match mode {
+                0=>decorators.push(Expression::int(1)),
+                1=>{let InterfaceMember::Method{params,..}=&mut members[0] else{unreachable!()};params[0].default=Some(Expression::int(1));},
+                2=>members.push(InterfaceMember::Property{name:"opaque".into(),type_hint:None,is_readonly:false,is_writeonly:false}),
+                3=>members.push(InterfaceMember::Event{name:"opaque".into(),type_hint:None}),
+                _=>unreachable!(),
+            }
+            let body=vec![target(),interface,caller("")];let snapshot=format!("{body:?}");
+            assert!(Bindings::prepare(&body,str::to_owned).by_binding.is_empty());
+            assert_eq!(snapshot,format!("{body:?}"));
+        }
+    }
+    #[test]
+    fn interface_inventory_never_enables_live_or_unstated_function_binding_policy() {
+        for policy in [None,Some(true)] {
+            let chunks=compile(&module(policy,vec![signature_interface("Registry"),target(),caller("")]));
+            assert!(chunks.iter().find(|chunk|chunk.name=="caller").unwrap().direct_defined_calls.is_empty());
+        }
     }
 }

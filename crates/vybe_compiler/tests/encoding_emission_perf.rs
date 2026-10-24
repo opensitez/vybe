@@ -25,8 +25,7 @@ fn runtime(input: &str) -> VM {
     vm
 }
 fn validate(chunks: &[Chunk]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
         .unwrap();
 }
 
@@ -397,8 +396,7 @@ fn php_codec_frontend_preserves_results_and_failure_continuations() {
             .unwrap();
         let binary = vybe_platform_wasm::write_wasm(&chunks);
         if let Err(error) =
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&binary)
+            vybe_platform_wasm::validate_binary(&binary)
         {
             std::fs::write(
                 std::env::temp_dir().join("encoding-frontend-invalid.wasm"),

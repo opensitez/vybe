@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 use vybe_compiler::primitives::{bundle, functions, globals, platforms};
-use vybe_runtime::{Chunk, Op, Value, VM};
+use vybe_runtime::{Chunk, Op, VM, Value};
 #[path = "fixtures/text_optimization_str_replace_candidate.rs"]
 mod candidate;
 #[path = "fixtures/text_optimization_str_replace_frozen.rs"]
@@ -37,66 +37,23 @@ fn run(v: &mut VM, c: Vec<Chunk>) -> Result<Value, String> {
         e.to_string()
     })
 }
+#[path = "fixtures/native_validation_diagnostic.rs"]
+mod native_validation_diagnostic;
+
 fn classify_native(c: &[Chunk], label: &str) -> Result<usize, String> {
-    let b = vybe_platform_wasm::write_wasm(c);
-    match wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&b)
-    {
-        Ok(_) => Ok(b.len()),
-        Err(e) => {
-            let p = std::path::Path::new(file!())
+    let bytes = vybe_platform_wasm::write_wasm(c);
+    match vybe_platform_wasm::validate_binary(&bytes) {
+        Ok(()) => Ok(bytes.len()),
+        Err(error) => {
+            let path = std::path::Path::new(file!())
                 .parent()
                 .unwrap()
                 .join(format!("native-failure-{label}.wasm"));
-            std::fs::write(&p, &b).unwrap();
-            let mut imports = vec![];
-            let mut defined = 0;
-            for payload in wasmparser::Parser::new(0).parse_all(&b) {
-                match payload.unwrap() {
-                    wasmparser::Payload::ImportSection(section) => {
-                        for item in section.into_imports() {
-                            let item = item.unwrap();
-                            if matches!(item.ty, wasmparser::TypeRef::Func(_)) {
-                                imports.push(format!("{}:{}", item.module, item.name));
-                            }
-                        }
-                    }
-                    wasmparser::Payload::CodeSectionEntry(body) => {
-                        if body.range().contains(&e.offset()) {
-                            println!("strict native {label} failure function={} chunk={defined} name={} body={:?} error={e}",imports.len()+defined,c[defined].name,body.range());
-                            let mut reader = body.get_operators_reader().unwrap();
-                            let mut window = vec![];
-                            while !reader.eof() {
-                                let (op, at) = reader.read_with_offset().unwrap();
-                                if at <= e.offset() + 16 {
-                                    window.push((at, format!("{op:?}")));
-                                    if let wasmparser::Operator::Call { function_index } = op {
-                                        if let Some(name) = imports.get(function_index as usize) {
-                                            window.push((at, format!("import={name}")));
-                                        }
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-                            for (at, op) in window
-                                .into_iter()
-                                .rev()
-                                .take(42)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                            {
-                                println!("  native @{at:#x}: {op}");
-                            }
-                        }
-                        defined += 1;
-                    }
-                    _ => {}
-                }
-            }
+            std::fs::write(&path, &bytes).unwrap();
+            native_validation_diagnostic::report(c, &bytes, &error, usize::MAX, 16);
             Err(format!(
-                "complete native {label}: {e}; file={}",
-                p.display()
+                "complete native {label}: {error}; file={}",
+                path.display()
             ))
         }
     }
@@ -363,7 +320,7 @@ fn selected_source(old: &[Chunk], name: &str, expect_segments: usize) -> Vec<Chu
             c.code[start..end],
             "actual emitted count segment"
         );
-        assert_eq!(proof.lines, c.lines[start..end]);
+        assert_eq!(proof.lines[..], c.lines[start..end]);
         assert!(
             proof.block_i32_results.is_empty()
                 && proof.call_indirect_sigs.is_empty()
@@ -422,22 +379,55 @@ fn selected_source(old: &[Chunk], name: &str, expect_segments: usize) -> Vec<Chu
         .collect::<std::collections::HashSet<_>>();
     assert!(out.block_i32_results.iter().all(|k| positions.contains(k)));
     assert!(out.call_indirect_sigs.keys().all(|k| positions.contains(k)));
-    assert!(out
-        .call_indirect_canon
-        .keys()
-        .all(|k| positions.contains(k)));
+    assert!(
+        out.call_indirect_canon
+            .keys()
+            .all(|k| positions.contains(k))
+    );
     result
 }
 fn source_cases() -> Vec<(&'static str, Value, usize)> {
     vec![
-        ("function replace_subject($s){return str_replace('\\\\','/',$s);} return replace_subject('a\\\\b');",text("a/b"),2),
-        ("function replace_subject($s){return str_replace(['a','X'],['X','Y'],$s);} return replace_subject('banana');",text("bYnYnY"),2),
-        ("function replace_subject($s){$n=99;$alias=&$n;$r=str_replace('a','X',$s,$alias);return $r.':'.$n;} return replace_subject('banana');",text("bXnXnX:3"),0),
-        ("function replace_subject($s){$n=[99];$r=str_replace('a','X',$s,$n[0]);return $r.':'.$n[0];} return replace_subject('banana');",text("bXnXnX:3"),0),
-        ("$order=[];function arg($tag,$value){global $order;$order[]=$tag;return $value;}function replace_subject($s){return str_replace(arg('n','a'),arg('r','X'),arg('s',$s));}$r=replace_subject('banana');return $r.':'.implode('',$order);",text("bXnXnX:nrs"),2),
-        ("$order=[];class StringBox {public $tag;public $value;function __construct($t,$v){$this->tag=$t;$this->value=$v;}function __toString(){global $order;$order[]=$this->tag;return $this->value;}}function replace_subject($s){return str_replace(new StringBox('n','a'),new StringBox('r','X'),$s);}$r=replace_subject(new StringBox('s','banana'));return $r.':'.implode('',$order);",text("bXnXnX:snr"),2),
-        ("$order=[];class BadBox {function __toString(){global $order;$order[]='r';throw new Exception('stop');}}function replace_subject($s){return str_replace('a',new BadBox(),$s);}try {replace_subject('banana');return 'missing-error';} catch(Exception $e){return 'error:'.implode('',$order);}",text("error:r"),2),
-        ("$order=[];$replacements=['X'];class ChangingNeedle {function __toString(){global $order,$replacements;$order[]='n';$replacements[0]='Y';return 'a';}}$needles=[new ChangingNeedle()];function replace_subject($s){global $needles,$replacements;return str_replace($needles,$replacements,$s);}$r=replace_subject('banana');return $r.':'.implode('',$order);",text("bYnYnY:n"),2),
+        (
+            "function replace_subject($s){return str_replace('\\\\','/',$s);} return replace_subject('a\\\\b');",
+            text("a/b"),
+            2,
+        ),
+        (
+            "function replace_subject($s){return str_replace(['a','X'],['X','Y'],$s);} return replace_subject('banana');",
+            text("bYnYnY"),
+            2,
+        ),
+        (
+            "function replace_subject($s){$n=99;$alias=&$n;$r=str_replace('a','X',$s,$alias);return $r.':'.$n;} return replace_subject('banana');",
+            text("bXnXnX:3"),
+            0,
+        ),
+        (
+            "function replace_subject($s){$n=[99];$r=str_replace('a','X',$s,$n[0]);return $r.':'.$n[0];} return replace_subject('banana');",
+            text("bXnXnX:3"),
+            0,
+        ),
+        (
+            "$order=[];function arg($tag,$value){global $order;$order[]=$tag;return $value;}function replace_subject($s){return str_replace(arg('n','a'),arg('r','X'),arg('s',$s));}$r=replace_subject('banana');return $r.':'.implode('',$order);",
+            text("bXnXnX:nrs"),
+            2,
+        ),
+        (
+            "$order=[];class StringBox {public $tag;public $value;function __construct($t,$v){$this->tag=$t;$this->value=$v;}function __toString(){global $order;$order[]=$this->tag;return $this->value;}}function replace_subject($s){return str_replace(new StringBox('n','a'),new StringBox('r','X'),$s);}$r=replace_subject(new StringBox('s','banana'));return $r.':'.implode('',$order);",
+            text("bXnXnX:snr"),
+            2,
+        ),
+        (
+            "$order=[];class BadBox {function __toString(){global $order;$order[]='r';throw new Exception('stop');}}function replace_subject($s){return str_replace('a',new BadBox(),$s);}try {replace_subject('banana');return 'missing-error';} catch(Exception $e){return 'error:'.implode('',$order);}",
+            text("error:r"),
+            2,
+        ),
+        (
+            "$order=[];$replacements=['X'];class ChangingNeedle {function __toString(){global $order,$replacements;$order[]='n';$replacements[0]='Y';return 'a';}}$needles=[new ChangingNeedle()];function replace_subject($s){global $needles,$replacements;return str_replace($needles,$replacements,$s);}$r=replace_subject('banana');return $r.':'.implode('',$order);",
+            text("bYnYnY:n"),
+            2,
+        ),
     ]
 }
 fn source_case(index: usize, typed: bool, native: bool) {
@@ -489,13 +479,17 @@ source_case_tests!(
 #[test]
 #[ignore = "known baseline PHP GLOBALS string append in callback loses trace; normative assertion retained"]
 fn actual_php_globals_string_append_normative_gap() {
-    let source="$GLOBALS['order']='';function arg($tag,$value){$GLOBALS['order'].=$tag;return $value;}function replace_subject($s){return str_replace(arg('n','a'),arg('r','X'),arg('s',$s));}$r=replace_subject('banana');return $r.':'.$GLOBALS['order'];";
+    let source = "$GLOBALS['order']='';function arg($tag,$value){$GLOBALS['order'].=$tag;return $value;}function replace_subject($s){return str_replace(arg('n','a'),arg('r','X'),arg('s',$s));}$r=replace_subject('banana');return $r.':'.$GLOBALS['order'];";
     let old = parsed(source);
     let new = selected_source(&old, "replace_subject", 2);
     let before = run(&mut vm(), old);
     let after = run(&mut vm(), new);
     assert_eq!(before, after);
-    assert_eq!(before,Ok(text("bXnXnX:nrs")),"normative callback trace; known identical baseline failure remains uncorrected by this optimization");
+    assert_eq!(
+        before,
+        Ok(text("bXnXnX:nrs")),
+        "normative callback trace; known identical baseline failure remains uncorrected by this optimization"
+    );
 }
 fn median(v: &[u128]) -> u128 {
     let mut v = v.to_vec();
@@ -677,19 +671,10 @@ fn largest_existing_frame_keeps_capacity_and_vm_output() {
     }
     for (label, c) in [("frozen", old), ("selected", new)] {
         let bytes = vybe_platform_wasm::write_wasm(&c);
-        match wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
-        {
-            Ok(_) => panic!("expected known native MAX50000 cap for largest frame"),
-            Err(e) => {
-                let message = e.to_string();
-                assert!(
-                    message.contains("too many locals"),
-                    "unexpected {label} native failure: {message}"
-                );
-                println!("str_replace largest unchanged 65535-slot frame {label}: positive VM output, explicit native implementation local-count cap: {message}");
-            }
-        }
+        // The full frame is valid Wasm; do not inherit another validator's
+        // implementation-specific 50,000-local resource ceiling.
+        vybe_platform_wasm::validate_binary(&bytes)
+            .unwrap_or_else(|error| panic!("{label} full frame: {error}"));
     }
 }
 
@@ -810,18 +795,17 @@ fn original_native_gap_is_recorded_separately_from_typed_controls() {
         assert_eq!(original[ci].code[at], 1);
         assert_eq!(typed[ci].code[at], 0);
         let bytes = vybe_platform_wasm::write_wasm(&original);
-        let err = match wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
-        {
+        let err = match vybe_platform_wasm::validate_binary(&bytes) {
             Ok(_) => panic!("original producer unexpectedly native-valid; review captured gap"),
             Err(e) => e,
         };
         assert!(
-            err.message()
-                .contains("expected externref but nothing on stack"),
+            err.message.contains("operand stack underflow"),
             "unexpected original native defect {err}"
         );
-        println!("original str_replace argc{argc} native failure retained: {err}; typed control changes only IF result byte");
+        println!(
+            "original str_replace argc{argc} native failure retained: {err}; typed control changes only IF result byte"
+        );
         validate(&typed, "typed-resultless-repair");
     }
 }

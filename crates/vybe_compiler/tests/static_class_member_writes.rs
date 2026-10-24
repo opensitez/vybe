@@ -32,7 +32,7 @@ fn values_and_native_sizes(){
   let mut outcomes=vec![];let mut sizes=vec![];let mut native=vec![];
   for fast in [false,true]{let cs=compile(source,fast);sizes.push(bytes(&cs));native_export::export_chunks(&cs,&format!("static-write-{label}-{fast}"));outcomes.push(vm().run(cs.clone()).map(|v|format!("{v:?}")).map_err(|e|e.message));
    let wasm=vybe_platform_wasm::write_wasm_with_options(&cs,vybe_platform_wasm::WasmWriteOptions{include_name_section:false,include_vybe_metadata:false});
-   wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&wasm).unwrap();native.push(wasm.len());
+   vybe_platform_wasm::validate_binary(&wasm).unwrap();native.push(wasm.len());
    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/static-class-writes");std::fs::create_dir_all(&root).unwrap();std::fs::write(root.join(format!("{label}-{fast}.wasm")),wasm).unwrap();
   }
   assert!(outcomes[0].is_ok(),"{label}: {outcomes:?}");assert_eq!(outcomes[0],outcomes[1],"{label}");

@@ -1,5 +1,5 @@
 use vybe_compiler::primitives::{bundle, globals, platforms};
-use vybe_runtime::{Chunk, Op, Value, VM};
+use vybe_runtime::{Chunk, Op, VM, Value};
 #[path = "fixtures/text_optimization_htmlentities_selected.rs"]
 mod candidate;
 #[path = "fixtures/text_optimization_htmlentities_frozen_named.rs"]
@@ -34,11 +34,12 @@ fn run(runtime: &mut VM, chunks: Vec<Chunk>) -> Result<Value, String> {
         error.to_string()
     })
 }
+#[path = "fixtures/native_validation_diagnostic.rs"]
+mod native_validation_diagnostic;
+
 fn validate(chunks: &[Chunk]) -> usize {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-    {
+    if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
         let selected = chunks.iter().any(|chunk| {
             chunk.global_imports.iter().any(|import| {
                 import.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE
@@ -55,26 +56,7 @@ fn validate(chunks: &[Chunk]) -> usize {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("html-{label}-{serial}.wasm"));
         std::fs::write(&path, &bytes).unwrap();
-        let mut defined = 0usize;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let Ok(wasmparser::Payload::CodeSectionEntry(body)) = payload {
-                if body.range().contains(&error.offset()) {
-                    println!(
-                        "HTML {label} native failure function={defined} chunk={} file={}",
-                        chunks[defined].name,
-                        path.display()
-                    );
-                    let mut reader = body.get_operators_reader().unwrap();
-                    while !reader.eof() {
-                        let (op, at) = reader.read_with_offset().unwrap();
-                        if at + 24 >= error.offset() && at <= error.offset() + 12 {
-                            println!("HTML {label} native @{at:#x}: {op:?}");
-                        }
-                    }
-                }
-                defined += 1;
-            }
-        }
+        native_validation_diagnostic::report(chunks, &bytes, &error, 24, 12);
         panic!("HTML {label} complete native gate: {error}");
     }
     bytes.len()
@@ -251,17 +233,10 @@ fn identity_and_capacity_fallback() {
         );
     }
     for chunks in [&old, &new] {
-        let error = match wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(chunks))
-        {
-            Ok(_) => panic!("expected native MAX50000 cap"),
-            Err(error) => error,
-        };
-        assert!(error.message().contains("locals"), "{error}");
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
+            .expect("complete valid 65535-local frame");
     }
-    println!(
-        "largest 65535-local frame: VM positive baseline/candidate proof, identical native implementation local-count cap; no native pass claimed"
-    );
+    println!("largest 65535-local frame: positive VM output and full in-house Wasm validation");
 }
 
 #[test]
@@ -352,9 +327,11 @@ fn installed_import_capacity_keeps_legacy_emission_without_runtime_stubs() {
         for import in &legacy {
             production[0].add_import(&import.module, &import.name);
         }
-        assert!(legacy
-            .iter()
-            .all(|import| import.module != "test:unused-capacity-declaration"));
+        assert!(
+            legacy
+                .iter()
+                .all(|import| import.module != "test:unused-capacity-declaration")
+        );
         production[0]
             .imports
             .extend(
@@ -404,15 +381,9 @@ fn installed_import_capacity_keeps_legacy_emission_without_runtime_stubs() {
         }
         let bytes = vybe_platform_wasm::write_wasm(&production);
         assert_eq!(bytes, vybe_platform_wasm::write_wasm(&expected));
-        let checked = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes);
-        match checked {
-            Ok(_)=>println!("HTML import boundary count={count} fallback={fallback}: complete native validation passed; emission-only, no host linking/VM execution claim"),
-            Err(error)=>{
-                let message=error.message();
-                assert!(message.contains("too many types")||message.contains("too many functions")||message.contains("too many imports"),"unexpected native emission failure: {error}");
-                println!("HTML import boundary count={count} fallback={fallback}: explicit native implementation cap {error}; emission-only, not native execution/pass");
-            }
-        }
+        vybe_platform_wasm::validate_binary(&bytes).expect("complete import-boundary module");
+        println!(
+            "HTML import boundary count={count} fallback={fallback}: complete in-house validation; emission-only, no execution claim"
+        );
     }
 }

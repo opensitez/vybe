@@ -5,11 +5,11 @@ use vybe_runtime::chunk::{ConstExpr, GlobalInit};
 use vybe_runtime::{Chunk, Op, VM, Value};
 #[path = "fixtures/numeric_optimization_next_after_baseline.rs"]
 mod baseline;
-#[path = "fixtures/numeric_optimization_next_after_candidate.rs"]
-mod candidate;
 #[path = "fixtures/nextafter_ordered_before.rs"]
 mod before_ordered;
-#[path="fixtures/nextafter_copysign_before.rs"]
+#[path = "fixtures/numeric_optimization_next_after_candidate.rs"]
+mod candidate;
+#[path = "fixtures/nextafter_copysign_before.rs"]
 mod ordered_stage;
 
 fn instructions(code: &[u8]) -> Vec<Vec<u8>> {
@@ -161,75 +161,19 @@ fn program(old: bool, lane: FloatLane, calls: usize) -> Vec<Chunk> {
     globals::normalize_global_table(&mut c);
     c
 }
+#[path = "fixtures/native_validation_diagnostic.rs"]
+mod native_validation_diagnostic;
+
 fn validate_result(c: &[Chunk], label: &str) -> Result<(), String> {
     let bytes = vybe_platform_wasm::write_wasm(c);
-    if let Err(e) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-    {
-        eprintln!("next_after {label} native failure {e}");
+    if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
+        eprintln!("next_after {label} native failure {error}");
         let path = format!(
             "/Users/youness/www/html/vybe/tools/primitive_experiments/next_after/{label}-native-failure.wasm"
         );
         std::fs::write(path, &bytes).unwrap();
-        let named = vybe_platform_wasm::write_wasm_with_options(
-            c,
-            vybe_platform_wasm::WasmWriteOptions {
-                include_name_section: true,
-                ..Default::default()
-            },
-        );
-        let mut names = std::collections::BTreeMap::new();
-        for payload in wasmparser::Parser::new(0).parse_all(&named) {
-            if let wasmparser::Payload::CustomSection(section) = payload.unwrap() {
-                if let wasmparser::KnownCustom::Name(reader) = section.as_known() {
-                    for name in reader {
-                        if let wasmparser::Name::Function(map) = name.unwrap() {
-                            for entry in map {
-                                let entry = entry.unwrap();
-                                names.insert(entry.index, entry.name.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let mut function = 0;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            match payload.unwrap() {
-                wasmparser::Payload::ImportSection(section) => {
-                    for import in section.into_imports() {
-                        if matches!(
-                            import.unwrap().ty,
-                            wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                        ) {
-                            function += 1;
-                        }
-                    }
-                }
-                wasmparser::Payload::CodeSectionEntry(body) => {
-                    if body.range().contains(&e.offset()) {
-                        eprintln!(
-                            "next_after {label} function={function} name={:?} range={:?}",
-                            names.get(&function),
-                            body.range()
-                        );
-                        let mut reader = body.get_operators_reader().unwrap();
-                        while !reader.eof() {
-                            let (op, offset) = reader.read_with_offset().unwrap();
-                            if offset + 140 >= e.offset() && offset <= e.offset() + 40 {
-                                eprintln!("  wasm@{offset}: {op:?}");
-                                if let wasmparser::Operator::Call { function_index } = op {
-                                    eprintln!("    target={:?}", names.get(&function_index));
-                                }
-                            }
-                        }
-                    }
-                    function += 1;
-                }
-                _ => {}
-            }
-        }
-        return Err(e.to_string());
+        native_validation_diagnostic::report(c, &bytes, &error, 140, 40);
+        return Err(error.to_string());
     }
     Ok(())
 }
@@ -269,9 +213,15 @@ fn actual_production_matches_copy_elimination_and_preserves_frozen_baseline() {
         candidate::emit_next_after(&mut proposed, lane, 37);
         let mut prior = Chunk::new("before-ordered-pruning");
         before_ordered::emit_next_after(&mut prior, lane, 37);
-        assert_eq!(prior.code, proposed.code, "the frozen copy-elimination stage remains exact");
+        assert_eq!(
+            prior.code, proposed.code,
+            "the frozen copy-elimination stage remains exact"
+        );
         assert_eq!(prior.lines, proposed.lines);
-        assert!(actual.code.len() < proposed.code.len(), "ordered upward pruning is verified in nextafter_ordered_operands");
+        assert!(
+            actual.code.len() < proposed.code.len(),
+            "ordered upward pruning is verified in nextafter_ordered_operands"
+        );
         assert_eq!(actual.local_count, proposed.local_count);
         let old = program(true, lane, 1);
         let new = program(false, lane, 1);

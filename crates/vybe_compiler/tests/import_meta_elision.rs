@@ -95,8 +95,7 @@ fn cached_values_initialization_and_sizes() {
                     include_vybe_metadata: false,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
             native_export::export_chunks(&cs, &format!("import-meta-{repeats}-{fast}"));
             sizes.push(serde_json::json!({"body":cs.iter().find(|c|c.name=="entry").unwrap().code.len(),"locals":cs.iter().find(|c|c.name=="entry").unwrap().local_count,"native":bytes.len(),"linked_body":cs.iter().map(|c|c.code.len()).sum::<usize>()}));

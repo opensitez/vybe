@@ -130,6 +130,23 @@ pub fn emit_new_with_length(chunks: &mut [Chunk], current: usize, line: u32) {
 /// (`wasm:js-string.length`, js-string-builtins). A `REF_IS_STRING`
 /// branch selects the right import — same pattern v8 uses for
 /// property dispatch on auto-boxed primitives.
+/// The element count of an array reference as an i32 word; a null reference
+/// counts 0. The operand is known to be a dense array or null, so no string,
+/// map or object probe runs, and the result is the raw `array.len` word that
+/// an integer lane widens directly.
+pub fn emit_array_len_or_zero(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = alloc_local(&mut chunks[current]);
+    let c = &mut chunks[current];
+    c.emit_op_u16(Op::LOCAL_TEE, value_slot, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_if_value(line);
+    c.emit_i32_const(0, line);
+    c.emit_else(line);
+    lget(c, value_slot, line);
+    c.emit_op(Op::ARRAY_LENGTH, line);
+    c.emit_end(line);
+}
+
 pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_slot = alloc_local(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_TEE, value_slot, line);
@@ -522,6 +539,21 @@ pub fn emit_promote_empty_array_for_string_key(
     key_slot: u16,
     line: u32,
 ) {
+    emit_promote_empty_array_for_string_key_open(chunks, current, obj_slot, key_slot, line);
+    emit_promote_empty_array_for_string_key_close(chunks, current, line);
+}
+
+/// [`emit_promote_empty_array_for_string_key`] up to the promotion itself,
+/// leaving its three guards open: code emitted before
+/// [`emit_promote_empty_array_for_string_key_close`] runs only when
+/// `obj_slot` was just replaced by the new map.
+pub fn emit_promote_empty_array_for_string_key_open(
+    chunks: &mut [Chunk],
+    current: usize,
+    obj_slot: u16,
+    key_slot: u16,
+    line: u32,
+) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     {
         let idx = chunks[current].add_import("ecma:array", "isArray");
@@ -549,7 +581,10 @@ pub fn emit_promote_empty_array_for_string_key(
 
     emit_map_new(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+}
 
+/// Closes the guards [`emit_promote_empty_array_for_string_key_open`] opened.
+pub fn emit_promote_empty_array_for_string_key_close(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);

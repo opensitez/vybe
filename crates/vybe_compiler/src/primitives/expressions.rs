@@ -108,7 +108,7 @@ impl Compiler {
             import.module == "wasm:js-boolean" && import.name == "fromI32")
     }
     fn exact_wide_integer_transport(&self) -> bool {
-        self.directives().wide_integer_transport() == vybe_ast::WideIntegerTransport::Exact
+        self.directives().wide_integer_transport().preserves_all_bits()
     }
 
     fn exact_word_expression(&self, value: &Expression) -> bool {
@@ -130,8 +130,71 @@ impl Compiler {
             })
     }
 
-    fn compile_exact_i64_operand(&mut self, value: &Expression) -> Result<(), String> {
+    /// The callee is a builtin declared as `collections.array_len_or_zero`,
+    /// whose result is an unsigned i32 element count.
+    fn leaves_array_length_word(&self, callee: &Expression) -> bool {
+        let ExprKind::Ident(name) = &callee.kind else { return false };
+        self.profile.lookup_builtin(name).is_some_and(|def| matches!(
+            &def.emit,
+            vybe_runtime::profile::BuiltinEmit::Common(emit) if emit == "collections.array_len_or_zero"
+        ))
+    }
+
+    /// A char-like `inner` widened to its integer code through the `char`/`int`
+    /// coercion slot the language binds; false (nothing emitted) otherwise.
+    pub(super) fn compile_char_widening(&mut self, inner: &Expression) -> Result<bool, String> {
+        let is_char_like = matches!(&inner.kind, ExprKind::Lit(Literal::Char(_)))
+            || matches!(
+                &inner.kind,
+                ExprKind::Cast { type_name, .. }
+                    if self.canon(type_name) == "char"
+            )
+            || self
+                .infer_expr_type_hint(inner)
+                .is_some_and(|hint| Self::normalize_type_hint(&hint) == "char");
+        if !is_char_like {
+            return Ok(false);
+        }
+        let Some(target) = self
+            .profile
+            .builtin_slots
+            .get(vybe_ast::builtin_slots::BuiltinType::Char, vybe_ast::ProtocolSlot::Int)
+            .map(str::to_string)
+        else {
+            return Ok(false);
+        };
+        // Reuses the profile's own emit-target parser — a slot binding is
+        // deliberately not a new vocabulary. A one-argument coercion is a
+        // `common:` emitter or a host call; anything else is a mis-declaration
+        // and falls through rather than emitting nonsense.
+        match vybe_runtime::profile::parse_emit_target(&target) {
+            Some(vybe_runtime::profile::BuiltinEmit::Common(emit)) => {
+                self.compile_expr(inner)?;
+                let line = self.line;
+                self.emit_common(&emit, 1, line);
+                Ok(true)
+            }
+            Some(vybe_runtime::profile::BuiltinEmit::HostCall(module, func)) => {
+                self.compile_expr(inner)?;
+                let idx = self.import(&module, &func);
+                self.emit_host_call(idx, 1);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    pub(super) fn compile_exact_i64_operand(&mut self, value: &Expression) -> Result<(), String> {
         let line = self.line;
+        if self.emit_native_word_operand(value) {
+            return Ok(());
+        }
+        if let ExprKind::Call { callee, args, optional: false } = &value.kind
+            && let ExprKind::Ident(name) = &callee.kind
+            && self.try_emit_native_entry_call(name, args, true)?
+        {
+            return Ok(());
+        }
         match &value.kind {
             ExprKind::Lit(Literal::Int(word) | Literal::BigInt(word)) => {
                 self.chunk().emit_i64_const(*word, line);
@@ -147,6 +210,15 @@ impl Compiler {
                     .is_some_and(|width| width.bits == Some(64)) => {
                 self.compile_exact_i64_operand(expr)?;
             }
+            ExprKind::Call { callee, args, optional: false } if self.typed_array_i64_word(callee).is_some() => {
+                let (op, element) = self.typed_array_i64_word(callee).expect("guarded typed array word");
+                let args: Vec<&Expression> = args.iter().map(|arg| &arg.value).collect();
+                self.compile_typed_array_word(op, element, &args)?;
+            }
+            ExprKind::Call { callee, optional: false, .. } if self.leaves_array_length_word(callee) => {
+                self.compile_expr(value)?;
+                self.emit(Op::I64_EXTEND_I32_U);
+            }
             _ if self.number_backed_word32(value) => {
                 // Every signed/unsigned 32-bit value is exact in Number and
                 // fits signed i64. No BigInt transport is needed here.
@@ -155,11 +227,8 @@ impl Compiler {
             }
             _ => {
                 self.compile_expr(value)?;
-                crate::primitives::exact_integer::emit_normalize_value(
+                crate::primitives::exact_integer::emit_value_to_i64(
                     &mut self.chunks, self.current, false, line,
-                );
-                crate::primitives::exact_integer::emit_unbox_i64(
-                    &mut self.chunks, self.current, line,
                 );
             }
         }
@@ -167,9 +236,12 @@ impl Compiler {
     }
 
     pub(super) fn emit_step_for_expr(&mut self, operand: &Expression, add: bool) -> Option<Expression> {
-        if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
-            && self.type_resolution() == vybe_ast::TypeResolution::Static
-            && self.expr_is_provably_number(operand)
+        let frame_number = matches!(&operand.kind,
+            ExprKind::Ident(name) if self.is_frame_number_local(name));
+        if frame_number
+            || (self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+                && self.type_resolution() == vybe_ast::TypeResolution::Static
+                && self.expr_is_provably_number(operand))
         {
             let one = Expression::new(ExprKind::Lit(Literal::Int(1)));
             self.emit_const(Value::F64(1.0));
@@ -1231,6 +1303,10 @@ impl Compiler {
 
             // ── Identifier ──────────────────────────────────────────────
             ExprKind::Ident(name) => {
+                if want_i32_word && self.emit_native_w32_word(name) {
+                    self.gave_i32_word = true;
+                    return Ok(());
+                }
                 // JS global constants that aren't variables
                 match name.as_str() {
                     "NaN" => {
@@ -2168,8 +2244,10 @@ impl Compiler {
                         self.gave_i32_condition = want_i32_condition;
                     } else {
                         let line = self.line;
-                        crate::primitives::exact_integer::emit_box_i64(
-                            &mut self.chunks, self.current, true, line,
+                        let transport = self.directives().wide_integer_transport();
+                        crate::primitives::exact_integer::emit_box_i64_as(
+                            &mut self.chunks, self.current, true, transport,
+                            line,
                         );
                     }
                     self.want_i32_condition = false;
@@ -2226,10 +2304,24 @@ impl Compiler {
                 let mut right_word = right_i32.is_some();
                 let line = self.line;
                 let operands_start = self.chunks[self.current].code.len();
+                // A 32-bit integer operator narrows each operand as soon as it
+                // is on the stack, so neither waits in a scratch slot. The left
+                // one only when the right operand cannot observe the order.
+                let narrows_operands = matches!(op, BinOp::Integer(_, vybe_ast::BitLane::W32));
+                let observes_nothing = |expr: &Expression| matches!(&expr.kind,
+                    ExprKind::Ident(_) | ExprKind::Lit(_));
                 if let Some(value) = left_i32 {
                     self.chunk().emit_i32_const(value, line);
                 } else if word_operation {
                     left_word = self.compile_word_operand(left)?;
+                    if !left_word && narrows_operands && observes_nothing(right)
+                        && !self.proven_boxed_signed_word(left)
+                    {
+                        crate::primitives::bits::emit_normalize_integer(
+                            self.chunk(), vybe_ast::BitLane::W32, line,
+                        );
+                        left_word = true;
+                    }
                 } else {
                     self.compile_expr(left)?;
                 }
@@ -2238,6 +2330,14 @@ impl Compiler {
                     self.chunk().emit_i32_const(value, line);
                 } else if word_operation {
                     right_word = self.compile_word_operand(right)?;
+                    if !right_word && left_word && narrows_operands
+                        && !self.proven_boxed_signed_word(right)
+                    {
+                        crate::primitives::bits::emit_normalize_integer(
+                            self.chunk(), vybe_ast::BitLane::W32, line,
+                        );
+                        right_word = true;
+                    }
                 } else {
                     self.compile_expr(right)?;
                 }
@@ -2670,15 +2770,10 @@ impl Compiler {
                 } else {
                     self.compile_condition_to_i32(cond)?;
                     let line = self.line;
-                    // Boolean literals and canonical integer predicates have Boolean
-                    // results. Their condition consumer can retain the raw i32 lane.
-                    // Other arms keep the shared post-join coercion.
-                    let raw_bool_arm = |arm: &Expression| {
-                        matches!(&arm.kind, ExprKind::Lit(Literal::Bool(_)))
-                            || matches!(&arm.kind, ExprKind::Binary { op: BinOp::Integer(operation, _), .. } if operation.is_comparison())
-                    };
-                    let raw_bool_arms = raw_bool_arm(then) && raw_bool_arm(else_);
-                    if want_i32_condition && raw_bool_arms {
+                    // A conditional used as a condition is true exactly when its
+                    // selected arm is, so each arm yields its own i32 truth and
+                    // no joined value is boxed only to be tested again.
+                    if want_i32_condition {
                         self.chunk().emit_if_i32(line);
                         self.compile_condition_to_i32(then)?;
                         self.chunk().emit_else(line);
@@ -5056,6 +5151,7 @@ impl Compiler {
                 // this path instead of the one that maintains its storage.
                 } else if self.program_has_index_accessor {
                     self.compile_expr(object)?;
+                    self.emit_array_storage_of_stack();
                     let obj_slot = self.define_local("__index_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
 
@@ -5303,7 +5399,12 @@ impl Compiler {
                         self.chunk().emit_end(line);
                     } else {
                         self.compile_expr(object)?;
-                        self.emit_autoderef_pointer_cell();
+                        if self.expression_reads_nonreference_value(object) {
+                            self.emit_nonreference_temporary_deref();
+                        } else {
+                            self.emit_autoderef_pointer_cell();
+                        }
+                        self.emit_array_storage_of_stack();
                         self.compile_array_index_operand_for_owner(object, index)?;
                         if self.profile.negative_index_wraps {
                             self.emit_negative_index_wrap();
@@ -6172,6 +6273,9 @@ impl Compiler {
 
             // ── Assignment as expression ────────────────────────────────
             ExprKind::Assign { target, value } => {
+                if self.compile_native_word_assignment(target, value, true)? {
+                    return Ok(());
+                }
                 if matches!(value.kind, ExprKind::Lit(Literal::Null)) {
                     if let ExprKind::Ident(name) = &target.kind {
                         self.emit_buffered_generator_close_ident_if_needed(name);
@@ -6432,6 +6536,7 @@ impl Compiler {
                                     );
                                     continue;
                                 }
+                                self.emit_array_storage_of_stack();
                                 common::collections::emit_spread_iterable(
                                     &mut self.chunks,
                                     self.current,
@@ -6457,6 +6562,7 @@ impl Compiler {
                         }
                     }
                 }
+                self.emit_array_wrap_of_stack();
             }
 
             // ── Cross-language zip primitive ───────────────────────────
@@ -6471,6 +6577,7 @@ impl Compiler {
                 }
                 for iterable in iterables {
                     self.compile_expr(iterable)?;
+                    self.emit_array_storage_of_stack();
                 }
                 let mode = match mode {
                     crate::ast::ZipMode::First => common::collections::ZipLen::First,
@@ -7113,6 +7220,15 @@ impl Compiler {
                 expr: inner,
                 type_name,
             } => {
+                if self.directives().type_test_mode == Some(vybe_ast::TypeTestMode::Nominal) {
+                    let runtime_type = self.resolve_source_type_alias(type_name);
+                    let runtime_type = self.canon(&runtime_type);
+                    self.compile_expr(inner)?;
+                    let line = self.line;
+                    self.emit_ref_type_test(Op::REF_TEST, &runtime_type, line);
+                    crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                    return Ok(());
+                }
                 let canon_type = self.canon(type_name);
                 if matches!(
                     canon_type.as_str(),
@@ -7147,6 +7263,21 @@ impl Compiler {
                 // ECMA-compatible Bool output.
                 {
                     let line = self.line;
+                    // An exact 64-bit integer travels as a BigInt, or as a
+                    // Number where no exact producer wrote it.
+                    if self.exact_wide_integer_transport()
+                        && self.profile.integer_cast_widths
+                            .get(self.canon_lookup(type_name.trim()).as_ref())
+                            .is_some_and(|width| width.bits == Some(64))
+                    {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        fn_call!(self, "wasm:js-number", "test", 1);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        fn_call!(self, "wasm:js-bigint", "test", 1);
+                        self.emit(Op::I32_OR);
+                        self.finish_type_predicate(want_i32_condition, line);
+                        return Ok(());
+                    }
                     match canon_type.as_str() {
                         "string" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -7270,6 +7401,7 @@ impl Compiler {
                     &canon_type_name,
                     line,
                 );
+                fn_call!(self, "wasm:js-boolean", "cast", 1);
                 self.chunk().emit_if(line);
                 self.emit_const(Value::I32(1));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -7330,6 +7462,7 @@ impl Compiler {
                         &candidate_name,
                         line,
                     );
+                    fn_call!(self, "wasm:js-boolean", "cast", 1);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -7405,12 +7538,13 @@ impl Compiler {
                     class_slots::ObjSource::Stack,
                     &class_slots::ClassSlot::internal("__types"),
                 );
-                inst!(self, core_wasm::dup);
+                let types_slot = self.define_local("__type_test_types");
+                self.emit_u16(Op::LOCAL_SET, types_slot);
+                self.emit_u16(Op::LOCAL_GET, types_slot);
                 self.emit(Op::REF_IS_NULL);
                 self.emit(Op::I32_EQZ);
                 self.chunk().emit_if(line);
-                let types_slot = self.define_local("__type_test_types");
-                self.emit_u16(Op::LOCAL_TEE, types_slot);
+                self.emit_u16(Op::LOCAL_GET, types_slot);
                 self.emit_const(Value::String(Arc::from(canon_type.as_str())));
                 common::collections::emit_contains(&mut self.chunks, self.current, line);
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -7428,8 +7562,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
                     self.chunk().emit_end(line);
                 }
-                self.chunk().emit_else(line);
-                self.emit(Op::DROP);
                 self.chunk().emit_end(line);
                 // matched_slot holds I32(0) or I32(1); convert to Bool for Go type assertions.
                 // ⛔ BOXED: `emit_const` stores a VALUE and every wasm-ABI local
@@ -7550,51 +7682,20 @@ impl Compiler {
                         // `Number("A")`. The two casts are the two directions of
                         // one coercion, so the inner one has to be visible to
                         // the outer one.
-                        let is_char_like = matches!(&inner.kind, ExprKind::Lit(Literal::Char(_)))
-                            || matches!(
-                                &inner.kind,
-                                ExprKind::Cast { type_name, .. }
-                                    if self.canon(type_name) == "char"
-                            )
-                            || self
-                                .infer_expr_type_hint(inner)
-                                .is_some_and(|hint| Self::normalize_type_hint(&hint) == "char");
-                        let bound = self
-                            .profile
-                            .builtin_slots
-                            .get(
-                                vybe_ast::builtin_slots::BuiltinType::Char,
-                                vybe_ast::ProtocolSlot::Int,
-                            )
-                            .map(str::to_string);
-                        if let (true, Some(target)) = (is_char_like, bound.as_deref()) {
-                            // Reuses the profile's own emit-target parser — a
-                            // slot binding is deliberately not a new vocabulary.
-                            // A one-argument coercion is a `common:` emitter or
-                            // a host call; anything else is a mis-declaration
-                            // and falls through rather than emitting nonsense.
-                            match vybe_runtime::profile::parse_emit_target(target) {
-                                Some(vybe_runtime::profile::BuiltinEmit::Common(emit)) => {
-                                    self.compile_expr(inner)?;
-                                    let line = self.line;
-                                    self.emit_common(&emit, 1, line);
-                                    return Ok(());
-                                }
-                                Some(vybe_runtime::profile::BuiltinEmit::HostCall(
-                                    module,
-                                    func,
-                                )) => {
-                                    self.compile_expr(inner)?;
-                                    let idx = self.import(&module, &func);
-                                    self.emit_host_call(idx, 1);
-                                    return Ok(());
-                                }
-                                _ => {}
-                            }
+                        if self.compile_char_widening(inner)? {
+                            return Ok(());
                         }
-                        if bound.is_some() {
+                        let bound = self.profile.builtin_slots.get(
+                            vybe_ast::builtin_slots::BuiltinType::Char,
+                            vybe_ast::ProtocolSlot::Int,
+                        );
+                        if bound.is_some()
+                            && !self.profile.integer_cast_widths.contains_key(canon_type.trim())
+                        {
                             // The language declared how a char widens, so it also
-                            // owns the ordinary numeric widening beside it.
+                            // owns the ordinary numeric widening beside it — unless
+                            // it declared this spelling's width, which the
+                            // fixed-width cast below lowers.
                             self.compile_expr(inner)?;
                             let num = self.import("ecma:number", "Number");
                             self.emit_host_call(num, 1);
@@ -7612,10 +7713,20 @@ impl Compiler {
                         let bits = width.bits;
                         let signed = width.signed;
                         if self.exact_wide_integer_transport() && bits == Some(64) {
+                            if let ExprKind::Lit(Literal::Int(word)) = &inner.kind
+                                && self.directives().wide_integer_transport()
+                                    == vybe_ast::WideIntegerTransport::Compact
+                                && crate::primitives::exact_integer::compact_number(*word, signed)
+                            {
+                                self.emit_const(Value::F64(*word as f64));
+                                return Ok(());
+                            }
                             self.compile_exact_i64_operand(inner)?;
                             let line = self.line;
-                            crate::primitives::exact_integer::emit_box_i64(
-                                &mut self.chunks, self.current, signed, line,
+                            let transport = self.directives().wide_integer_transport();
+                            crate::primitives::exact_integer::emit_box_i64_as(
+                                &mut self.chunks, self.current, signed, transport,
+                                line,
                             );
                             return Ok(());
                         }
@@ -7676,6 +7787,24 @@ impl Compiler {
                                 self.emit_c_signed_wrap_from_unsigned(modulus / 2.0, modulus);
                             }
                         }
+                        return Ok(());
+                    }
+                    // An exact integer converted to the language's double:
+                    // one round-to-nearest conversion of the native word.
+                    if self.exact_wide_integer_transport()
+                        && self.exact_word_expression(inner)
+                        && vybe_ast::builtin_types::classify_with(
+                            &self.profile.builtin_type_spellings,
+                            &cast_spelling,
+                        ) == Some(vybe_ast::builtin_slots::BuiltinType::Double)
+                    {
+                        let unsigned = self.infer_expr_type_hint(inner).is_some_and(|hint| {
+                            self.profile.integer_cast_widths
+                                .get(self.canon_lookup(&hint).as_ref())
+                                .is_some_and(|width| width.bits == Some(64) && !width.signed)
+                        });
+                        self.compile_exact_i64_operand(inner)?;
+                        self.emit(if unsigned { Op::F64_CONVERT_I64_U } else { Op::F64_CONVERT_I64_S });
                         return Ok(());
                     }
                     if self
@@ -7906,8 +8035,117 @@ impl Compiler {
                                 }
                             };
 
+                            // Exact data-only literals need value snapshots,
+                            // not an intermediate dynamic bag. Preserve source
+                            // order, run the existing constructor afterwards,
+                            // and retain every destination write/check below.
+                            let exact_fields = self.pending_classes
+                                .get(&user_type).map(|pending| pending.fields.clone());
+                            let snapshots = match (&inner.kind, exact_fields) {
+                                (ExprKind::Object(props), Some(fields))
+                                    if props.len() > 1 && props.len() == fields.len()
+                                        && fields.iter().collect::<std::collections::HashSet<_>>()
+                                            .len() == fields.len() => {
+                                    let mut values = Vec::with_capacity(fields.len());
+                                    for (prop, field) in props.iter().zip(fields) {
+                                        let ObjectProperty::KeyValue { key, value } = prop else {
+                                            values.clear(); break;
+                                        };
+                                        let ExprKind::Lit(Literal::Str(key)) = &key.kind else {
+                                            values.clear(); break;
+                                        };
+                                        let key = if self.case_sensitive {
+                                            key.clone()
+                                        } else {
+                                            self.canon(key)
+                                        };
+                                        if key != field || key == "__proto__" || key == "__keys"
+                                            || key.starts_with("__get_")
+                                            || key.starts_with("__set_")
+                                            || matches!(&value.kind,
+                                                ExprKind::Lambda { .. }
+                                                    | ExprKind::FunctionExpr(_)
+                                                    | ExprKind::ClassExpr { .. })
+                                        {
+                                            values.clear(); break;
+                                        }
+                                        values.push((field, value));
+                                    }
+                                    (!values.is_empty()).then_some(values)
+                                }
+                                _ => None,
+                            };
+                            if let Some(values) = snapshots {
+                                let mut members = Vec::with_capacity(values.len());
+                                for (field, value) in values {
+                                    self.compile_expr(value)?;
+                                    let slot = self.define_temp_local("__cast_record_snapshot");
+                                    self.emit_u16(Op::LOCAL_SET, slot);
+                                    members.push((field, slot));
+                                }
+                                let value_slot = self.define_temp_local("__cast_record_value");
+                                self.emit_global_read(&ctor_global);
+                                self.emit_direct_callable_invoke(0);
+                                self.emit_u16(Op::LOCAL_SET, value_slot);
+                                for (field, member_slot) in members {
+                                    let field_idx = self.resolve_slot_interned(
+                                        &class_slots::ClassSlot::internal(&field),
+                                    );
+                                    self.emit_u16(Op::LOCAL_GET, member_slot);
+                                    fn_call!(self, "wasm:js-undefined", "test", 1);
+                                    self.emit(Op::I32_EQZ);
+                                    let set_line = self.line;
+                                    self.chunk().emit_if(set_line);
+                                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                                    self.emit_u16(Op::LOCAL_GET, member_slot);
+                                    self.class_set_resolved(
+                                        class_slots::ObjSource::Stack,
+                                        &field_idx,
+                                        class_slots::ValueSource::Stack,
+                                    );
+                                    self.chunk().emit_end(set_line);
+                                }
+                                self.emit_u16(Op::LOCAL_GET, value_slot);
+                                return Ok(());
+                            }
+
+                            // A single exact data member needs a value snapshot,
+                            // not an intermediate property bag. Keep evaluation
+                            // before the constructor and retain the same root
+                            // slot until the enclosing frame releases it.
+                            // Accessor/prototype keys and anonymous definitions
+                            // retain ordinary literal construction semantics.
+                            let literal_value = match &inner.kind {
+                                ExprKind::Object(props) if props.len() == 1 => {
+                                    match &props[0] {
+                                        ObjectProperty::KeyValue { key, value } => {
+                                            if let ExprKind::Lit(Literal::Str(key)) = &key.kind {
+                                                let key = if self.case_sensitive {
+                                                    key.clone()
+                                                } else {
+                                                    self.canon(key)
+                                                };
+                                                let exact_field = self.pending_classes
+                                                    .get(&user_type).is_some_and(|pending|
+                                                        pending.fields.len() == 1
+                                                            && pending.fields[0] == key);
+                                                (exact_field && key != "__proto__"
+                                                    && !key.starts_with("__get_")
+                                                    && !key.starts_with("__set_")
+                                                    && !matches!(&value.kind,
+                                                        ExprKind::Lambda { .. }
+                                                            | ExprKind::FunctionExpr(_)
+                                                            | ExprKind::ClassExpr { .. }))
+                                                    .then_some(value)
+                                            } else { None }
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            };
                             let source_slot = self.define_local("__cast_struct_source");
-                            self.compile_expr(inner)?;
+                            self.compile_expr(literal_value.unwrap_or(inner))?;
                             self.emit_u16(Op::LOCAL_SET, source_slot);
 
                             let value_slot = self.define_local("__cast_struct_value");
@@ -7926,10 +8164,12 @@ impl Compiler {
                                         &class_slots::ClassSlot::internal(&field_name),
                                     );
                                     self.emit_u16(Op::LOCAL_GET, source_slot);
-                                    self.class_get_resolved(
-                                        class_slots::ObjSource::Stack,
-                                        &field_idx,
-                                    );
+                                    if literal_value.is_none() {
+                                        self.class_get_resolved(
+                                            class_slots::ObjSource::Stack,
+                                            &field_idx,
+                                        );
+                                    }
                                     self.emit_u16(Op::LOCAL_SET, member_slot);
 
                                     self.emit_u16(Op::LOCAL_GET, member_slot);
@@ -8250,6 +8490,7 @@ impl Compiler {
                 // `GEN_NEXT`; plain iterables are first drained through
                 // the shared collection surface and yielded value-by-value.
                 self.compile_expr(inner)?;
+                self.emit_array_storage_of_stack();
                 let gen_slot = self.define_local("__yield_star_gen");
                 let val_slot = self.define_local("__yield_star_val");
                 let has_more_slot = self.define_local("__yield_star_has_more");
@@ -8481,15 +8722,10 @@ impl Compiler {
                         // ahead of the arguments and the count includes it.
                         // (`Call { callee: Super }` in `calls.rs` carries the
                         // same rule for the languages that spell it that way.)
-                        if let Some(slot) = self.scope().resolve(&self_kw) {
-                            self.emit_u16(Op::LOCAL_GET, slot);
-                        } else {
-                            self.emit_null();
-                        }
-                        for arg in args.iter() {
-                            self.compile_expr(&arg.value)?;
-                        }
-                        self.emit_direct_callable_invoke((args.len() as u8).saturating_add(1));
+                        let receiver = self.scope().resolve(&self_kw);
+                        let arg_exprs: Vec<&Expression> =
+                            args.iter().map(|arg| &arg.value).collect();
+                        self.emit_resolved_super_method_call(receiver, &arg_exprs)?;
                     } else {
                         self.emit_null();
                     }
@@ -8810,6 +9046,7 @@ impl Compiler {
                     }
                 } else if let ExprKind::Index { object, index, .. } = &inner.kind {
                     self.compile_expr(object)?;
+                    self.emit_array_storage_mut_of_stack();
                     self.compile_expr(index)?;
                     if self.uses_proxy {
                         self.emit_proxy_delete_property()?;
@@ -9216,6 +9453,10 @@ impl Compiler {
         if !self.profile.set_bitwise_operators {
             return Ok(false);
         }
+        // Two numbers are never sets: their `-`, `|`, `&` and `^` are numeric.
+        if self.expr_is_provably_number(left) && self.expr_is_provably_number(right) {
+            return Ok(false);
+        }
 
         let helper = match op {
             BinOp::BitOr => Some("union"),
@@ -9505,7 +9746,7 @@ impl Compiler {
         )
     }
 
-    fn emit_c_unsigned_wrap(&mut self, modulus: f64) {
+    pub(super) fn emit_c_unsigned_wrap(&mut self, modulus: f64) {
         let line = self.line;
         self.emit_const(Value::F64(modulus));
         common::math::emit_c_fmod(self.chunk(), line);
@@ -9796,11 +10037,8 @@ pub fn emit_rich_arithmetic(
 
     // A primitive traps on STRUCT_GET, so gate the lookup on the operand
     // actually being an object.
-    let typeof_fn = chunk.add_import("ecma:value", "typeof");
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-    chunk.emit_call(typeof_fn, 1, line);
-    chunk.emit_string_const("object", line);
-    crate::primitives::ops::emit_dyn_eq(chunk, line);
+    crate::primitives::reflection::emit_typeof_is(chunk, "object", line);
     chunk.emit_if_value(line);
 
     let key = class_slots::resolve_interned(
@@ -9850,11 +10088,8 @@ pub fn emit_rich_unary(
 ) {
     let method_slot = alloc_local(chunk);
 
-    let typeof_fn = chunk.add_import("ecma:value", "typeof");
     chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
-    chunk.emit_call(typeof_fn, 1, line);
-    chunk.emit_string_const("object", line);
-    crate::primitives::ops::emit_dyn_eq(chunk, line);
+    crate::primitives::reflection::emit_typeof_is(chunk, "object", line);
     chunk.emit_if_value(line);
 
     let key = class_slots::resolve_interned(

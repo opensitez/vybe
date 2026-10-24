@@ -55,8 +55,7 @@ fn program(old: bool, setdefault: bool, calls: usize) -> Vec<Chunk> {
     chunks
 }
 fn validate(chunks: &[Chunk]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
         .unwrap();
 }
 fn vm(input: Value, key: Value, default: Value) -> VM {

@@ -33,8 +33,7 @@ mod temporary_tests {
         crate::primitives::globals::declare_free_globals(&mut chunks);
         crate::primitives::globals::normalize_global_table(&mut chunks);
         let wasm = vybe_platform_wasm::write_wasm(&chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&wasm).unwrap();
+        vybe_platform_wasm::validate_binary(&wasm).unwrap();
         let mut vm = vybe_runtime::VM::new();
         crate::primitives::platforms::register_platforms_all(&mut vm);
         vm.run(chunks).unwrap()
@@ -676,6 +675,13 @@ impl Compiler {
         let member_slot = self.define_temp_local("__callable_designator_member");
         let receiver_slot = self.define_temp_local("__callable_designator_receiver");
         let resolved_slot = self.define_temp_local("__callable_designator_resolved");
+
+        // A `[receiver, 'method']` pair is designated by its storage.
+        if self.directives().array_wrapper.is_some() {
+            self.emit_u16(Op::LOCAL_GET, slot);
+            self.emit_array_storage_of_stack();
+            self.emit_u16(Op::LOCAL_SET, slot);
+        }
 
         // Guarded by `isArray`, not by a length probe on any object:
         // `collections::emit_len` falls back to `Object.keys().length`, so an

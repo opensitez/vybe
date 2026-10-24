@@ -175,8 +175,16 @@ impl Compiler {
         if let Some(i64_slot) = self.chunks[cur].i64_scratch_slot {
             restore = restore.max(i64_slot + 1);
         }
+        // A slot typed i64 keeps that type function-wide; reclaiming it would
+        // hand it out again as an externref temporary.
+        if let Some(&i64_slot) = self.chunks[cur].i64_locals.iter().max() {
+            restore = restore.max(i64_slot + 1);
+        }
         if let Some(autoderef_slot) = self.chunks[cur].autoderef_scratch_slot {
             restore = restore.max(autoderef_slot + 1);
+        }
+        if let Some(memo_slot) = self.chunks[cur].memo_slot_ceiling() {
+            restore = restore.max(memo_slot + 1);
         }
         let peak = self.chunks[cur].local_count;
         if peak > self.chunks[cur].scratch_high_water {
@@ -237,8 +245,16 @@ impl Compiler {
         if let Some(i64_slot) = self.chunks[cur].i64_scratch_slot {
             restore = restore.max(i64_slot + 1);
         }
+        // A slot typed i64 keeps that type function-wide; reclaiming it would
+        // hand it out again as an externref temporary.
+        if let Some(&i64_slot) = self.chunks[cur].i64_locals.iter().max() {
+            restore = restore.max(i64_slot + 1);
+        }
         if let Some(autoderef_slot) = self.chunks[cur].autoderef_scratch_slot {
             restore = restore.max(autoderef_slot + 1);
+        }
+        if let Some(memo_slot) = self.chunks[cur].memo_slot_ceiling() {
+            restore = restore.max(memo_slot + 1);
         }
         // `local_count` is TWO facts in one field: the bump pointer for the
         // next allocation, AND the peak the frame must be sized to. Only the
@@ -296,6 +312,11 @@ impl Compiler {
         value: &Expression,
         by_ref: bool,
     ) -> Result<(), String> {
+        if let ([target], false) = (targets.as_slice(), by_ref)
+            && self.compile_native_word_assignment(target, value, false)?
+        {
+            return Ok(());
+        }
         // Rebinding a name to the null literal drops what it held —
         // Python's `x = None`. Scoped to the literal ON PURPOSE:
         // finalising on every rebind would fire in loops and
@@ -472,9 +493,12 @@ impl Compiler {
             //
             // Skipped entirely when the compiler can already see the
             // value is not an instance — a literal, an arithmetic
-            // result, a comparison. Those are most assignments in every
-            // corpus, and the check is pure cost there.
-            if crate::primitives::records::may_be_value_instance(value) {
+            // result, a comparison, or anything the compiler proves is a
+            // number. Those are most assignments in every corpus, and the
+            // check is pure cost there.
+            if crate::primitives::records::may_be_value_instance(value)
+                && !self.expr_is_provably_number(value)
+            {
                 let line = self.line;
                 let value_slot = self.define_local("__assign_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
@@ -1043,6 +1067,7 @@ impl Compiler {
                     }
 
                     self.compile_expr(object)?;
+                    self.emit_array_storage_mut_of_stack();
                     let obj_tmp = self.define_local("__delete_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_tmp);
                     self.compile_expr(index)?;
@@ -1111,6 +1136,9 @@ impl Compiler {
             ExprKind::Unary { op, expr: target }
                 if matches!(op, UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec) =>
             {
+                if self.emit_native_word_step(target, matches!(op, UnaryOp::PreInc | UnaryOp::PostInc)) {
+                    return Ok(());
+                }
                 self.compile_expr(target)?;
                 let source = self.emit_step_for_expr(
                     target,
@@ -1138,9 +1166,19 @@ impl Compiler {
     #[allow(clippy::ptr_arg)]
     #[inline(never)]
     pub(super) fn compile_expr_stmt(&mut self, expr: &Expression) -> Result<(), String> {
+        if let ExprKind::Call { callee, args, optional: false } = &expr.kind
+            && let ExprKind::Ident(name) = &callee.kind
+            && let Some((super::typed_arrays::TypedArrayOp::Set, element)) = self.typed_array_op(name)
+        {
+            let args: Vec<&Expression> = args.iter().map(|arg| &arg.value).collect();
+            return self.compile_typed_array_word(super::typed_arrays::TypedArrayOp::Set, element, &args);
+        }
         if self.try_compile_discarded_builtin_call(expr)? { return Ok(()); }
         match &expr.kind {
             ExprKind::Assign { target, value } => {
+                if self.compile_native_word_assignment(target, value, false)? {
+                    return Ok(());
+                }
                 if matches!(value.kind, ExprKind::Lit(Literal::Null)) {
                     if let ExprKind::Ident(name) = &target.kind {
                         self.emit_buffered_generator_close_ident_if_needed(name);
@@ -1344,6 +1382,7 @@ impl Compiler {
         } else {
             let line = self.line;
             self.compile_expr(iter)?;
+            self.emit_array_storage_of_stack();
             let iter_slot = self.define_local("__forin_iter");
             self.emit_u16(Op::LOCAL_SET, iter_slot);
 
@@ -1534,7 +1573,13 @@ impl Compiler {
             } else {
                 None
             };
-            let lp = common::loops::emit_for_in_snapshot_start(
+            let needs_continue_target = common::loops::body_requires_continue_target(body);
+            let snapshot_start = if needs_continue_target {
+                common::loops::emit_for_in_snapshot_start
+            } else {
+                common::loops::emit_for_in_snapshot_no_continue_start
+            };
+            let lp = snapshot_start(
                 &mut self.chunks,
                 self.current,
                 arr_slot,
@@ -1542,10 +1587,13 @@ impl Compiler {
                 length_slot,
                 line,
             );
-            // for_in_start emits: block + loop + cond + block $body = 3 labels
+            // The body block exists only when a continue can target its end.
+            // Otherwise block + loop suffice; all enclosing label accounting
+            // must use the same layout selected by the shared primitive.
+            let loop_labels = if needs_continue_target { 3 } else { 2 };
             let break_depth = self.label_depth + 1; // outer block
-            let continue_depth = self.label_depth + 3; // body block (innermost)
-            self.label_depth += 3;
+            let continue_depth = self.label_depth + loop_labels;
+            self.label_depth += loop_labels;
 
             if let Some(k_name) = key {
                 // Entries path: TOS is a [k, v] pair. Destructure
@@ -1561,17 +1609,17 @@ impl Compiler {
                 self.emit_const(Value::I32(0));
                 common::collections::emit_get(&mut self.chunks, self.current, line);
                 let key_slot = self.define_source_local(k_name);
-                self.emit_u16(Op::LOCAL_SET, key_slot);
+                self.emit_plain_local_store(k_name, key_slot);
 
                 // var = pair[1]
                 self.emit_u16(Op::LOCAL_GET, pair_slot);
                 self.emit_const(Value::I32(1));
                 common::collections::emit_get(&mut self.chunks, self.current, line);
                 let var_slot = self.define_source_local(var);
-                self.emit_u16(Op::LOCAL_SET, var_slot);
+                self.emit_plain_local_store(var, var_slot);
             } else if iterates_dictionary_entries {
                 let var_slot = self.define_source_local(var);
-                self.emit_u16(Op::LOCAL_SET, var_slot);
+                self.emit_plain_local_store(var, var_slot);
             } else {
                 // Values path: TOS is the value, bind directly.
                 // `for await (let v of …)` per ECMA-262 §13.7.5
@@ -1595,7 +1643,7 @@ impl Compiler {
                 } else {
                     self.define_source_local(var)
                 };
-                self.emit_u16(Op::LOCAL_SET, var_slot);
+                self.emit_plain_local_store(var, var_slot);
             }
 
             self.loop_states.push(lp);
@@ -1614,7 +1662,7 @@ impl Compiler {
             self.loops.pop();
             let lp = self.loop_states.pop().unwrap();
             common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, lp, line);
-            self.label_depth -= 3;
+            self.label_depth -= loop_labels;
             if let Some(else_stmts) = else_body {
                 // Python/Ruby for-else: skip else if any `break` fired.
                 // Wrap in `block { br_if 0 (if did_break); ...else... }`.
@@ -2031,8 +2079,8 @@ impl Compiler {
             });
         match bits {
             Some(32) => Some(vybe_ast::BitLane::W32),
-            Some(64) if self.directives().wide_integer_transport()
-                == vybe_ast::WideIntegerTransport::Exact => Some(vybe_ast::BitLane::W64),
+            Some(64) if self.directives().wide_integer_transport().preserves_all_bits() =>
+                Some(vybe_ast::BitLane::W64),
             _ => None,
         }
     }
@@ -2122,9 +2170,10 @@ impl Compiler {
                             });
                             if let Some(lane) = integer_case {
                                 if lane == vybe_ast::BitLane::W64 {
-                                    crate::primitives::exact_integer::emit_integer_binary(
+                                    let transport = self.directives().wide_integer_transport();
+                                    crate::primitives::exact_integer::emit_integer_binary_as(
                                         &mut self.chunks, self.current,
-                                        vybe_ast::IntOp::Eq, false, line,
+                                        vybe_ast::IntOp::Eq, false, transport, line,
                                     );
                                 } else {
                                     self.compile_binop_operands(
@@ -2746,6 +2795,48 @@ impl Compiler {
     /// level, not only where it runs.
     #[allow(clippy::ptr_arg, clippy::too_many_arguments)]
     #[inline(never)]
+    // The condition is evaluated before a C-style loop's body label exists:
+    // depth 0 is the loop and depth 1 its exit block. Boolean literals have
+    // no evaluation effects and the same truth in every language directive.
+    fn compile_loop_condition(&mut self, cond: &Expression) -> Result<(), String> {
+        match &cond.kind {
+            ExprKind::Lit(Literal::Bool(true)) => {}
+            ExprKind::Lit(Literal::Bool(false)) => {
+                let line = self.line;
+                self.chunk().emit_br(1, line);
+            }
+            _ => {
+                self.compile_condition_to_i32(cond)?;
+                let line = self.line;
+                common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
+            }
+        }
+        Ok(())
+    }
+
+    /// Entry guard of a rotated loop, emitted inside its outer block: leave
+    /// the block when the condition is false.
+    fn compile_loop_guard(&mut self, cond: &Expression) -> Result<(), String> {
+        let mark = self.chunks[self.current].local_count;
+        self.compile_condition_to_i32(cond)?;
+        self.reclaim_scratch_to(mark);
+        let line = self.line;
+        self.chunk().emit_op(Op::I32_EQZ, line);
+        self.chunk().emit_br_if(0, line);
+        Ok(())
+    }
+
+    /// Bottom test of a rotated loop, emitted directly inside its `loop`:
+    /// branch back to the top while the condition holds.
+    fn compile_loop_bottom_test(&mut self, cond: &Expression) -> Result<(), String> {
+        let mark = self.chunks[self.current].local_count;
+        self.compile_condition_to_i32(cond)?;
+        self.reclaim_scratch_to(mark);
+        let line = self.line;
+        self.chunk().emit_br_if(0, line);
+        Ok(())
+    }
+
     fn compile_for_stmt(
         &mut self,
         init: &Option<Box<Statement>>,
@@ -2771,20 +2862,26 @@ impl Compiler {
             None
         };
         let line = self.line;
-        // For C-style with update: use block { loop { cond, block $body { body }, update, br loop } }
+        // Top-tested:  block { loop { cond, block $body { body }, update, br loop } }
+        // Rotated:     block { guard, loop { block $body { body }, update, cond, br_if loop } }
+        let rotated = cond.as_ref().filter(|c| common::loops::condition_is_duplicable(c));
         let block_patch = self.chunk().emit_block(line);
         self.label_depth += 1; // block
+        if let Some(c) = rotated {
+            self.compile_loop_guard(c)?;
+        }
         let (loop_patch, _) = self.chunk().emit_loop_s(line);
         self.label_depth += 1; // loop
         let break_depth = self.label_depth - 1; // the block
-        if let Some(c) = cond {
-            self.compile_condition_to_i32(c)?;
-            let line = self.line;
-            common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
+        if rotated.is_none() && let Some(c) = cond {
+            self.compile_loop_condition(c)?;
         }
         let line = self.line;
-        // Body block for continue-to-update
-        let body_block = if update.is_some() {
+        // Body block for continue-to-update; a rotated loop's continue must
+        // also reach its bottom test.
+        let body_block = if (update.is_some() || rotated.is_some())
+            && common::loops::body_requires_continue_target(body)
+        {
             let bp = self.chunk().emit_block(line);
             self.label_depth += 1;
             Some(bp)
@@ -2828,7 +2925,11 @@ impl Compiler {
             self.compile_discarded_expr(u)?;
         }
         let line = self.line;
-        self.chunk().emit_br(0, line); // br loop
+        if let Some(c) = rotated {
+            self.compile_loop_bottom_test(c)?;
+        } else {
+            self.chunk().emit_br(0, line); // br loop
+        }
         self.chunk().emit_end(line); // end loop
         self.chunk().patch_loop(lp.loop_patch);
         self.label_depth -= 1;
@@ -3100,6 +3201,61 @@ impl Compiler {
                 else_body,
             } => {
                 let line = self.line;
+                if common::loops::condition_is_duplicable(cond) {
+                    // Rotated: block { guard, loop { block $body { body }, cond, br_if loop } }
+                    let block_patch = self.chunk().emit_block(line);
+                    self.label_depth += 1;
+                    let break_depth = self.label_depth;
+                    self.compile_loop_guard(cond)?;
+                    let (loop_patch, _) = self.chunk().emit_loop_s(line);
+                    self.label_depth += 1;
+                    let body_block_patch = if common::loops::body_requires_continue_target(body) {
+                        let patch = self.chunk().emit_block(line);
+                        self.label_depth += 1;
+                        Some(patch)
+                    } else {
+                        None
+                    };
+                    self.loop_states.push(common::loops::LoopState {
+                        block_patch,
+                        loop_patch,
+                        body_block_patch,
+                    });
+                    self.loops.push(LoopCtx {
+                        label: self.pending_label.take(),
+                        break_label_depth: break_depth,
+                        continue_label_depth: self.label_depth,
+                        did_break_slot: None,
+                        iterator_close_slot: None,
+                        is_continuable: true,
+                        finally_depth: self.frame_cf().active_finally_blocks.len(),
+                    });
+                    for s in body {
+                        self.compile_stmt(s)?;
+                    }
+                    self.loops.pop();
+                    let lp = self.loop_states.pop().unwrap();
+                    let line = self.line;
+                    if let Some(patch) = lp.body_block_patch {
+                        self.chunk().emit_end(line);
+                        self.chunk().patch_block(patch);
+                        self.label_depth -= 1;
+                    }
+                    self.compile_loop_bottom_test(cond)?;
+                    let line = self.line;
+                    self.chunk().emit_end(line); // end loop
+                    self.chunk().patch_loop(lp.loop_patch);
+                    self.label_depth -= 1;
+                    self.chunk().emit_end(line); // end block
+                    self.chunk().patch_block(lp.block_patch);
+                    self.label_depth -= 1;
+                    if let Some(else_stmts) = else_body {
+                        for s in else_stmts {
+                            self.compile_stmt(s)?;
+                        }
+                    }
+                    return Ok(());
+                }
                 let lp = common::loops::emit_loop_start(&mut self.chunks, self.current, line);
                 // block + loop = 2 label stack entries
                 let break_depth = self.label_depth + 1; // block is first (break target)
@@ -3116,9 +3272,7 @@ impl Compiler {
                     finally_depth: self.frame_cf().active_finally_blocks.len(),
                 });
                 let cond_mark = self.chunks[self.current].local_count;
-                self.compile_condition_to_i32(cond)?;
-                let line = self.line;
-                common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
+                self.compile_loop_condition(cond)?;
                 self.reclaim_scratch_to(cond_mark);
                 for s in body {
                     self.compile_stmt(s)?;
@@ -3216,7 +3370,13 @@ impl Compiler {
                     }
                 }
                 let cond_started = should_trace.then(std::time::Instant::now);
-                self.compile_condition_to_i32(cond)?;
+                let known_condition = match &cond.kind {
+                    ExprKind::Lit(Literal::Bool(value)) => Some(*value != *until),
+                    _ => None,
+                };
+                if known_condition.is_none() {
+                    self.compile_condition_to_i32(cond)?;
+                }
                 if should_trace {
                     if let (Some(path), Some(function_name)) =
                         (timing.as_deref(), current_function.as_deref())
@@ -3236,13 +3396,15 @@ impl Compiler {
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
                 let line = self.line;
-                common::loops::emit_do_loop_end_from_i32(
-                    &mut self.chunks,
-                    self.current,
-                    lp,
-                    *until,
-                    line,
-                );
+                if let Some(repeat) = known_condition {
+                    common::loops::emit_do_loop_end_known_condition(
+                        &mut self.chunks, self.current, lp, repeat, line,
+                    );
+                } else {
+                    common::loops::emit_do_loop_end_from_i32(
+                        &mut self.chunks, self.current, lp, *until, line,
+                    );
+                }
                 self.label_depth -= 2;
             }
 
@@ -3270,6 +3432,17 @@ impl Compiler {
                 return self.compile_exit_stmt(status.as_ref());
             }
             StmtKind::Return(val) => {
+                if self.scope().native_result.is_some() {
+                    match val {
+                        Some(value) => self.compile_exact_i64_operand(value)?,
+                        None => {
+                            let line = self.line;
+                            self.chunk().emit_i64_const(0, line);
+                        }
+                    }
+                    self.emit_return_through_finally(1)?;
+                    return Ok(());
+                }
                 // Multi-value path: `return a, b, c` in a function the
                 // pre-scan marked as multi-return. We push each element
                 // separately (no heap tuple allocation) and let the VM's
@@ -5109,6 +5282,11 @@ impl Compiler {
     ) -> Result<(), String> {
         match &decl.pattern {
             BindingPattern::Ident(name) => {
+                if !matches!(kind, VarDeclKind::Static | VarDeclKind::FunctionScoped)
+                    && self.compile_native_word_declaration(name, decl)?
+                {
+                    return Ok(());
+                }
                 let reflection_binding = decl
                     .init
                     .as_ref()
@@ -5725,6 +5903,7 @@ impl Compiler {
                 }
                 ArrayPatternElem::Pattern(BindingPattern::Array(items), _) => {
                     read_elem(self);
+                    self.emit_array_storage_of_stack();
                     let nested_slot = self.define_local("__destruct_nested_arr");
                     self.emit_u16(Op::LOCAL_SET, nested_slot);
                     self.compile_array_pattern_assignment_from_slot(nested_slot, items)?;
@@ -5874,13 +6053,25 @@ impl Compiler {
                 // object ownership.
                 let release_old = finalizer.is_some()
                     && self.is_variable_name(name)
-                    && self.scope().resolve(name).is_some();
+                    && self.scope().resolve(name).is_some()
+                    && !self.is_frame_number_local(name);
                 let old_slot = if release_old {
                     let incoming = self.define_local("__rebind_incoming");
                     self.emit_u16(Op::LOCAL_SET, incoming);
+                    // The old value is only read when the release it feeds runs;
+                    // the finalizer applies the same gate.
+                    let gate = vybe_runtime::registry::hooks(&self.profile.name).rebind_gate;
+                    let line = self.line;
+                    if let Some(gate) = gate {
+                        gate(self.chunk(), line);
+                        self.chunk().emit_if(line);
+                    }
                     self.compile_expr(target)?;
                     let old = self.define_local("__rebind_old");
                     self.emit_u16(Op::LOCAL_SET, old);
+                    if gate.is_some() {
+                        self.chunk().emit_end(line);
+                    }
                     self.emit_u16(Op::LOCAL_GET, incoming);
                     Some(old)
                 } else {
@@ -5890,7 +6081,10 @@ impl Compiler {
                 if self.lookup_var_declared(name).is_none_or(|hint| hint.converts()) {
                     self.bind_value_to_declared_type(stored_type_hint.as_deref(), source)?;
                 }
+                self.store_value_nonreference =
+                    source.is_some_and(|value| self.expression_reads_nonreference_value(value));
                 self.emit_var_set(name);
+                self.store_value_nonreference = false;
                 if let (Some(old), Some(emit_finalizer)) = (old_slot, finalizer) {
                     self.emit_rebound_value_finalizer(old, emit_finalizer);
                 }
@@ -6875,6 +7069,7 @@ impl Compiler {
                                 &class_slots::ClassSlot::internal(&field_name),
                             );
                             self.class_get_resolved(class_slots::ObjSource::Stack, &field_idx);
+                            self.emit_array_storage_mut_of_stack();
                             self.emit_u16(Op::LOCAL_SET, coll_tmp);
 
                             if is_append {
@@ -6985,6 +7180,7 @@ impl Compiler {
                         let key_tmp = self.define_local("__vivify_key");
                         let sub_tmp = self.define_local("__vivify_sub");
                         self.compile_expr(parent)?;
+                        self.emit_array_storage_mut_of_stack();
                         self.emit_u16(Op::LOCAL_SET, parent_tmp);
                         self.compile_expr(key)?;
                         self.emit_u16(Op::LOCAL_SET, key_tmp);
@@ -6992,6 +7188,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, parent_tmp);
                         self.emit_u16(Op::LOCAL_GET, key_tmp);
                         self.emit(Op::ARRAY_GET);
+                        self.emit_array_storage_mut_of_stack();
                         self.emit_u16(Op::LOCAL_SET, sub_tmp);
                         // if sub is null/undefined → create [] and set
                         self.emit_u16(Op::LOCAL_GET, sub_tmp);
@@ -7017,6 +7214,7 @@ impl Compiler {
                 if is_append {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
+                    self.emit_array_storage_mut_of_stack();
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     common::collections::emit_push(&mut self.chunks, self.current, line);
                     // ecma:array.push leaves [new_length]; drop it.
@@ -7090,6 +7288,7 @@ impl Compiler {
                 } else if self.program_has_index_accessor {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
+                    self.emit_array_storage_mut_of_stack();
                     let obj_tmp = self.define_local("__index_set_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
@@ -7202,6 +7401,7 @@ impl Compiler {
 
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
+                    self.emit_array_storage_mut_of_stack();
                     self.compile_array_index_operand_for_owner(object, index)?;
                     if self.profile.unified_array_map {
                         let key_tmp = self.define_local("__php_idx_key");
@@ -7216,11 +7416,24 @@ impl Compiler {
                         // band — that stamps an extra property onto the Map and
                         // makes `foreach`/`Object.keys` read the stale tracker
                         // instead of the Map's real order.
-                        common::collections::emit_promote_empty_array_for_string_key(
+                        //
+                        // The store mutates the receiver in place, so the
+                        // variable is rebound only when the promotion replaced
+                        // its value.
+                        common::collections::emit_promote_empty_array_for_string_key_open(
                             &mut self.chunks,
                             self.current,
                             obj_tmp,
                             key_tmp,
+                            line,
+                        );
+                        if let ExprKind::Ident(name) = &object.kind {
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_var_set(name);
+                        }
+                        common::collections::emit_promote_empty_array_for_string_key_close(
+                            &mut self.chunks,
+                            self.current,
                             line,
                         );
 
@@ -7229,10 +7442,6 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, tmp);
                         common::collections::emit_set(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP);
-                        if let ExprKind::Ident(name) = &object.kind {
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_var_set(name);
-                        }
                         return Ok(());
                     }
                     if std::env::var_os("VYBE_KEEP_PY_IDX").is_some() {
@@ -7405,6 +7614,7 @@ impl Compiler {
                 // Destructuring assignment
                 match pattern {
                     DestructurePattern::Object(props) => {
+                        self.emit_array_storage_of_stack();
                         let obj_slot = self.define_local("__destruct_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot);
                         let named_keys: Vec<String> = props
@@ -7447,6 +7657,7 @@ impl Compiler {
                         }
                     }
                     DestructurePattern::Array(elems) => {
+                        self.emit_array_storage_of_stack();
                         let arr_slot = self.define_local("__destruct_arr");
                         self.emit_u16(Op::LOCAL_SET, arr_slot);
                         self.compile_array_pattern_assignment_from_slot(arr_slot, elems)?;
@@ -7459,6 +7670,7 @@ impl Compiler {
             // the same shape. Treat each element as a separate
             // assignment to mirror the desugar `let _t = rhs; a = _t[0]; b = _t[1]`.
             ExprKind::Array(elems) => {
+                self.emit_array_storage_of_stack();
                 let arr_slot = self.define_local("__assign_destruct_arr");
                 self.emit_u16(Op::LOCAL_SET, arr_slot);
                 for (i, elem) in elems.iter().enumerate() {

@@ -331,6 +331,11 @@ impl Compiler {
     ) -> Result<bool, String> {
         let line = self.line;
 
+        if let Some((op, element)) = self.typed_array_op(name) {
+            self.compile_typed_array_value(op, element, args)?;
+            return Ok(true);
+        }
+
         // `globals()` removed. It built a dict from `self.defined_globals`
         // for the NAME `globals`, and its own comment named the hazard: *"A
         // user function named `globals()` in another language would now reach
@@ -2044,6 +2049,34 @@ impl Compiler {
     pub(super) fn emit_common(&mut self, name: &str, argc: u8, line: u32) {
         self.emit_common_with_emit_request(name, argc, line, EmitRequest::Value);
     }
+
+    /// Stack: `[value] -> [storage]` under a declared
+    /// [`vybe_ast::Directives::array_wrapper`]; nothing otherwise.
+    pub(super) fn emit_array_storage_of_stack(&mut self) {
+        if let Some(wrapper) = self.directives().array_wrapper.clone() {
+            let line = self.line;
+            self.emit_common(&wrapper.storage, 1, line);
+        }
+    }
+
+    /// Stack: `[storage] -> [value]` under a declared
+    /// [`vybe_ast::Directives::array_wrapper`]; nothing otherwise.
+    pub(super) fn emit_array_wrap_of_stack(&mut self) {
+        if let Some(wrapper) = self.directives().array_wrapper.clone() {
+            let line = self.line;
+            self.emit_common(&wrapper.wrap, 1, line);
+        }
+    }
+
+    /// Stack: `[value] -> [storage]` for a write under a declared
+    /// [`vybe_ast::Directives::array_wrapper`]; nothing otherwise.
+    pub(super) fn emit_array_storage_mut_of_stack(&mut self) {
+        if let Some(wrapper) = self.directives().array_wrapper.clone() {
+            let line = self.line;
+            self.emit_common(&wrapper.storage_mut, 1, line);
+        }
+    }
+
 
     /// Reuse the shared formatter only when the evaluated format operand is
     /// physically emitted from a literal; all other formats keep normal dispatch.
@@ -4577,6 +4610,7 @@ impl Compiler {
 
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
+                    self.emit_array_storage_of_stack();
                     self.emit_formatter_with_literal(args[0], true, 2, line);
                     self.emit_common("php.echo_stringify", 1, line);
                     self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -4600,6 +4634,7 @@ impl Compiler {
                 } else {
                     self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
+                    self.emit_array_storage_of_stack();
                     self.emit_formatter_with_literal(args[0], true, 2, line);
                 }
             }
@@ -4616,9 +4651,13 @@ impl Compiler {
                 // One entry per registration: [callback, ...extra args].
                 let line = self.line;
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-                for arg in args {
+                for (position, arg) in args.iter().enumerate() {
                     inst!(self, core_wasm::dup);
                     self.compile_expr(arg)?;
+                    // The finalizer dispatches on the callback's raw shape.
+                    if position == 0 {
+                        self.emit_array_storage_of_stack();
+                    }
                     let push = self.import("ecma:array", "push");
                     self.emit_host_call(push, 2);
                     self.emit(Op::DROP);
@@ -4667,6 +4706,7 @@ impl Compiler {
                 // variable points to.
                 if !args.is_empty() {
                     self.compile_expr(args[0])?;
+                    self.emit_array_storage_mut_of_stack();
                     let arr_slot = self.define_local("__php_rsort_arr");
                     self.emit_u16(Op::LOCAL_SET, arr_slot);
                     self.emit_global_read("__vybe_sort_in_place");
@@ -4937,6 +4977,7 @@ impl Compiler {
                 if args.len() >= 2 {
                     let idx_slot = self.define_local("__php_array_search_idx");
                     self.compile_expr(args[1])?;
+                    self.emit_array_storage_of_stack();
                     self.compile_expr(args[0])?;
                     common::collections::emit_index_of(&mut self.chunks, self.current, line);
                     self.emit_u16(Op::LOCAL_SET, idx_slot);
@@ -4965,6 +5006,7 @@ impl Compiler {
                     let start_slot = self.define_local("__php_array_slice_start");
 
                     self.compile_expr(args[0])?;
+                    self.emit_array_storage_of_stack();
                     self.emit_u16(Op::LOCAL_SET, arr_slot);
 
                     self.compile_expr(args[1])?;

@@ -890,6 +890,19 @@ impl Compiler {
             // (`"unsigned char"`, `"sbyte"`, …) that used to be inline here.
             // The emitted sequence is unchanged — modulus and sign threshold
             // come from the width rather than from a repeated literal.
+            // A width the language itself declares 64-bit is carried exactly
+            // by its operations and casts; the platform spelling table's
+            // narrower reading of the same spelling does not apply.
+            _ if self.profile.integer_cast_widths.get(normalized.as_str())
+                .is_some_and(|width| width.bits == Some(64)) => {}
+            // A narrower width the language declares wraps at its own modulus.
+            _ if self.profile.integer_cast_widths.get(normalized.as_str())
+                .is_some_and(|width| matches!(width.bits, Some(1..=32))) => {
+                let width = self.profile.integer_cast_widths[normalized.as_str()].clone();
+                let bits = width.bits.expect("guard matched a width");
+                let modulus = 2f64.powi(bits as i32);
+                self.emit_modular_wrap(modulus, width.signed.then_some(modulus / 2.0));
+            }
             _ if vybe_ast::builtin_types::int_width_of(&normalized).is_some() => {
                 let width =
                     vybe_ast::builtin_types::int_width_of(&normalized).expect("guard just matched");
@@ -914,7 +927,12 @@ impl Compiler {
     /// lands in `0..m`, then a signed width subtracts one modulus above its
     /// threshold. Byte-identical to the per-width arms this replaced.
     fn emit_int_width_wrap(&mut self, width: vybe_ast::builtin_types::IntWidth) {
-        let modulus = width.modulus();
+        self.emit_modular_wrap(width.modulus(), width.sign_threshold());
+    }
+
+    /// Wrap the stack value modulo `modulus`; with a `threshold`, a result at
+    /// or above it is negative (one modulus is subtracted).
+    fn emit_modular_wrap(&mut self, modulus: f64, threshold: Option<f64>) {
         let line = self.line;
         self.emit(Op::F64_TRUNC);
         self.emit_const(Value::F64(modulus));
@@ -924,7 +942,7 @@ impl Compiler {
         self.emit_const(Value::F64(modulus));
         crate::primitives::math::emit_c_fmod(self.chunk(), line);
 
-        let Some(threshold) = width.sign_threshold() else {
+        let Some(threshold) = threshold else {
             return;
         };
         inst!(self, core_wasm::dup);

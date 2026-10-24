@@ -41,8 +41,7 @@ fn measure_catalog_helpers() {
             );
             row["native_bytes"] = bytes.len().into();
             row["validation"] =
-                match wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&bytes)
+                match vybe_platform_wasm::validate_binary(&bytes)
                 {
                     Ok(_) => serde_json::json!("valid"),
                     Err(e) => serde_json::json!(e.to_string()),

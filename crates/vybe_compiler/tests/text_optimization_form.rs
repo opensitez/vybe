@@ -87,8 +87,7 @@ fn separator_reuse_preserves_decoding_duplicates_unicode_and_errors() {
     );
     for old in [true, false] {
         for calls in [1, 20] {
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(&program(old, calls)))
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&program(old, calls)))
                 .unwrap();
         }
     }

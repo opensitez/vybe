@@ -218,8 +218,7 @@ fn size_and_native_exports() {
                     include_vybe_metadata: false,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
             if std::env::var_os("VYBE_PRIMITIVE_COMPOUND_EXPORT").is_some() {
                 native_export::export_chunks(&cs, &format!("compound-{depth}-{}", u8::from(fast)));
@@ -318,8 +317,7 @@ fn checked_word_arithmetic_result_keeps_wrapping_and_numeric_domain() {
     }
     for (side, cs) in programs.iter().enumerate() {
         let bytes = vybe_platform_wasm::write_wasm(cs);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         if std::env::var_os("VYBE_PRIMITIVE_COMPOUND_EXPORT").is_some() {
             native_export::export_chunks(cs, &format!("compound-word-{side}"));
@@ -359,8 +357,7 @@ fn converting_declarations_preserve_numeric_entry_coercion() {
             assert_eq!(vm.invoke(&f, &args).unwrap(), Value::Bool(true));
         }
         let bytes = vybe_platform_wasm::write_wasm(cs);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         if std::env::var_os("VYBE_PRIMITIVE_COMPOUND_EXPORT").is_some() {
             native_export::export_chunks(cs, &format!("compound-converting-{side}"));

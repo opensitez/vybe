@@ -120,8 +120,7 @@ fn certified_boxed_binding_reuses_normalization_without_raw_storage() {
                 include_name_section: false,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         let mut vm = vybe_runtime::VM::new();
         vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);

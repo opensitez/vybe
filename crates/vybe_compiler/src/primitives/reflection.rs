@@ -3622,8 +3622,8 @@ pub fn emit_instanceof_chain(
         class_slots::Dest::Stack,
         line,
     );
-    chunks[current].emit_op_u16(Op::LOCAL_TEE, types_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, types_slot, line);
+    crate::primitives::delegates::emit_slot_is_nullish(chunks, current, types_slot, line);
     chunks[current].emit_if_value(line);
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_else(line);

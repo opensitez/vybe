@@ -30,7 +30,7 @@ fn shape(stmt: &Statement) -> Shape {
     Shape([digest.0.finish(),digest.1.finish()])
 }
 enum Action { Emit, HoistedFunction, MergedClass(Box<Statement>), MergedDuplicate }
-struct Expected { shape: Option<Shape>, action: Action }
+struct Expected { shape: Shape, action: Action }
 
 /// One validated SOURCE UNIT, not a whole interactive request/program.
 /// Hoisted functions have already been emitted using the ordinary Compiler.
@@ -49,78 +49,12 @@ pub struct StatementEmission {
     body_elapsed: Duration,
     module_producers: Option<std::collections::BTreeMap<&'static str,(usize,Duration)>>,
 }
-/// Private owned capability: callers can advance or abort this session, but
-/// cannot obtain, mutate or replace its original statement iterator/inner sink.
-/// Preparation/actions are identical to the checked independent producer path.
-pub(crate) struct OwnedStatementEmission {
-    emission: StatementEmission,
-    statements: std::vec::IntoIter<Statement>,
-}
-impl OwnedStatementEmission {
-    pub(crate) fn emit_next(&mut self)->Result<Option<StatementProgress>,String>{
-        if self.emission.compiler.is_none(){return Err("statement stream is poisoned".into());}
-        let Some(statement)=self.statements.next()else{return Ok(None)};
-        let index=self.emission.next;
-        let result=self.emission.emit_owned_inner(index,&statement);
-        if result.is_err(){self.emission.compiler.take();}
-        result.map(Some)
-    }
-    pub(crate) fn finish(self)->Result<CompileResult,String>{
-        if self.statements.len()!=0{return Err("owned statement stream has pending original statements".into());}
-        self.emission.finish()
-    }
-    #[allow(dead_code)]
-    pub(crate) fn abort(self){}
-}
-
-/// Compiler-private immutable view of the exact prepared manifest. The borrow
-/// prevents source refinement/restoration until emission has finished or aborts.
-/// No independent frontend callback can replace or mutate these iterator nodes.
-pub(crate) struct BorrowedManifestEmission<'a> {
-    emission: StatementEmission,
-    statements: std::slice::Iter<'a,Statement>,
-}
-impl BorrowedManifestEmission<'_> {
-    pub(crate) fn emit_next(&mut self)->Result<Option<StatementProgress>,String>{
-        if self.emission.compiler.is_none(){return Err("statement stream is poisoned".into());}
-        let Some(statement)=self.statements.next()else{return Ok(None)};
-        let index=self.emission.next;
-        let result=self.emission.emit_owned_inner(index,statement);
-        if result.is_err(){self.emission.compiler.take();}
-        result.map(Some)
-    }
-    pub(crate) fn finish(self)->Result<CompileResult,String>{
-        if self.statements.len()!=0{return Err("borrowed statement stream has pending original statements".into());}
-        self.emission.finish()
-    }
-    #[allow(dead_code)]pub(crate) fn abort(self){}
-}
-
 impl Compiler {
     /// Discover semantic/header facts once, then accept independently delivered
     /// normalized statements. No source-unit AST reference survives this call.
     pub fn begin_statement_emission(self, module:&Module)->Result<StatementEmission,String>{
         let prepared=self.begin_emission(module)?;
         StatementEmission::prepare(prepared,module)
-    }
-    /// Compiler-only ownership transfer. Borrow the SAME semantic preparation
-    /// route while sealing actions, then move the untouched original body into
-    /// the private iterator. No independent frontend producer can replace it.
-    pub(crate) fn begin_owned_statement_emission_prepared(self,module:Module,
-        parser:vybe_runtime::registry::ParseFn)->Result<OwnedStatementEmission,String>{
-        let emission={
-            let prepared=self.begin_emission_prepared(&module,parser)?;
-            StatementEmission::prepare_with_origin(prepared,&module,false)?
-        };
-        Ok(OwnedStatementEmission{emission,statements:module.body.into_iter()})
-    }
-    /// Immutable compiler-owned source view; source identity is validated by
-    /// Bundle before entry, using the same normalizer/hoist/action setup.
-    pub(crate) fn begin_borrowed_manifest_emission_prepared<'a>(self,module:&'a Module,
-        parser:vybe_runtime::registry::ParseFn)->Result<BorrowedManifestEmission<'a>,String>{
-        let prepared=self.begin_emission_prepared(module,parser)?;
-        let emission=StatementEmission::prepare_with_origin(prepared,module,false)?;
-        Ok(BorrowedManifestEmission{emission,statements:module.body.iter()})
     }
     /// Registered CaaS entry; preserve the same parser/normalizer admission as
     /// ordinary borrowed prepared compilation, without donating source bodies.
@@ -132,9 +66,6 @@ impl Compiler {
 }
 impl StatementEmission {
     fn prepare(prepared:PreparedEmission<'_>,module:&Module)->Result<Self,String>{
-        Self::prepare_with_origin(prepared,module,true)
-    }
-    fn prepare_with_origin(prepared:PreparedEmission<'_>,module:&Module,independent:bool)->Result<Self,String>{
         let prepared=prepared.into_statement_stream_parts()?;
         let compiler=prepared.compiler;
         let has_partial=module.body.iter().any(|s|matches!(&s.kind,StmtKind::ClassDecl{modifiers,..}if modifiers.is_partial));
@@ -156,7 +87,7 @@ impl StatementEmission {
                     if seen.insert(name.clone()){Action::MergedClass(Box::new(merged.remove(&name).ok_or("missing partial class group")?))}
                     else{Action::MergedDuplicate}
                 }else{Action::Emit}}else{Action::Emit};
-            expected.push(Some(Expected{shape:independent.then(||shape(statement)),action}));
+            expected.push(Some(Expected{shape:shape(statement),action}));
         }
         Ok(Self{compiler:Some(compiler),expected,next:0,
             builtin_signatures:prepared.builtin_signatures,
@@ -183,18 +114,8 @@ impl StatementEmission {
         if self.compiler.is_none(){return Err("statement stream is poisoned".into());}
         if index!=self.next{return Err(format!("statement producer out of order: expected {}, received {index}",self.next));}
         let row=self.expected.get_mut(index).and_then(Option::take).ok_or_else(||format!("unexpected statement producer {index}"))?;
-        let expected=row.shape.ok_or("independent callback cannot consume compiler-owned statement slots")?;
-        if expected!=shape(&statement){return Err(format!("statement producer differs from sealed normalized manifest at {index}"));}
+        if row.shape!=shape(&statement){return Err(format!("statement producer differs from sealed normalized manifest at {index}"));}
         self.emit_action(row.action,&statement,index)
-    }
-    /// Only compiler-private original-manifest iterators reach this method.
-    /// The node is borrowed from the exact vector sealed in preparation.
-    fn emit_owned_inner(&mut self,index:usize,statement:&Statement)->Result<StatementProgress,String>{
-        if self.compiler.is_none(){return Err("statement stream is poisoned".into());}
-        if index!=self.next{return Err("owned statement order mismatch".into());}
-        let row=self.expected.get_mut(index).and_then(Option::take).ok_or("unexpected owned statement")?;
-        if row.shape.is_some(){return Err("owned iterator cannot consume independent callback slots".into());}
-        self.emit_action(row.action,statement,index)
     }
     fn emit_action(&mut self,action:Action,statement:&Statement,index:usize)->Result<StatementProgress,String>{
         let compiler=self.compiler.as_ref().unwrap();

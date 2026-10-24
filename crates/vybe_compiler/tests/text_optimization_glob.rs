@@ -57,8 +57,7 @@ fn runtime() -> VM {
 }
 fn validate(chunks: &[Chunk]) -> usize {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     bytes.len()
 }

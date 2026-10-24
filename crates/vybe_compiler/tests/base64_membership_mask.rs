@@ -97,8 +97,7 @@ fn exhaustive_units_and_size() {
                     include_vybe_metadata: false,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
             native_export::export_chunks(&cs, &format!("base64-membership-{url}-{fast}"));
             // Preserve the primitive's import-free numeric-body contract too.
@@ -106,8 +105,7 @@ fn exhaustive_units_and_size() {
             raw.func_sig = Some(("i32".into(), "i32".into()));
             assert!(raw.imports.is_empty());
             let raw_bytes = vybe_platform_wasm::write_wasm(&[raw.clone()]);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&raw_bytes)
+            vybe_platform_wasm::validate_binary(&raw_bytes)
                 .unwrap();
             native_export::export_chunks(&[raw], &format!("base64-membership-raw-{url}-{fast}"));
             sizes.push(serde_json::json!({"body":cs[1].code.len(),"locals":cs[1].local_count,"native":bytes.len(),"raw_native":raw_bytes.len()}));

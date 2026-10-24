@@ -692,9 +692,30 @@ impl Compiler {
         if self.lookup_array_binding(name).is_some() {
             return;
         }
+        // A DESCRIPTIVE declaration documents the value and never mutates it
+        // (Python's annotations): `x: int = 0; x = 3.7` keeps `3.7`.
+        if self
+            .lookup_var_declared(name)
+            .is_some_and(|declared| declared.binding == vybe_ast::TypeBinding::Descriptive)
+        {
+            return;
+        }
         let Some(type_hint) = self.lookup_var_type_hint(name).map(str::to_string) else {
             return;
         };
+        // A width the language declares 64-bit is carried exactly by its
+        // operations and casts; narrowing the stored value to an i32 would
+        // truncate it.
+        if self.profile.integer_cast_widths.get(self.canon_lookup(type_hint.trim()).as_ref())
+            .is_some_and(|width| width.bits == Some(64))
+        {
+            return;
+        }
+        // An unsigned 32-bit width holds values past i32::MAX; it wraps
+        // modulo 2^32 instead of passing through a signed i32.
+        let unsigned32 = self.profile.integer_cast_widths
+            .get(self.canon_lookup(type_hint.trim()).as_ref())
+            .is_some_and(|width| width.bits == Some(32) && !width.signed);
         let normalized = Self::normalize_type_hint(&type_hint);
         let integer = match normalized.as_str() {
             "integer" | "int" | "int32" | "longint" | "long" | "int64" | "short" | "int16"
@@ -716,7 +737,10 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         let number_idx = self.import("ecma:number", "Number");
         self.emit_host_call(number_idx, 1);
-        if integer {
+        if unsigned32 {
+            self.emit(Op::F64_TRUNC);
+            self.emit_c_unsigned_wrap(4294967296.0);
+        } else if integer {
             common::convert::emit_to_int(self.chunk(), line);
             let boxed = self.import("wasm:js-number", "fromI32");
             self.emit_host_call(boxed, 1);
@@ -1174,7 +1198,7 @@ mod assignment_coercion_tests {
                 crate::primitives::globals::declare_free_globals(&mut compiler.chunks);
                 crate::primitives::globals::normalize_global_table(&mut compiler.chunks);
                 let native=vybe_platform_wasm::write_wasm(&compiler.chunks);
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&native).unwrap();
+                vybe_platform_wasm::validate_binary(&native).unwrap();
                 let mut vm=VM::new();crate::primitives::platforms::register_platforms_all(&mut vm);
                 let actual=vm.run(compiler.chunks).unwrap();
                 let expected=if matches!(input,Value::Null){Value::Null}else {let n=if let Value::String(_) = input {42.0}else{input.as_f64()};if integer{Value::I32(n as i32)}else{Value::F64(n)}};

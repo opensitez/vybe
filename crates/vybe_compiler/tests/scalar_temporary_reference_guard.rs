@@ -135,8 +135,7 @@ fn ordinary_complete_native_modules_strict() {
     for old in [true, false] {
         let chunks = module(old, false);
         let wasm = vybe_platform_wasm::write_wasm(&chunks);
-        let result = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&wasm);
+        let result = vybe_platform_wasm::validate_binary(&wasm);
         if let Err(e) = result {
             errors.push(format!("old={old} ordinary: {e}"));
         }

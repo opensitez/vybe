@@ -7,7 +7,10 @@ use vybe_ast::{
 };
 use vybe_ast::{Directives, WordLocalTransport};
 mod subset;
-pub use subset::{RejectedBinding, Rejection, SubsetProof, prove_subset};
+pub use subset::{
+    NativeBindingProof, NativeSubsetProof, RejectedBinding, Rejection, SubsetProof,
+    prove_native_subset, prove_subset,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingProof {

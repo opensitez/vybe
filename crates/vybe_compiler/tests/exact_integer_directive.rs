@@ -76,8 +76,7 @@ fn run(chunks: Vec<Chunk>) -> Value {
             include_name_section: true,
         },
     );
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     let mut vm = VM::new();
     vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);

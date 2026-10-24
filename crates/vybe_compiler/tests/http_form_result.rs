@@ -41,9 +41,7 @@ fn empty(v: &Value) -> bool {
 }
 #[test]
 fn complete_request_parser_native_validation() {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(&program()))
-        .unwrap();
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&program())).unwrap();
 }
 #[test]
 fn actual_wasi_requests_both_map_branches_and_memoised_identity() {

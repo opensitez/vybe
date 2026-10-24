@@ -197,10 +197,9 @@ fn values_sizes_channels() {
                 },
             );
             let validation =
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&bytes)
+                vybe_platform_wasm::validate_binary(&bytes)
                     .map(|_| "valid".to_owned())
-                    .unwrap_or_else(|e| e.message().to_owned());
+                    .unwrap_or_else(|e| e.message);
             assert_eq!(validation, "valid");
             if std::env::var_os("VYBE_CHANNEL_COMPARE_EXPORT").is_some() {
                 let label = if kind == 0 {

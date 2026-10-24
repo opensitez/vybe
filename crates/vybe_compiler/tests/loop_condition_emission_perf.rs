@@ -75,8 +75,7 @@ fn direct_conditions_preserve_dynamic_range_comparisons_and_results() {
         let old = program(true, values.len() as u8, inclusive);
         let new = program(false, values.len() as u8, inclusive);
         for chunks in [&old, &new] {
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
                 .unwrap();
         }
         let a = items(vm(&values).run(old).unwrap());

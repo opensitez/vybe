@@ -1,6 +1,6 @@
 use vybe_compiler::primitives;
 use vybe_runtime::{Chunk, Op, Value, VM};
-fn module() -> Vec<Chunk> {
+fn unfinalized_module() -> Vec<Chunk> {
     let mut c = vec![Chunk::new("allocator-owner"), Chunk::new("allocator-call")];
     c[0].memory_min_pages.push(1);
     c[1].arity = 1; c[1].param_count = 1; c[1].local_count = 1;
@@ -21,25 +21,31 @@ fn module() -> Vec<Chunk> {
     c[1].emit_op_u16(Op::LOCAL_GET, ptr, 0); c[1].emit_op(Op::RETURN, 0);
     primitives::functions::emit_ref_func(&mut c[0], 1, 0, 0);
     c[0].emit_op(Op::RETURN, 0);
+    c
+}
+fn module() -> Vec<Chunk> {
+    let mut c = unfinalized_module();
     primitives::globals::declare_free_globals(&mut c);
-    primitives::globals::normalize_global_table(&mut c); c
+    primitives::globals::normalize_global_table(&mut c);
+    c
 }
 #[test]
 fn reserved_allocator_lane_complete_native_module() {
     let c=module(); let bytes=vybe_platform_wasm::write_wasm(&c);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let mut seen=false;
-    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-        if let wasmparser::Payload::CodeSectionEntry(body)=payload.unwrap() {
-            for row in body.get_locals_reader().unwrap() {let (_,ty)=row.unwrap(); seen |= ty==wasmparser::ValType::I64;}
-        }
-    }
+    vybe_platform_wasm::inspection::CoreModule::new(&bytes).unwrap().function_bodies(|body| {
+        body.locals(|_, ty| {
+            seen |= ty == vybe_platform_wasm::inspection::NativeValueType::I64;
+            Ok(())
+        })
+    }).unwrap();
     assert!(seen,"native raw i64 local declaration retained");
 }
 
 #[test]
 fn allocator_raw_lane_does_not_retype_reclaimed_value_slots() {
-    let mut chunks = module();
+    let mut chunks = unfinalized_module();
     let chunk = &mut chunks[1];
     chunk.code.clear();
     chunk.i64_locals.clear();
@@ -54,9 +60,10 @@ fn allocator_raw_lane_does_not_retype_reclaimed_value_slots() {
     assert!(chunk.i64_scratch_slot.unwrap() >= prior_peak);
     chunk.emit_op_u16(Op::LOCAL_GET, ptr, 0);
     chunk.emit_op(Op::RETURN, 0);
+    primitives::globals::declare_free_globals(&mut chunks);
+    primitives::globals::normalize_global_table(&mut chunks);
     let bytes = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
 }
 #[test]
 fn empty_small_and_multi_page_allocations_preserve_bump_and_alignment() {

@@ -62,8 +62,7 @@ fn character_caching_preserves_existing_distance_and_unicode_contracts() {
     }
     for old in [true, false] {
         let chunks = program(old, 2);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
     }
 }
@@ -159,8 +158,7 @@ fn repeated_distance_calls_share_one_valid_helper() {
     let old_bytes = vybe_platform_wasm::write_wasm(&old);
     let new_bytes = vybe_platform_wasm::write_wasm(&new);
     for bytes in [&old_bytes, &new_bytes] {
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(bytes)
+        vybe_platform_wasm::validate_binary(bytes)
             .unwrap();
     }
     assert!(new[0].code.len() < old[0].code.len() / 10);
@@ -204,8 +202,7 @@ fn wide_unicode_distance_execution_benchmark() {
 }
 
 fn validate_private_distance(chunks: &[Chunk]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
         .unwrap();
 }
 fn alias_distance_program(old: bool, body_name_collision: bool) -> Vec<Chunk> {

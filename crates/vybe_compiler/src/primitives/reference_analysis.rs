@@ -11,6 +11,7 @@ struct Frame {
     function: bool,
 }
 
+#[cfg(test)]
 pub(super) fn module_address_taken(
     body: &[Statement],
     fold: Option<CaseAlphabet>,

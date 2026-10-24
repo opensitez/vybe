@@ -1,10 +1,10 @@
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use vybe_compiler::primitives::{bundle, globals, platforms, random};
 use vybe_runtime::value::{Object, ObjectKind};
-use vybe_runtime::{Chunk, Op, Value, VM};
+use vybe_runtime::{Chunk, Op, VM, Value};
 
 #[path = "fixtures/random_optimization_baseline.rs"]
 mod baseline;
@@ -90,70 +90,13 @@ fn runtime(state: Value, input: Value, count: Value) -> VM {
     vm.set_global("count", count);
     vm
 }
+#[path = "fixtures/native_validation_diagnostic.rs"]
+mod native_validation_diagnostic;
+
 fn validate(chunks: &[Chunk]) {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-    {
-        let mut names = std::collections::BTreeMap::new();
-        let named_bytes = vybe_platform_wasm::write_wasm_with_options(
-            chunks,
-            vybe_platform_wasm::WasmWriteOptions {
-                include_name_section: true,
-                ..Default::default()
-            },
-        );
-        for payload in wasmparser::Parser::new(0).parse_all(&named_bytes) {
-            if let wasmparser::Payload::CustomSection(section) = payload.unwrap() {
-                if let wasmparser::KnownCustom::Name(reader) = section.as_known() {
-                    for name in reader {
-                        if let wasmparser::Name::Function(map) = name.unwrap() {
-                            for entry in map {
-                                let entry = entry.unwrap();
-                                names.insert(entry.index, entry.name.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let mut first_defined = 0;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let wasmparser::Payload::ImportSection(section) = payload.unwrap() {
-                for import in section.into_imports() {
-                    if matches!(
-                        import.unwrap().ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                    ) {
-                        first_defined += 1;
-                    }
-                }
-            }
-        }
-        let mut function = first_defined;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-                if body.range().contains(&error.offset()) {
-                    eprintln!(
-                        "native failure function={} name={:?} range={:?} error={error}",
-                        function,
-                        names.get(&function),
-                        body.range()
-                    );
-                    let mut operators = body.get_operators_reader().unwrap();
-                    while !operators.eof() {
-                        let (operator, offset) = operators.read_with_offset().unwrap();
-                        if offset + 100 >= error.offset() && offset <= error.offset() + 30 {
-                            eprintln!("  wasm@{offset}: {operator:?}");
-                            if let wasmparser::Operator::Call { function_index } = operator {
-                                eprintln!("    target={:?}", names.get(&function_index));
-                            }
-                        }
-                    }
-                }
-                function += 1;
-            }
-        }
+    if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
+        native_validation_diagnostic::report(chunks, &bytes, &error, 100, 30);
         panic!("native module rejected: {error}");
     }
 }
@@ -341,7 +284,9 @@ fn source_alias_program(callable_kind: u8) -> Vec<Chunk> {
         2 => "draw = lambda: __py_random_r()\nanswers = [draw(), draw()]\n",
         _ => unreachable!(),
     };
-    let source = format!("def __stdlib_random_next_unit():\n    return 42.0\n__vybe_random_next_unit = __stdlib_random_next_unit\nalias_answer = __vybe_random_next_unit()\n{draw}");
+    let source = format!(
+        "def __stdlib_random_next_unit():\n    return 42.0\n__vybe_random_next_unit = __stdlib_random_next_unit\nalias_answer = __vybe_random_next_unit()\n{draw}"
+    );
     let mut module = vybe_language_python::parse(&source).unwrap();
     module
         .body
@@ -368,10 +313,12 @@ fn source_entropy_alias_preserves_user_function_draws_and_final_state() {
         eprintln!("random source callable_kind={callable_kind} (0=root, 1=function, 2=lambda)");
         let mut chunks = source_alias_program(callable_kind);
         validate(&chunks);
-        assert!(!chunks[0]
-            .global_inits
-            .iter()
-            .any(|init| init.name == "__vybe_random_next_unit"));
+        assert!(
+            !chunks[0]
+                .global_inits
+                .iter()
+                .any(|init| init.name == "__vybe_random_next_unit")
+        );
         assert_eq!(
             chunks
                 .iter()
@@ -407,10 +354,12 @@ fn zero_argument_private_entropy_reserves_only_one_valid_marker_slot() {
         }
     }
     assert_eq!(chunks[0].local_count, 1);
-    assert!(chunks[0]
-        .local_names
-        .iter()
-        .all(|local| local.slot < chunks[0].local_count));
+    assert!(
+        chunks[0]
+            .local_names
+            .iter()
+            .all(|local| local.slot < chunks[0].local_count)
+    );
     chunks[0].emit_op(Op::RETURN, 1);
     bundle::finalize_with_runtime_helpers_excluding(&mut chunks, &["__stdlib_random_next_unit"]);
     globals::declare_free_globals(&mut chunks);

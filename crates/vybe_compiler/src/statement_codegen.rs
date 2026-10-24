@@ -70,7 +70,6 @@ pub(crate) fn selected(parser:ParseFn)->Option<Binding>{
 #[derive(Clone)]
 pub struct Production {source:Arc<str>,binding:Binding,context:Option<ProducerContext>}
 impl Production {
-    pub(crate) fn capture(parser:ParseFn,source:&str)->Option<Self>{selected(parser)?.capture(source,None)}
     pub(crate) fn is_owned(&self)->bool{matches!(self.binding.hooks,Hooks::PreparedOwned(_))}
     pub(crate) fn validate_owned(self)->Result<(),String>{
         match self.binding.hooks {

@@ -26,8 +26,7 @@ fn program(old: bool) -> Vec<Chunk> {
     bundle::finalize_with_runtime_helpers(&mut chunks);
     globals::declare_free_globals(&mut chunks);
     globals::normalize_global_table(&mut chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
         .unwrap();
     chunks
 }
@@ -89,8 +88,7 @@ fn byte_copy_has_one_private_body_and_preserves_backings() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let mut vm = runtime();
     let callable = vm.run(chunks).unwrap();
     vm.memory.with_buffer_mut(|memory| memory[8..12].copy_from_slice(&[1, 0, 255, 4]));
@@ -135,8 +133,7 @@ fn linear_i64_store_keeps_native_bits_and_assignment_result() {
                 include_vybe_metadata: false,
                 include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         let mut vm = runtime();
         assert_eq!(vm.run(chunks).unwrap(), Value::I32(word as i32));
         vm.memory.with_buffer(|memory| {
@@ -167,8 +164,7 @@ fn pointer_output_store_preserves_stack_for_cell_and_container_references() {
             include_vybe_metadata: false,
             include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     let cell = object(&[
         (pointers::REF_KIND_KEY, Value::String(pointers::CELL_KIND.into())),
         (pointers::REF_VALUE_KEY, Value::I32(0)),

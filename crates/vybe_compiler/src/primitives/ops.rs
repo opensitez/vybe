@@ -373,23 +373,22 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
 }
 
 /// Both operands have been evaluated; one is a known null literal.
-/// Keep only the other operand, preserving the evaluation order.
-fn retain_other_null_operand(chunk: &mut Chunk, null_on_left: bool, line: u32) {
+/// Retain the other operand in one private local, preserving evaluation order.
+fn retain_other_null_operand(chunk: &mut Chunk, null_on_left: bool, line: u32) -> u16 {
+    let value = alloc_locals(chunk, 1);
     if null_on_left {
-        let value = alloc_locals(chunk, 1);
         save(chunk, value, line);
         chunk.emit_op(Op::DROP, line);
-        load(chunk, value, line);
     } else {
         chunk.emit_op(Op::DROP, line);
+        save(chunk, value, line);
     }
+    value
 }
 
 /// Specialize the nullish arms of emit_dyn_eq for a literal null operand.
 pub fn emit_dyn_eq_null_operand(chunk: &mut Chunk, null_on_left: bool, line: u32) {
-    retain_other_null_operand(chunk, null_on_left, line);
-    let value = alloc_locals(chunk, 1);
-    save(chunk, value, line);
+    let value = retain_other_null_operand(chunk, null_on_left, line);
     emit_slot_is_null_or_undefined(chunk, value, line);
 }
 
@@ -570,9 +569,7 @@ fn emit_slot_is_null_only(chunk: &mut Chunk, slot: u16, line: u32) {
 
 /// Specialize strict ECMA equality against null, excluding undefined.
 pub fn emit_js_strict_eq_null_operand(chunk: &mut Chunk, null_on_left: bool, line: u32) {
-    retain_other_null_operand(chunk, null_on_left, line);
-    let value = alloc_locals(chunk, 1);
-    save(chunk, value, line);
+    let value = retain_other_null_operand(chunk, null_on_left, line);
     emit_slot_is_null_only(chunk, value, line);
 }
 
@@ -758,11 +755,18 @@ fn emit_dyn_cmp_inline(chunk: &mut Chunk, line: u32, op: CmpOp) {
     chunk.emit_op(i32_cmp_op(&op), line);
     chunk.emit_else(line);
 
-    // both bigint?
+    // A BigInt against a BigInt or a Number compares by mathematical value
+    // (ECMA-262 §7.2.13 IsLessThan steps 3-4); both Numbers took the arm above.
     load(chunk, a_slot, line);
     call1(chunk, test_bigint, line);
+    load(chunk, a_slot, line);
+    call1(chunk, test_num, line);
+    chunk.emit_op(Op::I32_OR, line);
     load(chunk, b_slot, line);
     call1(chunk, test_bigint, line);
+    load(chunk, b_slot, line);
+    call1(chunk, test_num, line);
+    chunk.emit_op(Op::I32_OR, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if_i32(line);
     load(chunk, a_slot, line);
@@ -1051,12 +1055,16 @@ pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
 /// Separate entry point rather than a new parameter on `emit_dyn_add`: that
 /// one has 140-odd callers, almost all of them internal emits adding numbers,
 /// and none of them wants to answer a question about Booleans.
+///
+/// `exact_words` says the region carries 64-bit integers as exact BigInt
+/// values (`WideIntegerTransport::Exact`), so a concat operand may be one.
 pub fn emit_dyn_add_with_bool_text(
     chunk: &mut Chunk,
     bool_text: Option<vybe_ast::BoolText>,
+    exact_words: bool,
     line: u32,
 ) {
-    emit_dyn_add_inner(chunk, line, false, false, bool_text);
+    emit_dyn_add_inner(chunk, line, false, false, bool_text, exact_words);
 }
 
 /// Render the non-string operand of a legacy shared-helper string addition.
@@ -1064,7 +1072,7 @@ pub fn emit_dyn_add_with_bool_text(
 /// numeric/Boolean/null/undefined rendering and strict error behavior; this
 /// is not the language-level String constructor or a new coercion policy.
 pub fn emit_add_string_operand_from_local(chunk: &mut Chunk, slot: u16, line: u32) {
-    emit_add_operand_as_string(chunk, slot, false, None, line);
+    emit_add_operand_as_string(chunk, slot, false, None, false, line);
 }
 
 /// Push operand `slot` coerced to a string, for the concat arm of `+`.
@@ -1077,6 +1085,7 @@ fn emit_add_operand_as_string(
     slot: u16,
     known_num: bool,
     bool_text: Option<vybe_ast::BoolText>,
+    exact_words: bool,
     line: u32,
 ) {
     let str_from_f64 = chunk.add_import("wasm:js-string", "fromF64");
@@ -1096,6 +1105,17 @@ fn emit_add_operand_as_string(
     load(chunk, slot, line);
     call1(chunk, str_cast, line);
     chunk.emit_else(line);
+    // ECMA §7.1.17 ToString(BigInt) is the decimal digits, not ToNumber.
+    if exact_words {
+        let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+        let bigint_to_string = chunk.add_import("ecma:bigint", "toString");
+        load(chunk, slot, line);
+        call1(chunk, test_bigint, line);
+        chunk.emit_if_value(line);
+        load(chunk, slot, line);
+        call1(chunk, bigint_to_string, line);
+        chunk.emit_else(line);
+    }
     // ⛔ A BOOLEAN IS NOT A NUMBER HERE. Without this arm the ToNumber ladder
     // below turns `true` into `1.0` and the concat reads `1` — which is what
     // every C# `bool` in a string printed. `Directives::bool_text` says how the
@@ -1119,6 +1139,9 @@ fn emit_add_operand_as_string(
     } else {
         emit_js_to_number_f64(chunk, slot, to_f64, test_bool, cast_bool, line);
         call1(chunk, str_from_f64, line);
+    }
+    if exact_words {
+        chunk.emit_end(line);
     }
     chunk.emit_end(line);
 }
@@ -1171,7 +1194,7 @@ fn emit_add_operand_as_f64(chunk: &mut Chunk, slot: u16, known_num: bool, line: 
 /// by no caller and covered by no test — whoever wires `compile_binop_operands`
 /// through here is their first user and should verify them.
 pub fn emit_dyn_add_known(chunk: &mut Chunk, line: u32, a_known_num: bool, b_known_num: bool) {
-    emit_dyn_add_inner(chunk, line, a_known_num, b_known_num, None);
+    emit_dyn_add_inner(chunk, line, a_known_num, b_known_num, None, false);
 }
 
 fn emit_dyn_add_inner(
@@ -1180,6 +1203,7 @@ fn emit_dyn_add_inner(
     a_known_num: bool,
     b_known_num: bool,
     bool_text: Option<vybe_ast::BoolText>,
+    exact_words: bool,
 ) {
     let slots = alloc_locals(chunk, 2);
     let b_slot = slots;
@@ -1227,8 +1251,8 @@ fn emit_dyn_add_inner(
         chunk.emit_op(Op::I32_OR, line); // i32: 1 if either is string
     }
     chunk.emit_if_value(line);
-    emit_add_operand_as_string(chunk, a_slot, a_known_num, bool_text, line);
-    emit_add_operand_as_string(chunk, b_slot, b_known_num, bool_text, line);
+    emit_add_operand_as_string(chunk, a_slot, a_known_num, bool_text, exact_words, line);
+    emit_add_operand_as_string(chunk, b_slot, b_known_num, bool_text, exact_words, line);
     call2(chunk, str_concat, line);
 
     chunk.emit_else(line);
@@ -1362,9 +1386,7 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_op(Op::I32_AND, line);
     code.emit_if_i32(line);
     load(code, a_slot, line);
-    call1(code, to_f64, line);
     load(code, b_slot, line);
-    call1(code, to_f64, line);
     code.emit_op(Op::F64_EQ, line);
     code.emit_else(line);
 
@@ -1492,9 +1514,7 @@ pub fn emit_dyn_eq_i32_literal(chunk: &mut Chunk, literal: i32, line: u32) {
     let test = chunk.add_import("wasm:js-number", "test");
     call1(chunk, test, line);
     chunk.emit_if_i32(line);
-    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
     load(chunk, a, line);
-    call1(chunk, to_f64, line);
     chunk.emit_f64_const(f64::from(literal), line);
     chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_else(line);
@@ -1971,6 +1991,14 @@ pub fn benchmark_with_comparison_slots<R>(reuse: bool, build: impl FnOnce() -> R
     let _restore = Restore(COMPARISON_SLOTS_REUSE.with(|v| v.replace(reuse)));
     build()
 }
+
+#[cfg(test)]
+#[path = "ops_numeric_equality_tests.rs"]
+mod numeric_equality_tests;
+
+#[cfg(test)]
+#[path = "ops_null_equality_tests.rs"]
+mod null_equality_tests;
 
 pub fn build_dyn_comparison(name: &str) -> Chunk {
     let mut chunk = Chunk::new(name);

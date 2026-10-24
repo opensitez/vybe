@@ -1,5 +1,5 @@
 use vybe_ast::FloatLane;
-use vybe_runtime::{Chunk,Op};
+use vybe_runtime::{Chunk, Op};
 const MIN_SUBNORMAL: f64 = 5e-324;
 
 /// Smallest positive f32 subnormal — bit pattern 1 in the 32-bit lane.
@@ -36,7 +36,11 @@ fn emit_next_toward_from_slot(chunk: &mut Chunk, x: u16, up: bool, lane: FloatLa
 
 // x is ordered and is not the infinity in the travelled direction.
 fn emit_finite_next_toward_from_slot(
-    chunk: &mut Chunk, x: u16, up: bool, lane: FloatLane, line: u32,
+    chunk: &mut Chunk,
+    x: u16,
+    up: bool,
+    lane: FloatLane,
+    line: u32,
 ) {
     // ±0 both step to the smallest subnormal of the travelled sign — the bit
     // pattern is NOT contiguous across the sign bit, so this cannot be a ±1.
@@ -126,4 +130,3 @@ pub fn emit_ulp(chunk: &mut Chunk, lane: FloatLane, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     chunk.emit_op(Op::F64_SUB, line);
 }
-

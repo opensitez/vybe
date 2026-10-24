@@ -208,7 +208,7 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line); // +Infinity
     chunk.emit_end(line); // NaN
     chunk.emit_else(line); // non-number
-                           // Keep the DOM/SimpleXML text conversion used by explicit PHP casts.
+    // Keep the DOM/SimpleXML text conversion used by explicit PHP casts.
     let text_key = vybe_compiler::primitives::class_slots::resolve(
         &vybe_compiler::primitives::class_slots::ClassSlot::internal("textContent"),
         &vybe_compiler::primitives::class_slots::PlainNames,

@@ -154,6 +154,12 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
             c.emit_op(Op::I32_EQZ, LINE);
         });
         chunks[idx].emit_end(LINE);
+        // An aggregate whose declaration never asked for value storage. This
+        // field read answers most values, so it runs before the host query.
+        bail_if(chunks, &|c| {
+            records::emit_is_value_copy(c, value, LINE);
+            c.emit_op(Op::I32_EQZ, LINE);
+        });
         // A function or closure. Map-backed like everything else, but a
         // reference by nature — deep-copying one shreds it.
         bail_if(chunks, &|c| {
@@ -179,11 +185,6 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
             // ABI. Unbox that proven Number before the native Wasm i32 IF.
             let to_i32 = c.add_import("wasm:js-number", "toI32");
             c.emit_call(to_i32, 1, LINE);
-        });
-        // An aggregate whose declaration never asked for value storage.
-        bail_if(chunks, &|c| {
-            records::emit_is_value_copy(c, value, LINE);
-            c.emit_op(Op::I32_EQZ, LINE);
         });
     }
     chunks[idx].emit_end(LINE);

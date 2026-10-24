@@ -121,7 +121,7 @@ fn substitute(old: &[Chunk], n: u8) -> Vec<Chunk> {
         decoded.iter().any(|(p, _)| *p == end),
         "exact end instruction boundary"
     );
-    assert_eq!(original.lines[start..end], frozen.lines);
+    assert_eq!(original.lines[start..end], frozen.lines[..]);
     // The replacement has zero net structural depth and no outward branches.
     // Preserve all prefix/suffix bytes; suffix contains no absolute jump operand.
     assert!(
@@ -300,8 +300,7 @@ fn parse(src: &str) -> Vec<Chunk> {
 fn native_pair(old: &[Chunk], new: &[Chunk], label: &str) {
     let validate = |chunks: &[Chunk]| {
         let b = vybe_platform_wasm::write_wasm(chunks);
-        let r = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&b)
+        let r = vybe_platform_wasm::validate_binary(&b)
             .map(|_| ())
             .map_err(|e| e.to_string());
         (b, r)
@@ -387,8 +386,7 @@ fn actual_js_path_join_invalid_early_argument_keeps_all_argument_evaluation_befo
 fn export_actual_js_path_join_native_source_diagnostic() {
     let chunks = parse(&source(16, false, None));
     let bytes = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .expect("full actual JS source strict native validation");
     let dir = std::path::Path::new(file!())
         .parent()

@@ -25,18 +25,30 @@ fn reload_vm_module(simd:bool,bounded:bool,preceding:usize)->Vec<Chunk> {
  let mut chunks=algorithm::reload_vm_module(false,bounded,preceding);if simd {replace_scan(&mut chunks,1,bounded);}chunks
 }
 #[test]
-fn complete_scans_validate_as_standard_wasm(){
- for simd in [false,true] {for bounded in [false,true] {
-  let chunks=native_module(simd,bounded);let bytes=vybe_platform_wasm::write_wasm(&chunks);
-  if let Err(error)=wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes) {
-   let offset=error.offset();eprintln!("native simd={simd} bounded={bounded} error={error}");
-   for payload in wasmparser::Parser::new(0).parse_all(&bytes) {if let wasmparser::Payload::CodeSectionEntry(body)=payload.unwrap() {
-    let mut reader=body.get_operators_reader().unwrap();while !reader.eof(){let (op,at)=reader.read_with_offset().unwrap();if at+50>=offset&&at<offset+30 {eprintln!("{at}: {op:?}");}}
-   }}
-  }
-  wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).unwrap();
-  let path=std::env::var_os("VYBE_SCAN_NATIVE_OUTPUT").map(std::path::PathBuf::from);if let Some(path)=path {std::fs::write(path.join(format!("inline-scan-{}-{}.wasm",simd,bounded)),bytes).unwrap();}
- }}
+fn complete_scans_validate_as_standard_wasm() {
+    for simd in [false, true] {
+        for bounded in [false, true] {
+            let chunks = native_module(simd, bounded);
+            let bytes = vybe_platform_wasm::write_wasm(&chunks);
+            if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
+                eprintln!("native simd={simd} bounded={bounded} error={error}");
+                vybe_platform_wasm::inspection::CoreModule::new(&bytes).unwrap().function_bodies(|body| {
+                    for instruction in body.instructions()? {
+                        let instruction = instruction?;
+                        if error.offset().is_some_and(|offset|
+                            instruction.offset + 50 >= offset && instruction.offset < offset + 30) {
+                            eprintln!("{}: {instruction:?}", instruction.offset);
+                        }
+                    }
+                    Ok(())
+                }).unwrap();
+                panic!("{error}");
+            }
+            if let Some(path) = std::env::var_os("VYBE_SCAN_NATIVE_OUTPUT").map(std::path::PathBuf::from) {
+                std::fs::write(path.join(format!("inline-scan-{simd}-{bounded}.wasm")), bytes).unwrap();
+            }
+        }
+    }
 }
 #[test]
 fn scalar_and_simd_scans_keep_limits_nuls_and_boundary_traps(){
@@ -77,7 +89,7 @@ fn inline_scan_accepts_complete_wide_definition_tables(){
   let helpers:Vec<_>=chunks.iter().enumerate().filter(|(_,c)|c.name.starts_with("primitive.cstring_scan")||c.name=="primitive.zero_mask_16").collect();
   assert!(helpers.is_empty(),"this variant emits the vector island in the caller, with no helper edges");
   let bytes=vybe_platform_wasm::write_wasm(&chunks);
-  wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).unwrap();
+  vybe_platform_wasm::validate_binary(&bytes).unwrap();
   let mut vm=VM::new();let f=vm.run(chunks).unwrap();
   vm.memory.with_buffer_mut(|m|{m[..81].fill(0x91);m[80]=0;});
   let args=if bounded {vec![Value::I32(0),Value::I32(81)]} else {vec![Value::I32(0)]};
@@ -92,7 +104,7 @@ fn scan_helpers_preserve_near_limit_recursive_callers(){
   for simd in [false,true] {
    let chunks=deep_vm_module(simd);
    let bytes=vybe_platform_wasm::write_wasm(&chunks);
-   wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).unwrap();
+   vybe_platform_wasm::validate_binary(&bytes).unwrap();
    let mut vm=VM::new();let f=vm.run(chunks).unwrap();vm.memory.with_buffer_mut(|m|{m[..65].fill(0x91);m[64]=0;});
    outcomes.push(vm.invoke(&f,&[Value::I32(depth)]).map(|v|v.as_f64()).map_err(|e|e.to_string()));
   }
@@ -111,7 +123,7 @@ fn retained_scan_callers_survive_supported_same_structure_reload(){
   let args=if bounded {vec![Value::I32(0),Value::I32(81)]} else {vec![Value::I32(0)]};
   assert_eq!(vm.invoke(&f,&args).unwrap().as_f64(),80.0);
   let replacement=reload_vm_module(simd,bounded,0);
-  wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&vybe_platform_wasm::write_wasm(&replacement)).unwrap();
+  vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&replacement)).unwrap();
   vm.set_reload_hook(Box::new(move |_|Ok(replacement.clone())));vm.debug_reload().unwrap();
   assert_eq!(vm.invoke(&f,&args).unwrap().as_f64(),80.0);
   vm.memory.with_buffer_mut(|m|m[4]=0);assert_eq!(vm.invoke(&f,&args).unwrap().as_f64(),4.0);
@@ -134,8 +146,8 @@ fn inline_scan_preserves_u16_local_boundary_and_high_native_frames(){
   if simd {chunks[1].emit_op_u16(Op::LOCAL_GET,len,1);chunks[1].emit_op(Op::RETURN,1);}
   assert_eq!(chunks[1].local_count,frame);
   let bytes=vybe_platform_wasm::write_wasm(&chunks);
-  let native=wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes);
-  if frame==49_900 {native.unwrap();} else {assert!(native.err().expect("original native resource cap").to_string().contains("locals exceed maximum"),"retain the same wasmparser50000 resource limit on both graphs");}
+  let native=vybe_platform_wasm::validate_binary(&bytes);
+  native.unwrap();
   let mut vm=VM::new();let f=vm.run(chunks).unwrap();vm.memory.with_buffer_mut(|m|{m[..65].fill(0x91);m[64]=0;});assert_eq!(vm.invoke(&f,&[Value::I32(0)]).unwrap().as_f64(),64.0);
  }}
 }

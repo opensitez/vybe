@@ -691,9 +691,18 @@ impl Compiler {
                 | UnaryOp::Void | UnaryOp::Delete, .. })
     }
 
+    /// [`Self::expression_emits_nonreference_temporary`], or a read of a name
+    /// whose read leaves a plain value: a frame local that holds plain values
+    /// only, or a name whose read already dereferences an alias reference.
+    pub(super) fn expression_reads_nonreference_value(&self, expr: &vybe_ast::Expression) -> bool {
+        Self::expression_emits_nonreference_temporary(expr)
+            || matches!(&expr.kind, vybe_ast::ExprKind::Ident(name)
+                if self.ident_reads_plain_local(name) || self.ident_read_dereferences(name))
+    }
+
     /// Preserve scratch ownership/release timing while omitting unreachable
     /// aggregate probing. Use only after an exact nonreference producer proof.
-    fn emit_nonreference_temporary_deref(&mut self) {
+    pub(super) fn emit_nonreference_temporary_deref(&mut self) {
         let line = self.line;
         crate::primitives::references::emit_nonreference_temporary_to_stack(
             &mut self.chunks, self.current, line,
@@ -720,6 +729,22 @@ impl Compiler {
         &mut self,
         cond: &vybe_ast::Expression,
     ) -> Result<(), String> {
+        // `c ? true : false` as a condition is the truth of `c` itself.
+        if let vybe_ast::ExprKind::Ternary { cond: inner, then, else_ } = &cond.kind
+            && matches!(then.kind, vybe_ast::ExprKind::Lit(vybe_ast::Literal::Bool(true)))
+            && matches!(else_.kind, vybe_ast::ExprKind::Lit(vybe_ast::Literal::Bool(false)))
+        {
+            return self.compile_condition_to_i32(inner);
+        }
+        // A `bool` element of a typed array is stored as its i32 condition.
+        if self.typed_array_bool_read(cond)
+            && let vybe_ast::ExprKind::Call { callee, args, .. } = &cond.kind
+            && let vybe_ast::ExprKind::Ident(name) = &callee.kind
+            && let Some((op, element)) = self.typed_array_op(name)
+        {
+            let args: Vec<&vybe_ast::Expression> = args.iter().map(|arg| &arg.value).collect();
+            return self.compile_typed_array_word(op, element, &args);
+        }
         if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
             && !self.directives().logical_ops_bitwise_for_integers.unwrap_or(false)
             && let vybe_ast::ExprKind::Unary { op: vybe_ast::UnaryOp::Not, expr } = &cond.kind
@@ -802,7 +827,7 @@ impl Compiler {
         if !gave {
             if cond_is_number {
                 let line = self.line;
-                if Self::expression_emits_nonreference_temporary(cond) {
+                if self.expression_reads_nonreference_value(cond) {
                     self.emit_nonreference_temporary_deref();
                 } else {
                     crate::primitives::references::emit_autoderef_to_stack(
@@ -833,8 +858,15 @@ impl Compiler {
     /// `__len__` uses, so there is no "empty collections" special case and a
     /// class in any language earns the behaviour by binding the slot.
     pub(super) fn emit_condition_truthiness_for_expression(&mut self, expr: &vybe_ast::Expression) {
-        if Self::expression_emits_nonreference_temporary(expr) {
+        if self.expression_reads_nonreference_value(expr) {
             self.emit_nonreference_temporary_deref();
+            if !Self::expression_is_never_collection(expr) {
+                self.emit_array_storage_of_stack();
+            }
+            self.emit_condition_truthiness_after_deref();
+        } else if Self::expression_is_never_collection(expr) {
+            let line = self.line;
+            crate::primitives::references::emit_autoderef_to_stack(&mut self.chunks, self.current, line);
             self.emit_condition_truthiness_after_deref();
         } else {
             self.emit_condition_truthiness_from_stack();
@@ -848,7 +880,22 @@ impl Compiler {
             self.current,
             line,
         );
+        // A collection is true when its storage is non-empty.
+        self.emit_array_storage_of_stack();
         self.emit_condition_truthiness_after_deref();
+    }
+
+    /// The expression's result is never a collection: a scalar literal, or an
+    /// operator whose result is a number, a string or a boolean.
+    fn expression_is_never_collection(expr: &vybe_ast::Expression) -> bool {
+        use vybe_ast::{BinOp, ExprKind, Literal, UnaryOp};
+        match &expr.kind {
+            ExprKind::Lit(literal) => !matches!(literal, Literal::Ellipsis),
+            ExprKind::Binary { op, .. } => !matches!(op, BinOp::Add | BinOp::And | BinOp::Or),
+            ExprKind::Unary { op, .. } => !matches!(op, UnaryOp::Deref),
+            ExprKind::TypeOf(_) => true,
+            _ => false,
+        }
     }
 
     fn emit_condition_truthiness_after_deref(&mut self) {
@@ -860,6 +907,20 @@ impl Compiler {
 
         let value_slot = self.define_local("__truth_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
+
+        // A boolean or a number is never absent, an object or a string, so no
+        // rung below applies to it: its truth is rung 4's, taken directly.
+        let test_boolean = self.import("wasm:js-boolean", "test");
+        let test_number = self.import("wasm:js-number", "test");
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_host_call(test_boolean, 1);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_host_call(test_number, 1);
+        self.chunk().emit_op(Op::I32_OR, line);
+        self.chunk().emit_if_i32(line);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_else(line);
 
         // ── rung 0: absent is false ─────────────────────────────────────
         // Nothing below can run on a null: `ecma:value.typeof` traps on one,
@@ -949,6 +1010,7 @@ impl Compiler {
         self.chunk().emit_end(line); // rung 2 (Len slot)
         self.chunk().emit_end(line); // rung 1 (Bool slot)
         self.chunk().emit_end(line); // rung 0 (null)
+        self.chunk().emit_end(line); // boolean or number
     }
 
     /// `local = null` — a slot probe starts empty so the non-object path skips

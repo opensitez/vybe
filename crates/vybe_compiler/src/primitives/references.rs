@@ -41,6 +41,15 @@ pub fn emit_bind_late_bound_argument(
     lget(&mut chunks[current], slot, line);
     recipes::is_object(&mut chunks[current], line);
     chunks[current].emit_if(line);
+    emit_bind_late_bound_object_argument(chunks, current, slot, alias, line);
+    chunks[current].emit_end(line);
+}
+
+/// [`emit_bind_late_bound_argument`] for a slot already proven to hold an
+/// object: only a carrier object selects its value or alias.
+pub fn emit_bind_late_bound_object_argument(
+    chunks: &mut [Chunk], current: usize, slot: u16, alias: bool, line: u32,
+) {
     lget(&mut chunks[current], slot, line);
     emit_field_get(chunks, current, ARGUMENT_PLACE, line);
     let place = chunks[current].alloc_scratch(1);
@@ -54,7 +63,6 @@ pub fn emit_bind_late_bound_argument(
         emit_field_get(chunks, current, ARGUMENT_VALUE, line);
     }
     lset(&mut chunks[current], slot, line);
-    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -247,9 +255,23 @@ pub fn emit_autoderef_to_stack(chunks: &mut [Chunk], current: usize, line: u32) 
     let test = chunk.add_import("wasm:js-string", "test");
     chunk.emit_call(test, 1, line);
     chunk.emit_if_value(line);
+    // Cells are the common reference shape; load them in place and leave
+    // every other shape to the shared helper.
+    lget(chunk, value, line);
+    emit_field_get(chunks, current, REF_KIND_KEY, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_string_const(CELL_KIND, line);
+    let equals = chunk.add_import("wasm:js-string", "equals");
+    chunk.emit_call(equals, 2, line);
+    chunk.emit_if_value(line);
+    lget(chunk, value, line);
+    emit_cell_load(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_else(line);
     crate::primitives::globals::emit_read(chunk, "__vybe_autoderef", line);
     lget(chunk, value, line);
     crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    chunk.emit_end(line);
     chunk.emit_else(line);
     lget(chunk, value, line);
     chunk.emit_end(line);
@@ -281,8 +303,7 @@ pub fn build_autoderef() -> Chunk {
     let mut chunks = vec![chunk];
     // The argument is already rooted in this helper's frame. Dispatch from
     // it directly instead of copying it into another frame-long local.
-    emit_autoderef_from_slot(&mut chunks, 0, 0, 0);
-    chunks[0].emit_op(Op::RETURN, 0);
+    emit_autoderef_from_slot(&mut chunks, 0, 0, 0, true);
     chunks.pop().unwrap()
 }
 
@@ -306,7 +327,7 @@ pub fn build_guarded_reference_read() -> Chunk {
 pub fn emit_guarded_reference_read_body(
     chunks: &mut [Chunk], current: usize, object: u16, line: u32,
 ) {
-    emit_autoderef_object_inline(chunks, current, object, line);
+    emit_autoderef_object_inline(chunks, current, object, line, false);
 }
 
 /// Inline fallback for the same operation when the module cannot address
@@ -345,22 +366,43 @@ fn emit_autoderef_inline(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj_slot = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], obj_slot, line);
 
-    emit_autoderef_from_slot(chunks, current, obj_slot, line);
+    emit_autoderef_from_slot(chunks, current, obj_slot, line, false);
 }
 
 fn emit_autoderef_from_slot(
-    chunks: &mut [Chunk], current: usize, obj_slot: u16, line: u32,
+    chunks: &mut [Chunk], current: usize, obj_slot: u16, line: u32, returning: bool,
 ) {
 
     lget(&mut chunks[current], obj_slot, line);
     recipes::is_object(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
+    emit_reference_result_if(&mut chunks[current], line, returning);
 
-    emit_autoderef_object_inline(chunks, current, obj_slot, line);
+    emit_autoderef_object_inline(chunks, current, obj_slot, line, returning);
 
-    chunks[current].emit_else(line);
-    lget(&mut chunks[current], obj_slot, line);
-    chunks[current].emit_end(line);
+    if returning {
+        chunks[current].emit_end(line);
+        lget(&mut chunks[current], obj_slot, line);
+        chunks[current].emit_op(Op::RETURN, line);
+    } else {
+        chunks[current].emit_else(line);
+        lget(&mut chunks[current], obj_slot, line);
+        chunks[current].emit_end(line);
+    }
+}
+
+// Only standalone helpers may end a read by returning. Embedded emitters must
+// preserve their caller's frame and leave the same single stack value.
+fn emit_reference_result_if(chunk: &mut Chunk, line: u32, returning: bool) {
+    if returning { chunk.emit_if(line); } else { chunk.emit_if_value(line); }
+}
+
+fn emit_reference_result_else(chunk: &mut Chunk, line: u32, returning: bool) {
+    if returning {
+        chunk.emit_op(Op::RETURN, line);
+        chunk.emit_end(line);
+    } else {
+        chunk.emit_else(line);
+    }
 }
 
 fn emit_autoderef_object_inline(
@@ -368,6 +410,7 @@ fn emit_autoderef_object_inline(
     current: usize,
     obj_slot: u16,
     line: u32,
+    returning: bool,
 ) {
 
     // Ordinary objects have no reference tag. Return them without walking
@@ -378,25 +421,19 @@ fn emit_autoderef_object_inline(
     chunks[current].emit_op_u16(Op::LOCAL_TEE, kind_slot, line);
     let test = chunks[current].add_import("wasm:js-string", "test");
     chunks[current].emit_call(test, 1, line);
-    chunks[current].emit_if_value(line);
+    emit_reference_result_if(&mut chunks[current], line, returning);
 
     // The wrapper's tag is stable throughout this read. Once its string type
     // is established, dispatch on that value without repeating field access
     // and type testing for each reference representation.
     let equals = chunks[current].add_import("wasm:js-string", "equals");
 
-    lget(&mut chunks[current], kind_slot, line);
-    chunks[current].emit_string_const(CELL_KIND, line);
-    chunks[current].emit_call(equals, 2, line);
-    chunks[current].emit_if_value(line);
-    lget(&mut chunks[current], obj_slot, line);
-    emit_cell_load(chunks, current, line);
-    chunks[current].emit_else(line);
-
+    // Call sites load cells in place, so the references reaching this
+    // dispatch are mostly container slots: test that shape first.
     lget(&mut chunks[current], kind_slot, line);
     chunks[current].emit_string_const(CARRAY_KIND, line);
     chunks[current].emit_call(equals, 2, line);
-    chunks[current].emit_if_value(line);
+    emit_reference_result_if(&mut chunks[current], line, returning);
 
     let base_slot = chunks[current].alloc_scratch(1);
     lget(&mut chunks[current], obj_slot, line);
@@ -423,24 +460,35 @@ fn emit_autoderef_object_inline(
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_end(line);
 
-    chunks[current].emit_else(line);
+    emit_reference_result_else(&mut chunks[current], line, returning);
+
+    lget(&mut chunks[current], kind_slot, line);
+    chunks[current].emit_string_const(CELL_KIND, line);
+    chunks[current].emit_call(equals, 2, line);
+    emit_reference_result_if(&mut chunks[current], line, returning);
+    lget(&mut chunks[current], obj_slot, line);
+    emit_cell_load(chunks, current, line);
+    emit_reference_result_else(&mut chunks[current], line, returning);
 
     lget(&mut chunks[current], kind_slot, line);
     chunks[current].emit_string_const(SHARED_KIND, line);
     chunks[current].emit_call(equals, 2, line);
-    chunks[current].emit_if_value(line);
+    emit_reference_result_if(&mut chunks[current], line, returning);
     lget(&mut chunks[current], obj_slot, line);
     emit_field_get(chunks, current, SHARED_ADDR_KEY, line);
     crate::primitives::threading::emit_atomic_load(&mut chunks[current], line);
-    chunks[current].emit_else(line);
-    lget(&mut chunks[current], obj_slot, line);
-    chunks[current].emit_end(line);
-
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-
-    chunks[current].emit_else(line);
-    lget(&mut chunks[current], obj_slot, line);
+    if returning {
+        chunks[current].emit_op(Op::RETURN, line);
+        chunks[current].emit_end(line);
+    } else {
+        chunks[current].emit_else(line);
+        lget(&mut chunks[current], obj_slot, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_else(line);
+        lget(&mut chunks[current], obj_slot, line);
+    }
     chunks[current].emit_end(line);
 
 }

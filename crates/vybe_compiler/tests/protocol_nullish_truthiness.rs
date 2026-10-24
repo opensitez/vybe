@@ -32,4 +32,4 @@ class Probe:
 p=Probe()
 answer=bool(p)
 "#;let mut v=vm();let e=v.run(compile(s)).err().expect("actual method failure");assert_eq!(enc(v.global("events").unwrap()),r#"["bool"]"#);assert!(e.call_stack.iter().any(|f|f.chunk_name=="__bool__"),"{e:?}");}
-#[test] #[ignore="strict whole actual Python Source native diagnostic, no function pruning"] fn complete_source_native(){for s in ["answer=bool([])\n", "answer=bool(None)\n", "class Probe:\n    def __bool__(self):\n        return False\np=Probe()\nanswer=not (not p)\n"]{let c=compile(s);let b=vybe_platform_wasm::write_wasm(&c);wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&b).unwrap();}}
+#[test] #[ignore="strict whole actual Python Source native diagnostic, no function pruning"] fn complete_source_native(){for s in ["answer=bool([])\n", "answer=bool(None)\n", "class Probe:\n    def __bool__(self):\n        return False\np=Probe()\nanswer=not (not p)\n"]{let c=compile(s);let b=vybe_platform_wasm::write_wasm(&c);vybe_platform_wasm::validate_binary(&b).unwrap();}}

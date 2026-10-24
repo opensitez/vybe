@@ -1,5 +1,5 @@
 use vybe_compiler::primitives::instructions::host;
-use vybe_runtime::{opcode::Op, Chunk};
+use vybe_runtime::{Chunk, opcode::Op};
 pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let value_slot = chunk.alloc_scratch(2);
@@ -77,8 +77,8 @@ fn emit_bytes_of_width(
     line: u32,
 ) {
     use vybe_compiler::primitives::packing::{
-        emit_store_u32_to_array_from_number_slot, emit_store_u64_parts_to_array_from_number_slots,
-        Endian,
+        Endian, emit_store_u32_to_array_from_number_slot,
+        emit_store_u64_parts_to_array_from_number_slots,
     };
     for _ in 0..width {
         chunks[current].emit_i32_const(0, line);

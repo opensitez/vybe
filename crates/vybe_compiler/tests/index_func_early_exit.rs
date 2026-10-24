@@ -149,8 +149,7 @@ fn code_shrinks_and_native_modules_validate() {
                 include_vybe_metadata: false,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         if std::env::var_os("VYBE_PRIMITIVE_INDEX_EXPORT").is_some() {
             native_export::export_chunks(chunks, &format!("index-early-{side}"));

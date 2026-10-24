@@ -983,8 +983,34 @@ fn resolve_pointer_receiver_instance_method_owner(
 }
 
 impl Compiler {
-    fn emit_fortran_member_receiver_writeback(&mut self, object: &Expression, receiver_slot: u16) {
-        if !self.profile.member_call_writes_receiver_back {
+    /// Check the active semantic directive before emitting either guard.
+    /// The enabled path preserves receiver tests, writeback and result joins.
+    fn emit_member_receiver_writeback_if_enabled(
+        &mut self,
+        object: &Expression,
+        object_slot: u16,
+        receiver_slot: u16,
+    ) {
+        if !self.directives().member_receiver_writeback() {
+            return;
+        }
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        self.emit(Op::REF_IS_NULL);
+        let line = self.line;
+        self.chunk().emit_if_params(line, 1, 1);
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
+        let line = self.line;
+        self.chunk().emit_if_params(line, 1, 1);
+        self.chunk().emit_else(line);
+        self.emit_member_receiver_writeback(object, object_slot);
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(line);
+    }
+
+    fn emit_member_receiver_writeback(&mut self, object: &Expression, receiver_slot: u16) {
+        if !self.directives().member_receiver_writeback() {
             return;
         }
         let result_slot = self.define_local("__fortran_member_call_result");
@@ -1479,6 +1505,21 @@ impl Compiler {
             .get(&method_key)
             .or_else(|| pending.instance_method_overloads.get(&method_key))?;
         self.match_method_overload(overloads, arg_exprs, false)
+    }
+
+    /// How many static overloads `class_name` declares for `method_name`.
+    fn static_method_overload_count(&self, class_name: &str, method_name: &str) -> usize {
+        let Some(class_name) = self.resolve_pending_class_name_for_type_hint(class_name).or_else(|| {
+            let canon = self.canon(class_name);
+            self.pending_classes.contains_key(&canon).then_some(canon)
+        }) else {
+            return 0;
+        };
+        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
+        self.pending_classes
+            .get(&class_name)
+            .and_then(|pending| pending.static_method_overloads.get(&method_key))
+            .map_or(0, Vec::len)
     }
 
     pub(crate) fn resolve_unique_static_method_chunk_for_class(
@@ -2328,6 +2369,40 @@ impl Compiler {
         self.emit_normal_call_from_arg_slots(callee_slot, receiver_slot, js_this_slot, arg_slots);
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.chunk().emit_end(line);
+    }
+
+    /// Invoke an already resolved parent method through the callable's
+    /// receiver/rest contract. Both surface spellings of super share this.
+    pub(super) fn emit_resolved_super_method_call(
+        &mut self,
+        self_slot: Option<u16>,
+        args: &[&Expression],
+    ) -> Result<(), String> {
+        let parent_fn = self.define_temp_local("__super_method_fn");
+        self.emit_u16(Op::LOCAL_SET, parent_fn);
+        let receiver = if let Some(slot) = self_slot {
+            slot
+        } else {
+            let slot = self.define_temp_local("__super_method_receiver");
+            self.emit_null();
+            self.emit_u16(Op::LOCAL_SET, slot);
+            slot
+        };
+        let mut arg_slots = Vec::with_capacity(args.len());
+        for arg in args {
+            self.compile_expr(arg)?;
+            let slot = self.define_temp_local("__super_method_arg");
+            self.emit_u16(Op::LOCAL_SET, slot);
+            arg_slots.push(slot);
+        }
+        // Selecting the base implementation does not prove fixed arity:
+        // includes can supply rest parameters or an introspection array.
+        let result = self.define_temp_local("__super_method_result");
+        self.emit_dispatch_and_store_from_arg_slots(
+            parent_fn, Some(receiver), None, &arg_slots, result,
+        );
+        self.emit_u16(Op::LOCAL_GET, result);
+        Ok(())
     }
 
     fn emit_call_ref_with_arg_slots(
@@ -4628,15 +4703,7 @@ impl Compiler {
                     // code] }` and making `base.Greet() + " World"` take the
                     // numeric `+`. The receiver is parameter 0, so it is bound
                     // ahead of the arguments and the count includes it.
-                    if let Some(s) = self_slot {
-                        self.emit_u16(Op::LOCAL_GET, s);
-                    } else {
-                        self.emit_null();
-                    }
-                    for a in &arg_exprs {
-                        self.compile_expr(a)?;
-                    }
-                    self.emit_direct_callable_invoke((arg_exprs.len() as u8).saturating_add(1));
+                    self.emit_resolved_super_method_call(self_slot, &arg_exprs)?;
 
                     return Ok(());
                 }
@@ -9778,19 +9845,7 @@ impl Compiler {
                                 self.current,
                                 self.line,
                             );
-                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            self.emit(Op::REF_IS_NULL);
-                            let line = self.line;
-                            self.chunk().emit_if_params(line, 1, 1);
-                            self.chunk().emit_else(line);
-                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            fn_call!(self, "wasm:js-undefined", "test", 1);
-                            let line = self.line;
-                            self.chunk().emit_if_params(line, 1, 1);
-                            self.chunk().emit_else(line);
-                            self.emit_fortran_member_receiver_writeback(object, obj_tmp);
-                            self.chunk().emit_end(line);
-                            self.chunk().emit_end(line);
+                            self.emit_member_receiver_writeback_if_enabled(object, obj_tmp, receiver_slot);
                         } else {
                             let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                             for (index, arg) in arg_exprs.iter().enumerate() {
@@ -9831,19 +9886,7 @@ impl Compiler {
                                     self.line,
                                 );
                             }
-                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            self.emit(Op::REF_IS_NULL);
-                            let line = self.line;
-                            self.chunk().emit_if_params(line, 1, 1);
-                            self.chunk().emit_else(line);
-                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            fn_call!(self, "wasm:js-undefined", "test", 1);
-                            let line = self.line;
-                            self.chunk().emit_if_params(line, 1, 1);
-                            self.chunk().emit_else(line);
-                            self.emit_fortran_member_receiver_writeback(object, obj_tmp);
-                            self.chunk().emit_end(line);
-                            self.chunk().emit_end(line);
+                            self.emit_member_receiver_writeback_if_enabled(object, obj_tmp, receiver_slot);
                         }
                     } else {
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
@@ -9867,19 +9910,7 @@ impl Compiler {
                                 &arg_slots,
                             );
                         }
-                        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                        self.emit(Op::REF_IS_NULL);
-                        let line = self.line;
-                        self.chunk().emit_if_params(line, 1, 1);
-                        self.chunk().emit_else(line);
-                        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                        fn_call!(self, "wasm:js-undefined", "test", 1);
-                        let line = self.line;
-                        self.chunk().emit_if_params(line, 1, 1);
-                        self.chunk().emit_else(line);
-                        self.emit_fortran_member_receiver_writeback(object, obj_tmp);
-                        self.chunk().emit_end(line);
-                        self.chunk().emit_end(line);
+                        self.emit_member_receiver_writeback_if_enabled(object, obj_tmp, receiver_slot);
                     }
                 }
                 if let Some(line) = primitive_tostring_if {
@@ -10098,6 +10129,22 @@ impl Compiler {
                         signature,
                     )?;
                 } else {
+                    // Overloads share one member name; the statically selected
+                    // overload's body is the callee. A static method is not
+                    // virtual, so the selection is the dispatch.
+                    let callee_slot = match static_overload.as_ref() {
+                        Some(overload) if self.flatten_member_chain(object).last().is_some_and(
+                            |class_name| self.static_method_overload_count(class_name, field) > 1,
+                        ) => {
+                            let line = self.line;
+                            self.emit_u16(Op::REF_FUNC, overload.chunk_idx as u16);
+                            self.chunk().emit(0, line);
+                            let direct_fn_tmp = self.define_local("__static_overload_body_fn");
+                            self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
+                            direct_fn_tmp
+                        }
+                        _ => fn_tmp,
+                    };
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
                         self.compile_expr(arg)?;
@@ -10107,7 +10154,7 @@ impl Compiler {
                         arg_slots.push(arg_slot);
                     }
                     self.emit_call_ref_with_arg_slots(
-                        fn_tmp,
+                        callee_slot,
                         self.call_supplies_receiver().then_some(obj_tmp),
                         &arg_slots,
                     );
@@ -10463,19 +10510,7 @@ impl Compiler {
                                 self.current,
                                 self.line,
                             );
-                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            self.emit(Op::REF_IS_NULL);
-                            let line = self.line;
-                            self.chunk().emit_if_params(line, 1, 1);
-                            self.chunk().emit_else(line);
-                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            fn_call!(self, "wasm:js-undefined", "test", 1);
-                            let line = self.line;
-                            self.chunk().emit_if_params(line, 1, 1);
-                            self.chunk().emit_else(line);
-                            self.emit_fortran_member_receiver_writeback(object, obj_tmp);
-                            self.chunk().emit_end(line);
-                            self.chunk().emit_end(line);
+                            self.emit_member_receiver_writeback_if_enabled(object, obj_tmp, receiver_slot);
                         } else {
                             let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                             for (index, arg) in arg_exprs.iter().enumerate() {
@@ -10490,19 +10525,7 @@ impl Compiler {
                                 Some(receiver_slot),
                                 &arg_slots,
                             );
-                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            self.emit(Op::REF_IS_NULL);
-                            let line = self.line;
-                            self.chunk().emit_if_params(line, 1, 1);
-                            self.chunk().emit_else(line);
-                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                            fn_call!(self, "wasm:js-undefined", "test", 1);
-                            let line = self.line;
-                            self.chunk().emit_if_params(line, 1, 1);
-                            self.chunk().emit_else(line);
-                            self.emit_fortran_member_receiver_writeback(object, obj_tmp);
-                            self.chunk().emit_end(line);
-                            self.chunk().emit_end(line);
+                            self.emit_member_receiver_writeback_if_enabled(object, obj_tmp, receiver_slot);
                         }
                     } else {
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
@@ -10514,19 +10537,7 @@ impl Compiler {
                             arg_slots.push(arg_slot);
                         }
                         self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
-                        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                        self.emit(Op::REF_IS_NULL);
-                        let line = self.line;
-                        self.chunk().emit_if_params(line, 1, 1);
-                        self.chunk().emit_else(line);
-                        self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                        fn_call!(self, "wasm:js-undefined", "test", 1);
-                        let line = self.line;
-                        self.chunk().emit_if_params(line, 1, 1);
-                        self.chunk().emit_else(line);
-                        self.emit_fortran_member_receiver_writeback(object, obj_tmp);
-                        self.chunk().emit_end(line);
-                        self.chunk().emit_end(line);
+                        self.emit_member_receiver_writeback_if_enabled(object, obj_tmp, receiver_slot);
                     }
                 }
             }
@@ -11230,8 +11241,13 @@ impl Compiler {
             // reaches every one of them — which is exactly why this must not be
             // gated on a language NAME. It was `is_python_profile()`, so
             // `val f = Box(); f("x")` trapped with "Not a function" in every
-            // other language that has the feature.
+            // other language that has the feature. A callee that names a
+            // function binding is never such an object.
+            let callee_names_function = self.directives().bare_callee_names_function == Some(true)
+                && self.scope().resolve(name).is_none()
+                && !self.has_static_local_binding(name);
             if self.profile.callable_objects
+                && !callee_names_function
                 && !is_known_func
                 && !args.iter().any(|arg| arg.by_ref)
                 && self
@@ -11380,6 +11396,9 @@ impl Compiler {
                 return Ok(());
             }
 
+            if self.try_emit_native_entry_call(name, args, false)? {
+                return Ok(());
+            }
             if self.try_emit_immutable_declared_call(name, args)? {
                 return Ok(());
             }
@@ -11490,13 +11509,22 @@ impl Compiler {
                 self.emit_var_get(name);
             }
             self.emit_u16(Op::LOCAL_SET, callee_slot);
-            self.emit_callable_value_resolution(callee_slot);
-            self.class_get(
-                class_slots::ObjSource::Local(callee_slot),
-                &class_slots::ClassSlot::internal("__vybe_method_receiver"),
-            );
-            let receiver_slot = self.define_local("__direct_call_receiver");
-            self.emit_u16(Op::LOCAL_SET, receiver_slot);
+            // A callee that names a function binding is neither a callable
+            // designator nor a value carrying a bound receiver.
+            let names_function = !is_local
+                && self.directives().bare_callee_names_function == Some(true);
+            let receiver_slot = if names_function {
+                None
+            } else {
+                self.emit_callable_value_resolution(callee_slot);
+                self.class_get(
+                    class_slots::ObjSource::Local(callee_slot),
+                    &class_slots::ClassSlot::internal("__vybe_method_receiver"),
+                );
+                let receiver_slot = self.define_local("__direct_call_receiver");
+                self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                Some(receiver_slot)
+            };
             if let Some(signature) = rest_signature.as_ref() {
                 let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                 for (index, arg) in arg_exprs.iter().enumerate() {
@@ -11513,7 +11541,7 @@ impl Compiler {
                 let rest_receiver = if self.profile.explicit_method_receiver_argument {
                     None
                 } else {
-                    Some(receiver_slot)
+                    receiver_slot
                 };
                 self.emit_call_ref_with_arg_slots(callee_slot, rest_receiver, &arg_slots);
                 return Ok(());
@@ -11540,7 +11568,7 @@ impl Compiler {
                         arg_slots.push(arg_slot);
                     }
 
-                    self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
+                    self.emit_call_ref_with_arg_slots(callee_slot, receiver_slot, &arg_slots);
 
                     if !needs_packed_result {
                         return Ok(());
@@ -11586,7 +11614,7 @@ impl Compiler {
                     arg_slots.push(arg_slot);
                 }
 
-                self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
+                self.emit_call_ref_with_arg_slots(callee_slot, receiver_slot, &arg_slots);
 
                 let result_slot = self.define_local("__direct_call_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -11638,7 +11666,7 @@ impl Compiler {
                 }
             }
 
-            self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
+            self.emit_call_ref_with_arg_slots(callee_slot, receiver_slot, &arg_slots);
             return Ok(());
         }
 

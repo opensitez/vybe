@@ -88,7 +88,7 @@ fn native(c: &[Chunk]) -> Vec<u8> {
         },
     );
     if let Err(e) =
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&b)
+        vybe_platform_wasm::validate_binary(&b)
     {
         let h = c.iter().find(|x| x.name == "__stdlib_levenshtein").unwrap();
         let dir = std::path::PathBuf::from(std::env::var("VYBE_PRIMITIVE_ARTIFACT_DIR").unwrap());

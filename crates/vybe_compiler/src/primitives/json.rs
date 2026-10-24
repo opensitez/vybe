@@ -240,9 +240,19 @@ fn mark_helper(chunk: &mut Chunk) {
 ///   (PHP / plain dict). When falsy, an object carrying an own `__type`
 ///   (a class instance, e.g. Python `datetime`) routes to the hook instead.
 fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    build_normalize_helper_named(chunks, "__json_normalize", None, line)
+}
+
+/// The normalizer named `name`. `entry` maps the value parameter (`[value] ->
+/// [value]`) before every visit, the root and each nested value alike.
+fn build_normalize_helper_named(
+    chunks: &mut Vec<Chunk>,
+    name: &str,
+    entry: Option<&dyn Fn(&mut Chunk, u32)>,
+    line: u32,
+) -> usize {
     // These internal helpers historically use Chunk::new's default policy.
     // Keep that policy when sharing their bodies, even if the caller differs.
-    let name = "__json_normalize";
     if let Some(index) = existing_helper(chunks, name, 4) {
         return index;
     }
@@ -250,6 +260,11 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut h = create_function_chunk(name, 4);
     mark_helper(&mut h);
     h.alloc_scratch(4); // reserve the four param slots
+    if let Some(entry) = entry {
+        lget(&mut h, 0, line);
+        entry(&mut h, line);
+        h.emit_op_u16(Op::LOCAL_SET, 0, line);
+    }
 
     let value_slot = 0u16;
     let default_slot = 1u16;
@@ -538,12 +553,29 @@ pub fn emit_normalize(
     line: u32,
 ) {
     let helper = build_normalize_helper(chunks, line);
+    emit_normalize_call(chunks, current, helper, [value_slot, default_slot, sort_slot, props_slot], line);
+}
+
+/// [`emit_normalize`] through the helper `name`, whose every visit first maps
+/// the value with `entry` (`[value] -> [value]`).
+pub fn emit_normalize_with_entry(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    name: &str,
+    entry: &dyn Fn(&mut Chunk, u32),
+    slots: [u16; 4],
+    line: u32,
+) {
+    let helper = build_normalize_helper_named(chunks, name, Some(entry), line);
+    emit_normalize_call(chunks, current, helper, slots, line);
+}
+
+fn emit_normalize_call(chunks: &mut [Chunk], current: usize, helper: usize, slots: [u16; 4], line: u32) {
     let c = &mut chunks[current];
     ref_func(c, helper, line);
-    lget(c, value_slot, line);
-    lget(c, default_slot, line);
-    lget(c, sort_slot, line);
-    lget(c, props_slot, line);
+    for slot in slots {
+        lget(c, slot, line);
+    }
     call_ref(c, 4, line);
 }
 

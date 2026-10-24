@@ -16,7 +16,7 @@ fn exact(a:Value,b:Value){match(&a,&b){(Value::F64(a),Value::F64(b))=>assert_eq!
  let inputs=[Value::I32(0),Value::I32(i32::MAX),Value::I64(i64::MAX),Value::I64(9007199254740993),Value::F32(-0.0),Value::F64(-0.0),Value::F64(f64::NAN),Value::F64(f64::INFINITY),Value::F64(f64::NEG_INFINITY),Value::Bool(true),Value::Bool(false),Value::Null,Value::Undefined,Value::String("7".into()),Value::String("a".into())];
  for input in inputs {let mut outputs=Vec::new();for old in [true,false]{let mut vm=VM::new();vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);let callee=vm.run(program(old,true)).unwrap();outputs.push(vm.invoke_callback(&callee,&[input.clone()]));}exact(outputs.remove(0),outputs.remove(0));}
 }
-#[test] fn complete_standard_native_modules_remain_strict(){for old in [true,false]{wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&vybe_platform_wasm::write_wasm(&program(old,true))).unwrap();}}
+#[test] fn complete_standard_native_modules_remain_strict(){for old in [true,false]{vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&program(old,true))).unwrap();}}
 
 fn root_call(vm:&mut VM, callee:Value,input:Value)->Result<Value,vybe_runtime::VMError> {
  let mut entry=Chunk::new("<step-input-owner>");

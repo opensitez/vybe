@@ -135,8 +135,7 @@ fn all_48_variants_keep_fresh_input_state_bases_order_facts_and_native_results()
         let (inputs, expected) = inputs(name);
         for inline in [false, true] {
             let chunks = program(name, inline);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                 .unwrap_or_else(|e| panic!("{name} inline={inline}: {e}"));
             let mut vm = VM::new();
             platforms::register_platforms_all(&mut vm);

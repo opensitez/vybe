@@ -104,8 +104,7 @@ fn check(read: &str, specialize: bool, discarded: bool) {
     assert!(dump.contains("i64.trunc_f64_s") && dump.contains("i32.wrap_i64"), "{dump}");
     let bytes = vybe_platform_wasm::write_wasm_with_options(&chunks,
         vybe_platform_wasm::WasmWriteOptions { include_vybe_metadata: false, include_name_section: true });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
 }
 
 // Namespace registration is irreversible; keep these cases in one isolated test binary.

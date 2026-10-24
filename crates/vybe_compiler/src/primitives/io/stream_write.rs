@@ -102,7 +102,6 @@ mod tests {
     #[test]
     fn progress_loop_is_standard_wasm() {
         let binary = vybe_platform_wasm::write_wasm(&[fixture(5)]);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary).expect("canonical progress loop must validate");
+        vybe_platform_wasm::validate_binary(&binary).expect("canonical progress loop must validate");
     }
 }

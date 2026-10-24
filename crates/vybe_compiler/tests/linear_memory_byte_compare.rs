@@ -26,8 +26,7 @@ fn worker(fast: bool) -> (VM, Value) {
     primitives::bundle::finalize_with_runtime_helpers(&mut chunks);
     primitives::globals::declare_free_globals(&mut chunks);
     primitives::globals::normalize_global_table(&mut chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
         .unwrap();
     let mut vm = VM::new();
     primitives::platforms::register_platforms_all(&mut vm);
@@ -103,7 +102,6 @@ fn memory64_scalar_fallback_validates_as_standard_wasm() {
     let mut chunks = vec![c];
     primitives::memory_compare::emit_linear_byte_compare(&mut chunks, 0, 0);
     chunks[0].emit_op(Op::RETURN, 0);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
         .unwrap();
 }

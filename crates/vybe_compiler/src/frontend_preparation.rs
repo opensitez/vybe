@@ -90,7 +90,6 @@ impl Registration {
 }
 pub fn snapshot(parser:ParseFn)->Registration{Registration{parser,capabilities:capabilities(parser),producer:crate::statement_codegen::selected(parser)}}
 pub fn for_parser(parser:ParseFn)->Option<FrontendPreparer>{snapshot(parser).preparer()}
-pub(crate) fn identity(parser:ParseFn)->[usize;10]{snapshot(parser).identity()}
 pub fn php_source_path(entry:&Path,caller:&Path,target:&str,fused:bool)->std::path::PathBuf{
     crate::dynamic::resolve_prepared_php_include_path(entry,caller,target,fused)
 }
@@ -112,9 +111,7 @@ pub struct PreparedModule {
     pub preparation_hints_complete:bool,
     pub statement_production:Option<crate::statement_codegen::Production>,
 }
-pub(crate) fn parse(source:&str,caller:&Path,parser:ParseFn)->Result<PreparedModule,String>{
-    parse_using(source,caller,parser,for_parser(parser))
-}
+#[cfg(test)]
 pub(crate) fn parse_using(source:&str,caller:&Path,parser:ParseFn,preparer:Option<FrontendPreparer>)->Result<PreparedModule,String>{
     let mut emitted=None;
     let mut result=parse_using_with_sink(source,caller,parser,preparer,&mut |hints|emitted=Some(hints))?;

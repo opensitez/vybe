@@ -194,8 +194,7 @@ fn actual_source_lt_route_is_explicit_registered_python_helper() {
 fn strict_complete_actual_python_source_native_gate() {
     let c = parse("python", PYTHON_LT_ANY);
     let bytes = vybe_platform_wasm::write_wasm(&c);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
 }
 

@@ -31,8 +31,7 @@ fn runtime(input: Value) -> VM {
     vm
 }
 fn validate(chunks: &[Chunk]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
         .unwrap();
 }
 fn assert_exact_value(before: Value, after: Value) {
@@ -50,8 +49,7 @@ fn shared_erf_preserves_ieee_bits_approximation_and_complement() {
         let new = program(false, complement, 1);
         validate(&new);
         assert!(
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(&old))
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&old))
                 .is_err(),
             "captured erf has void branches carrying f64 results"
         );
@@ -808,8 +806,7 @@ fn standard_ref_module(answer: u8, padding_functions: usize) -> Vec<u8> {
             vec![2, 4, 0, 0x41, answer, 0x0b, 6, 0, 0xd2, 0, 0x24, 0, 0x0b],
         );
     }
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     bytes
 }

@@ -25,75 +25,17 @@ fn vm() -> VM {
     platforms::register_platforms_all(&mut vm);
     vm
 }
+#[path = "fixtures/native_validation_diagnostic.rs"]
+mod native_validation_diagnostic;
+
 fn validate(chunks: &[Chunk], label: &str) {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-    {
+    if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
         eprintln!("literal validation label={label}");
-        let mut names = std::collections::BTreeMap::new();
-        let named_bytes = vybe_platform_wasm::write_wasm_with_options(
-            chunks,
-            vybe_platform_wasm::WasmWriteOptions {
-                include_name_section: true,
-                ..Default::default()
-            },
-        );
-        for payload in wasmparser::Parser::new(0).parse_all(&named_bytes) {
-            if let wasmparser::Payload::CustomSection(section) = payload.unwrap() {
-                if let wasmparser::KnownCustom::Name(reader) = section.as_known() {
-                    for name in reader {
-                        if let wasmparser::Name::Function(map) = name.unwrap() {
-                            for entry in map {
-                                let entry = entry.unwrap();
-                                names.insert(entry.index, entry.name.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let mut first_defined = 0;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let wasmparser::Payload::ImportSection(section) = payload.unwrap() {
-                for import in section.into_imports() {
-                    if matches!(
-                        import.unwrap().ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                    ) {
-                        first_defined += 1;
-                    }
-                }
-            }
-        }
-        let mut function = first_defined;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-                if body.range().contains(&error.offset()) {
-                    eprintln!(
-                        "native failure function={} name={:?} range={:?} error={error}",
-                        function,
-                        names.get(&function),
-                        body.range()
-                    );
-                    let mut operators = body.get_operators_reader().unwrap();
-                    while !operators.eof() {
-                        let (operator, offset) = operators.read_with_offset().unwrap();
-                        if offset + 100 >= error.offset() && offset <= error.offset() + 30 {
-                            eprintln!("  wasm@{offset}: {operator:?}");
-                            if let wasmparser::Operator::Call { function_index } = operator {
-                                eprintln!("    target={:?}", names.get(&function_index));
-                            }
-                        }
-                    }
-                }
-                function += 1;
-            }
-        }
+        native_validation_diagnostic::report(chunks, &bytes, &error, 100, 30);
         panic!("native module rejected [{label}]: {error}");
     }
 }
-
 fn logs(runtime: &VM) -> Vec<String> {
     let Some(Value::Object(object)) = runtime.global("events") else {
         return vec![];
@@ -232,31 +174,54 @@ fn selected_source_own_lookup_conversion_callbacks_and_partial_errors_match() {
         assert!(!new.iter().any(|c| c.name == "__stdlib_format_map"));
         let before = result(&mut old_vm, old);
         let after = result(&mut new_vm, new);
-        for (label, runtime, output) in [("baseline", &old_vm, &before), ("selected", &new_vm, &after)] {
+        for (label, runtime, output) in [
+            ("baseline", &old_vm, &before),
+            ("selected", &new_vm, &after),
+        ] {
             let result_summary = match output {
                 Ok(Value::String(text)) => format!("String {} bytes", text.len()),
                 Ok(value) => format!("Value tag={:?}", value.tag()),
                 Err(message) => format!("Error {message}"),
             };
-            println!("callback source {label} fail={fail} output={result_summary} trace={:?}", logs(runtime));
+            println!(
+                "callback source {label} fail={fail} output={result_summary} trace={:?}",
+                logs(runtime)
+            );
             for name in ["mapping", "value"] {
                 if let Some(Value::Object(object)) = runtime.global(name) {
                     let object = object.lock().unwrap();
                     let mut keys = object.properties.keys().collect::<Vec<_>>();
                     keys.sort();
                     let field_tags = object.fields.iter().map(Value::tag).collect::<Vec<_>>();
-                    println!("  {name} type={} own_keys={keys:?} field_tags={field_tags:?}", object.type_id);
+                    println!(
+                        "  {name} type={} own_keys={keys:?} field_tags={field_tags:?}",
+                        object.type_id
+                    );
                     for key in ["__getitem__", "toString", "a"] {
                         if let Some(value) = object.properties.get(key) {
                             println!("    property {key} tag={:?}", value.tag());
                             if let Value::Object(callback) = value {
                                 let callback = callback.lock().unwrap();
-                                if let vybe_runtime::value::ObjectKind::Function(function) = &callback.kind {
-                                    println!("    function name={:?} arity={} chunk_index={}", function.name, function.arity, function.chunk_index);
+                                if let vybe_runtime::value::ObjectKind::Function(function) =
+                                    &callback.kind
+                                {
+                                    println!(
+                                        "    function name={:?} arity={} chunk_index={}",
+                                        function.name, function.arity, function.chunk_index
+                                    );
                                 }
-                                for slot in ["__table_idx", "__vybe_method_receiver", "__vybe_method_target"] {
+                                for slot in [
+                                    "__table_idx",
+                                    "__vybe_method_receiver",
+                                    "__vybe_method_target",
+                                ] {
                                     if let Some(value) = callback.properties.get(slot) {
-                                        println!("    callable slot {slot} tag={:?} numeric={:?}", value.tag(), matches!(value, Value::I32(_) | Value::F64(_)).then(|| value.as_f64()));
+                                        println!(
+                                            "    callable slot {slot} tag={:?} numeric={:?}",
+                                            value.tag(),
+                                            matches!(value, Value::I32(_) | Value::F64(_))
+                                                .then(|| value.as_f64())
+                                        );
                                     }
                                 }
                             }

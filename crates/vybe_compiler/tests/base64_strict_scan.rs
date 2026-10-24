@@ -137,8 +137,7 @@ fn values_sizes_work() {
                 include_vybe_metadata: false,
             },
         );
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap();
         native_export::export_chunks(&cs, &format!("base64-strict-{fast}"));
         sizes.push(serde_json::json!({"body":cs[1].code.len(),"locals":cs[1].local_count,"native":bytes.len()}));

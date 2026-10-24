@@ -131,8 +131,7 @@ fn resolved_static_word_loads_require_an_actual_producer_report() {
             let dump = vybe_runtime::debug::disassemble(&chunks[0]);
             assert!(dump.contains("i32.load8_u"), "{dump}");
             assert!(!dump.contains("i64.trunc_f64_s"), "{dump}");
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm_with_options(
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm_with_options(
                     &chunks,
                     vybe_platform_wasm::WasmWriteOptions {
                         include_vybe_metadata: false,
@@ -208,8 +207,7 @@ fn resolved_linear_word_results_skip_only_redundant_conversions() {
             assert!(dump.contains("i32.load"), "{dump}");
             assert!(!dump.contains("i64.trunc_f64_s"), "{dump}");
             assert!(!dump.contains("i32.wrap_i64"), "{dump}");
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm_with_options(
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm_with_options(
                     &chunks,
                     vybe_platform_wasm::WasmWriteOptions {
                         include_vybe_metadata: false,
@@ -276,8 +274,7 @@ fn word_request_reports_actual_owned_emission_without_changing_value_emission() 
 }
 
 fn validate_and_run(chunks: Vec<Chunk>) -> vybe_runtime::Value {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm_with_options(
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm_with_options(
             &chunks,
             vybe_platform_wasm::WasmWriteOptions {
                 include_vybe_metadata: false,

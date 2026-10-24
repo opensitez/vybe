@@ -62,8 +62,7 @@ fn primitive_type_tests_keep_conditions_native_and_values_boolean() {
                 assert!(!dump.contains("__vybe_autoderef"), "{type_name}: {dump}");
             }
             let bytes = vybe_platform_wasm::write_wasm(&chunks);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap_or_else(|error| {
                     panic!("{type_name} condition={condition}: {error}\n{dump}")
                 });

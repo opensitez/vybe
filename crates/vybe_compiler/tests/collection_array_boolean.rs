@@ -19,8 +19,7 @@ fn program(emit: Emitter) -> Vec<Chunk> {
     bundle::finalize_with_runtime_helpers(&mut chunks);
     globals::declare_free_globals(&mut chunks);
     globals::normalize_global_table(&mut chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
         .unwrap();
     chunks
 }
@@ -171,8 +170,7 @@ fn promotion_keeps_empty_array_and_string_key_guards() {
         bundle::finalize_with_runtime_helpers(&mut chunks);
         globals::declare_free_globals(&mut chunks);
         globals::normalize_global_table(&mut chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
         for (values, key, promote) in [
             (vec![], Value::String("key".into()), true),
@@ -221,8 +219,7 @@ fn paired_debug_rank_execution_measurement() {
         root.emit_op(Op::RETURN, 0);
         let mut chunks = vec![root, body.remove(0)];
         bundle::finalize_with_runtime_helpers(&mut chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
         let mut vm = VM::new();
         platforms::register_platforms_all(&mut vm);

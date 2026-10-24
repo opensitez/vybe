@@ -32,8 +32,7 @@ fn run(runtime: &mut VM, chunks: Vec<Chunk>) -> Result<Value, String> {
 }
 fn validate(chunks: &[Chunk]) -> usize {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     bytes.len()
 }
@@ -309,16 +308,10 @@ fn largest_old_frame_remains_accepted() {
         runtime.set_global("input", Value::String("a😀b".into()));
         assert_eq!(run(&mut runtime, chunks.to_vec()), Ok(Value::I32(3)));
         let bytes = vybe_platform_wasm::write_wasm(chunks);
-        let error = match wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
-        {
-            Ok(_) => panic!("native MAX50000 cap expected"),
-            Err(e) => e,
-        };
-        assert!(error.message().contains("locals"));
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
     }
     println!(
-        "scalar_length maximal old frame output passed both; native local-count implementation cap, not a native pass"
+        "scalar_length maximal old frame output and complete in-house Wasm validation passed both; not a native execution claim"
     );
 }
 

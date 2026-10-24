@@ -30,8 +30,7 @@ fn runner(old: bool, argc: u8) -> (VM, Value) {
     bundle::finalize_with_runtime_helpers(&mut chunks);
     globals::declare_free_globals(&mut chunks);
     globals::normalize_global_table(&mut chunks);
-    let native = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(&chunks));
+    let native = vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks));
     if old {
         // The captured baseline's alphanumeric-name branch has no value in
         // either arm but declares an externref result. Keep its full native

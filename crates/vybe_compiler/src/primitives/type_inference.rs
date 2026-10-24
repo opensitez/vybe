@@ -927,6 +927,25 @@ impl Compiler {
         match &expr.kind {
             ExprKind::Lit(Literal::Int(n)) => *n >= range.0 && *n <= range.1,
 
+            ExprKind::Cast { type_name, .. }
+                if width == vybe_ast::builtin_types::IntWidth::U32 =>
+            {
+                // Keep the real numeric cast and its evaluation. Its U32
+                // result is a fixed point of the subsequent binding wrap.
+                // Earlier enum/char paths must not inherit this width proof.
+                let cast = self.canon(type_name);
+                if matches!(cast.as_str(),
+                    "char" | "int" | "long" | "short" | "byte"
+                        | "uint" | "ulong" | "ushort" | "sbyte")
+                    || self.enum_value_names.contains_key(&cast)
+                    || self.resolve_pending_class_name_for_type_hint(type_name).is_some()
+                {
+                    return false;
+                }
+                self.profile.integer_cast_widths.get(cast.trim())
+                    .is_some_and(|cast_width| cast_width.bits == Some(32) && !cast_width.signed)
+            }
+
             ExprKind::Binary { op, left, right } => {
                 if matches!(op, BinOp::Integer(_, vybe_ast::BitLane::W32)) {
                     return is_i32;

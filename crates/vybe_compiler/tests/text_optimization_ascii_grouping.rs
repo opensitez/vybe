@@ -73,8 +73,7 @@ fn vm() -> VM {
 }
 fn validate(chunks: &[Chunk]) -> usize {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     bytes.len()
 }
@@ -688,15 +687,6 @@ fn benchmark_ascii_runs_against_generic_unit_copy() {
     }
 }
 
-fn known_native_local_cap(chunks: &[Chunk]) -> String {
-    let bytes = vybe_platform_wasm::write_wasm(chunks);
-    let error = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-        .err()
-        .expect("known wasmparser MAX50000 local implementation cap");
-    assert_eq!(error.message(), "too many locals: locals exceed maximum");
-    error.message().to_owned()
-}
 #[test]
 fn candidate_reuses_dead_sign_slot_at_largest_generic_local_budget() {
     for base in [0u16, 1, u16::MAX - 12] {
@@ -732,15 +722,8 @@ fn candidate_reuses_dead_sign_slot_at_largest_generic_local_budget() {
             expected,
             "candidate full-frame output"
         );
-        if base == u16::MAX - 12 {
-            assert_eq!(known_native_local_cap(&old), known_native_local_cap(&new));
-            println!(
-                "Grouping generic largest frame: VM old/new expected output passed; native both hit wasmparser MAX50000 local implementation cap (not native pass)"
-            );
-        } else {
-            validate(&old);
-            validate(&new);
-        }
+        validate(&old);
+        validate(&new);
         assert_eq!(old[0].local_count, new[0].local_count);
     }
     let php_emit = |base: u16, old: bool| {
@@ -766,7 +749,6 @@ fn candidate_reuses_dead_sign_slot_at_largest_generic_local_budget() {
         "Grouping local budgets generic=12 candidate=12 PHP={budget} candidate={} delta=0",
         new[0].local_count
     );
-    let mut native_caps = vec![];
     for old in [true, false] {
         let mut chunks = php_emit(u16::MAX - budget, old);
         assert_eq!(
@@ -783,12 +765,8 @@ fn candidate_reuses_dead_sign_slot_at_largest_generic_local_budget() {
             Ok(Value::String("1,234,567".into())),
             "actual PHP largest frame preserves positive output old={old}"
         );
-        native_caps.push(known_native_local_cap(&chunks));
+        validate(&chunks);
     }
-    assert_eq!(native_caps[0], native_caps[1]);
-    println!(
-        "Grouping PHP largest frame: VM old/new expected output passed; native both hit wasmparser MAX50000 local implementation cap (not native pass)"
-    );
 }
 #[test]
 #[ignore = "interleaved opt-level-0 retained-callee grouping and actual PHP Source diagnostic"]

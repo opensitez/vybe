@@ -324,12 +324,6 @@ impl PreparationPlan {
             .map_or(&[],|(_,paths)|paths.as_slice())
     }
 
-    // Gate-only diagnostic of the real private admission predicate.
-    #[cfg(any(test,v6_service_gate))]
-    pub(crate) fn retirement_rank_gate_enabled(&self)->bool {
-        self.retirement_admission_enabled()
-    }
-
     /// Retire at most one completed speculative unit when later work is pending.
     /// The caller must drop its paired lowering receiver before refilling.
     /// Running jobs and the actual requested unit retain ownership. No requeue.
@@ -364,7 +358,7 @@ impl PreparationPlan {
 
     pub(crate) fn replenish_with_hints(&mut self, pool: &PreparationPool,
         active: &mut HashMap<PathBuf, PreparationTicket>, window: usize,
-        hints: Option<SourceHintFactory>, mut skip: impl FnMut(&std::path::Path) -> bool,
+        hints: Option<SourceHintFactory>, skip: impl FnMut(&std::path::Path) -> bool,
     ) {
         self.replenish_by(active,window,|_key,path,language|pool.submit_with_hints(path,language,hints),skip);
     }

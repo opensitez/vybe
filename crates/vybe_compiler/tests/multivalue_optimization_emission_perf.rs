@@ -35,8 +35,7 @@ fn runtime(first: Value) -> VM {
     vm
 }
 fn validate(chunks: &[Chunk]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
         .unwrap();
 }
 #[test]
@@ -184,8 +183,7 @@ fn packet_scalar_conversion_and_first_value_branches_validate() {
             bundle::finalize_with_runtime_helpers(&mut chunks);
             globals::declare_free_globals(&mut chunks);
             globals::normalize_global_table(&mut chunks);
-            let checked = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(&chunks));
+            let checked = vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks));
             if old {
                 assert!(
                     checked.is_err(),

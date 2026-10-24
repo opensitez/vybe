@@ -23,8 +23,7 @@ fn module() -> Vec<Chunk> {
 fn base64_filter_retains_only_standard_ascii_and_traps_non_strings() {
     let chunks = module();
     let native = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&native).unwrap();
+    vybe_platform_wasm::validate_binary(&native).unwrap();
     let mut vm = VM::new();
     primitives::platforms::register_platforms_all(&mut vm);
     let function = vm.run(chunks).unwrap();

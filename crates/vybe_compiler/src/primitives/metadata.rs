@@ -1694,16 +1694,29 @@ impl Compiler {
             return false;
         }
         let full_canon = self.canon(&parts.join("."));
-        if self.defined_classes.contains(&full_canon)
+        let is_class_name = self.defined_classes.contains(&full_canon)
             || self.pending_classes.contains_key(&full_canon)
-        {
-            return true;
+            || parts.last().is_some_and(|short| {
+                let short_canon = self.canon(short);
+                self.defined_classes.contains(&short_canon)
+                    || self.pending_classes.contains_key(&short_canon)
+            });
+        if !is_class_name {
+            return false;
         }
-        parts.last().is_some_and(|short| {
-            let short_canon = self.canon(short);
-            self.defined_classes.contains(&short_canon)
-                || self.pending_classes.contains_key(&short_canon)
-        })
+        // Only ambiguous class-name candidates need declaration inspection.
+        // holder.Inner is a value when Inner is a declared instance field,
+        // not a reference to the unrelated class with the same short name.
+        // A class-qualified prefix must retain its existing static semantics.
+        if let ExprKind::Member { object, field, .. } = &receiver.kind
+            && !self.receiver_is_class_name(object)
+            && let Some(owner_hint) = self.infer_expr_type_hint(object)
+            && let Some(owner) = self.resolve_pending_class_name_for_type_hint(&owner_hint)
+            && self.lookup_instance_field_type(&owner, field).is_some()
+        {
+            return false;
+        }
+        true
     }
 
     /// Whether an instance field named `field_canon` is already declared by

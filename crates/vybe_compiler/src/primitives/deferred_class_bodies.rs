@@ -75,6 +75,7 @@ pub(crate) fn has_candidate_class_headers(body: &[Statement]) -> bool {
 /// inspect source expression scopes, rejecting anonymous classes and nested
 /// declarations in closures. No source Vec is donated in this mode, so the
 /// separate independent-lowering ownership proof is unnecessary.
+#[cfg(any(test, feature = "service-verification"))]
 pub(crate) fn has_installed_library_metadata_headers(body: &[Statement], case_sensitive: bool) -> bool {
     installed_library_metadata_safe(body,case_sensitive,false,true)
 }

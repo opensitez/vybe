@@ -405,8 +405,7 @@ mod canonical_stream_tests {
             let mut chunks = vec![chunk];
             crate::primitives::globals::normalize_global_table(&mut chunks);
             let binary = vybe_platform_wasm::write_wasm(&chunks);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&binary).expect("sink-first byte transport must be standard Wasm");
+            vybe_platform_wasm::validate_binary(&binary).expect("sink-first byte transport must be standard Wasm");
             let result = vm.run(chunks).expect("sink-first transport must finish");
             let Value::I32(handle) = result else { panic!("sink future handle was lost") };
             assert!(matches!(vm.handle_table.get(handle as u32),
@@ -454,8 +453,7 @@ mod canonical_stream_tests {
         let mut chunks = vec![chunk];
         crate::primitives::globals::normalize_global_table(&mut chunks);
         let binary = vybe_platform_wasm::write_wasm(&chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary)
+        vybe_platform_wasm::validate_binary(&binary)
             .expect("direct canonical byte drain must be valid standard Wasm");
     }
 
@@ -473,8 +471,7 @@ mod canonical_stream_tests {
         let mut chunks = vec![chunk];
         crate::primitives::globals::normalize_global_table(&mut chunks);
         let binary = vybe_platform_wasm::write_wasm(&chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary).expect("canonical write loop must be valid standard Wasm");
+        vybe_platform_wasm::validate_binary(&binary).expect("canonical write loop must be valid standard Wasm");
     }
 }
 

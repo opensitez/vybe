@@ -159,8 +159,7 @@ fn collection_numeric_control_wasm_binaries_validate() {
         let helper = builder(&mut Chunk::new("imports"));
         let name = helper.name.clone();
         let binary = vybe_platform_wasm::write_wasm(&[helper]);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary)
+        vybe_platform_wasm::validate_binary(&binary)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
     }
 }
@@ -304,8 +303,7 @@ fn merge_sort_preserves_stability_identity_receiver_abi_and_complexity() {
             let mut runtime = vm(input.clone());
             runtime.set_global("comparisons", Value::I32(0));
             let chunks = comparator_sort_program(inline, parameter_receiver, None, false);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                 .unwrap();
             let result = runtime.run(chunks).unwrap();
             let (Value::Object(original), Value::Object(sorted)) = (&input, &result) else {
@@ -464,8 +462,7 @@ fn key_sort_caches_keys_in_order_is_stable_and_preserves_identity() {
                 let mut runtime = vm(input.clone());
                 runtime.set_global("key_calls", Value::I32(0));
                 let chunks = key_sort_program(parameter_receiver, false);
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+                vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                     .unwrap();
                 let result = runtime.run(chunks).unwrap();
                 let (Value::Object(original), Value::Object(sorted)) = (&input, &result) else {
@@ -574,8 +571,7 @@ fn bounded_selection_preserves_stable_ties_input_identity_and_key_order() {
                         },
                     );
                     if size == 7 && n == 2 {
-                        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+                        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                             .unwrap();
                     }
                     let result = runtime.run(chunks).unwrap();
@@ -826,8 +822,7 @@ fn multi_string_concat_preserves_left_to_right_order() {
         chunk.emit_op(Op::RETURN, 0);
         assert_eq!(chunk.local_count as usize, parts.len() - 2);
         let binary = vybe_platform_wasm::write_wasm(&[chunk.clone()]);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary)
+        vybe_platform_wasm::validate_binary(&binary)
             .unwrap();
         assert_eq!(
             vm(Value::Null).run(vec![chunk]).unwrap().as_str(),
@@ -1039,8 +1034,7 @@ fn optimized_wasm_fixtures() -> [(&'static str, Vec<Chunk>); 13] {
 fn optimized_wasm_binaries_validate() {
     for (name, chunks) in optimized_wasm_fixtures() {
         let binary = vybe_platform_wasm::write_wasm(&chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary)
+        vybe_platform_wasm::validate_binary(&binary)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
     }
 }
@@ -1301,8 +1295,7 @@ fn null_selection_key_uses_values_without_invoking_a_callback() {
     let mut runtime = vm(array(&[4, 2, 9, 1, 3]));
     runtime.set_global("key_calls", Value::I32(0));
     let chunks = selection_program(3, true, false, with_null_key);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
         .unwrap();
     let result = runtime.run(chunks).unwrap();
     assert_eq!(
@@ -1377,8 +1370,7 @@ fn dynamic_selection_count_is_normalized_once_and_nan_is_empty() {
         let mut runtime = vm(array(&[4, 2, 9, 1, 3]));
         runtime.set_global("count", count.clone());
         let chunks = selection_program_with_count(None, false, false, heap::emit_nsmallest);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
         let result = runtime.run(chunks).unwrap();
         assert_eq!(
@@ -1530,8 +1522,7 @@ fn queue_binary_insertion_preserves_ties_identity_abi_and_logarithmic_callbacks(
                     heap::emit_push_with_comparator,
                 );
                 if size == 7 {
-                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                        .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+                    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                         .unwrap();
                 }
                 runtime.run(chunks).unwrap();
@@ -1646,8 +1637,7 @@ fn queue_push_pop_only_replaces_on_strict_increase_including_nan() {
         let mut runtime = vm(input.clone());
         runtime.set_global("added", added);
         let chunks = queue_program(heap::emit_push_pop, 2);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
         let result = runtime.run(chunks).unwrap().as_f64();
         assert!(result == expected || (result.is_nan() && expected.is_nan()));
@@ -1825,8 +1815,7 @@ fn outlined_key_sort_shares_body_and_dependencies_and_finalization_is_idempotent
         );
         globals::declare_free_globals(&mut chunks);
         globals::normalize_global_table(&mut chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
         let pairs: Vec<_> = (0..33).map(|id| ((id * 37) % 7, id)).collect();
         let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
@@ -1894,8 +1883,7 @@ fn outlined_bounded_selection_shares_direction_and_receiver_specific_bodies() {
         }
         globals::declare_free_globals(&mut chunks);
         globals::normalize_global_table(&mut chunks);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
         let total_bytes = chunks.iter().map(|c| c.code.len()).sum::<usize>();
         let input = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
@@ -1950,8 +1938,7 @@ fn outlining_reduces_full_module_bytes_against_identical_inlined_algorithms() {
             globals::normalize_global_table(&mut chunks);
             let bytecode = chunks.iter().map(|c| c.code.len()).sum::<usize>();
             let binary = vybe_platform_wasm::write_wasm(&chunks);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&binary)
+            vybe_platform_wasm::validate_binary(&binary)
                 .unwrap();
             sizes.push((bytecode, binary.len()));
             // Run both module shapes too: sizing cannot conceal different
@@ -2152,8 +2139,7 @@ fn shared_reversal_preserves_copy_element_identity_and_indexed_read_contracts() 
                 let input =
                     Value::Object(vybe_runtime::heap::alloc(Object::new_array(values.clone())));
                 let chunks = reversal_program(old, 2, parameter_receiver);
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+                vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                     .unwrap();
                 let result = vm(input.clone()).run(chunks).unwrap();
                 assert_ne!(result, input, "reversal must return a fresh array");
@@ -2194,8 +2180,7 @@ fn shared_reversal_reduces_repeated_module_size_and_links_only_one_body() {
     let after: usize = new.iter().map(|c| c.code.len()).sum();
     let old_wasm = vybe_platform_wasm::write_wasm(&old);
     let new_wasm = vybe_platform_wasm::write_wasm(&new);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&new_wasm)
+    vybe_platform_wasm::validate_binary(&new_wasm)
         .unwrap();
     println!(
         "reverse 20 calls: bytecode={before}/{after} wasm={}/{}",
@@ -2263,8 +2248,7 @@ fn python_reversal_normalizes_dictionary_keys_and_unicode_before_shared_copy() {
         exports.push((body, bytes));
     }
     for (body, bytes) in exports {
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        vybe_platform_wasm::validate_binary(&bytes)
             .unwrap_or_else(|error| panic!("{body}: {error}"));
     }
 }
@@ -2327,8 +2311,7 @@ fn outlined_reversal_preserves_existing_field_and_prototype_directives() {
             assert_eq!(helpers.len(), 1);
             assert_eq!(helpers[0].module_instance_fields_are_own_properties, own);
             assert_eq!(helpers[0].module_members_on_prototype, prototype);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                 .unwrap();
             assert_eq!(
                 array_items(vm(array(&[1, 2, 3])).run(chunks.clone()).unwrap())

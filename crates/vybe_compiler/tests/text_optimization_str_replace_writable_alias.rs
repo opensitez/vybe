@@ -41,8 +41,7 @@ fn program(selected: bool) -> Vec<Chunk> {
     globals::declare_free_globals(&mut chunks);
     globals::normalize_global_table(&mut chunks);
     let bytes = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     chunks
 }

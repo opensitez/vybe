@@ -405,8 +405,7 @@ fn packet_schema_identity_values_and_size() {
                     include_vybe_metadata: false,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
             if std::env::var_os("VYBE_PRIMITIVE_COMPILER_GENERATOR_EXPORT").is_some() {
                 native_export::export_chunks(&cs, &format!("compiler-packet-{op}-{mode}"));
@@ -429,10 +428,9 @@ fn packet_schema_identity_values_and_size() {
         // The full lifecycle currently exposes a writer type mismatch even in
         // baseline mode. Record it explicitly; do not certify native lifecycle.
         // Candidates must not introduce a different validation failure.
-        let validation = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes)
+        let validation = vybe_platform_wasm::validate_binary(&bytes)
             .map(|_| "valid".to_owned())
-            .unwrap_or_else(|e| e.message().to_owned());
+            .unwrap_or_else(|e| e.message);
         if mode == 0 {
             baseline_validation = Some(validation.clone());
         } else {

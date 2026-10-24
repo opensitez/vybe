@@ -145,92 +145,55 @@ fn narrowing_count(chunks: &[Chunk]) -> usize {
 }
 
 fn validate(chunks: &[Chunk], case: &str) {
+    use vybe_platform_wasm::inspection::{CoreModule, ImportType};
     assert!(!dump(chunks).contains("dyneq"));
     let bytes = vybe_platform_wasm::write_wasm_with_options(
-        chunks,
-        vybe_platform_wasm::WasmWriteOptions {
-            include_vybe_metadata: false,
-            include_name_section: false,
+        chunks, vybe_platform_wasm::WasmWriteOptions {
+            include_vybe_metadata: false, include_name_section: false,
         },
     );
-    if let Err(error) = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-    {
-        let test = std::thread::current()
-            .name()
-            .unwrap_or("unnamed")
-            .to_owned();
+    let module = CoreModule::new(&bytes).unwrap();
+    if let Err(error) = vybe_platform_wasm::validate_binary(&bytes) {
+        let test = std::thread::current().name().unwrap_or("unnamed").to_owned();
         let stem = format!("static-word-{test}-{case}-{}", std::process::id());
         let path = std::env::temp_dir().join(format!("{stem}-invalid.wasm"));
         std::fs::write(&path, &bytes).expect("save failing Wasm");
         std::fs::write(path.with_extension("chunks.txt"), dump(chunks))
             .expect("save failing Chunk context");
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-            if let Ok(wasmparser::Payload::CodeSectionEntry(body)) = payload
-                && body.range().contains(&error.offset())
-            {
-                let mut operators = body.get_operators_reader().unwrap();
+        module.function_bodies(|body| {
+            if let Some(offset) = error.offset().filter(|offset| body.range().contains(offset)) {
                 let mut previous = std::collections::VecDeque::new();
-                while !operators.eof() {
-                    let offset = operators.original_position();
-                    let operation = operators.read().unwrap();
-                    previous.push_back(format!("{offset}: {operation:?}"));
-                    if previous.len() > 20 {
-                        previous.pop_front();
-                    }
-                    if offset >= error.offset() {
-                        eprintln!(
-                            "failed body {:?}:\n{}",
-                            body.range(),
-                            previous.into_iter().collect::<Vec<_>>().join("\n")
-                        );
+                for instruction in body.instructions()? {
+                    let instruction = instruction?;
+                    previous.push_back(format!("{}: {instruction:?}", instruction.offset));
+                    if previous.len() > 20 { previous.pop_front(); }
+                    if instruction.offset >= offset {
+                        eprintln!("failed body {:?}:\n{}", body.range(),
+                            previous.into_iter().collect::<Vec<_>>().join("\n"));
                         break;
                     }
                 }
             }
-        }
-        panic!(
-            "test={test} case={case}: {error}; failing metadata-free Wasm: {}",
-            path.display()
-        );
+            Ok(())
+        }).unwrap();
+        panic!("test={test} case={case}: {error}; failing metadata-free Wasm: {}", path.display());
     }
     let mut abstract_imports = Vec::new();
-    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
-        match payload.unwrap() {
-            wasmparser::Payload::ImportSection(imports) => {
-                for import in imports.into_imports() {
-                    let import = import.unwrap();
-                    if matches!(
-                        import.ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                    ) {
-                        abstract_imports.push(
-                            import.module == "ecma:value"
-                                && matches!(import.name, "abstractEq" | "abstractNe"),
-                        );
-                    }
-                }
-            }
-            wasmparser::Payload::CodeSectionEntry(body) => {
-                let mut operators = body.get_operators_reader().unwrap();
-                while !operators.eof() {
-                    match operators.read().unwrap() {
-                        wasmparser::Operator::Call { function_index }
-                        | wasmparser::Operator::ReturnCall { function_index }
-                        | wasmparser::Operator::RefFunc { function_index } => {
-                            assert_ne!(
-                                abstract_imports.get(function_index as usize),
-                                Some(&true),
-                                "actual abstract equality call/reference {function_index}"
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
+    module.imports(|module, name, ty| {
+        if matches!(ty, ImportType::Func { .. }) {
+            abstract_imports.push(module == "ecma:value" && matches!(name, "abstractEq" | "abstractNe"));
         }
-    }
+        Ok(())
+    }).unwrap();
+    module.function_bodies(|body| {
+        for instruction in body.instructions()? {
+            if let Some(index) = instruction?.function_index() {
+                assert_ne!(abstract_imports.get(index as usize), Some(&true),
+                    "actual abstract equality call/reference {index}");
+            }
+        }
+        Ok(())
+    }).unwrap();
 }
 
 type Trace = Arc<Mutex<Vec<String>>>;

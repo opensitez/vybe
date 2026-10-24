@@ -127,10 +127,7 @@ fn raw_logical_conditions_preserve_order_skips_and_nested_results() {
                 ] {
                     for old in [true, false] {
                         let chunks = program(&condition, old);
-                        let validation = wasmparser::Validator::new_with_features(
-                            wasmparser::WasmFeatures::all(),
-                        )
-                        .validate_all(&vybe_platform_wasm::write_wasm(&chunks));
+                        let validation = vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks));
                         if old {
                             assert!(
                                 validation.is_err(),
@@ -242,8 +239,7 @@ fn c_profile_ast_if_conditions_use_valid_raw_logical_results() {
                         .unwrap();
                     let bytes = vybe_platform_wasm::write_wasm(&chunks);
                     if let Err(error) =
-                        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                            .validate_all(&bytes)
+                        vybe_platform_wasm::validate_binary(&bytes)
                     {
                         std::fs::write("/private/tmp/condition-c-ast.wasm", &bytes).unwrap();
                         panic!(
@@ -305,8 +301,7 @@ fn c_integer_comparison_records_separate_signed_conversion_export_gap() {
     let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .unwrap();
-    let validation = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(&chunks));
+    let validation = vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks));
     match validation {
         Err(error) => assert!(
             error.to_string().contains("expected f64, found externref"),

@@ -78,8 +78,7 @@ fn arguments_preserve_order_and_values() {
             "{fmt}"
         );
         for chunks in [&old, &new] {
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+            vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
                 .unwrap();
         }
     }
@@ -98,8 +97,7 @@ fn repeated_argument_packing_uses_constant_scratch_space() {
         new[0].code.len()
     );
     for chunks in [&old, &new] {
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
             .unwrap();
     }
 }
@@ -125,8 +123,7 @@ fn packing_retains_array_argument_identity() {
             unreachable!()
         };
         assert!(std::sync::Arc::ptr_eq(actual, original));
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
     }
 }

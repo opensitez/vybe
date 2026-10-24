@@ -15,6 +15,95 @@ use crate::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+/// Whether a C-style loop must retain its continue-to-update body label.
+/// Keep every continue, including those in nested loops, conservatively: a
+/// labeled or level-based continue can target an enclosing loop. Unknown
+/// statement forms also retain the old layout. Callable bodies have their
+/// own control-flow context and cannot continue their declaring loop.
+pub(crate) fn body_requires_continue_target(body: &[vybe_ast::Statement]) -> bool {
+    use vybe_ast::StmtKind;
+    body.iter().any(|statement| match &statement.kind {
+        StmtKind::Continue(_) => true,
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. }
+        | StmtKind::DoWhile { body, .. } | StmtKind::With { body, .. }
+        | StmtKind::Using { body, .. } | StmtKind::Lock { body, .. } =>
+            body_requires_continue_target(body),
+        StmtKind::If { then_body, elifs, else_body, .. } =>
+            body_requires_continue_target(then_body)
+            || elifs.iter().any(|(_, body)| body_requires_continue_target(body))
+            || else_body.as_deref().is_some_and(body_requires_continue_target),
+        StmtKind::For { init, body, .. } =>
+            init.as_deref().is_some_and(|statement|
+                body_requires_continue_target(std::slice::from_ref(statement)))
+            || body_requires_continue_target(body),
+        StmtKind::While { body, else_body, .. }
+        | StmtKind::ForIn { body, else_body, .. } =>
+            body_requires_continue_target(body)
+            || else_body.as_deref().is_some_and(body_requires_continue_target),
+        StmtKind::Switch { cases, default, .. } =>
+            cases.iter().any(|case| body_requires_continue_target(&case.body))
+            || default.as_deref().is_some_and(body_requires_continue_target),
+        StmtKind::Try { body, catches, else_body, finally } =>
+            body_requires_continue_target(body)
+            || catches.iter().any(|catch| body_requires_continue_target(&catch.body))
+            || else_body.as_deref().is_some_and(body_requires_continue_target)
+            || finally.as_deref().is_some_and(body_requires_continue_target),
+        StmtKind::Expr(_) | StmtKind::VarDecl { .. } | StmtKind::Assign { .. }
+        | StmtKind::CompoundAssign { .. } | StmtKind::Return(_)
+        | StmtKind::Break(_) | StmtKind::Throw { .. } | StmtKind::Echo(_)
+        | StmtKind::Empty | StmtKind::Directive { .. }
+        | StmtKind::FunctionDecl { .. } => false,
+        _ => true,
+    })
+}
+
+/// Whether `for`/`while` loops test their condition at the bottom.
+pub(crate) const ROTATE_LOOPS: bool = true;
+
+/// Whether a loop condition may be compiled twice — once as the entry guard
+/// and once as the bottom test of a rotated loop. Evaluation count is the
+/// same as a top-tested loop (N+1), so only the COMPILATION must be
+/// repeatable: no nested callable, no binding, no write, and a small size so
+/// the duplicate stays cheap.
+pub(crate) fn condition_is_duplicable(cond: &vybe_ast::Expression) -> bool {
+    if !ROTATE_LOOPS {
+        return false;
+    }
+    fn walk(expr: &vybe_ast::Expression, budget: &mut u32) -> bool {
+        use vybe_ast::{ExprKind, Literal, UnaryOp};
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        match &expr.kind {
+            ExprKind::Lit(literal) => !matches!(literal, Literal::Ellipsis),
+            ExprKind::Ident(_) | ExprKind::This => true,
+            ExprKind::Binary { left, right, .. } => walk(left, budget) && walk(right, budget),
+            ExprKind::Unary { op, expr } => {
+                !matches!(
+                    op,
+                    UnaryOp::PreInc | UnaryOp::PreDec | UnaryOp::PostInc | UnaryOp::PostDec
+                        | UnaryOp::Delete | UnaryOp::AddrOf
+                ) && walk(expr, budget)
+            }
+            ExprKind::Ternary { cond, then, else_ } => {
+                walk(cond, budget) && walk(then, budget) && walk(else_, budget)
+            }
+            ExprKind::Cast { expr, .. } => walk(expr, budget),
+            ExprKind::Member { object, .. } => walk(object, budget),
+            ExprKind::Index { object, index, .. } => walk(object, budget) && walk(index, budget),
+            ExprKind::Call { callee, args, .. } => {
+                matches!(callee.kind, ExprKind::Ident(_) | ExprKind::Member { .. })
+                    && walk(callee, budget)
+                    && args.iter().all(|arg| !arg.by_ref && !arg.spread && walk(&arg.value, budget))
+            }
+            _ => false,
+        }
+    }
+    let mut budget = 24;
+    !matches!(cond.kind, vybe_ast::ExprKind::Lit(_)) && walk(cond, &mut budget)
+}
+
 // ── Basic loop primitives ──────────────────────────────────────────────
 //
 // These are the building blocks for while, do-while, and C-style for loops.
@@ -201,6 +290,21 @@ pub fn emit_do_loop_end_from_i32(
     chunks[current].patch_block(state.block_patch);
 }
 
+/// Close a do-loop whose source condition is a known Boolean literal.
+/// Its body/continue label has already been closed by the caller, just as
+/// for emit_do_loop_end_from_i32. No condition value is left on the stack.
+pub fn emit_do_loop_end_known_condition(
+    chunks: &mut [Chunk], current: usize, state: LoopState, repeat: bool, line: u32,
+) {
+    if repeat {
+        chunks[current].emit_br(0, line);
+    }
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(state.loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(state.block_patch);
+}
+
 // ── For-in iteration ────────────────────────────────────────────────────
 
 /// Emit the start of a for-in loop: init index, check condition, load element.
@@ -215,7 +319,7 @@ pub fn emit_for_in_start(
     idx_slot: u16,
     line: u32,
 ) -> LoopState {
-    emit_for_in_start_with_length(chunks, current, arr_slot, idx_slot, None, line)
+    emit_for_in_start_with_length(chunks, current, arr_slot, idx_slot, None, true, line)
 }
 
 /// Iterate a compiler-owned snapshot whose length cannot change in the body.
@@ -229,7 +333,25 @@ pub fn emit_for_in_snapshot_start(
     length_slot: u16,
     line: u32,
 ) -> LoopState {
-    emit_for_in_start_with_length(chunks, current, arr_slot, idx_slot, Some(length_slot), line)
+    emit_for_in_start_with_length(chunks, current, arr_slot, idx_slot, Some(length_slot), true, line)
+}
+
+// Callback frames cannot continue this loop. Keep live length and element
+// semantics, but do not execute an unused continue-to-increment block.
+/// Iterate an immutable-in-length private snapshot without a continue label.
+/// The caller owns the complete body and must not emit a continue targeting
+/// this loop. Any early exit must use the returned state's branch depths.
+pub fn emit_for_in_snapshot_no_continue_start(
+    chunks: &mut [Chunk], current: usize, arr_slot: u16, idx_slot: u16,
+    length_slot: u16, line: u32,
+) -> LoopState {
+    emit_for_in_start_with_length(chunks, current, arr_slot, idx_slot, Some(length_slot), false, line)
+}
+
+fn emit_callback_iteration_start(
+    chunks: &mut [Chunk], current: usize, arr_slot: u16, idx_slot: u16, line: u32,
+) -> LoopState {
+    emit_for_in_start_with_length(chunks, current, arr_slot, idx_slot, None, false, line)
 }
 
 fn emit_for_in_start_with_length(
@@ -238,6 +360,7 @@ fn emit_for_in_start_with_length(
     arr_slot: u16,
     idx_slot: u16,
     length_slot: Option<u16>,
+    needs_continue_target: bool,
     line: u32,
 ) -> LoopState {
     // i = 0
@@ -267,8 +390,8 @@ fn emit_for_in_start_with_length(
     chunks[current].emit_op(Op::I32_GE_S, line);
     emit_loop_break_if_from_i32(chunks, current, line);
 
-    // block $body { — continue targets this, skips to increment
-    let body_block_patch = chunks[current].emit_block(line);
+    // User bodies need a continue target; closed callback loops do not.
+    let body_block_patch = needs_continue_target.then(|| chunks[current].emit_block(line));
 
     // element = arr[i]
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
@@ -278,7 +401,7 @@ fn emit_for_in_start_with_length(
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: Some(body_block_patch),
+        body_block_patch,
     }
 }
 
@@ -356,7 +479,7 @@ pub fn emit_map(
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     let elem_slot = chunks[current].alloc_scratch(1);
-    let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    let state = emit_callback_iteration_start(chunks, current, arr_slot, idx_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
@@ -401,7 +524,7 @@ pub fn emit_filter(
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
-    let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    let state = emit_callback_iteration_start(chunks, current, arr_slot, idx_slot, line);
 
     // Store element
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
@@ -444,7 +567,7 @@ pub fn emit_foreach(
     line: u32,
 ) {
     let elem_slot = chunks[current].alloc_scratch(1);
-    let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    let state = emit_callback_iteration_start(chunks, current, arr_slot, idx_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
@@ -577,7 +700,7 @@ pub fn emit_any_every(
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
 
     let elem_slot = chunks[current].alloc_scratch(1);
-    let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    let state = emit_callback_iteration_start(chunks, current, arr_slot, idx_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
@@ -590,16 +713,16 @@ pub fn emit_any_every(
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + __recv, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    // Structure from emit_for_in_start: block $exit { loop $loop { cond, block $body {
-    // From here: depth 0=$body, 1=$loop, 2=$exit
-    // With an extra block $skip: depth 0=$skip, 1=$body, 2=$loop, 3=$exit
+    // The skip block adds one label to the actual loop layout. Derive the
+    // exit depth rather than assuming a continue-to-increment body block.
+    let exit_depth = u32::from(state.break_depth(1));
     if is_any {
         let skip = chunks[current].emit_block(line);
         chunks[current].emit_op(Op::I32_EQZ, line);
         chunks[current].emit_br_if(0, line); // skip if false
         chunks[current].emit_bool_const(true, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
-        chunks[current].emit_br(3, line); // break: skip=0, body=1, loop=2, exit=3
+        chunks[current].emit_br(exit_depth, line);
         chunks[current].emit_end(line);
         chunks[current].patch_block(skip);
     } else {
@@ -607,7 +730,7 @@ pub fn emit_any_every(
         chunks[current].emit_br_if(0, line); // skip if true
         chunks[current].emit_bool_const(false, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
-        chunks[current].emit_br(3, line); // break: skip=0, body=1, loop=2, exit=3
+        chunks[current].emit_br(exit_depth, line);
         chunks[current].emit_end(line);
         chunks[current].patch_block(skip);
     }

@@ -255,10 +255,17 @@ impl crate::Compiler {
         // static belongs to its declaring class. Replace only the storage
         // receiver, not the late-static-bound method receiver.
         self.emit_u16(Op::LOCAL_GET, class_local);
-        self.emit_const(Value::String(Arc::from("__static_property_owner$")));
-        self.emit_u16(Op::LOCAL_GET, source_key);
-        let owner_concat = self.import("ecma:string", "concat");
-        self.emit_host_call(owner_concat, 2);
+        if let ExprKind::Lit(vybe_ast::Literal::Str(name)) = &member.kind {
+            // Literal names have no observable coercion or evaluation effects.
+            self.emit_const(Value::String(Arc::from(format!(
+                "__static_property_owner${name}"
+            ))));
+        } else {
+            self.emit_const(Value::String(Arc::from("__static_property_owner$")));
+            self.emit_u16(Op::LOCAL_GET, source_key);
+            let owner_concat = self.import("ecma:string", "concat");
+            self.emit_host_call(owner_concat, 2);
+        }
         let owner_get = self.import("ecma:object", "get");
         self.emit_host_call(owner_get, 2);
         let owner = self.define_local("__static_property_owner");
@@ -267,7 +274,10 @@ impl crate::Compiler {
         super::delegates::emit_slot_is_nullish(
             &mut self.chunks, self.current, owner, owner_line,
         );
-        self.chunk().emit_if(owner_line);
+        // The caller's receiver is replaced only when metadata supplies its
+        // declaring owner. Make it an explicit block input/result rather
+        // than consuming an operand below a void IF's stack boundary.
+        self.chunk().emit_if_params(owner_line, 1, 1);
         self.chunk().emit_else(owner_line);
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, owner);
@@ -1287,8 +1297,7 @@ mod indexed_guard_tests {
                             include_name_section: true,
                         },
                     );
-                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                        .validate_all(&bytes)
+                    vybe_platform_wasm::validate_binary(&bytes)
                         .expect("indexed guards must emit valid WASM");
                     let receiver = Value::Object(vybe_runtime::heap::alloc(
                         vybe_runtime::value::Object::new(),

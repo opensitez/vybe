@@ -15,5 +15,5 @@ fn program(which:u8,calls:usize)->Vec<Chunk>{
 }
 fn runtime(a:Value,b:Value)->VM {let mut v=VM::new();platforms::register_platforms_all(&mut v);v.set_global("left_value",a);v.set_global("right_value",b);v}
 fn result(a:Value,b:Value,c:Vec<Chunk>)->Result<String,String>{runtime(a,b).run(c).map(|x| match x{Value::F64(f)=>format!("F64:{:x}",f.to_bits()),x=>format!("{x:?}")}).map_err(|mut e|{for f in &mut e.call_stack{f.offset=0;}e.to_string()})}
-fn validate(c:&[Chunk]){wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&vybe_platform_wasm::write_wasm(c)).unwrap();}
+fn validate(c:&[Chunk]){vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(c)).unwrap();}
 fn count(c:&Chunk)->usize{let(mut pc,mut n)=(0,0);while pc<c.code.len(){let op=Op::decode(c.read_u16(pc),c.read_u16(pc+2)).unwrap();pc+=4+op.operand_format().size_in(&c.code,pc+4);n+=1;}assert_eq!(pc,c.code.len());n}

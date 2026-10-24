@@ -150,8 +150,7 @@ fn values_and_sizes() {
                     include_vybe_metadata: false,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
             if std::env::var_os("VYBE_MINMAX_EXPORT").is_some() {
                 native_export::export_chunks(&cs, &format!("minmax-private-{max}-{fast}"));
@@ -315,8 +314,7 @@ fn natural_sort_values_and_sizes() {
                     include_vybe_metadata: false,
                 },
             );
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&bytes)
+            vybe_platform_wasm::validate_binary(&bytes)
                 .unwrap();
             if std::env::var_os("VYBE_MINMAX_EXPORT").is_some() {
                 native_export::export_chunks(&cs, &format!("natural-private-{copy}-{fast}"));

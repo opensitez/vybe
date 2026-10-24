@@ -288,14 +288,6 @@ pub fn register_dynamic_runtime_imports(vm: &mut VM) {
 struct PhpIncludeRuntime {
     caps: Capabilities,
     helper_session: crate::primitives::helper_templates::Session,
-    #[cfg(any(test,v6_service_gate))]
-    completion_handoff_hits: usize,
-    #[cfg(any(test,v6_service_gate))]
-    current_source_rank_receipts: usize,
-    #[cfg(v6_service_gate)]
-    committed_foreground_receipts: usize,
-    #[cfg(v6_service_gate)]
-    committed_foreground_ready_paths: usize,
     vm: *mut VM,
     current_paths: Vec<PathBuf>,
     /// Per-RUN, and it stays that way. Only the COMPILATION is cacheable: share
@@ -391,6 +383,7 @@ struct FusedLoweringContext {
     helpers: Option<crate::primitives::helper_templates::Selected>,
     arguments: crate::primitives::argument_emission::Selection,
     runtime_helpers: std::sync::Mutex<Vec<vybe_runtime::shared_provider::InstalledRuntimeProvider>>,
+    first_entry_preparation: bool,
 }
 impl FusedLoweringContext {
     fn capture(vm:&VM,language:Language,admission:CompletionLoweringHook, helpers:Option<crate::primitives::helper_templates::Selected>, registration:crate::frontend_preparation::Registration)->Result<Self,String>{
@@ -424,6 +417,7 @@ impl FusedLoweringContext {
         Ok(Self{
             #[cfg(feature="service-verification")] manifest_probe:FUSED_MANIFEST_PROBE.with(|slot|slot.borrow().clone()),
             modules,libraries,profile,profile_source:source,frontend:FrontendIdentity::with_registration(language,registration),admission,helpers,arguments:registration.argument_selection(),
+            first_entry_preparation:registration.capabilities.request_code_space,
             runtime_helpers:std::sync::Mutex::new(crate::primitives::bundle::snapshot_runtime_helpers(vm))})
     }
     fn installed(&self,name:&str,identity:&str)->bool{
@@ -505,7 +499,7 @@ impl FusedLoweringContext {
             source_declarations:Arc::from([]),required_libraries:compiled.required_libraries,chunks:compiled.chunks,host_imports:compiled.host_imports,
             component_source:compiled.component_source,component_binary:compiled.component_binary,entry_path:Some(prepared.path.clone()),app_shell:compiled.app_shell,prepared_sources:None,
         });
-        let compilation=compilation.map(|c| PendingCompilation::prepare(c, link_budget));
+        let compilation=compilation.map(|c| PendingCompilation::prepare_with_entry_policy(c, link_budget, self.first_entry_preparation));
         #[cfg(feature="service-verification")]if let Some(probe)=&self.manifest_probe{probe.completed.fetch_add(1,Ordering::Relaxed); }
         Some(LoweredSource{elapsed:started.elapsed(),path:prepared.path.clone(),source:prepared.source.clone(),compilation})
     }
@@ -549,14 +543,17 @@ impl PendingCompilation {
         let chunks = std::mem::take(&mut compilation.chunks);
         Self { compilation, code: LinkPayload::Raw(chunks) }
     }
-    fn prepare(compilation: DynamicCompilation, budget: &Arc<AtomicUsize>) -> Self {
+    fn prepare_with_entry_policy(compilation: DynamicCompilation, budget: &Arc<AtomicUsize>, first_entry: bool) -> Self {
         let mut pending = Self::raw(compilation);
         let Some(mut permit) = LinkPermit::reserve(budget) else { return pending; };
         let LinkPayload::Raw(chunks) = pending.code else { unreachable!() };
         let preparation_span = crate::compilation_timeline::span(
             "include_link_preparation", pending.compilation.entry_path.as_deref().unwrap_or(Path::new("")),
         );
-        pending.code = match vybe_runtime::PreparedLinkedCode::prepare(chunks, LINK_OWNER_BUDGET) {
+        let prepared = if first_entry {
+            vybe_runtime::PreparedLinkedCode::prepare_for_first_entry(chunks, LINK_OWNER_BUDGET)
+        } else { vybe_runtime::PreparedLinkedCode::prepare(chunks, LINK_OWNER_BUDGET) };
+        pending.code = match prepared {
             Ok(code) => { permit.retain(code.metadata_bytes()); LinkPayload::Prepared(code, permit) }
             Err(chunks) => LinkPayload::Raw(chunks),
         };
@@ -1640,14 +1637,6 @@ impl PhpIncludeRuntime {
             preparation_plan: Default::default(),
             preparation_hints: HashMap::new(),
             helper_session: Default::default(),
-            #[cfg(any(test,v6_service_gate))]
-            completion_handoff_hits: 0,
-            #[cfg(any(test,v6_service_gate))]
-            current_source_rank_receipts: 0,
-            #[cfg(v6_service_gate)]
-            committed_foreground_receipts: 0,
-            #[cfg(v6_service_gate)]
-            committed_foreground_ready_paths: 0,
             builtin_callables: HashMap::new(),
             php_trait_declarations: HashMap::new(),
         }
@@ -1910,6 +1899,19 @@ impl PhpIncludeRuntime {
         canonical_path: PathBuf, publishes_once_resource: bool, explicit_scope: Option<Value>,
         resident_source:Option<(SourceReceipt,Language,PathBuf,Option<(Arc<dyn IncludeCompileCache>,u64)>)>,
     ) -> Result<Value, String> {
+        // Only the exact captured frontend's explicit request-code-space
+        // capability selects first-entry preparation. Cached/raw results keep
+        // all source/dependency checks and use the same immutable handoff.
+        let first_entry = pending.compilation.compile_dependencies.as_ref().is_some_and(|deps| {
+            languages::find_by_name(deps.language_name).is_some_and(|language| {
+                let registration=crate::frontend_preparation::snapshot(language.parse);
+                registration.capabilities.request_code_space
+                    && FrontendIdentity::with_registration(language,registration)==deps.frontend
+            })
+        });
+        let pending = if first_entry && matches!(&pending.code, LinkPayload::Raw(_)) {
+            PendingCompilation::prepare_with_entry_policy(pending.into_raw(), &self.link_budget, true)
+        } else { pending };
         let PendingCompilation { compilation: compiled, code } = pending;
         // A function-scoped include inherits the caller's symbol table. Keep
         // it distinct from request globals: functions declared/called by the
@@ -2244,9 +2246,7 @@ impl PhpIncludeRuntime {
         hints:Box<dyn crate::preparation::DeferredPreparationHints>,
         entry:&Path,language:Language,vm:&VM,
     ) {
-        #[cfg(v6_service_gate)] { self.committed_foreground_receipts += 1; }
         let paths=self.resolve_preparation_hint_rows(std::iter::once((caller.clone(),hints)),entry,language,vm);
-        #[cfg(v6_service_gate)] { self.committed_foreground_ready_paths += paths.len(); }
         self.queue_current_source_preparation(paths,language,&caller,true);
     }
 
@@ -2307,7 +2307,6 @@ impl PhpIncludeRuntime {
             Some((key,path,language))
         }).collect();
         let owner=caller.canonicalize().unwrap_or_else(|_|absolutize_path(caller));
-        #[cfg(any(test,v6_service_gate))] { if self.preparation_plan.retirement_rank_gate_enabled() { self.current_source_rank_receipts += 1; } }
         self.preparation_plan.prioritize_current(owner,&priority,full);
         self.preparation_plan.prioritize_as(paths);
         self.replenish_php_preparation();
@@ -2467,7 +2466,7 @@ impl PhpIncludeRuntime {
                     app_shell:compiled.app_shell,prepared_sources:None,
                 });
                 if !worker_cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                    let compilation=compilation.map(|c| PendingCompilation::prepare(c, &link_budget));
+                    let compilation=compilation.map(|c| PendingCompilation::prepare_with_entry_policy(c, &link_budget, worker_registration.capabilities.request_code_space));
                     let _=sender.send(LoweredSource{elapsed:started.elapsed(),path:worker_path,source,compilation});
                 }
             });
@@ -2535,17 +2534,23 @@ impl PhpIncludeRuntime {
             format!("compile {}", bundle.sources.first().map_or("<unknown>", |s| s.path.to_str().unwrap_or("<path>"))),
         );
         self.refresh_worker_preparation_hints(entry_path, bundle.language, vm);
+        // Resolve the admission key once for this source snapshot. All worker,
+        // retired-code and prepared-AST lookups must address the same unit;
+        // resolving the filesystem again at each stage adds work to every
+        // include and can select different tickets if a symlink changes.
+        let actual_key = bundle.sources.first().map(|source|
+            source.path.canonicalize().unwrap_or_else(|_| source.path.clone()));
         if let Some(source)=bundle.sources.first() {
-            let source_key=source.path.canonicalize().unwrap_or_else(|_|source.path.clone());
+            let source_key=actual_key.as_ref().expect("source admission key");
             if std::env::var_os("VYBE_PREPARATION_AUDIT").is_some() {
                 eprintln!("[preparation-audit] lowering-lookup path={} permitted={} context={} ticket={} preparing={} ready={}",
                     source.path.display(), permitted, self.fused_context.is_some(),
-                    self.lowering.contains_key(&source_key), self.preparing.contains_key(&source_key),
-                    self.prepared_ready.contains_key(&source_key));
+                    self.lowering.contains_key(source_key), self.preparing.contains_key(source_key),
+                    self.prepared_ready.contains_key(source_key));
             }
-            if let Some(ticket)=self.lowering.remove(&source_key) {
-                let lowering_wait = crate::compilation_timeline::span("foreground_lowering_wait", &source_key);
-                let hints=self.preparing.get(&source_key).and_then(|t|t.hint_receiver()).cloned();
+            if let Some(ticket)=self.lowering.remove(source_key) {
+                let lowering_wait = crate::compilation_timeline::span("foreground_lowering_wait", source_key);
+                let hints=self.preparing.get(source_key).and_then(|t|t.hint_receiver()).cloned();
                 let result=if let Some(hints)=hints{loop{
                     crossbeam_channel::select!{
                         recv(ticket.result)->result=>break result,
@@ -2561,7 +2566,7 @@ impl PhpIncludeRuntime {
                         if let Ok(compiled)=lowered.compilation {
                             if let Some(context)=&compiled.compilation.compile_dependencies {for message in context.certificate.lock().unwrap().take_diagnostics() {eprintln!("{message}");}}
                             if let Some(report)=vm.debug_report() {report.lock().unwrap().completed.push(("parallel include lowering (worker wall)".into(),lowered.elapsed));}
-                            if let Some(preparing)=self.preparing.remove(&source_key){
+                            if let Some(preparing)=self.preparing.remove(source_key){
                                 if let Some(hints)=preparing.take_hints(){self.consume_worker_preparation_hints(std::iter::once(hints),entry_path,bundle.language,vm);}
                                 let resolved_hints=preparing.resolved_hints();
                                 // Compilation completed before its AST is sent.
@@ -2573,7 +2578,6 @@ impl PhpIncludeRuntime {
                                 self.prioritize_resolved_source_hints(resolved_hints.as_ref(),&source.path,entry_path,bundle.language);
                             }
                             self.replenish_php_preparation();
-                            #[cfg(any(test,v6_service_gate))] { self.completion_handoff_hits += 1; }
                             #[cfg(feature="service-verification")]if let Some(probe)=self.fused_context.as_ref().and_then(|context|context.manifest_probe.as_ref()){probe.accepted.fetch_add(1,Ordering::Relaxed);}
                             return Ok(compiled);
                         }
@@ -2583,9 +2587,8 @@ impl PhpIncludeRuntime {
             }
         }
         if permitted && self.fused_context.is_some() {
-            if let Some(source)=bundle.sources.first() {
-                let key=source.path.canonicalize().unwrap_or_else(|_|source.path.clone());
-                if let Some(lowered)=self.retired_compiled.take(&key) {
+            if let Some(key)=actual_key.as_ref() {
+                if let Some(lowered)=self.retired_compiled.take(key) {
                     let valid=lowered.valid(bundle,vm);
                     if std::env::var_os("VYBE_PREPARATION_AUDIT").is_some() {
                         eprintln!("[preparation-audit] retired-compiled-lookup path={} valid={} payload_charge_bytes={} entries={}",key.display(),valid,self.retired_compiled.payload_bytes,self.retired_compiled.entries.len());
@@ -2606,8 +2609,6 @@ impl PhpIncludeRuntime {
                 }
             }
         }
-        let actual_key = bundle.sources.first().map(|source|
-            source.path.canonicalize().unwrap_or_else(|_| source.path.clone()));
         let ticket = actual_key.as_ref().and_then(|path| self.preparing.remove(path));
         // Discover the current parent's descendants before retiring/refilling
         // a full window. Otherwise a stale speculative descendant takes the
@@ -2683,14 +2684,14 @@ impl PhpIncludeRuntime {
         // Keep the consumed ticket's window slot available for discovery
         // from this parser. Existing tickets keep other workers occupied;
         // early hints can now schedule a descendant during the parent wait.
-        let mut preparation_hints_complete=false;
-        let mut statement_production=None;
+        let preparation_hints_complete;
+        let statement_production;
         let mut module = {
             let _phase = DebugPhase::current("prepare source");
             let frontend_span = crate::compilation_timeline::span("foreground_preparation_wait", bundle.sources.first().map_or(entry_path, |source| source.path.as_path()));
             let source_hints_discovered = ticket.as_ref().is_some_and(|ticket| ticket.has_source_hints());
             let resolved_hints = ticket.as_ref().and_then(|ticket| ticket.resolved_hints());
-            let prepared = bundle.sources.first().and_then(|s|self.prepared_ready.remove(&s.path.canonicalize().unwrap_or_else(|_|s.path.clone()))).or_else(|| ticket.and_then(|ticket| ticket.wait_with_early_hints(|hints| {
+            let prepared = actual_key.as_ref().and_then(|key|self.prepared_ready.remove(key)).or_else(|| ticket.and_then(|ticket| ticket.wait_with_early_hints(|hints| {
                 // Schedule descendants while this parent's parser is still
                 // running, rather than blocking on the finished parent AST.
                 self.consume_worker_preparation_hints(std::iter::once(hints), entry_path, bundle.language, vm);
@@ -4370,7 +4371,7 @@ mod tests {
             component_binary: None, entry_path: None, prepared_sources: None, app_shell: None,
         };
         let budget = Arc::new(AtomicUsize::new(0));
-        let pending = PendingCompilation::prepare(make(), &budget);
+        let pending = PendingCompilation::prepare_with_entry_policy(make(), &budget, false);
         assert!(pending.compilation.chunks.is_empty());
         assert!(matches!(&pending.code, LinkPayload::Prepared(..)));
         assert_eq!(pending.code.chunks()[0].code, expected);
@@ -4381,12 +4382,12 @@ mod tests {
         raw.chunks[0].code.clear(); // public mutation can never retain trusted metadata
         let first = LinkPermit::reserve(&budget).unwrap();
         let second = LinkPermit::reserve(&budget).unwrap();
-        let fallback = PendingCompilation::prepare(make(), &budget);
+        let fallback = PendingCompilation::prepare_with_entry_policy(make(), &budget, false);
         assert!(matches!(&fallback.code, LinkPayload::Raw(..)));
         assert_eq!(fallback.into_raw().chunks[0].code, expected);
         drop(first); drop(second);
         assert_eq!(budget.load(Ordering::Relaxed), 0);
-        drop(PendingCompilation::prepare(make(), &budget));
+        drop(PendingCompilation::prepare_with_entry_policy(make(), &budget, false));
         assert_eq!(budget.load(Ordering::Relaxed), 0);
     }
 
@@ -5598,10 +5599,6 @@ fn immediate_ast_lookahead_skips_deferred_bodies_and_default_is_exact() {
     }
 
 }
-
-#[cfg(v6_service_gate)]
-#[path="retirement_service_gate.rs"]
-pub mod retirement_service_gate;
 
 #[cfg(any(test, feature="service-verification"))]
 #[path="dynamic/retired_verification.rs"]

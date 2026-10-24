@@ -13,8 +13,7 @@ fn actual_php_empty_value_condition_and_negation_are_boolean_checked() {
     .compile(&module)
     .unwrap();
     let bytes = vybe_platform_wasm::write_wasm(&chunks);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
+    vybe_platform_wasm::validate_binary(&bytes)
         .unwrap();
     let mut vm = VM::new();
     vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);

@@ -16,7 +16,7 @@ fn module()->Vec<Chunk>{
  at=next;}
  assert_eq!(exit_conditions,1,"one proven private all-consumed exit, not a replacement comparison dispatcher");
  assert!(h.code.len()<1500,"bounded +21-byte control change, no cache arrays/new slots");
- wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&vybe_platform_wasm::write_wasm(&c)).unwrap();
+ vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&c)).unwrap();
 }
 #[test]fn legacy_count_dense_disjoint_threshold_unicode_and_empty(){
  let mut vm=VM::new();primitives::platforms::register_platforms_all(&mut vm);let f=vm.run(module()).unwrap();

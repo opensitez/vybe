@@ -518,8 +518,35 @@ pub fn emit_spread_concat_arg(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn try_emit_direct_helper_call(
     chunks: &mut [Chunk], current: usize, target: usize, argc: u8, line: u32,
 ) -> bool {
+    try_emit_direct_helper_call_with_result(chunks, current, target, argc, line, false)
+}
+
+/// Checked externref-parameter/i32-result edge for an explicit helper ABI.
+/// The selected producer owns its result semantics and already-stacked argument
+/// representation. Generic source helpers retain their externref result ABI.
+pub fn try_emit_direct_i32_helper_call(
+    chunks: &mut [Chunk], current: usize, target: usize, argc: u8, line: u32,
+) -> bool {
+    try_emit_direct_helper_call_with_result(chunks, current, target, argc, line, true)
+}
+
+fn try_emit_direct_helper_call_with_result(
+    chunks: &mut [Chunk], current: usize, target: usize, argc: u8, line: u32,
+    raw_i32: bool,
+) -> bool {
     let Some(callee) = chunks.get(target) else { return false; };
-    if callee.arity != argc || callee.func_sig.is_some() || callee.result_arity != 1 {
+    if callee.arity != argc || callee.result_arity != 1 {
+        return false;
+    }
+    if raw_i32 {
+        let Some((params, results)) = &callee.func_sig else { return false; };
+        let mut parameters = params.split(',').filter(|parameter| !parameter.is_empty());
+        if results != "i32" || parameters.clone().count() != usize::from(argc)
+            || !parameters.all(|parameter| parameter == "externref")
+        {
+            return false;
+        }
+    } else if callee.func_sig.is_some() {
         return false;
     }
     let Ok(index) = u32::try_from(target) else { return false; };

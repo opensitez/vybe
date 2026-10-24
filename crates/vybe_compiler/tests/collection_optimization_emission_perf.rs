@@ -32,8 +32,7 @@ fn run(chunks: Vec<Chunk>, values: &[(&str, Value)]) -> Value {
     vm.run(chunks).unwrap()
 }
 fn validate(chunks: &[Chunk]) {
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&vybe_platform_wasm::write_wasm(chunks))
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(chunks))
         .unwrap();
 }
 fn vector(value: &Value) -> Vec<Value> {
@@ -235,8 +234,7 @@ fn tuple_slice_tag_guards_preserve_result_identity() {
         let chunks = finish(chunks);
         if old {
             assert!(
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+                vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
                     .is_err(),
                 "captured helper consumes result below a nested block entry"
             );

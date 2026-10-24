@@ -172,82 +172,20 @@ fn runtime(input: Value, delimiter: Value, enclosure: Value) -> VM {
     vm.set_global("enclosure", enclosure);
     vm
 }
-fn native_result(chunks: &[Chunk], label: &str) -> Result<(), wasmparser::BinaryReaderError> {
+#[path = "fixtures/native_validation_diagnostic.rs"]
+mod native_validation_diagnostic;
+
+fn native_result(chunks: &[Chunk], label: &str) -> Result<(), vybe_platform_wasm::WasmError> {
     let bytes = vybe_platform_wasm::write_wasm(chunks);
-    let result = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes)
-        .map(|_| ());
+    let result = vybe_platform_wasm::validate_binary(&bytes);
     if let Err(error) = &result {
-        diagnose_native_failure(chunks, &bytes, error, label);
+        eprintln!("CSV native {label}: {error}");
+        native_validation_diagnostic::report(chunks, &bytes, error, 140, 40);
     }
     result
 }
 fn validate(chunks: &[Chunk]) {
     native_result(chunks, "current/frozen primitive fixture").unwrap();
-}
-fn diagnose_native_failure(
-    chunks: &[Chunk],
-    bytes: &[u8],
-    error: &wasmparser::BinaryReaderError,
-    label: &str,
-) {
-    let named = vybe_platform_wasm::write_wasm_with_options(
-        chunks,
-        vybe_platform_wasm::WasmWriteOptions {
-            include_name_section: true,
-            ..Default::default()
-        },
-    );
-    let mut names = std::collections::HashMap::new();
-    for payload in wasmparser::Parser::new(0).parse_all(&named) {
-        if let wasmparser::Payload::CustomSection(section) = payload.unwrap() {
-            if let wasmparser::KnownCustom::Name(reader) = section.as_known() {
-                for name in reader {
-                    if let wasmparser::Name::Function(map) = name.unwrap() {
-                        for entry in map {
-                            let entry = entry.unwrap();
-                            names.insert(entry.index, entry.name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let mut function = 0;
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        if let wasmparser::Payload::ImportSection(section) = payload.unwrap() {
-            for import in section.into_imports() {
-                if matches!(
-                    import.unwrap().ty,
-                    wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
-                ) {
-                    function += 1
-                }
-            }
-        }
-    }
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-            if body.range().contains(&error.offset()) {
-                eprintln!(
-                    "CSV native {label}: function={function} name={:?} range={:?} error={error}",
-                    names.get(&function),
-                    body.range()
-                );
-                let mut operators = body.get_operators_reader().unwrap();
-                while !operators.eof() {
-                    let (operator, offset) = operators.read_with_offset().unwrap();
-                    if offset + 140 >= error.offset() && offset <= error.offset() + 40 {
-                        eprintln!("  wasm@{offset}: {operator:?}");
-                        if let wasmparser::Operator::Call { function_index } = operator {
-                            eprintln!("    target={:?}", names.get(&function_index));
-                        }
-                    }
-                }
-            }
-            function += 1;
-        }
-    }
 }
 fn validate_source_pair(chunks: &[Chunk], op: Operation, kind: u8) {
     let mut before = chunks.to_vec();

@@ -30,8 +30,7 @@ fn packing_preserves_endian_bytes_high_bits_and_numeric_traps() {
             let endian = if little { packing::Endian::Little } else { packing::Endian::Big };
             let chunks = program(width, endian);
             let native = vybe_platform_wasm::write_wasm(&chunks);
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                .validate_all(&native).unwrap();
+            vybe_platform_wasm::validate_binary(&native).unwrap();
             let mut vm = VM::new();
             primitives::platforms::register_platforms_all(&mut vm);
             let function = vm.run(chunks).unwrap();

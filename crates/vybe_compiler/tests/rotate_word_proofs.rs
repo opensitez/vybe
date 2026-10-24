@@ -49,8 +49,7 @@ fn compiled_rotate_skips_only_proven_word_conversions() {
                         usize::from(!proof.0) + usize::from(!proof.1),
                         "{dump}"
                     );
-                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                        .validate_all(&vybe_platform_wasm::write_wasm(&c))
+                    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&c))
                         .unwrap();
                     let mut vm = VM::new();
                     vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
@@ -107,8 +106,7 @@ fn wide_rotate_raw_count_does_not_corrupt_later_boxed_scratch() {
         assert!(!c.i64_locals.contains(&answer));
         assert!(!c.i64_locals.contains(&later));
         let chunks = vec![c];
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&vybe_platform_wasm::write_wasm(&chunks))
+        vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks))
             .unwrap();
         let mut vm = VM::new();
         vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
@@ -127,6 +125,6 @@ fn wide_rotate_raw_slot_survives_statement_scratch_reclaim() {
     let module=Module{name:"wide-rotate-statement-reclaim".into(),language:Lang::Unknown,body:vec![Statement::new(StmtKind::Expr(rotate)),Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Binary{op:BinOp::RotR(BitLane::W32),left:Box::new(Expression::float(4.0)),right:Box::new(Expression::float(1.0))}))))],imports:vec![],canon:Default::default(),directives:Default::default()};
     let chunks=vybe_compiler::Compiler::with_profile(vybe_compiler::profile::parse_profile("[compiler]\n").unwrap()).compile(&module).unwrap();
     assert_eq!(chunks[0].i64_locals.len(),1);
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&vybe_platform_wasm::write_wasm(&chunks)).unwrap();
+    vybe_platform_wasm::validate_binary(&vybe_platform_wasm::write_wasm(&chunks)).unwrap();
     let mut vm=VM::new();vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);assert_eq!(vm.run(chunks).unwrap().as_i32(),2);
 }

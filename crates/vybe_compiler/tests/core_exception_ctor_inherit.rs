@@ -212,7 +212,7 @@ fn native_modules_validate() {
     for fast in [false,true] {
         let cs=compile(source,fast).unwrap();
         let bytes=vybe_platform_wasm::write_wasm_with_options(&cs,vybe_platform_wasm::WasmWriteOptions {include_name_section:false,include_vybe_metadata:false});
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join(if fast {"core-exception-candidate.wasm"} else {"core-exception-before.wasm"}),&bytes).unwrap();

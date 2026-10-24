@@ -97,36 +97,26 @@ fn assert_static_guard(chunks: &[Chunk]) {
             && line.contains(&format!("({key})"))).count(), 1, "{key}: {dump}");
     }
 }
-
 fn wasm_abstract_equality_calls(bytes: &[u8]) -> usize {
+    let module = vybe_platform_wasm::inspection::CoreModule::new(bytes).unwrap();
     let mut imports = Vec::new();
     let mut calls = 0;
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        match payload.unwrap() {
-            wasmparser::Payload::ImportSection(section) => {
-                for import in section.into_imports() {
-                    let import = import.unwrap();
-                    if matches!(import.ty,
-                        wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_))
-                    {
-                        imports.push(import.module == "ecma:value"
-                            && matches!(import.name, "abstractEq" | "abstractNe"));
-                    }
-                }
-            }
-            wasmparser::Payload::CodeSectionEntry(body) => {
-                let mut operators = body.get_operators_reader().unwrap();
-                while !operators.eof() {
-                    if let wasmparser::Operator::Call { function_index }
-                        | wasmparser::Operator::ReturnCall { function_index } = operators.read().unwrap()
-                    {
-                        calls += usize::from(imports.get(function_index as usize) == Some(&true));
-                    }
-                }
-            }
-            _ => {}
+    module.imports(|module, name, ty| {
+        if matches!(ty, vybe_platform_wasm::inspection::ImportType::Func { .. }) {
+            imports.push(module == "ecma:value" && matches!(name, "abstractEq" | "abstractNe"));
         }
-    }
+        Ok(())
+    }).unwrap();
+    module.function_bodies(|body| {
+        for instruction in body.instructions()? {
+            let instruction = instruction?;
+            if matches!(instruction.opcode, 0x10 | 0x12) {
+                let index = instruction.function_index().unwrap();
+                calls += usize::from(imports.get(index as usize) == Some(&true));
+            }
+        }
+        Ok(())
+    }).unwrap();
     calls
 }
 
@@ -148,8 +138,7 @@ fn generated_index_store_tag_guard_is_profile_independent_and_noncoercing() {
             vybe_platform_wasm::WasmWriteOptions {
                 include_vybe_metadata: false, include_name_section: true,
             });
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&bytes).unwrap();
+        vybe_platform_wasm::validate_binary(&bytes).unwrap();
         assert_eq!(wasm_abstract_equality_calls(&bytes), 0,
             "metadata-free WASM retained actual abstract equality calls");
         let mut vm = VM::new();
@@ -238,8 +227,7 @@ fn ordinary_ecma_equality_keeps_its_language_fallback() {
         vybe_platform_wasm::WasmWriteOptions {
             include_vybe_metadata: false, include_name_section: true,
         });
-    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-        .validate_all(&bytes).unwrap();
+    vybe_platform_wasm::validate_binary(&bytes).unwrap();
     assert!(wasm_abstract_equality_calls(&bytes) > 0);
     let mut vm = VM::new();
     platforms::register_platforms_all(&mut vm);

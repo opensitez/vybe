@@ -463,8 +463,7 @@ mod tests {
         chunk.emit_op(Op::RETURN, 0);
 
         let binary = vybe_platform_wasm::write_wasm(&[chunk]);
-        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-            .validate_all(&binary)
+        vybe_platform_wasm::validate_binary(&binary)
             .expect("canonical byte append must be valid standard Wasm");
     }
 
@@ -495,8 +494,7 @@ mod tests {
             let binary = matches!(size, 64 | 254 | 572 | 262_144)
                 .then(|| vybe_platform_wasm::write_wasm(&[chunk.clone()]));
             if let Some(bytes) = &binary {
-                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
-                    .validate_all(bytes)
+                vybe_platform_wasm::validate_binary(bytes)
                     .expect("canonical byte append must be valid standard Wasm");
             }
 
