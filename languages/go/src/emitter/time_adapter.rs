@@ -1,5 +1,5 @@
 use vybe_compiler::primitives::instructions::host;
-use vybe_compiler::primitives::{class_slots, collections, ops, strings, tuples};
+use vybe_compiler::primitives::{class_slots, collections, exact_integer, ops, strings, tuples};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::opcode::heaptype::HT_EXTERN;
@@ -135,42 +135,97 @@ fn emit_location_from_stack(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
 }
 
+/// `time.Unix(sec, nsec)`: Go normalizes `nsec` into [0, 1e9) by carrying
+/// whole seconds into `sec`, in int64 arithmetic (TinyGo/gc `time.Unix`).
 fn emit_unix(chunks: &mut [Chunk], current: usize, line: u32) {
+    let nsec_word = i64_scratch(&mut chunks[current]);
+    let sec_word = i64_scratch(&mut chunks[current]);
+    emit_int64_word(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, nsec_word, line);
+    emit_int64_word(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sec_word, line);
+    let carry = i64_scratch(&mut chunks[current]);
+    emit_floor_div_mod(&mut chunks[current], nsec_word, NS_PER_SEC as i64, carry, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, sec_word, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, carry, line);
+    chunk.emit_op(Op::I64_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, sec_word, line);
+    emit_time_from_words(chunks, current, sec_word, nsec_word, 1, line);
+}
+
+/// A slot typed i64 for the whole function, above every scratch slot used so
+/// far (a Wasm local has one type).
+fn i64_scratch(chunk: &mut Chunk) -> u16 {
+    chunk.local_count = chunk.local_count.max(chunk.scratch_high_water);
+    let slot = chunk.alloc_scratch(1);
+    chunk.i64_locals.insert(slot);
+    slot
+}
+
+/// Stack `[int64 value]` -> `[i64]`: the exact carrier's word.
+fn emit_int64_word(chunks: &mut [Chunk], current: usize, line: u32) {
+    exact_integer::emit_value_to_i64(chunks, current, true, line);
+}
+
+/// `value` <- floor(value / divisor) remainder in [0, divisor);
+/// `quotient` <- the floor quotient. Go's normalization rounds toward -inf.
+fn emit_floor_div_mod(chunk: &mut Chunk, value: u16, divisor: i64, quotient: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_i64_const(divisor, line);
+    chunk.emit_op(Op::I64_DIV_S, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, quotient, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_i64_const(divisor, line);
+    chunk.emit_op(Op::I64_REM_S, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_i64_const(0, line);
+    chunk.emit_op(Op::I64_LT_S, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_i64_const(divisor, line);
+    chunk.emit_op(Op::I64_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, quotient, line);
+    chunk.emit_i64_const(1, line);
+    chunk.emit_op(Op::I64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, quotient, line);
+    chunk.emit_end(line);
+}
+
+/// A UTC Time from whole seconds and a sub-second count in `unit`
+/// nanoseconds, both i64 words with the count already in [0, 1e9 / unit).
+/// The representation's fields are Numbers: both are exact there.
+fn emit_time_from_words(
+    chunks: &mut [Chunk],
+    current: usize,
+    sec_word: u16,
+    sub_word: u16,
+    unit: i64,
+    line: u32,
+) {
     let base = chunks[current].alloc_scratch(2);
-    let sec = base;
-    let nsec = base + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, nsec, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, sec, line);
-    emit_time_from_total_ns(chunks, current, sec, nsec, None, line);
+    let (sec, nsec) = (base, base + 1);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, sec_word, line);
+    chunk.emit_op(Op::F64_CONVERT_I64_S, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, sec, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sub_word, line);
+    chunk.emit_i64_const(unit, line);
+    chunk.emit_op(Op::I64_MUL, line);
+    chunk.emit_op(Op::F64_CONVERT_I64_S, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, nsec, line);
+    build_time(chunks, current, sec, nsec, None, line);
 }
 
 fn emit_unix_scaled(chunks: &mut [Chunk], current: usize, divisor: f64, ns_factor: f64, line: u32) {
-    let base = chunks[current].alloc_scratch(3);
-    let value = base;
-    let sec = base + 1;
-    let nsec = base + 2;
+    let value = i64_scratch(&mut chunks[current]);
+    emit_int64_word(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    chunks[current].emit_f64_const(divisor, line);
-    chunks[current].emit_op(Op::F64_DIV, line);
-    chunks[current].emit_op(Op::F64_FLOOR, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, sec, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, sec, line);
-    chunks[current].emit_f64_const(divisor, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
-    chunks[current].emit_op(Op::F64_SUB, line);
-    chunks[current].emit_f64_const(ns_factor, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, nsec, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, nsec, line);
-    chunks[current].emit_f64_const(ns_factor, line);
-    chunks[current].emit_op(Op::F64_DIV, line);
-    chunks[current].emit_op(Op::F64_NEAREST, line);
-    chunks[current].emit_f64_const(ns_factor, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, nsec, line);
-    build_time(chunks, current, sec, nsec, None, line);
+    let sec = i64_scratch(&mut chunks[current]);
+    emit_floor_div_mod(&mut chunks[current], value, divisor as i64, sec, line);
+    emit_time_from_words(chunks, current, sec, value, ns_factor as i64, line);
 }
 
 fn emit_now(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -324,28 +379,25 @@ fn emit_time_field_from_stack(chunk: &mut Chunk, field: &str, line: u32) {
 }
 
 fn emit_unix_nano(chunks: &mut [Chunk], current: usize, line: u32) {
-    let t = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, t, line);
-    class_get_local(&mut chunks[current], t, "sec", line);
-    chunks[current].emit_f64_const(NS_PER_SEC, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
-    class_get_local(&mut chunks[current], t, "nsec", line);
-    chunks[current].emit_op(Op::F64_ADD, line);
+    emit_unix_div(chunks, current, NS_PER_SEC, 1.0, line);
 }
 
+/// `sec * sec_factor + nsec / nsec_div` as an exact int64 (Go `UnixNano`,
+/// `UnixMicro`, `UnixMilli` compute in int64), on the exact carrier.
 fn emit_unix_div(chunks: &mut [Chunk], current: usize, sec_factor: f64, nsec_div: f64, line: u32) {
     let t = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, t, line);
-    class_get_local(&mut chunks[current], t, "sec", line);
-    chunks[current].emit_f64_const(sec_factor, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
-    class_get_local(&mut chunks[current], t, "nsec", line);
-    chunks[current].emit_f64_const(nsec_div, line);
-    chunks[current].emit_op(Op::F64_DIV, line);
-    chunks[current].emit_f64_const(0.000000001, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
-    chunks[current].emit_op(Op::F64_TRUNC, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, t, line);
+    class_get_local(chunk, t, "sec", line);
+    chunk.emit_op(Op::I64_TRUNC_F64_S, line);
+    chunk.emit_i64_const(sec_factor as i64, line);
+    chunk.emit_op(Op::I64_MUL, line);
+    class_get_local(chunk, t, "nsec", line);
+    chunk.emit_op(Op::I64_TRUNC_F64_S, line);
+    chunk.emit_i64_const(nsec_div as i64, line);
+    chunk.emit_op(Op::I64_DIV_S, line);
+    chunk.emit_op(Op::I64_ADD, line);
+    exact_integer::emit_box_i64(chunks, current, true, line);
 }
 
 fn emit_to_utc(chunks: &mut [Chunk], current: usize, line: u32) {

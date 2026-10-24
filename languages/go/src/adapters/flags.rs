@@ -104,6 +104,9 @@ pub(crate) fn rewrite_call(
     args: &[Argument],
     definitions: &[FlagDefinition],
 ) -> Option<Expression> {
+    if !call_name.starts_with("flag.") && !call_name.starts_with("go.flag.") {
+        return None;
+    }
     match call_name {
         "flag.String" | "go.flag.String" => Some(flag_pointer("string", args)),
         "flag.Int" | "flag.Int64" | "flag.Uint" | "flag.Uint64" | "go.flag.Int"

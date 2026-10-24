@@ -12,16 +12,29 @@ mod native_grammar {
     include!(concat!(env!("OUT_DIR"), "/native_parser.rs"));
 }
 pub(crate) use native_grammar::Rule;
+pub mod direct_ast;
 pub(crate) struct GoParser;
 impl GoParser {
+    /// Ordinary captures for a rule of any source, including fragments.
     pub(crate) fn parse(rule: Rule, source: &str) -> Result<grameo::compat::Pairs<'_, Rule>, grameo::ParseError> {
-        native_grammar::Parser.parse_pairs(rule, source)
+        direct_ast::parse_reference(rule, source)
+    }
+    /// A Go source file, with the expressions the grammar hooks construct
+    /// directly; see [`direct_ast`].
+    pub(crate) fn parse_program(source: &str) -> Result<grameo::compat::Pairs<'_, Rule>, grameo::ParseError> {
+        direct_ast::parse_owned(Rule::program, source)
     }
 }
 
 /// Parse Go source into the common AST.
 pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
-    walker::parse(source)
+    let (module, profile) = direct_ast::profile_construction(|| walker::parse(source));
+    direct_ast::clear_owned();
+    // An attached debugger report lists the construction counts per parse.
+    drop(vybe_runtime::debugger::DebugPhase::current_lazy(|| format!(
+        "go expressions owned={} handed_off={} walked={}",
+        profile.owned_regions, profile.handoffs, profile.walked)));
+    module
 }
 
 /// Embedded profile TOML source.

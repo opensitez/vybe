@@ -136,7 +136,6 @@ fn emit_maps_equal(chunks: &mut Vec<Chunk>, current: usize, with_func: bool, lin
     lget(chunks, current, right, line);
     emit_map_len_nil_zero(chunks, current, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     lget(chunks, current, left, line);
@@ -198,7 +197,6 @@ fn emit_maps_equal(chunks: &mut Vec<Chunk>, current: usize, with_func: bool, lin
         collections::emit_get(chunks, current, line);
         lget(chunks, current, right_value, line);
         ops::emit_dyn_eq(&mut chunks[current], line);
-        ops::emit_dyn_to_bool(&mut chunks[current], line);
     }
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
@@ -232,8 +230,7 @@ fn emit_maps_keys(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(chunks, current, value, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     let keys = chunks[current].alloc_scratch(1);
@@ -250,8 +247,7 @@ fn emit_maps_values(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(chunks, current, value, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     let keys = chunks[current].alloc_scratch(1);
@@ -344,8 +340,7 @@ fn emit_map_len_nil_zero(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(chunks, current, value, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_else(line);
     lget(chunks, current, value, line);
@@ -359,7 +354,6 @@ fn emit_map_keys_nil_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(chunks, current, value, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_else(line);
@@ -419,7 +413,33 @@ fn invoke_map_values(c: &mut Vec<Chunk>, current: usize, target: usize, line: u3
     caller.emit_direct_defined_call(target as u32, callee, false, line)
         .expect("plain owned map-values body");
 }
+// Reuse authority is the exact contextual Owner, never this diagnostic name.
+const MAP_EQUAL_BODY: &str = "\0go.owned.maps.equal.v1";
+fn build_map_equal(c: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut body = Chunk::new(MAP_EQUAL_BODY);
+    body.arity = 2;
+    body.param_count = 2;
+    body.local_count = 2;
+    body.takes_receiver = false;
+    body.direct_entry_has_captures = Some(false);
+    body.module_receiver_abi = class_context::module_receiver_abi(c);
+    body.emit_op_u16(Op::LOCAL_GET, 0, line);
+    body.emit_op_u16(Op::LOCAL_GET, 1, line);
+    let target = c.len();
+    c.push(body);
+    emit_maps_equal(c, target, false, line);
+    c[target].emit_op(Op::RETURN, line);
+    target
+}
+
 pub static HELPER_DEFINITIONS: &[Definition] = &[
+    Definition { contract: Contract::ContextualTypedDirectCallAppendOnlyUnit {
+        key: map_values_context, build: build_map_equal,
+        result: vybe_runtime::registry::emitter_results::ResultRepresentation::BoxedBoolean,
+    }, operation: "go.maps_equal", namespace: "go", version: 1,
+        parser: crate::parse, producer: super::dispatch::dispatch, arity: 2,
+        helper_name: MAP_EQUAL_BODY, factory: unused_map_values_factory,
+        caller: unused_map_values_caller },
     Definition { contract: Contract::ContextualAppendOnlyUnit {
         key: map_values_context, build: build_map_values, invoke: invoke_map_values,
     }, operation: "go.maps_values", namespace: "go", version: 1,

@@ -37,6 +37,7 @@ materialize_bool_results = true
 
 "__go_spawn"    = { emit = "common:threading.task_run",      min_args = 1, max_args = 1 }
 "__go_to_int"   = { emit = "common:to_int",                  min_args = 1, max_args = 1 }
+"__go_typeof"   = { emit = "host:ecma:value:typeof",         min_args = 1, max_args = 1 }
 "__go_str_from_char_code" = { emit = "common:str_from_char_code", min_args = 1, max_args = 1 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
@@ -157,6 +158,31 @@ materialize_bool_results = true
 # ── Array/Slice builtins ─────────────────────────────────────────────────────
 
 "len"             = { emit = "common:collections.length",      min_args = 1, max_args = 1 }
+"__go_slice_len"  = { emit = "common:collections.array_len_or_zero", min_args = 1, max_args = 1 }
+"__go_i64_slice_make" = { emit = "common:collections.i64_array_new", min_args = 1, max_args = 1 }
+"__go_i64_slice_get"  = { emit = "common:collections.i64_array_get", min_args = 2, max_args = 3 }
+"__go_i64_slice_set"  = { emit = "common:collections.i64_array_set", min_args = 3, max_args = 3 }
+"__go_i64_slice_len"  = { emit = "common:collections.i64_array_len", min_args = 1, max_args = 1 }
+"__go_bool_slice_make" = { emit = "common:collections.bool_array_new", min_args = 1, max_args = 1 }
+"__go_bool_slice_get"  = { emit = "common:collections.bool_array_get", min_args = 2, max_args = 3 }
+"__go_bool_slice_set"  = { emit = "common:collections.bool_array_set", min_args = 3, max_args = 3 }
+"__go_bool_slice_len"  = { emit = "common:collections.bool_array_len", min_args = 1, max_args = 1 }
+"__go_i32_slice_make" = { emit = "common:collections.i32_array_new", min_args = 1, max_args = 1 }
+"__go_i32_slice_get"  = { emit = "common:collections.i32_array_get", min_args = 2, max_args = 3 }
+"__go_i32_slice_set"  = { emit = "common:collections.i32_array_set", min_args = 3, max_args = 3 }
+"__go_i32_slice_len"  = { emit = "common:collections.i32_array_len", min_args = 1, max_args = 1 }
+"__go_u32_slice_make" = { emit = "common:collections.u32_array_new", min_args = 1, max_args = 1 }
+"__go_u32_slice_get"  = { emit = "common:collections.u32_array_get", min_args = 2, max_args = 3 }
+"__go_u32_slice_set"  = { emit = "common:collections.u32_array_set", min_args = 3, max_args = 3 }
+"__go_u32_slice_len"  = { emit = "common:collections.u32_array_len", min_args = 1, max_args = 1 }
+"__go_f64_slice_make" = { emit = "common:collections.f64_array_new", min_args = 1, max_args = 1 }
+"__go_f64_slice_get"  = { emit = "common:collections.f64_array_get", min_args = 2, max_args = 3 }
+"__go_f64_slice_set"  = { emit = "common:collections.f64_array_set", min_args = 3, max_args = 3 }
+"__go_f64_slice_len"  = { emit = "common:collections.f64_array_len", min_args = 1, max_args = 1 }
+"__go_f32_slice_make" = { emit = "common:collections.f32_array_new", min_args = 1, max_args = 1 }
+"__go_f32_slice_get"  = { emit = "common:collections.f32_array_get", min_args = 2, max_args = 3 }
+"__go_f32_slice_set"  = { emit = "common:collections.f32_array_set", min_args = 3, max_args = 3 }
+"__go_f32_slice_len"  = { emit = "common:collections.f32_array_len", min_args = 1, max_args = 1 }
 "cap"             = { emit = "common:collections.length",      min_args = 1, max_args = 1 }
 "append"          = { emit = "common:collections.push",        min_args = 2, max_args = 255 }
 "__vybe_channel_send"    = { emit = "common:channels.send",    min_args = 2, max_args = 2 }
@@ -344,6 +370,22 @@ materialize_bool_results = true
 
 [known_types]
 "error"         = ["ecma:error", "Error"]
+
+# Declared integer widths a cast wraps to. Go's 64-bit integers are exact.
+[integer_cast_widths]
+int64 = { bits = 64, signed = true }
+uint64 = { bits = 64, signed = false }
+int = { bits = 64, signed = true }
+uint = { bits = 64, signed = false }
+uintptr = { bits = 64, signed = false }
+int32 = { bits = 32, signed = true }
+uint32 = { bits = 32, signed = false }
+int16 = { bits = 16, signed = true }
+uint16 = { bits = 16, signed = false }
+int8 = { bits = 8, signed = true }
+uint8 = { bits = 8, signed = false }
+byte = { bits = 8, signed = false }
+rune = { bits = 32, signed = true }
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTIN TYPE SPELLINGS — go names the platform table cannot

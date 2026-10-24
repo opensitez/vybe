@@ -31,6 +31,7 @@ use super::{GoParser, Rule};
 use grameo::compat::Pair;
 use regex::{Captures, Regex};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use vybe_ast::*;
 // Channels are normalized into COMMON AST shapes — the walker builds AST,
 // not bytecode. The emit side lives in the compiler.
@@ -43,8 +44,7 @@ use vybe_compiler::primitives::reflection;
 // ══════════════════════════════════════════════════════════════════════════════════════════
 
 pub fn parse(source: &str) -> Result<Module, String> {
-    let (package_name, body, imports) = walk_go_source(source)?;
-    let retained_signatures = interface_values::source_signatures(source)?;
+    let (package_name, body, imports, retained_signatures) = walk_go_source(source)?;
     go_validate_method_sets(&merge_go_struct_decls(&body))?;
 
     let mut module = normalize_go_module_with_signatures(Module {
@@ -76,6 +76,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             type_resolution: Some(vybe_ast::TypeResolution::Static),
             operator_dispatch: Some(vybe_ast::OperatorDispatch::StaticBuiltin),
+            // Go 64-bit integers are exact (Go spec "Numeric types"): their W64
+            // operations and casts cross the value ABI on the exact carrier.
+            wide_integer_transport: Some(vybe_ast::WideIntegerTransport::Exact),
+            // Go integer variables are machine words (gc and TinyGo keep them
+            // in registers/Wasm locals): proven bindings get native storage.
+            word_local_transport: Some(vybe_ast::WordLocalTransport::ProvenNative),
             ..Default::default()
         },
     }, retained_signatures);
@@ -253,13 +259,16 @@ fn insert_go_semicolons(src: &str) -> String {
     out
 }
 
-/// Walk a Go source string into its raw (pre-normalization) parts.
-fn walk_go_source(source: &str) -> Result<(String, Vec<Statement>, Vec<Import>), String> {
+/// Walk a Go source string into its raw (pre-normalization) parts and the
+/// function and method signatures it declares.
+fn walk_go_source(
+    source: &str,
+) -> Result<(String, Vec<Statement>, Vec<Import>, interface_values::SourceSignatures), String> {
     let source = insert_go_semicolons(source);
     let source = source.as_str();
     let _line_index = vybe_ast::line_index::LineIndex::install(source);
-    let pairs =
-        GoParser::parse(Rule::program, source).map_err(|e| format!("Go parse error: {}", e))?;
+    let pairs = GoParser::parse_program(source).map_err(|e| format!("Go parse error: {}", e))?;
+    let signatures = interface_values::signatures(pairs.clone())?;
 
     let mut body = Vec::new();
     let mut imports = Vec::new();
@@ -300,7 +309,7 @@ fn walk_go_source(source: &str) -> Result<(String, Vec<Statement>, Vec<Import>),
         }
     }
 
-    Ok((package_name, body, imports))
+    Ok((package_name, body, imports, signatures))
 }
 
 #[derive(Clone, Default)]
@@ -311,9 +320,11 @@ struct GoFunctionSignature {
     generic_param_names: Vec<String>,
 }
 
+/// Normalization scope. Module-wide tables are shared (`Rc`): a nested scope
+/// clones the handle, and only the per-scope bindings are copied.
 #[derive(Clone, Default)]
 struct GoNormalizeEnv {
-    interface_signatures: interface_values::DeclaredInterfaces,
+    interface_signatures: Rc<interface_values::DeclaredInterfaces>,
     lambda_signature: Option<interface_values::MethodSignature>,
     return_signature: Option<interface_values::MethodSignature>,
     value_types: HashMap<String, String>,
@@ -322,18 +333,18 @@ struct GoNormalizeEnv {
     reflect_pointer_targets: HashMap<String, (Expression, String)>,
     reflect_method_bindings: HashMap<String, (Expression, String)>,
     reflect_array_payloads: HashMap<String, Vec<Expression>>,
-    package_aliases: HashMap<String, String>,
+    package_aliases: Rc<HashMap<String, String>>,
     fixed_arrays: HashMap<String, String>,
     regex_patterns: HashMap<String, String>,
     slice_caps: HashMap<String, Expression>,
     slice_views: HashMap<String, GoSliceViewInfo>,
-    struct_infos: HashMap<String, GoStructInfo>,
-    interface_methods: HashMap<String, HashSet<String>>,
+    struct_infos: Rc<HashMap<String, GoStructInfo>>,
+    interface_methods: Rc<HashMap<String, HashSet<String>>>,
     interface_concrete_types: HashMap<String, String>,
     nil_interface_values: HashSet<String>,
-    named_types: HashMap<String, String>,
-    type_names: HashSet<String>,
-    function_bodies: HashMap<String, Vec<Statement>>,
+    named_types: Rc<HashMap<String, String>>,
+    type_names: Rc<HashSet<String>>,
+    function_bodies: Rc<HashMap<String, Vec<Statement>>>,
     flag_bindings: HashMap<String, (String, String)>,
     flag_defs: Vec<crate::adapters::flags::FlagDefinition>,
     log_output: Option<Expression>,
@@ -388,16 +399,14 @@ struct GoNormalizeState {
     next_temp: usize,
     interface_carriers: std::collections::BTreeSet<String>,
     interface_reflection_types: std::collections::BTreeSet<String>,
+    interface_equality: interface_values::EqualityEligibility,
+    interface_equality_function: Option<interface_values::EqualityRecipe>,
 }
 
 struct GoSignatureInfo {
     params: Vec<Param>,
     return_type: Option<String>,
     named_results: Vec<Param>,
-}
-
-fn normalize_go_module(module: Module) -> Module {
-    normalize_go_module_with_signatures(module, interface_values::SourceSignatures::default())
 }
 
 fn normalize_go_module_with_signatures(mut module: Module, retained: interface_values::SourceSignatures) -> Module {
@@ -411,8 +420,11 @@ fn normalize_go_module_with_signatures(mut module: Module, retained: interface_v
     let function_bodies = collect_go_function_bodies(&module.body);
     let package_aliases = collect_go_package_aliases(&module.imports);
     let mut state = GoNormalizeState::default();
+    let mut interface_signatures = interface_values::collect(&module.body);
+    interface_signatures.package = module.name.clone();
+    interface_signatures.source = retained;
     let mut env = GoNormalizeEnv {
-        interface_signatures: interface_values::collect(&module.body),
+        interface_signatures: Rc::new(interface_signatures),
         lambda_signature: None,
         return_signature: None,
         value_types: HashMap::new(),
@@ -421,18 +433,18 @@ fn normalize_go_module_with_signatures(mut module: Module, retained: interface_v
         reflect_pointer_targets: HashMap::new(),
         reflect_method_bindings: HashMap::new(),
         reflect_array_payloads: HashMap::new(),
-        package_aliases,
+        package_aliases: Rc::new(package_aliases),
         fixed_arrays: globals.clone(),
         regex_patterns: HashMap::new(),
         slice_caps: HashMap::new(),
         slice_views: HashMap::new(),
-        struct_infos,
-        interface_methods,
+        struct_infos: Rc::new(struct_infos),
+        interface_methods: Rc::new(interface_methods),
         interface_concrete_types: HashMap::new(),
         nil_interface_values: HashSet::new(),
-        named_types,
-        type_names,
-        function_bodies,
+        named_types: Rc::new(named_types),
+        type_names: Rc::new(type_names),
+        function_bodies: Rc::new(function_bodies),
         flag_bindings: HashMap::new(),
         flag_defs: Vec::new(),
         log_output: None,
@@ -448,8 +460,7 @@ fn normalize_go_module_with_signatures(mut module: Module, retained: interface_v
         owns_panic_state: false,
     };
 
-    env.interface_signatures.package = module.name.clone();
-    env.interface_signatures.source = retained;
+    state.interface_equality = interface_values::EqualityEligibility::for_module(&module, &env);
     let mut normalized = Vec::with_capacity(module.body.len());
     for stmt in &module.body {
         normalized.extend(normalize_go_statement(
@@ -461,7 +472,11 @@ fn normalize_go_module_with_signatures(mut module: Module, retained: interface_v
     }
     let normalized = go_add_named_scalar_method_wrappers(normalized, &env);
     let mut normalized = go_hoist_zero_value_globals(normalized);
-    normalized.extend(interface_values::carrier_declarations(&env, &state));
+    let equality = interface_values::equality_declarations(&state);
+    let carriers = interface_values::demanded_carrier_declarations(&env, &state,
+        normalized.iter().chain(&equality));
+    normalized.extend(carriers);
+    normalized.extend(equality);
     module.body = go_lower_module_init_functions(normalized, &mut state);
     module
 }
@@ -1017,6 +1032,11 @@ fn go_lower_module_init_functions(
     lowered
 }
 
+/// The signature key of method `method` declared on type `type_name`.
+fn go_method_signature_key(type_name: &str, method: &str) -> String {
+    format!("{type_name}\u{1}{method}")
+}
+
 fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunctionSignature> {
     let mut signatures = HashMap::new();
     for stmt in body {
@@ -1040,7 +1060,7 @@ fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunct
                     },
                 );
             }
-            StmtKind::StructDecl { members, .. } => {
+            StmtKind::StructDecl { name: type_name, members, .. } => {
                 for member in members {
                     if let ClassMember::Method(stmt) = member {
                         if let StmtKind::FunctionDecl {
@@ -1050,6 +1070,22 @@ fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunct
                             ..
                         } = &stmt.kind
                         {
+                            // Also keyed by its receiver type, which names
+                            // one method where the bare name may name several.
+                            let signature = GoFunctionSignature {
+                                params: params
+                                    .iter()
+                                    .map(|param| param.type_hint.as_deref().map(str::to_string))
+                                    .collect(),
+                                return_type: return_type.clone(),
+                                generic_arg_count: go_signature_generic_arg_count(params),
+                                generic_param_names: go_signature_generic_param_names(params),
+                            };
+                            signatures.insert(
+                                go_scalar_method_wrapper_name(type_name, name),
+                                signature.clone(),
+                            );
+                            signatures.insert(go_method_signature_key(type_name, name), signature);
                             signatures.insert(
                                 name.clone(),
                                 GoFunctionSignature {
@@ -1210,21 +1246,21 @@ fn go_validate_method_sets(body: &[Statement]) -> Result<(), String> {
         reflect_pointer_targets: HashMap::new(),
         reflect_method_bindings: HashMap::new(),
         reflect_array_payloads: HashMap::new(),
-        package_aliases: HashMap::new(),
+        package_aliases: Rc::default(),
         fixed_arrays: HashMap::new(),
         regex_patterns: HashMap::new(),
         slice_caps: HashMap::new(),
         slice_views: HashMap::new(),
-        struct_infos: collect_go_struct_infos(body),
-        interface_signatures: interface_values::collect(body),
+        struct_infos: Rc::new(collect_go_struct_infos(body)),
+        interface_signatures: Rc::new(interface_values::collect(body)),
         lambda_signature: None,
         return_signature: None,
-        interface_methods: collect_go_interface_methods(body),
+        interface_methods: Rc::new(collect_go_interface_methods(body)),
         interface_concrete_types: HashMap::new(),
         nil_interface_values: HashSet::new(),
-        named_types: collect_go_named_types(body),
-        type_names: collect_go_type_names(body),
-        function_bodies: HashMap::new(),
+        named_types: Rc::new(collect_go_named_types(body)),
+        type_names: Rc::new(collect_go_type_names(body)),
+        function_bodies: Rc::default(),
         flag_bindings: HashMap::new(),
         flag_defs: Vec::new(),
         log_output: None,
@@ -1567,7 +1603,7 @@ fn go_field_tag_from_modifiers(modifiers: &Modifiers) -> Option<String> {
 /// The two look identical once the walker fills the missing field name in from
 /// the type, so the embedding is recorded while the source still shows it —
 /// comparing the name back against the type calls every `T T` field embedded.
-fn go_field_is_embedded(modifiers: &Modifiers) -> bool {
+pub(crate) fn go_field_is_embedded(modifiers: &Modifiers) -> bool {
     modifiers.decorators.iter().any(|decorator| {
         matches!(&decorator.kind, ExprKind::Lit(Literal::Str(text)) if &**text == GO_EMBEDDED_MARKER)
     })
@@ -5124,11 +5160,31 @@ fn normalize_go_statement_inner(
                 }
             }
 
+            let params = params
+                .iter()
+                .map(|param| {
+                    let mut param = param.clone();
+                    if !param.is_rest && param.pass_by == PassBy::Value {
+                        if let Some(hint) = go_wide_integer_declaration_hint(
+                            param.type_hint.as_deref(),
+                            None,
+                            signatures,
+                        ) {
+                            param.type_hint = Some(hint);
+                        }
+                    }
+                    param
+                })
+                .collect::<Vec<Param>>();
+            let body = go_type_i64_slices(
+                normalize_go_function_body(body, &mut fn_env, signatures, state),
+                &params,
+            );
             vec![Statement::new(StmtKind::FunctionDecl {
                 name: name.clone(),
-                params: params.clone(),
+                params,
                 return_type: return_type.clone(),
-                body: normalize_go_function_body(body, &mut fn_env, signatures, state),
+                body,
                 modifiers: modifiers.clone(),
                 handles: handles.clone(),
                 is_async: *is_async,
@@ -5199,6 +5255,16 @@ fn normalize_go_statement_inner(
                     if let Some(init) = next_decl.init.take() {
                         next_decl.init = Some(interface_values::box_value(init, source, target, env, signatures, state));
                     }
+                    if let Some(constant) = go_wide_integer_constant(source, target) {
+                        next_decl.init = Some(constant);
+                    }
+                }
+                if let Some(hint) = go_wide_integer_declaration_hint(
+                    decl.type_hint.as_deref(),
+                    next_decl.init.as_ref(),
+                    signatures,
+                ) {
+                    next_decl.type_hint = Some(hint);
                 }
                 next_decl.array_bounds = decl.array_bounds.as_ref().map(|bounds| {
                     bounds
@@ -5575,22 +5641,54 @@ fn normalize_go_statement_inner(
                     return rewritten;
                 }
             }
+            let next_targets: Vec<Expression> = targets
+                .iter()
+                .map(|target| normalize_go_lvalue_expr(target, env, signatures, state))
+                .collect();
+            if let [target] = next_targets.as_slice() {
+                let (guard, guarded_value) =
+                    go_index_store_guard(target, next_value, env, signatures, state);
+                prefix.extend(guard);
+                next_value = guarded_value;
+            }
             prefix.push(Statement::new(StmtKind::Assign {
-                targets: targets
-                    .iter()
-                    .map(|target| normalize_go_lvalue_expr(target, env, signatures, state))
-                    .collect(),
+                targets: next_targets,
                 value: next_value,
                 by_ref: false,
             }));
             prefix
         }
         StmtKind::CompoundAssign { target, op, value } => {
-            vec![Statement::new(StmtKind::CompoundAssign {
-                target: normalize_go_lvalue_expr(target, env, signatures, state),
-                op: *op,
-                value: normalize_go_expr(value, env, signatures, state),
-            })]
+            let target = normalize_go_lvalue_expr(target, env, signatures, state);
+            let value = normalize_go_expr(value, env, signatures, state);
+            let (mut guard, value) = go_index_store_guard(&target, value, env, signatures, state);
+            // `x op= v` on a Go 64-bit integer is `x = x op v` in the integer
+            // lane; the target is re-read, so it must be free of effects.
+            let binary = match op {
+                CompoundOp::Add => Some(BinOp::Add),
+                CompoundOp::Sub => Some(BinOp::Sub),
+                CompoundOp::Mul => Some(BinOp::Mul),
+                CompoundOp::Div => Some(BinOp::Div),
+                CompoundOp::IDiv => Some(BinOp::IDiv),
+                CompoundOp::Mod => Some(BinOp::Mod),
+                CompoundOp::BitAnd => Some(BinOp::BitAnd),
+                CompoundOp::BitOr => Some(BinOp::BitOr),
+                CompoundOp::BitXor => Some(BinOp::BitXor),
+                CompoundOp::Shl => Some(BinOp::Shl),
+                CompoundOp::Shr => Some(BinOp::Shr),
+                _ => None,
+            };
+            if go_place_is_pure(&target)
+                && let Some(binary) = binary
+                && let Some(next) = go_wide_integer_binary(binary, &target, &value, env, signatures)
+            {
+                guard.push(Statement::new(StmtKind::Assign {
+                    targets: vec![target], value: next, by_ref: false,
+                }));
+                return guard;
+            }
+            guard.push(Statement::new(StmtKind::CompoundAssign { target, op: *op, value }));
+            guard
         }
         StmtKind::Return(expr) => {
             let next_expr = expr.as_ref().map(|value| {
@@ -5638,6 +5736,12 @@ fn normalize_go_statement_inner(
             cases,
             default,
         } => {
+            // Case constants convert to the tag's type (spec "Switch
+            // statements"), which for an integer lane is its exact carrier.
+            let next_tag = normalize_go_expr(expr, env, signatures, state);
+            let tag_lane = go_expr_type_hint(&next_tag, env, signatures)
+                .map(|type_name| go_underlying_type(&type_name, env))
+                .filter(|type_name| go_wide_integer_signedness(type_name).is_some());
             let next_cases = cases
                 .iter()
                 .map(|case| SwitchCase {
@@ -5645,17 +5749,35 @@ fn normalize_go_statement_inner(
                         .conditions
                         .iter()
                         .map(|condition| match condition {
-                            CaseCondition::Value(value) => CaseCondition::Value(normalize_go_expr(
-                                value, env, signatures, state,
-                            )),
+                            CaseCondition::Value(value) => {
+                                let next = normalize_go_expr(value, env, signatures, state);
+                                CaseCondition::Value(match tag_lane.as_deref() {
+                                    Some(lane) => go_wide_integer_constant(&next, lane)
+                                        .unwrap_or_else(|| Expression::new(ExprKind::Cast {
+                                            expr: Box::new(next),
+                                            type_name: lane.to_owned(),
+                                        })),
+                                    None => next,
+                                })
+                            }
                             _ => condition.clone(),
                         })
                         .collect(),
                     body: normalize_go_block(&case.body, env, signatures, state),
                 })
                 .collect();
+            // The tag in the same carrier as the cases, whatever produced it.
+            let next_tag = match tag_lane.as_deref() {
+                Some(lane) => go_wide_integer_constant(&next_tag, lane).unwrap_or_else(|| {
+                    Expression::new(ExprKind::Cast {
+                        expr: Box::new(next_tag),
+                        type_name: lane.to_owned(),
+                    })
+                }),
+                None => next_tag,
+            };
             vec![Statement::new(StmtKind::Switch {
-                expr: normalize_go_expr(expr, env, signatures, state),
+                expr: next_tag,
                 cases: next_cases,
                 default: default
                     .as_ref()
@@ -6106,8 +6228,14 @@ fn normalize_go_expr(
                     equal
                 };
             }
+            if let Some(value) = go_const_int(expr).and_then(|value| i64::try_from(value).ok()) {
+                return Expression::new(ExprKind::Lit(Literal::Int(value)));
+            }
             let next_left = normalize_go_expr(left, env, signatures, state);
             let next_right = normalize_go_expr(right, env, signatures, state);
+            if let Some(wide) = go_wide_integer_binary(*op, &next_left, &next_right, env, signatures) {
+                return wide;
+            }
             if matches!(op, BinOp::Eq | BinOp::NotEq)
                 && [left.as_ref(), right.as_ref()].iter().any(|operand|
                     go_expr_type_hint(operand, env, signatures)
@@ -6199,6 +6327,17 @@ fn normalize_go_expr(
             expr,
         } => {
             let next_expr = normalize_go_expr(expr, env, signatures, state);
+            // `&xs[i]` checks the index like a read and then takes the place.
+            if let ExprKind::Ternary { cond, then, else_ } = &next_expr.kind
+                && go_is_index_bounds_panic(else_)
+                && let Some(place) = PlaceExpr::from_expr(then)
+            {
+                return Expression::new(ExprKind::Ternary {
+                    cond: cond.clone(),
+                    then: Box::new(Expression::new(ExprKind::RefOf(Box::new(place)))),
+                    else_: else_.clone(),
+                });
+            }
             if let Some(place) = PlaceExpr::from_expr(&next_expr) {
                 Expression::new(ExprKind::RefOf(Box::new(place)))
             } else {
@@ -6211,13 +6350,29 @@ fn normalize_go_expr(
         ExprKind::Unary {
             op: UnaryOp::Deref,
             expr,
-        } => Expression::new(ExprKind::RefLoad(Box::new(normalize_go_expr(
-            expr, env, signatures, state,
-        )))),
-        ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
-            op: *op,
-            expr: Box::new(normalize_go_expr(expr, env, signatures, state)),
-        }),
+        } => match normalize_go_expr(expr, env, signatures, state) {
+            // `*&x` denotes `x` itself (spec "Address operators").
+            Expression { kind: ExprKind::RefOf(place), .. } => go_place_expr(&place),
+            pointer => Expression::new(ExprKind::RefLoad(Box::new(pointer))),
+        },
+        ExprKind::Unary { op, expr } => {
+            let next_expr = normalize_go_expr(expr, env, signatures, state);
+            // `-x` is `0 - x` and `^x` is `x ^ -1` in x's integer lane
+            // (spec "Arithmetic operators": both wrap like the binary forms).
+            let lowered = match op {
+                UnaryOp::Neg if go_const_int(&next_expr).is_none() => go_wide_integer_binary(
+                    BinOp::Sub, &Expression::int(0), &next_expr, env, signatures,
+                ),
+                UnaryOp::BitNot if go_const_int(&next_expr).is_none() => go_wide_integer_binary(
+                    BinOp::BitXor, &next_expr, &Expression::int(-1), env, signatures,
+                ),
+                _ => None,
+            };
+            lowered.unwrap_or_else(|| Expression::new(ExprKind::Unary {
+                op: *op,
+                expr: Box::new(next_expr),
+            }))
+        }
         ExprKind::Ternary { cond, then, else_ } => Expression::new(ExprKind::Ternary {
             cond: Box::new(normalize_go_expr(cond, env, signatures, state)),
             then: Box::new(normalize_go_expr(then, env, signatures, state)),
@@ -6237,17 +6392,29 @@ fn normalize_go_expr(
                 return rewritten;
             }
             if go_expr_type_hint(&next_object, env, signatures).as_deref() == Some("string") {
+                let next_index = go_position_operand(next_index, env, signatures);
                 go_builtin_call("__go_str_char_code_at", vec![next_object, next_index])
             } else if let Some(value_type) = go_expr_type_hint(&next_object, env, signatures)
                 .and_then(|type_name| go_map_value_type(&type_name))
             {
+                let next_index = go_map_key_operand(&next_object, next_index, env, signatures);
                 go_build_map_read_expr(next_object, next_index, &value_type)
             } else {
-                Expression::new(ExprKind::Index {
+                let check = go_index_bounds_check(&next_object, &next_index, env, signatures);
+                let next_index = go_sequence_index_operand(&next_object, next_index, env, signatures);
+                let read = Expression::new(ExprKind::Index {
                     object: Box::new(next_object),
                     index: Box::new(next_index),
                     null_safe: *null_safe,
-                })
+                });
+                match check {
+                    Some((in_range, message)) => Expression::new(ExprKind::Ternary {
+                        cond: Box::new(in_range),
+                        then: Box::new(read),
+                        else_: Box::new(go_builtin_call("panic", vec![message])),
+                    }),
+                    None => read,
+                }
             }
         }
         ExprKind::Assign { target, value } => Expression::new(ExprKind::Assign {
@@ -6303,6 +6470,7 @@ fn normalize_go_expr(
             let next_callee = if matches!(&callee.kind, ExprKind::Member { .. }) {
                 go_normalize_member_expr(callee, env, signatures, state, false)
             } else { normalize_go_expr(callee, env, signatures, state) };
+            let receiver_hint = ReceiverHintScope::enter(&next_callee, env, signatures);
             if matches!(&next_callee.kind, ExprKind::Ident(name) if name == "__go_type_assert_comma_ok")
                 && args.len() == 2
             {
@@ -6384,6 +6552,7 @@ fn normalize_go_expr(
             if next_args.is_empty()
                 && let ExprKind::Lit(Literal::Str(_)) = &next_callee.kind
             {
+                drop(receiver_hint);
                 return next_callee;
             }
 
@@ -6763,9 +6932,11 @@ fn normalize_go_expr(
                         });
                     }
                     if go_is_slice_type(&type_name) {
+                        // The length is an allocation count: an exact Number,
+                        // like an index (a 64-bit integer value is a BigInt).
                         let len_expr = next_args
                             .get(1)
-                            .map(|arg| arg.value.clone())
+                            .map(|arg| if go_types_batch() { go_position_operand(arg.value.clone(), env, signatures) } else { arg.value.clone() })
                             .unwrap_or_else(|| Expression::int(0));
                         let init_expr = go_array_element_type(&type_name)
                             .map(|elem| go_zero_value_expr(&elem))
@@ -6891,6 +7062,9 @@ fn normalize_go_expr(
                 {
                     return chan_len(next_args[0].value.clone());
                 }
+                if let Some(len) = go_sequence_len(&next_args[0].value, env, signatures) {
+                    return len;
+                }
                 let value = next_args[0].value.clone();
                 return Expression::new(ExprKind::Ternary {
                     cond: Box::new(Expression::new(ExprKind::Binary {
@@ -6959,11 +7133,13 @@ fn normalize_go_expr(
                     .filter(|ty| interface_values::function_signature(ty).is_some())
                 {
                     if !next_args.iter().any(|arg| arg.by_ref) {
+                        drop(receiver_hint);
                         return interface_values::guard_function_call(
                             next_callee, ty, next_args, *optional, state);
                     }
                 }
             }
+            drop(receiver_hint);
             Expression::new(ExprKind::Call {
                 callee: Box::new(next_callee),
                 args: next_args,
@@ -7594,11 +7770,16 @@ fn lower_go_integer_range(
 ) -> Vec<Statement> {
     let bound_name = fresh_go_temp(state, "__go_range_bound");
     let index_name = fresh_go_temp(state, "__go_range_idx");
+    // Go spec "For statements with range clause": ranging over an integer n
+    // yields values of n's type.
+    let value_type = go_expr_type_hint(&iter, env, signatures)
+        .filter(|type_name| go_is_integer_type(type_name))
+        .unwrap_or_else(|| "int".to_string());
 
     let bound_decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(bound_name.clone()),
-            type_hint: Some("int".to_string().into()),
+            type_hint: Some(value_type.clone().into()),
             init: Some(iter),
             array_bounds: None,
             with_events: false,
@@ -7609,10 +7790,10 @@ fn lower_go_integer_range(
     let mut body_env = env.clone();
     body_env
         .value_types
-        .insert(bound_name.clone(), "int".to_string());
+        .insert(bound_name.clone(), value_type.clone());
     body_env
         .value_types
-        .insert(index_name.clone(), "int".to_string());
+        .insert(index_name.clone(), value_type.clone());
 
     let mut lowered_body = Vec::new();
     let range_name = key
@@ -7623,7 +7804,7 @@ fn lower_go_integer_range(
             &Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(range_name.to_string()),
-                    type_hint: Some("int".to_string().into()),
+                    type_hint: Some(value_type.clone().into()),
                     init: Some(Expression::ident(&index_name)),
                     array_bounds: None,
                     with_events: false,
@@ -7649,25 +7830,29 @@ fn lower_go_integer_range(
         init: Some(Box::new(Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(index_name.clone()),
-                type_hint: Some("int".to_string().into()),
+                type_hint: Some(value_type.clone().into()),
                 init: Some(Expression::int(0)),
                 array_bounds: None,
                 with_events: false,
             }],
             kind: VarDeclKind::Let,
         }))),
-        cond: Some(Expression::new(ExprKind::Binary {
-            op: BinOp::Lt,
-            left: Box::new(Expression::ident(&index_name)),
-            right: Box::new(Expression::ident(&bound_name)),
-        })),
+        cond: Some(go_binary_in_lane(
+            BinOp::Lt,
+            Expression::ident(&index_name),
+            Expression::ident(&bound_name),
+            &body_env,
+            signatures,
+        )),
         update: Some(Expression::new(ExprKind::Assign {
             target: Box::new(Expression::ident(&index_name)),
-            value: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(Expression::ident(&index_name)),
-                right: Box::new(Expression::int(1)),
-            })),
+            value: Box::new(go_binary_in_lane(
+                BinOp::Add,
+                Expression::ident(&index_name),
+                Expression::int(1),
+                &body_env,
+                signatures,
+            )),
         })),
         body: lowered_body,
     });
@@ -10656,14 +10841,22 @@ fn go_rewrite_json_call(
 ) -> Option<Expression> {
     match call_name {
         "json.RawMessage" => crate::adapters::json::rewrite_raw_message(args),
-        "json.Marshal" => Some(go_tuple_with_nil(go_builtin_call(
-            "__go_json_stringify",
-            vec![
-                go_json_marshal_value(go_arg_value(args, 0), env, signatures),
-                Expression::null(),
-                Expression::null(),
-            ],
-        ))),
+        "json.Marshal" => {
+            let value = go_json_marshal_value(go_arg_value(args, 0), env, signatures);
+            // An integer marshals as its exact decimal digits.
+            let wide = go_expr_type_hint(&value, env, signatures)
+                .is_some_and(|type_name| {
+                    go_wide_integer_signedness(&go_underlying_type(&type_name, env)).is_some()
+                });
+            Some(go_tuple_with_nil(if wide {
+                go_builtin_call("__go_fmt_sprint", vec![value])
+            } else {
+                go_builtin_call(
+                    "__go_json_stringify",
+                    vec![value, Expression::null(), Expression::null()],
+                )
+            }))
+        }
         "json.MarshalIndent" => {
             let value = go_json_marshal_value(go_arg_value(args, 0), env, signatures);
             let prefix = go_arg_value(args, 1);
@@ -10711,11 +10904,26 @@ fn go_rewrite_json_call(
             }
             let parsed_name = fresh_go_temp(state, "__go_json_parsed");
             let parsed_ident = Expression::ident(&parsed_name);
-            let assign_value = go_expr_type_hint(&target_place, env, signatures)
+            let target_type = go_expr_type_hint(&target_place, env, signatures);
+            let assign_value = target_type
+                .as_deref()
                 .and_then(|type_name| {
-                    go_json_unmarshal_struct_object(parsed_ident.clone(), &type_name, env)
+                    go_json_unmarshal_struct_object(parsed_ident.clone(), type_name, env)
                 })
-                .unwrap_or_else(|| parsed_ident.clone());
+                .unwrap_or_else(|| match target_type.as_deref() {
+                    // A decoded JSON number stored into an integer converts
+                    // to it exactly as `int(x)` would.
+                    Some(type_name)
+                        if go_wide_integer_signedness(&go_underlying_type(type_name, env))
+                            .is_some() =>
+                    {
+                        Expression::new(ExprKind::Cast {
+                            expr: Box::new(parsed_ident.clone()),
+                            type_name: go_underlying_type(type_name, env),
+                        })
+                    }
+                    _ => parsed_ident.clone(),
+                });
             Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Lambda {
                     params: Vec::new(),
@@ -11450,12 +11658,10 @@ fn go_array_literal_values(value: &Expression) -> Option<Vec<Expression>> {
     }
 }
 
-fn go_concat_exprs(mut exprs: Vec<Expression>) -> Expression {
-    let first = exprs
-        .drain(..1)
-        .next()
-        .unwrap_or_else(|| Expression::string(""));
-    exprs.into_iter().fold(first, |left, right| {
+fn go_concat_exprs(exprs: Vec<Expression>) -> Expression {
+    let mut exprs = exprs.into_iter();
+    let first = exprs.next().unwrap_or_else(|| Expression::string(""));
+    exprs.fold(first, |left, right| {
         Expression::new(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(left),
@@ -12076,7 +12282,9 @@ fn go_big_captures(exprs: &[&Expression]) -> Vec<String> {
     for expr in exprs {
         go_collect_expr_idents(expr, &mut names);
     }
-    names.into_iter().collect()
+    let mut names: Vec<String> = names.into_iter().collect();
+    names.sort();
+    names
 }
 
 fn go_big_mutate_value(object: Expression, value: Expression) -> Expression {
@@ -13456,7 +13664,7 @@ fn go_recover_iife_expr(env: &GoNormalizeEnv) -> Expression {
     })
 }
 
-fn go_complex_value_expr(real: Expression, imag: Expression) -> Expression {
+pub(crate) fn go_complex_value_expr(real: Expression, imag: Expression) -> Expression {
     Expression::new(ExprKind::Object(vec![
         ObjectProperty::KeyValue {
             key: Expression::string("real"),
@@ -14084,6 +14292,9 @@ fn normalize_go_lvalue_expr(
             let next_index = normalize_go_expr(index, env, signatures, state);
             go_rewrite_slice_view_index(&next_object, next_index.clone(), env).unwrap_or_else(
                 || {
+                    let next_index =
+                        go_sequence_index_operand(&next_object, next_index, env, signatures);
+                    let next_index = go_map_key_operand(&next_object, next_index, env, signatures);
                     Expression::new(ExprKind::Index {
                         object: Box::new(next_object),
                         index: Box::new(next_index),
@@ -14138,7 +14349,7 @@ fn go_normalize_map_lookup_tuple_expr(
     // Checked bindings store the map value unchanged, before evaluating the key.
     for (name, type_name, init) in [
         (map_name.clone(), map_type, next_object),
-        (key_name.clone(), key_type, next_index),
+        (key_name.clone(), key_type.clone(), next_index),
     ] {
         env.value_types.insert(name.clone(), type_name.clone());
         temporaries.push(Statement::new(StmtKind::VarDecl {
@@ -14153,7 +14364,7 @@ fn go_normalize_map_lookup_tuple_expr(
         }));
     }
     let map = Expression::ident(&map_name);
-    let key = Expression::ident(&key_name);
+    let key = go_map_key_operand_for_type(Expression::ident(&key_name), &key_type);
     Some((
         temporaries,
         Expression::new(ExprKind::Tuple(vec![
@@ -14241,13 +14452,13 @@ fn go_struct_equality_expr(
     let mut iter = info.field_order.iter();
     let first = iter
         .next()
-        .map(|field| go_struct_field_eq(left.clone(), right.clone(), field))
+        .map(|field| go_struct_field_eq(left.clone(), right.clone(), field, env, signatures))
         .unwrap_or_else(|| Expression::bool(true));
     let equal = iter.fold(first, |acc, field| {
         Expression::new(ExprKind::Binary {
             op: BinOp::And,
             left: Box::new(acc),
-            right: Box::new(go_struct_field_eq(left.clone(), right.clone(), field)),
+            right: Box::new(go_struct_field_eq(left.clone(), right.clone(), field, env, signatures)),
         })
     });
     if op == BinOp::NotEq {
@@ -14326,20 +14537,19 @@ fn go_is_null_expr(expr: &Expression) -> bool {
     matches!(expr.kind, ExprKind::Lit(Literal::Null))
 }
 
-fn go_struct_field_eq(left: Expression, right: Expression, field: &str) -> Expression {
-    Expression::new(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(left),
-            field: field.to_string(),
-            null_safe: false,
-        })),
-        right: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(right),
-            field: field.to_string(),
-            null_safe: false,
-        })),
-    })
+fn go_struct_field_eq(
+    left: Expression,
+    right: Expression,
+    field: &str,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    let member = |object: Expression| Expression::new(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    });
+    go_binary_in_lane(BinOp::Eq, member(left), member(right), env, signatures)
 }
 
 fn go_expr_is_integer_range_bound(
@@ -14362,7 +14572,68 @@ fn go_expr_is_integer_range_bound(
     )
 }
 
+thread_local! {
+    /// Open receiver scopes: (receiver, environment, signatures) addresses and
+    /// the receiver's type hint once computed.
+    static RECEIVER_HINTS: std::cell::RefCell<Vec<(usize, usize, usize, Option<Option<String>>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// While a method call's rewrites inspect its receiver, the receiver's type
+/// hint is computed once. The scope borrows the receiver, environment and
+/// signatures, so their addresses identify them for its whole lifetime.
+struct ReceiverHintScope<'a>(std::marker::PhantomData<&'a Expression>);
+
+impl<'a> ReceiverHintScope<'a> {
+    fn enter(
+        callee: &'a Expression,
+        env: &'a GoNormalizeEnv,
+        signatures: &'a HashMap<String, GoFunctionSignature>,
+    ) -> Option<Self> {
+        let ExprKind::Member { object, .. } = &callee.kind else { return None };
+        let key = go_type_hint_key(object, env, signatures);
+        RECEIVER_HINTS.with(|hints| hints.borrow_mut().push((key.0, key.1, key.2, None)));
+        Some(Self(std::marker::PhantomData))
+    }
+}
+
+impl Drop for ReceiverHintScope<'_> {
+    fn drop(&mut self) {
+        RECEIVER_HINTS.with(|hints| hints.borrow_mut().pop());
+    }
+}
+
+fn go_type_hint_key(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> (usize, usize, usize) {
+    (expr as *const Expression as usize, env as *const GoNormalizeEnv as usize,
+        signatures as *const HashMap<String, GoFunctionSignature> as usize)
+}
+
 fn go_expr_type_hint(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<String> {
+    let key = go_type_hint_key(expr, env, signatures);
+    let open = RECEIVER_HINTS.with(|hints| {
+        hints.borrow().iter().rposition(|entry| (entry.0, entry.1, entry.2) == key)
+            .map(|index| (index, hints.borrow()[index].3.clone()))
+    });
+    match open {
+        None => go_expr_type_hint_uncached(expr, env, signatures),
+        Some((_, Some(hint))) => hint,
+        Some((index, None)) => {
+            let hint = go_expr_type_hint_uncached(expr, env, signatures);
+            RECEIVER_HINTS.with(|hints| hints.borrow_mut()[index].3 = Some(hint.clone()));
+            hint
+        }
+    }
+}
+
+fn go_expr_type_hint_uncached(
     expr: &Expression,
     env: &GoNormalizeEnv,
     signatures: &HashMap<String, GoFunctionSignature>,
@@ -14370,6 +14641,21 @@ fn go_expr_type_hint(
     if let ExprKind::Call { callee, .. } = &expr.kind {
         if let Some(signature) = go_expr_type_hint(callee, env, signatures).and_then(|ty| interface_values::function_signature(&ty)) {
             return signature.return_type;
+        }
+        if let ExprKind::Ident(name) = &callee.kind
+            && let Some(signature) = signatures.get(name)
+            && !env.value_types.contains_key(name)
+        {
+            return signature.return_type.clone();
+        }
+        if let ExprKind::Member { object, field, .. } = &callee.kind
+            && let Some(receiver) = go_expr_type_hint(object, env, signatures)
+            && let Some(signature) = signatures.get(&go_method_signature_key(
+                receiver.trim().trim_start_matches('*'),
+                field,
+            ))
+        {
+            return signature.return_type.clone();
         }
     }
     match &expr.kind {
@@ -14386,6 +14672,10 @@ fn go_expr_type_hint(
             op: UnaryOp::Neg | UnaryOp::Pos,
             expr,
         } => go_expr_type_hint(expr, env, signatures),
+        ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr,
+        } => go_expr_type_hint(expr, env, signatures).or_else(|| Some("bool".to_string())),
         ExprKind::Object(_) if go_expr_is_complex(expr) => Some("complex128".to_string()),
         ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
         ExprKind::RefOf(place) => {
@@ -14486,6 +14776,18 @@ fn go_expr_type_hint(
             let left_type = go_expr_type_hint(left, env, signatures);
             let right_type = go_expr_type_hint(right, env, signatures);
             match op {
+                BinOp::Eq
+                | BinOp::NotEq
+                | BinOp::StrictEq
+                | BinOp::StrictNotEq
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::LtEq
+                | BinOp::GtEq => Some("bool".to_string()),
+                BinOp::Integer(operation, _) if operation.is_comparison() => Some("bool".to_string()),
+                BinOp::And | BinOp::Or => left_type
+                    .or(right_type)
+                    .or_else(|| Some("bool".to_string())),
                 BinOp::Add
                 | BinOp::Sub
                 | BinOp::Mul
@@ -14496,12 +14798,13 @@ fn go_expr_type_hint(
                 | BinOp::BitXor
                 | BinOp::Shl
                 | BinOp::Shr => {
-                    if left_type.as_deref().is_some_and(go_is_integer_type)
-                        && right_type.as_deref().is_some_and(go_is_integer_type)
-                    {
-                        Some("int".to_string())
-                    } else {
-                        left_type.or(right_type)
+                    // Both operands of a Go binary operator have one type; an
+                    // untyped constant operand takes the other's.
+                    match (left_type, right_type) {
+                        (Some(l), Some(r)) if go_is_integer_type(&l) && go_is_integer_type(&r) => {
+                            if go_const_int(left).is_some() { Some(r) } else { Some(l) }
+                        }
+                        (l, r) => l.or(r),
                     }
                 }
                 BinOp::Div => {
@@ -14766,14 +15069,15 @@ fn go_resolve_struct_member_path(
     env: &GoNormalizeEnv,
     seen: &mut HashSet<String>,
 ) -> Option<Vec<String>> {
-    let lookup = go_struct_lookup_name(type_name)?;
-    if !seen.insert(lookup.clone()) {
+    let lookup = go_named_receiver_name(type_name)?;
+    if seen.contains(lookup) {
         return None;
     }
-    let info = env.struct_infos.get(&lookup)?;
+    let info = env.struct_infos.get(lookup)?;
     if info.member_names.contains(member) {
         return Some(vec![member.to_string()]);
     }
+    seen.insert(lookup.to_owned());
     for (embedded_name, embedded_type) in &info.embedded_fields {
         if let Some(mut tail) = go_resolve_struct_member_path(embedded_type, member, env, seen) {
             let mut path = vec![embedded_name.clone()];
@@ -14790,14 +15094,15 @@ fn go_resolve_struct_member_type(
     env: &GoNormalizeEnv,
     seen: &mut HashSet<String>,
 ) -> Option<String> {
-    let lookup = go_struct_lookup_name(type_name)?;
-    if !seen.insert(lookup.clone()) {
+    let lookup = go_named_receiver_name(type_name)?;
+    if seen.contains(lookup) {
         return None;
     }
-    let info = env.struct_infos.get(&lookup)?;
+    let info = env.struct_infos.get(lookup)?;
     if let Some(type_name) = info.member_types.get(member) {
         return Some(type_name.clone());
     }
+    seen.insert(lookup.to_owned());
     for (_, embedded_type) in &info.embedded_fields {
         if let Some(type_name) = go_resolve_struct_member_type(embedded_type, member, env, seen) {
             return Some(type_name);
@@ -15030,22 +15335,6 @@ fn go_bound_method_call_expr(
         args: rewritten_args,
         optional,
     }))
-}
-
-fn go_promoted_pointer_method_params(
-    receiver_lookup: &str,
-    method: &str,
-    env: &GoNormalizeEnv,
-) -> Option<Vec<Param>> {
-    let info = env.struct_infos.get(receiver_lookup)?;
-    for (_, embedded_type) in &info.embedded_fields {
-        let embedded_lookup = go_struct_lookup_name(embedded_type)?;
-        let embedded_info = env.struct_infos.get(&embedded_lookup)?;
-        if embedded_info.pointer_method_names.contains(method) {
-            return embedded_info.method_params.get(method).cloned();
-        }
-    }
-    None
 }
 
 fn go_method_expression_receiver_type(object: &Expression) -> Option<String> {
@@ -16022,6 +16311,918 @@ fn go_is_float_type(type_name: &str) -> bool {
     matches!(type_name.trim(), "float32" | "float64")
 }
 
+/// The signedness of a Go 64-bit integer type, as the profile's
+/// `[integer_cast_widths]` declares it (`int64`, `uint64`, and the
+/// platform-sized `int`/`uint`/`uintptr` when the profile declares them 64
+/// bits). Their operations are W64 integer operations and their values cross
+/// the value ABI on the exact wide carrier.
+fn go_wide_integer_signedness(type_name: &str) -> Option<bool> {
+    static WIDE: std::sync::OnceLock<HashMap<String, bool>> = std::sync::OnceLock::new();
+    WIDE.get_or_init(|| {
+        vybe_runtime::profile::parse_profile(crate::profile_source())
+            .map(|profile| {
+                profile
+                    .integer_cast_widths
+                    .iter()
+                    .filter(|(_, width)| width.bits == Some(64))
+                    .map(|(name, width)| (name.clone(), width.signed))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .get(type_name.trim())
+    .copied()
+}
+
+/// The exact value of an integer constant expression (Go spec "Constant
+/// expressions": untyped integer constants are exact, never rounded or
+/// wrapped). `None` for anything that is not a constant integer expression or
+/// leaves the exactly representable range.
+fn go_const_int(expr: &Expression) -> Option<i128> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(i128::from(*value)),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => go_const_int(expr)?.checked_neg(),
+        ExprKind::Unary { op: UnaryOp::Pos, expr } => go_const_int(expr),
+        ExprKind::Binary { op, left, right } => {
+            let (a, b) = (go_const_int(left)?, go_const_int(right)?);
+            match op {
+                BinOp::Add => a.checked_add(b),
+                BinOp::Sub => a.checked_sub(b),
+                BinOp::Mul => a.checked_mul(b),
+                BinOp::Div | BinOp::IDiv => (b != 0).then(|| a / b),
+                BinOp::Mod => (b != 0).then(|| a % b),
+                BinOp::BitAnd => Some(a & b),
+                BinOp::BitOr => Some(a | b),
+                BinOp::BitXor => Some(a ^ b),
+                BinOp::Shl if (0..120).contains(&b) => {
+                    let shifted = a << b;
+                    (shifted >> b == a).then_some(shifted)
+                }
+                BinOp::Shr if b >= 0 => Some(a >> b.min(127)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// `op` as a W64 integer operation at the operands' signedness, for the
+/// operations whose Go semantics equal the core i64 instruction. Division,
+/// remainder and shifts qualify only when the right operand is a constant
+/// that cannot trap (non-zero divisor) or exceed the width (count < 64).
+fn go_wide_integer_op(op: BinOp, signed: bool, right: &Expression) -> Option<IntOp> {
+    let constant = go_const_int(right);
+    Some(match op {
+        BinOp::Add => IntOp::Add,
+        BinOp::Sub => IntOp::Sub,
+        BinOp::Mul => IntOp::Mul,
+        BinOp::BitAnd => IntOp::And,
+        BinOp::BitOr => IntOp::Or,
+        BinOp::BitXor => IntOp::Xor,
+        BinOp::IDiv | BinOp::Div if constant.is_some_and(|value| value != 0) => {
+            if signed { IntOp::DivS } else { IntOp::DivU }
+        }
+        BinOp::Mod if constant.is_some_and(|value| value != 0) => {
+            if signed { IntOp::RemS } else { IntOp::RemU }
+        }
+        BinOp::Shl if constant.is_some_and(|count| (0..64).contains(&count)) => IntOp::Shl,
+        BinOp::Shr if constant.is_some_and(|count| (0..64).contains(&count)) => {
+            if signed { IntOp::ShrS } else { IntOp::ShrU }
+        }
+        BinOp::Eq | BinOp::StrictEq => IntOp::Eq,
+        BinOp::NotEq | BinOp::StrictNotEq => IntOp::Ne,
+        BinOp::Lt => if signed { IntOp::LtS } else { IntOp::LtU },
+        BinOp::LtEq => if signed { IntOp::LeS } else { IntOp::LeU },
+        BinOp::Gt => if signed { IntOp::GtS } else { IntOp::GtU },
+        BinOp::GtEq => if signed { IntOp::GeS } else { IntOp::GeU },
+        _ => return None,
+    })
+}
+
+/// A Go 64-bit integer operation, or `None` when neither operand has a Go
+/// 64-bit integer type. An untyped constant operand takes the other operand's
+/// type. Arithmetic results are cast back to that type so the value reads at
+/// its declared signedness; comparisons yield a `bool`.
+fn go_wide_integer_binary(
+    op: BinOp,
+    left: &Expression,
+    right: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    fn wide_type(ty: &Option<String>) -> Option<&str> {
+        ty.as_deref().filter(|ty| go_wide_integer_signedness(ty).is_some())
+    }
+    // A defined type (`type Celsius int64`) has its underlying type's
+    // operations (spec "Type definitions").
+    let underlying = |ty: Option<String>| ty.map(|ty| go_underlying_type(&ty, env));
+    let left_type = underlying(go_expr_type_hint(left, env, signatures));
+    let right_type = underlying(go_expr_type_hint(right, env, signatures));
+    // Go's binary operators take two operands of one type (spec "Operators"),
+    // so an operand whose type the walker did not record has the other's.
+    let shift = matches!(op, BinOp::Shl | BinOp::Shr);
+    // An untyped constant operand has no type of its own (spec "Constants");
+    // it takes the other operand's.
+    let left_untyped = go_const_int(left).is_some();
+    let right_untyped = go_const_int(right).is_some();
+    let left_wide = wide_type(&left_type).filter(|_| !left_untyped);
+    let right_wide = wide_type(&right_type).filter(|_| !right_untyped);
+    let ty = match (left_wide, right_wide) {
+        // A shift has its left operand's type; the count may be any integer.
+        (Some(a), _) if shift => a.trim().to_owned(),
+        (Some(a), Some(b)) if a.trim() == b.trim() => a.trim().to_owned(),
+        // Go's binary operators take two operands of one type (spec
+        // "Operators"), so an operand whose type the walker did not record
+        // has the other's.
+        (Some(a), None) if right_untyped || right_type.is_none() => a.trim().to_owned(),
+        (None, Some(b)) if left_untyped || left_type.is_none() => b.trim().to_owned(),
+        _ => return go_generic_integer_binary(op, left, right, &left_type, &right_type, env),
+    };
+    go_wide_integer_binary_typed(op, left, right, &ty)
+}
+
+/// An operation on a value of a type parameter (`func F[T ~int](v T)`):
+/// generic bodies run once for every instantiation, so the integer lane is
+/// chosen by the operand's carrier at run time (an exact integer carrier is
+/// a BigInt, ECMA-262 §13.5.3 `typeof`); other instantiations keep the
+/// plain operator.
+fn go_generic_integer_binary(
+    op: BinOp,
+    left: &Expression,
+    right: &Expression,
+    left_type: &Option<String>,
+    right_type: &Option<String>,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let parameter = |ty: &Option<String>| {
+        ty.as_deref().is_some_and(|ty| env.generic_type_params.contains_key(ty.trim()))
+    };
+    let (left_untyped, right_untyped) = (go_const_int(left).is_some(), go_const_int(right).is_some());
+    let paired = (parameter(left_type) && (right_untyped || parameter(right_type)))
+        || (parameter(right_type) && left_untyped);
+    let pure = |value: &Expression| matches!(value.kind, ExprKind::Ident(_) | ExprKind::Lit(_));
+    if !paired || !pure(left) || !pure(right) {
+        return None;
+    }
+    let integer = go_wide_integer_binary_typed(op, left, right, "int64")?;
+    let exact = |value: &Expression| Expression::new(ExprKind::Binary {
+        op: BinOp::StrictEq,
+        left: Box::new(go_builtin_call("__go_typeof", vec![value.clone()])),
+        right: Box::new(Expression::string("bigint")),
+    });
+    Some(Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(exact(left)),
+            right: Box::new(exact(right)),
+        })),
+        then: Box::new(integer),
+        else_: Box::new(Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(left.clone()),
+            right: Box::new(right.clone()),
+        })),
+    }))
+}
+
+/// `left op right` in the integer lane of Go type `ty`.
+fn go_wide_integer_binary_typed(
+    op: BinOp,
+    left: &Expression,
+    right: &Expression,
+    ty: &str,
+) -> Option<Expression> {
+    let ty = ty.to_owned();
+    let signed = go_wide_integer_signedness(&ty)?;
+    let Some(operation) = go_wide_integer_op(op, signed, right) else {
+        return go_wide_integer_guarded(op, signed, left, right, &ty);
+    };
+    let integer = Expression::new(ExprKind::Binary {
+        op: BinOp::Integer(operation, BitLane::W64),
+        left: Box::new(left.clone()),
+        right: Box::new(right.clone()),
+    });
+    Some(if operation.is_comparison() {
+        // The integer comparison is an i32 predicate; as the condition of a
+        // conditional it reads as a Go `bool` value in every context.
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(integer),
+            then: Box::new(Expression::bool(true)),
+            else_: Box::new(Expression::bool(false)),
+        })
+    } else {
+        Expression::new(ExprKind::Cast { expr: Box::new(integer), type_name: ty })
+    })
+}
+
+/// `left op right` in the operands' integer lane when they have one, else the
+/// plain operator.
+fn go_binary_in_lane(
+    op: BinOp,
+    left: Expression,
+    right: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    go_wide_integer_binary(op, &left, &right, env, signatures).unwrap_or_else(|| {
+        Expression::new(ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) })
+    })
+}
+
+/// The underlying type of a defined type (`type Celsius int64`), which
+/// supplies its operations (spec "Type definitions"); other types unchanged.
+fn go_underlying_type(type_name: &str, env: &GoNormalizeEnv) -> String {
+    let mut ty = type_name.trim().to_owned();
+    for _ in 0..8 {
+        match env.named_types.get(ty.as_str()) {
+            Some(next) if go_wide_integer_signedness(&ty).is_none() && next.trim() != ty => {
+                ty = next.trim().to_owned()
+            }
+            _ => break,
+        }
+    }
+    ty
+}
+
+/// A place whose re-evaluation has no effect and reads the same storage: a
+/// name, or a field/element/dereference of such places with such indices.
+fn go_place_is_pure(place: &Expression) -> bool {
+    match &place.kind {
+        ExprKind::Ident(_) | ExprKind::Lit(_) => true,
+        ExprKind::Member { object, .. } => go_place_is_pure(object),
+        ExprKind::Index { object, index, .. } => go_place_is_pure(object) && go_place_is_pure(index),
+        ExprKind::RefLoad(inner) | ExprKind::Cast { expr: inner, .. } => go_place_is_pure(inner),
+        ExprKind::Unary { op: UnaryOp::Deref, expr } => go_place_is_pure(expr),
+        _ => false,
+    }
+}
+
+/// Division, remainder and shifts by a non-constant right operand, with the
+/// Go results the core i64 instructions do not give: `MinInt / -1` is
+/// `MinInt` and `MinInt % -1` is 0 (spec "Integer operators"); a shift count
+/// of 64 or more shifts every bit out (spec "Arithmetic operators"); a zero
+/// divisor panics. The right operand is evaluated more than once, so only a
+/// side-effect-free one qualifies.
+fn go_wide_integer_guarded(
+    op: BinOp,
+    signed: bool,
+    left: &Expression,
+    right: &Expression,
+    ty: &str,
+) -> Option<Expression> {
+    fn pure(value: &Expression) -> bool {
+        match &value.kind {
+            ExprKind::Ident(_) | ExprKind::Lit(_) => true,
+            ExprKind::Cast { expr, .. } => pure(expr),
+            ExprKind::Member { object, .. } => pure(object),
+            _ => false,
+        }
+    }
+    if !pure(right) {
+        return None;
+    }
+    let word = |operation: IntOp, a: &Expression, b: &Expression| {
+        Expression::new(ExprKind::Cast {
+            expr: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Integer(operation, BitLane::W64),
+                left: Box::new(a.clone()),
+                right: Box::new(b.clone()),
+            })),
+            type_name: ty.to_owned(),
+        })
+    };
+    let test = |operation: IntOp, a: &Expression, b: Expression| {
+        Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Integer(operation, BitLane::W64),
+            left: Box::new(a.clone()),
+            right: Box::new(b),
+        }))
+    };
+    let constant = |value: i64| {
+        Expression::new(ExprKind::Cast {
+            expr: Box::new(Expression::new(ExprKind::Lit(Literal::Int(value)))),
+            type_name: ty.to_owned(),
+        })
+    };
+    let ternary = |cond, then: Expression, else_: Expression| {
+        Expression::new(ExprKind::Ternary { cond, then: Box::new(then), else_: Box::new(else_) })
+    };
+    let count_in_range = || test(IntOp::LtU, right, Expression::new(ExprKind::Lit(Literal::Int(64))));
+    // Go spec "Run-time panics": a zero divisor panics with a runtime error.
+    let nonzero = |quotient: Expression| {
+        ternary(
+            test(IntOp::Eq, right, Expression::new(ExprKind::Lit(Literal::Int(0)))),
+            go_builtin_call(
+                "panic",
+                vec![Expression::string("runtime error: integer divide by zero")],
+            ),
+            quotient,
+        )
+    };
+    Some(match op {
+        BinOp::Div | BinOp::IDiv if signed => nonzero(ternary(
+            test(IntOp::Eq, right, Expression::new(ExprKind::Lit(Literal::Int(-1)))),
+            word(IntOp::Sub, &constant(0), left),
+            word(IntOp::DivS, left, right),
+        )),
+        BinOp::Div | BinOp::IDiv => nonzero(word(IntOp::DivU, left, right)),
+        BinOp::Mod if signed => nonzero(ternary(
+            test(IntOp::Eq, right, Expression::new(ExprKind::Lit(Literal::Int(-1)))),
+            constant(0),
+            word(IntOp::RemS, left, right),
+        )),
+        BinOp::Mod => nonzero(word(IntOp::RemU, left, right)),
+        BinOp::Shl => ternary(count_in_range(), word(IntOp::Shl, left, right), constant(0)),
+        BinOp::Shr if signed => ternary(
+            count_in_range(),
+            word(IntOp::ShrS, left, right),
+            word(IntOp::ShrS, left, &Expression::new(ExprKind::Lit(Literal::Int(63)))),
+        ),
+        BinOp::Shr => ternary(count_in_range(), word(IntOp::ShrU, left, right), constant(0)),
+        _ => return None,
+    })
+}
+
+/// A Go 64-bit integer used as a position (an index or a string offset) as
+/// the Number the value ABI indexes with. A valid position is below the
+/// length, so the conversion is exact; an invalid one stays out of range.
+fn go_position_operand(
+    index: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    match go_expr_type_hint(&index, env, signatures) {
+        Some(type_name) if go_wide_integer_signedness(&type_name).is_some() => {
+            Expression::new(ExprKind::Cast {
+                expr: Box::new(index),
+                type_name: "float64".to_owned(),
+            })
+        }
+        _ => index,
+    }
+}
+
+/// An integer map key as one canonical value: the exactly converted Number,
+/// so a key written from a native word and one written from a constant name
+/// the same entry.
+fn go_map_key_operand(
+    owner: &Expression,
+    key: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    match go_expr_type_hint(owner, env, signatures)
+        .and_then(|type_name| go_map_key_value_types(type_name.trim().trim_start_matches('*')))
+    {
+        Some((key_type, _)) => go_map_key_operand_for_type(key, &go_underlying_type(&key_type, env)),
+        None => key,
+    }
+}
+
+fn go_map_key_operand_for_type(key: Expression, key_type: &str) -> Expression {
+    if go_wide_integer_signedness(key_type).is_some() {
+        Expression::new(ExprKind::Cast { expr: Box::new(key), type_name: "float64".to_owned() })
+    } else {
+        key
+    }
+}
+
+/// Go's index bounds check of `object[index]` (spec "Index expressions": a
+/// slice or array index outside `0 <= index < len` is a run-time panic): the
+/// in-range condition and the panic message. `index` is the integer index
+/// before its position conversion. A constant index of an array is checked by
+/// the compiler, a pointer operand dereferences first, and a byte slice keeps
+/// its generic access; those are not guarded here. Both operands are read
+/// twice, so only side-effect-free ones qualify.
+fn go_index_bounds_check(
+    object: &Expression,
+    index: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<(Expression, Expression)> {
+    if !go_types_batch() {
+        return None;
+    }
+    if !go_place_is_pure(object) || !go_place_is_pure(index) {
+        return None;
+    }
+    let type_name = go_underlying_type(go_expr_type_hint(object, env, signatures)?.trim(), env);
+    let length = if go_is_slice_type(&type_name) {
+        go_sequence_len(object, env, signatures)?
+    } else if go_is_fixed_array_type(&type_name) {
+        if go_const_int(index).is_some() {
+            return None;
+        }
+        let (head, _) = go_array_head(&type_name)?;
+        Expression::int(head.trim().parse::<i64>().ok()?)
+    } else {
+        return None;
+    };
+    let in_range = Expression::new(ExprKind::Binary {
+        op: BinOp::Integer(IntOp::LtU, BitLane::W64),
+        left: Box::new(index.clone()),
+        right: Box::new(length.clone()),
+    });
+    let concat = |left: Expression, right: Expression| {
+        Expression::new(ExprKind::Binary { op: BinOp::Add, left: Box::new(left), right: Box::new(right) })
+    };
+    let message = concat(
+        concat(
+            concat(
+                Expression::string("runtime error: index out of range ["),
+                go_builtin_call("__go_fmt_sprint", vec![index.clone()]),
+            ),
+            Expression::string("] with length "),
+        ),
+        go_builtin_call("__go_fmt_sprint", vec![length]),
+    );
+    Some((in_range, message))
+}
+
+/// Typed `[]int` storage: a slice of `int`/`int64` that never leaves its
+/// function is a Wasm GC `(array (mut i64))`, as gc and TinyGo store it — raw
+/// 64-bit elements read and written in the integer lane. A local qualifies
+/// when it is declared once as `make([]T, n)` and every other mention is an
+/// element read or store, its bounds check, or `len`. Any other mention (a
+/// call argument, reassignment, slicing, range, a closure, an unmodeled
+/// statement) keeps the dynamic array.
+/// The A/B measurement switch of the typed-slice batch.
+fn go_types_batch() -> bool {
+    true
+}
+
+fn go_type_i64_slices(mut body: Vec<Statement>, params: &[Param]) -> Vec<Statement> {
+    if !go_types_batch() {
+        return body;
+    }
+    let mut candidates = Vec::new();
+    for statement in &body {
+        go_i64_slice_candidates(statement, &mut candidates);
+    }
+    for (name, kind) in candidates {
+        if params.iter().any(|param| param.name == name) {
+            continue;
+        }
+        let mut trial = body.clone();
+        let mut declared = false;
+        if go_i64_slice_rewrite_body(&mut trial, &name, kind, &mut declared).is_ok()
+            && declared
+            && go_i64_slice_mentions_are_typed(&trial, &name, kind)
+        {
+            body = trial;
+        }
+    }
+    body
+}
+
+/// The builtin performing `op` (`make`/`get`/`set`/`len`) on a typed slice
+/// of element `kind`.
+fn go_typed_slice_builtin(kind: &str, op: &str) -> String {
+    format!("__go_{kind}_slice_{op}")
+}
+
+/// The typed-array element kind of a slice type: its storage and the value
+/// an element reads as.
+fn go_typed_slice_kind(type_name: &str) -> Option<&'static str> {
+    Some(match type_name.trim() {
+        "[]int" | "[]int64" => "i64",
+        "[]bool" => "bool",
+        "[]int8" | "[]int16" | "[]int32" | "[]rune" => "i32",
+        "[]uint8" | "[]byte" | "[]uint16" | "[]uint32" => "u32",
+        "[]float64" => "f64",
+        "[]float32" => "f32",
+        _ => return None,
+    })
+}
+
+/// The length operand and element kind of a normalized `make([]T, n)` of a
+/// scalar element type.
+fn go_i64_slice_make_length(init: &Expression) -> Option<(&Expression, &'static str)> {
+    let ExprKind::Cast { expr, type_name } = &init.kind else { return None };
+    let kind = go_typed_slice_kind(type_name)?;
+    let ExprKind::Call { callee, args, .. } = &expr.kind else { return None };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "Array") || args.len() != 2 {
+        return None;
+    }
+    let zero = matches!(
+        &args[1].value.kind,
+        ExprKind::Lit(Literal::Int(0) | Literal::Bool(false))
+    ) || matches!(&args[1].value.kind, ExprKind::Lit(Literal::Float(f)) if *f == 0.0 && f.is_sign_positive());
+    zero.then_some((&args[0].value, kind))
+}
+
+fn go_i64_slice_candidates(statement: &Statement, found: &mut Vec<(String, &'static str)>) {
+    match &statement.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for declaration in declarations {
+                if let BindingPattern::Ident(name) = &declaration.pattern
+                    && let Some((_, kind)) = declaration.init.as_ref().and_then(go_i64_slice_make_length)
+                    && !found.iter().any(|(other, _)| other == name)
+                {
+                    found.push((name.clone(), kind));
+                }
+            }
+        }
+        StmtKind::Block(body) => body.iter().for_each(|s| go_i64_slice_candidates(s, found)),
+        StmtKind::If { then_body, elifs, else_body, .. } => {
+            then_body.iter().for_each(|s| go_i64_slice_candidates(s, found));
+            for (_, body) in elifs {
+                body.iter().for_each(|s| go_i64_slice_candidates(s, found));
+            }
+            if let Some(body) = else_body {
+                body.iter().for_each(|s| go_i64_slice_candidates(s, found));
+            }
+        }
+        StmtKind::For { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. }
+        | StmtKind::ForIn { body, .. } => body.iter().for_each(|s| go_i64_slice_candidates(s, found)),
+        StmtKind::Labeled { body, .. } => go_i64_slice_candidates(body, found),
+        _ => {}
+    }
+}
+
+fn go_mentions_name(statement: &Statement, name: &str) -> bool {
+    let mut found = false;
+    statement.walk_exprs(&mut |value| {
+        found |= matches!(&value.kind, ExprKind::Ident(other) if other == name)
+    });
+    found
+}
+
+fn go_i64_slice_call(callee: &str, args: Vec<Expression>) -> Expression {
+    go_builtin_call(callee, args)
+}
+
+/// The integer index of a normalized element access (its position conversion
+/// to `float64` undone: the typed access takes the integer itself).
+fn go_i64_slice_index(index: &Expression) -> Expression {
+    match &index.kind {
+        ExprKind::Cast { expr, type_name } if type_name == "float64" => (**expr).clone(),
+        _ => index.clone(),
+    }
+}
+
+/// Rewrite the element reads and `len` of `name` inside `value`. A closure
+/// that mentions the name rejects it.
+fn go_i64_slice_rewrite_expr(value: &mut Expression, name: &str, kind: &str) -> Result<(), ()> {
+    let mut captured = false;
+    value.walk_exprs(&mut |node| {
+        if let ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) = &node.kind {
+            let mut inner = false;
+            node.walk_exprs(&mut |n| inner |= matches!(&n.kind, ExprKind::Ident(other) if other == name));
+            captured |= inner;
+        }
+    });
+    if captured {
+        return Err(());
+    }
+    let is_name = |e: &Expression| matches!(&e.kind, ExprKind::Ident(other) if other == name);
+    let get = go_typed_slice_builtin(kind, "get");
+    value.walk_exprs_mut(&mut |node| {
+        let replacement = match &node.kind {
+            ExprKind::Index { object, index, .. } if is_name(object) => Some(go_i64_slice_call(
+                &get,
+                vec![(**object).clone(), go_i64_slice_index(index)],
+            )),
+            ExprKind::Call { callee, args, .. }
+                if matches!(&callee.kind, ExprKind::Ident(callee) if callee == "__go_slice_len")
+                    && args.len() == 1
+                    && is_name(&args[0].value) =>
+            {
+                Some(go_i64_slice_call(&go_typed_slice_builtin(kind, "len"), vec![args[0].value.clone()]))
+            }
+            // A checked read: the typed access performs the bounds check.
+            ExprKind::Ternary { then, else_, .. } if go_is_index_bounds_panic(else_) => match &then.kind {
+                ExprKind::Call { callee, args, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(callee) if *callee == get)
+                        && args.len() == 2
+                        && is_name(&args[0].value) =>
+                {
+                    Some(go_i64_slice_call(
+                        &get,
+                        vec![args[0].value.clone(), args[1].value.clone(), (**else_).clone()],
+                    ))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            *node = replacement;
+        }
+    });
+    Ok(())
+}
+
+fn go_i64_slice_rewrite_body(body: &mut Vec<Statement>, name: &str, kind: &str, declared: &mut bool) -> Result<(), ()> {
+    let mut out = Vec::with_capacity(body.len());
+    for mut statement in std::mem::take(body) {
+        if let StmtKind::Assign { targets, value, by_ref: false } = &statement.kind
+            && let [target] = targets.as_slice()
+            && let ExprKind::Index { object, index, .. } = &target.kind
+            && matches!(&object.kind, ExprKind::Ident(other) if other == name)
+        {
+            let mut index = go_i64_slice_index(index);
+            let mut value = value.clone();
+            go_i64_slice_rewrite_expr(&mut index, name, kind)?;
+            go_i64_slice_rewrite_expr(&mut value, name, kind)?;
+            out.push(Statement::new(StmtKind::Expr(go_i64_slice_call(
+                &go_typed_slice_builtin(kind, "set"),
+                vec![Expression::ident(name), index, value],
+            ))));
+            continue;
+        }
+        let mentions = go_mentions_name(&statement, name);
+        match &mut statement.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                let mut guard = None;
+                for declaration in declarations.iter_mut() {
+                    if matches!(&declaration.pattern, BindingPattern::Ident(other) if other == name) {
+                        let length = declaration
+                            .init
+                            .as_ref()
+                            .and_then(go_i64_slice_make_length)
+                            .map(|(length, _)| go_i64_slice_index(length))
+                            .ok_or(())?;
+                        if *declared {
+                            return Err(());
+                        }
+                        *declared = true;
+                        let mut length = length;
+                        go_i64_slice_rewrite_expr(&mut length, name, kind)?;
+                        match go_const_int(&length) {
+                            Some(n) if (0..=i32::MAX as i128).contains(&(n as i128)) => {}
+                            Some(_) => return Err(()),
+                            None if go_place_is_pure(&length) => {
+                                // Go spec "Making slices": a length outside the
+                                // representable range panics.
+                                guard = Some(Statement::new(StmtKind::If {
+                                    cond: Expression::new(ExprKind::Unary {
+                                        op: UnaryOp::Not,
+                                        expr: Box::new(Expression::new(ExprKind::Binary {
+                                            op: BinOp::Integer(IntOp::LtU, BitLane::W64),
+                                            left: Box::new(length.clone()),
+                                            right: Box::new(Expression::int(i32::MAX as i64 + 1)),
+                                        })),
+                                    }),
+                                    then_body: vec![Statement::new(StmtKind::Throw {
+                                        expr: Some(Expression::string(
+                                            "runtime error: makeslice: len out of range",
+                                        )),
+                                        cause: None,
+                                    })],
+                                    elifs: Vec::new(),
+                                    else_body: None,
+                                }));
+                            }
+                            None => return Err(()),
+                        }
+                        declaration.init = Some(go_i64_slice_call(&go_typed_slice_builtin(kind, "make"), vec![length]));
+                    } else if let Some(init) = declaration.init.as_mut() {
+                        go_i64_slice_rewrite_expr(init, name, kind)?;
+                    }
+                }
+                out.extend(guard);
+            }
+            StmtKind::Assign { targets, value, by_ref: false } => {
+                if targets.iter().any(|target| matches!(&target.kind, ExprKind::Ident(other) if other == name)) {
+                    return Err(());
+                }
+                for target in targets.iter_mut() {
+                    go_i64_slice_rewrite_expr(target, name, kind)?;
+                }
+                go_i64_slice_rewrite_expr(value, name, kind)?;
+            }
+            StmtKind::Expr(value) | StmtKind::Return(Some(value)) => go_i64_slice_rewrite_expr(value, name, kind)?,
+            StmtKind::Throw { expr, cause } => {
+                for value in [expr, cause].into_iter().flatten() {
+                    go_i64_slice_rewrite_expr(value, name, kind)?;
+                }
+            }
+            StmtKind::If { cond, then_body, elifs, else_body } => {
+                go_i64_slice_rewrite_expr(cond, name, kind)?;
+                go_i64_slice_rewrite_body(then_body, name, kind, declared)?;
+                for (cond, body) in elifs.iter_mut() {
+                    go_i64_slice_rewrite_expr(cond, name, kind)?;
+                    go_i64_slice_rewrite_body(body, name, kind, declared)?;
+                }
+                if let Some(body) = else_body {
+                    go_i64_slice_rewrite_body(body, name, kind, declared)?;
+                }
+            }
+            StmtKind::For { init, cond, update, body } => {
+                if let Some(init) = init {
+                    let mut single = vec![(**init).clone()];
+                    go_i64_slice_rewrite_body(&mut single, name, kind, declared)?;
+                    match <[Statement; 1]>::try_from(single) {
+                        Ok([only]) => **init = only,
+                        Err(_) => return Err(()),
+                    }
+                }
+                for value in [cond, update].into_iter().flatten() {
+                    go_i64_slice_rewrite_expr(value, name, kind)?;
+                }
+                go_i64_slice_rewrite_body(body, name, kind, declared)?;
+            }
+            StmtKind::While { cond, body, else_body: None } | StmtKind::DoWhile { body, cond, .. } => {
+                go_i64_slice_rewrite_expr(cond, name, kind)?;
+                go_i64_slice_rewrite_body(body, name, kind, declared)?;
+            }
+            StmtKind::Block(body) => go_i64_slice_rewrite_body(body, name, kind, declared)?,
+            StmtKind::Labeled { body, .. } => {
+                let mut single = vec![(**body).clone()];
+                go_i64_slice_rewrite_body(&mut single, name, kind, declared)?;
+                match <[Statement; 1]>::try_from(single) {
+                    Ok([only]) => **body = only,
+                    Err(_) => return Err(()),
+                }
+            }
+            StmtKind::Return(None) | StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Empty => {}
+            _ if mentions => return Err(()),
+            _ => {}
+        }
+        out.push(statement);
+    }
+    *body = out;
+    Ok(())
+}
+
+/// Every mention of `name` left after the rewrite is the array operand of a
+/// typed access.
+fn go_i64_slice_mentions_are_typed(body: &[Statement], name: &str, kind: &str) -> bool {
+    let (mut all, mut typed) = (0usize, 0usize);
+    let accesses = ["get", "set", "len"].map(|op| go_typed_slice_builtin(kind, op));
+    for statement in body {
+        statement.walk_exprs(&mut |value| match &value.kind {
+            ExprKind::Ident(other) if other == name => all += 1,
+            ExprKind::Call { callee, args, .. }
+                if matches!(&callee.kind, ExprKind::Ident(callee)
+                    if accesses.contains(callee))
+                    && matches!(args.first().map(|arg| &arg.value.kind), Some(ExprKind::Ident(other)) if other == name) =>
+            {
+                typed += 1
+            }
+            _ => {}
+        });
+    }
+    all == typed
+}
+
+/// The panic arm of a bounds-checked read built by [`go_index_bounds_check`].
+fn go_is_index_bounds_panic(value: &Expression) -> bool {
+    matches!(&value.kind, ExprKind::Call { callee, args, .. }
+        if matches!(&callee.kind, ExprKind::Ident(name) if name == "panic")
+            && matches!(args.first().map(|arg| &arg.value.kind), Some(ExprKind::Binary { op: BinOp::Add, .. })))
+}
+
+/// A value whose evaluation has no effect and cannot panic, so a bounds check
+/// may run before it without changing what the program observes.
+fn go_expr_is_inert(value: &Expression) -> bool {
+    match &value.kind {
+        ExprKind::Ident(_) | ExprKind::Lit(_) => true,
+        ExprKind::Cast { expr, .. } => go_expr_is_inert(expr),
+        ExprKind::Unary { op, expr } => !matches!(op, UnaryOp::Deref) && go_expr_is_inert(expr),
+        ExprKind::Binary { op, left, right } => {
+            !matches!(
+                op,
+                BinOp::Div | BinOp::IDiv | BinOp::Mod
+                    | BinOp::Integer(IntOp::DivS | IntOp::DivU | IntOp::RemS | IntOp::RemU, _)
+            ) && go_expr_is_inert(left)
+                && go_expr_is_inert(right)
+        }
+        _ => false,
+    }
+}
+
+/// The statements that precede a store to `target = value` when `target` is
+/// a bounds-checked index: Go evaluates the right side first and then panics,
+/// so a value with effects is held in a temporary ahead of the check. Returns
+/// the prefix and the value to store.
+fn go_index_store_guard(
+    target: &Expression,
+    value: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> (Vec<Statement>, Expression) {
+    let ExprKind::Index { object, index, .. } = &target.kind else {
+        return (Vec::new(), value);
+    };
+    let index = match &index.kind {
+        ExprKind::Cast { expr, type_name } if type_name == "float64" => expr.as_ref(),
+        _ => index.as_ref(),
+    };
+    let Some((in_range, message)) = go_index_bounds_check(object, index, env, signatures) else {
+        return (Vec::new(), value);
+    };
+    let mut prefix = Vec::new();
+    let value = if go_expr_is_inert(&value) {
+        value
+    } else {
+        let name = fresh_go_temp(state, "__go_store_");
+        prefix.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name.clone()),
+                type_hint: None,
+                init: Some(value),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }));
+        Expression::ident(&name)
+    };
+    prefix.push(Statement::new(StmtKind::If {
+        cond: Expression::new(ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(in_range) }),
+        then_body: vec![Statement::new(StmtKind::Throw { expr: Some(message), cause: None })],
+        elifs: Vec::new(),
+        else_body: None,
+    }));
+    (prefix, value)
+}
+
+/// `len` of a slice: the backing array's element count, 0 for a nil slice.
+/// A byte slice keeps the generic length, since it may be backed by a byte
+/// buffer rather than an array.
+fn go_sequence_len(
+    value: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    if !go_types_batch() {
+        return None;
+    }
+    let type_name = go_underlying_type(go_expr_type_hint(value, env, signatures)?.trim(), env);
+    if !go_is_slice_type(&type_name) {
+        return None;
+    }
+    let element = go_underlying_type(go_array_element_type(&type_name)?.trim(), env);
+    if matches!(element.as_str(), "byte" | "uint8") {
+        return None;
+    }
+    Some(go_builtin_call("__go_slice_len", vec![value.clone()]))
+}
+
+/// `go_position_operand` for an index of a slice or an array; a map key keeps
+/// its own value.
+fn go_sequence_index_operand(
+    owner: &Expression,
+    index: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    let sequence = go_expr_type_hint(owner, env, signatures).is_some_and(|type_name| {
+        let type_name = type_name.trim().trim_start_matches('*');
+        go_is_slice_type(type_name) || go_is_fixed_array_type(type_name)
+    });
+    if sequence { go_position_operand(index, env, signatures) } else { index }
+}
+
+/// The statically enforced declaration fact of a Go 64-bit integer binding.
+/// The type is the declared one, or for `x := e` the type Go assigns `e`
+/// without inference heuristics: an explicit conversion or a call to a
+/// function declaring that single result. A Go program cannot store another
+/// type there, and no store conversion exists for these widths, so the binding
+/// is `Checked`; Go has no volatile or atomic declaration, so access is
+/// `Ordinary`. `word_value` stays unset: it certifies the W32 word domain.
+fn go_wide_integer_declaration_hint(
+    declared: Option<&str>,
+    init: Option<&Expression>,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<vybe_ast::TypeHint> {
+    let type_name = match (declared, init.map(|init| &init.kind)) {
+        (Some(declared), _) => declared.trim().to_owned(),
+        (None, Some(ExprKind::Cast { type_name, .. })) => type_name.trim().to_owned(),
+        (None, Some(ExprKind::Call { callee, .. })) => match &callee.kind {
+            ExprKind::Ident(name) => signatures.get(name)?.return_type.clone()?.trim().to_owned(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    go_wide_integer_signedness(&type_name)?;
+    let mut hint = vybe_ast::TypeHint::checked(type_name);
+    hint.access = Some(vybe_ast::StorageAccess::Ordinary);
+    Some(hint)
+}
+
+/// An integer constant stored into a Go 64-bit integer: the exact value cast
+/// to the declared type (a `uint64` constant above `i64::MAX` is carried as its
+/// bit pattern). `None` when `init` is not such a constant.
+fn go_wide_integer_constant(init: &Expression, type_name: &str) -> Option<Expression> {
+    let signed = go_wide_integer_signedness(type_name)?;
+    let value = go_const_int(init)?;
+    let bits = if signed {
+        i64::try_from(value).ok()?
+    } else {
+        u64::try_from(value).ok()? as i64
+    };
+    Some(Expression::new(ExprKind::Cast {
+        expr: Box::new(Expression::new(ExprKind::Lit(Literal::Int(bits)))),
+        type_name: type_name.trim().to_owned(),
+    }))
+}
+
 fn go_is_builtin_conversion_type(type_name: &str) -> bool {
     go_is_integer_type(type_name)
         || go_is_float_type(type_name)
@@ -16045,6 +17246,11 @@ fn go_normalize_type_conversion(
 ) -> Expression {
     if matches!(type_name.trim(), "any" | "interface{}") {
         return expr;
+    }
+
+    // Go spec "Conversions": converting a constant yields a typed constant.
+    if let Some(constant) = go_wide_integer_constant(&expr, type_name) {
+        return constant;
     }
 
     if let Some(underlying) = env
@@ -16188,7 +17394,7 @@ fn go_tree_mounted_import_path(path: &str) -> Option<String> {
     Some(local.to_string())
 }
 
-fn unquote(s: &str) -> String {
+pub(crate) fn unquote(s: &str) -> String {
     if s.len() < 2 {
         return s.to_string();
     }
@@ -17152,12 +18358,15 @@ fn go_embedded_field_name(type_name: &str) -> Option<String> {
 }
 
 fn go_named_receiver_type(type_name: &str) -> Option<String> {
+    go_named_receiver_name(type_name).map(str::to_string)
+}
+
+/// The named type a receiver or value type spelling refers to: pointer and
+/// generic application removed.
+fn go_named_receiver_name(type_name: &str) -> Option<&str> {
     let trimmed = type_name.trim().trim_start_matches('*').trim();
     let trimmed = common_generics::generic_base_name(trimmed);
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(trimmed.to_string())
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 // ── Statements ─────────────────────────────────────────────────────────────────────────
@@ -17528,6 +18737,7 @@ fn walk_inc_dec(pair: Pair<Rule>) -> Result<StmtKind, String> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::expression => expr = Some(walk_expression(inner)?),
+            Rule::unary_expression => expr = Some(walk_unary_expression(inner)?),
             Rule::primary => expr = Some(walk_primary(inner)?),
             _ => {}
         }
@@ -17962,7 +19172,7 @@ fn walk_select(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn chan_recv(ch: Expression) -> Expression {
+pub(crate) fn chan_recv(ch: Expression) -> Expression {
     Expression::new(ExprKind::Chan(ChanOp::Recv(Box::new(ch))))
 }
 
@@ -18156,6 +19366,43 @@ fn walk_statement_list(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     Ok(stmts)
 }
 
+/// A `for` clause's post statement as the loop's update expression: an
+/// assignment `x = v`, or an `x op= v` / `x++` / `x--` as `x = x op v`.
+fn go_for_update(statement: StmtKind) -> Option<Expression> {
+    match statement {
+        StmtKind::Assign { targets, value, .. } => targets.into_iter().next().map(|target| {
+            Expression::new(ExprKind::Assign { target: Box::new(target), value: Box::new(value) })
+        }),
+        StmtKind::CompoundAssign { target, op, value } => {
+            if !go_types_batch() && !matches!(&value.kind, ExprKind::Lit(Literal::Int(1))) {
+                return None;
+            }
+            let op = match op {
+                CompoundOp::Add => BinOp::Add,
+                CompoundOp::Sub => BinOp::Sub,
+                CompoundOp::Mul => BinOp::Mul,
+                CompoundOp::Div => BinOp::Div,
+                CompoundOp::Mod => BinOp::Mod,
+                CompoundOp::BitAnd => BinOp::BitAnd,
+                CompoundOp::BitOr => BinOp::BitOr,
+                CompoundOp::BitXor => BinOp::BitXor,
+                CompoundOp::Shl => BinOp::Shl,
+                CompoundOp::Shr => BinOp::Shr,
+                _ => return None,
+            };
+            Some(Expression::new(ExprKind::Assign {
+                target: Box::new(target.clone()),
+                value: Box::new(Expression::new(ExprKind::Binary {
+                    op,
+                    left: Box::new(target),
+                    right: Box::new(value),
+                })),
+            }))
+        }
+        _ => None,
+    }
+}
+
 fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut init: Option<Box<Statement>> = None;
     let mut cond: Option<Expression> = None;
@@ -18189,14 +19436,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             if init.is_none() {
                                 init = Some(Box::new(Statement::new(assign)));
                             } else if update.is_none() {
-                                if let StmtKind::Assign { targets, value, .. } = assign {
-                                    if let Some(target) = targets.into_iter().next() {
-                                        update = Some(Expression::new(ExprKind::Assign {
-                                            target: Box::new(target),
-                                            value: Box::new(value),
-                                        }));
-                                    }
-                                }
+                                update = go_for_update(assign);
                             }
                         }
                         Rule::inc_dec_statement => {
@@ -18204,57 +19444,14 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             if init.is_none() {
                                 init = Some(Box::new(Statement::new(inc_dec)));
                             } else if update.is_none() {
-                                if let StmtKind::CompoundAssign { target, op, value } = inc_dec {
-                                    let bin_op = match op {
-                                        CompoundOp::Add => BinOp::Add,
-                                        CompoundOp::Sub => BinOp::Sub,
-                                        CompoundOp::Mul => BinOp::Mul,
-                                        CompoundOp::Div => BinOp::Div,
-                                        CompoundOp::Mod => BinOp::Mod,
-                                        _ => BinOp::Add,
-                                    };
-                                    update = Some(Expression::new(ExprKind::Assign {
-                                        target: Box::new(target.clone()),
-                                        value: Box::new(Expression::new(ExprKind::Binary {
-                                            op: bin_op,
-                                            left: Box::new(target),
-                                            right: Box::new(value),
-                                        })),
-                                    }));
-                                }
+                                update = go_for_update(inc_dec);
                             }
                         }
                         Rule::for_inc_dec => {
-                            let inc_dec = walk_inc_dec(fc_inner)?;
-                            if let StmtKind::CompoundAssign { target, op, value } = inc_dec {
-                                let bin_op = match op {
-                                    CompoundOp::Add => BinOp::Add,
-                                    CompoundOp::Sub => BinOp::Sub,
-                                    CompoundOp::Mul => BinOp::Mul,
-                                    CompoundOp::Div => BinOp::Div,
-                                    CompoundOp::Mod => BinOp::Mod,
-                                    _ => BinOp::Add,
-                                };
-                                update = Some(Expression::new(ExprKind::Assign {
-                                    target: Box::new(target.clone()),
-                                    value: Box::new(Expression::new(ExprKind::Binary {
-                                        op: bin_op,
-                                        left: Box::new(target),
-                                        right: Box::new(value),
-                                    })),
-                                }));
-                            }
+                            update = go_for_update(walk_inc_dec(fc_inner)?);
                         }
                         Rule::for_assign_nosemi => {
-                            let assign = walk_assignment(fc_inner)?;
-                            if let StmtKind::Assign { targets, value, .. } = assign {
-                                if let Some(target) = targets.into_iter().next() {
-                                    update = Some(Expression::new(ExprKind::Assign {
-                                        target: Box::new(target),
-                                        value: Box::new(value),
-                                    }));
-                                }
-                            }
+                            update = go_for_update(walk_assignment(fc_inner)?);
                         }
                         Rule::expression => {
                             if cond.is_none() {
@@ -18439,6 +19636,9 @@ fn walk_labeled(pair: Pair<Rule>) -> Result<StmtKind, String> {
 // ── Expressions ─────────────────────────────────────────────────────────────────────────
 
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
+    if let Some(owned) = crate::direct_ast::owned_expression(&pair)? {
+        return Ok(owned);
+    }
     if matches!(
         pair.as_rule(),
         Rule::expression | Rule::if_expression | Rule::range_expression
@@ -18504,24 +19704,10 @@ fn walk_unary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     }
 
     if let Some(uop) = op {
-        let un_op = match uop.as_str() {
-            "-" => UnaryOp::Neg,
-            "!" => UnaryOp::Not,
-            "+" => UnaryOp::Pos,
-            "^" => UnaryOp::BitNot,
-            "*" => UnaryOp::Deref,
-            "&" => UnaryOp::AddrOf,
-            "<-" => {
-                return Ok(chan_recv(operand.unwrap_or_else(Expression::null)));
-            }
-            _ => UnaryOp::Pos,
-        };
-        Ok(Expression::new(ExprKind::Unary {
-            op: un_op,
-            expr: Box::new(
-                operand.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null))),
-            ),
-        }))
+        Ok(crate::direct_ast::go_unary_expr(
+            &uop,
+            operand.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null))),
+        ))
     } else {
         operand.ok_or_else(|| "Empty unary expression".to_string())
     }
@@ -18702,16 +19888,7 @@ fn walk_operand(pair: Pair<Rule>) -> Result<Expression, String> {
             Rule::slice_conversion => return walk_slice_conversion(inner),
             Rule::interface_conversion => return walk_type_conversion(inner),
             Rule::type_conversion => return walk_type_conversion(inner),
-            Rule::ident_name => {
-                let name = inner.as_str();
-                // Go builtins
-                match name {
-                    "nil" => return Ok(Expression::new(ExprKind::Lit(Literal::Null))),
-                    "true" => return Ok(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
-                    "false" => return Ok(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
-                    _ => return Ok(Expression::new(ExprKind::Ident(name.to_string()))),
-                }
-            }
+            Rule::ident_name => return Ok(crate::direct_ast::go_operand_ident(inner.as_str())),
             Rule::expression | Rule::if_expression | Rule::range_expression => {
                 return walk_expression(inner);
             }
@@ -18761,79 +19938,8 @@ fn walk_type_conversion(pair: Pair<Rule>) -> Result<Expression, String> {
 
 fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     for inner in pair.into_inner() {
-        match inner.as_rule() {
-            Rule::numeric_literal => {
-                let mut s = inner.as_str().replace('_', "");
-                let imaginary = s.ends_with('i');
-                if imaginary {
-                    s.pop();
-                }
-                let parsed = if s.starts_with("0x") || s.starts_with("0X") {
-                    i64::from_str_radix(&s[2..], 16).ok().map(Expression::int)
-                } else if s.starts_with("0b") || s.starts_with("0B") {
-                    i64::from_str_radix(&s[2..], 2).ok().map(Expression::int)
-                } else if s.starts_with("0o") || s.starts_with("0O") {
-                    i64::from_str_radix(&s[2..], 8).ok().map(Expression::int)
-                } else if s.contains('.')
-                    || s.contains('e')
-                    || s.contains('E')
-                    || s.contains('p')
-                    || s.contains('P')
-                {
-                    s.parse::<f64>().ok().map(Expression::float)
-                } else {
-                    s.parse::<i64>().ok().map(Expression::int)
-                };
-                if let Some(value) = parsed {
-                    if imaginary {
-                        return Ok(go_complex_value_expr(Expression::int(0), value));
-                    }
-                    return Ok(value);
-                }
-                if s.starts_with("0x") || s.starts_with("0X") {
-                    if let Ok(n) = i64::from_str_radix(&s[2..], 16) {
-                        return Ok(Expression::new(ExprKind::Lit(Literal::Int(n))));
-                    }
-                } else if s.starts_with("0b") || s.starts_with("0B") {
-                    if let Ok(n) = i64::from_str_radix(&s[2..], 2) {
-                        return Ok(Expression::new(ExprKind::Lit(Literal::Int(n))));
-                    }
-                } else if s.starts_with("0o") || s.starts_with("0O") {
-                    if let Ok(n) = i64::from_str_radix(&s[2..], 8) {
-                        return Ok(Expression::new(ExprKind::Lit(Literal::Int(n))));
-                    }
-                } else if s.contains('.')
-                    || s.contains('e')
-                    || s.contains('E')
-                    || s.contains('p')
-                    || s.contains('P')
-                {
-                    if let Ok(f) = s.parse::<f64>() {
-                        return Ok(Expression::new(ExprKind::Lit(Literal::Float(f))));
-                    }
-                } else if let Ok(n) = s.parse::<i64>() {
-                    return Ok(Expression::new(ExprKind::Lit(Literal::Int(n))));
-                }
-            }
-            Rule::string_literal => {
-                return Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(
-                    inner.as_str(),
-                )))));
-            }
-            Rule::bool_literal => {
-                return Ok(Expression::new(ExprKind::Lit(Literal::Bool(
-                    inner.as_str() == "true",
-                ))));
-            }
-            Rule::nil_literal => {
-                return Ok(Expression::new(ExprKind::Lit(Literal::Null)));
-            }
-            Rule::rune_literal => {
-                let rune = unquote(inner.as_str());
-                let code = rune.chars().next().map(|ch| ch as i64).unwrap_or(0);
-                return Ok(Expression::new(ExprKind::Lit(Literal::Int(code))));
-            }
-            _ => {}
+        if let Some(value) = crate::direct_ast::go_literal_value(inner.as_rule(), inner.as_str()) {
+            return Ok(value);
         }
     }
     Ok(Expression::new(ExprKind::Lit(Literal::Null)))
@@ -19353,16 +20459,13 @@ fn walk_literal_value_expr(pair: Pair<Rule>) -> Result<Expression, String> {
 fn walk_function_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut params = Vec::new();
     let mut signature_source = None;
-    let mut return_type = None;
     let mut body = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::signature => {
                 signature_source = Some(inner.as_str().to_owned());
-                let sig = walk_signature(inner)?;
-                params = sig.params;
-                return_type = sig.return_type;
+                params = walk_signature(inner)?.params;
             }
             Rule::function_body | Rule::block_statement => {
                 body = walk_block(inner)?;
@@ -19383,25 +20486,6 @@ fn walk_function_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     }))
 }
 
-fn go_function_type_name(params: &[Param], return_type: Option<&str>) -> String {
-    let args = params
-        .iter()
-        .map(|param| {
-            param
-                .type_hint
-                .as_deref()
-                .map(str::to_string)
-                .unwrap_or_else(|| "interface{}".to_string())
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut name = format!("func({})", args);
-    if let Some(return_type) = return_type.filter(|ty| !ty.trim().is_empty()) {
-        name.push(' ');
-        name.push_str(return_type.trim());
-    }
-    name
-}
 
 fn walk_expression_list(pair: Pair<Rule>) -> Result<Vec<Expression>, String> {
     let mut exprs = Vec::new();
@@ -19424,50 +20508,6 @@ fn first_meaningful(pair: Pair<Rule>) -> Result<Pair<Rule>, String> {
     Err("No meaningful child".to_string())
 }
 
-fn parse_bin_op(op: &str) -> BinOp {
-    match op {
-        "+" => BinOp::Add,
-        "-" => BinOp::Sub,
-        "*" => BinOp::Mul,
-        "/" => BinOp::Div,
-        "%" => BinOp::Mod,
-        "==" => BinOp::Eq,
-        "!=" => BinOp::NotEq,
-        "<" => BinOp::Lt,
-        "<=" => BinOp::LtEq,
-        ">" => BinOp::Gt,
-        ">=" => BinOp::GtEq,
-        "&&" => BinOp::And,
-        "||" => BinOp::Or,
-        "&" => BinOp::BitAnd,
-        "|" => BinOp::BitOr,
-        "^" => BinOp::BitXor,
-        "<<" => BinOp::Shl,
-        ">>" => BinOp::Shr,
-        "&^" => BinOp::BitAnd,
-        _ => BinOp::Add,
-    }
-}
-
-fn build_go_binary_expr(op: &str, left: Expression, right: Expression) -> Expression {
-    if op == "&^" {
-        Expression::new(ExprKind::Binary {
-            op: BinOp::BitAnd,
-            left: Box::new(left),
-            right: Box::new(Expression::new(ExprKind::Unary {
-                op: UnaryOp::BitNot,
-                expr: Box::new(right),
-            })),
-        })
-    } else {
-        Expression::new(ExprKind::Binary {
-            op: parse_bin_op(op),
-            left: Box::new(left),
-            right: Box::new(right),
-        })
-    }
-}
-
 fn go_reduce_binary_expr(
     operands: &mut Vec<Expression>,
     operators: &mut Vec<String>,
@@ -19481,7 +20521,7 @@ fn go_reduce_binary_expr(
     let Some(left) = operands.pop() else {
         return Err(format!("missing left operand for Go binary operator {op}"));
     };
-    operands.push(build_go_binary_expr(&op, left, right));
+    operands.push(crate::direct_ast::build_go_binary_expr(&op, left, right));
     Ok(())
 }
 

@@ -1,3 +1,23 @@
+// @grameo optimize native_choices native_rule_heads native_tokens native_token_failures ascii_xid
+// @grameo choice_heads statement operand if_operand range_operand literal
+// @grameo pratt expression atom=unary_expression trailing=preserve
+// @grameo operator expression go_or_op precedence=1 fixity=infix_left
+// @grameo operator expression go_and_op precedence=2 fixity=infix_left
+// @grameo operator expression go_rel_op precedence=3 fixity=infix_left
+// @grameo operator expression go_add_op precedence=4 fixity=infix_left
+// @grameo operator expression go_mul_op precedence=5 fixity=infix_left
+// @grameo pratt if_expression atom=if_unary_expression trailing=preserve
+// @grameo operator if_expression go_or_op precedence=1 fixity=infix_left
+// @grameo operator if_expression go_and_op precedence=2 fixity=infix_left
+// @grameo operator if_expression go_rel_op precedence=3 fixity=infix_left
+// @grameo operator if_expression go_add_op precedence=4 fixity=infix_left
+// @grameo operator if_expression go_mul_op precedence=5 fixity=infix_left
+// @grameo pratt range_expression atom=range_unary_expression trailing=preserve
+// @grameo operator range_expression go_or_op precedence=1 fixity=infix_left
+// @grameo operator range_expression go_and_op precedence=2 fixity=infix_left
+// @grameo operator range_expression go_rel_op precedence=3 fixity=infix_left
+// @grameo operator range_expression go_add_op precedence=4 fixity=infix_left
+// @grameo operator range_expression go_mul_op precedence=5 fixity=infix_left
 // Go Grammar for pest parser — FIXED
 // Key fixes:
 //   1. statement is NON-SILENT so function bodies are non-empty
@@ -17,14 +37,14 @@ program = { SOI ~ package_clause ~ import_declarations? ~ (top_level_declaration
 
 // ── Package ─────────────────────────────────────────────────────────────────
 
-package_clause = { "package" ~ ident_name ~ ";"? }
+package_clause = { !keyword_package_glued ~ "package" ~ ident_name ~ ";"? }
 
 // ── Imports ─────────────────────────────────────────────────────────────────
 
 import_declarations = { import_declaration+ }
 
 import_declaration = {
-    "import" ~ (import_group | import_spec) ~ ";"?
+    !keyword_import_glued ~ "import" ~ (import_group | import_spec) ~ ";"?
 }
 
 import_group = { "(" ~ (import_spec ~ ";"?)* ~ ")" }
@@ -50,7 +70,7 @@ declaration = _{
 // ── Variable declarations ───────────────────────────────────────────────────
 
 var_declaration = {
-    "var" ~ (var_group | var_spec)
+    !keyword_var_glued ~ "var" ~ (var_group | var_spec)
 }
 
 var_group = { "(" ~ (var_spec ~ ";"?)* ~ ")" }
@@ -66,7 +86,7 @@ expression_list = { expression ~ ("," ~ expression)* }
 // ── Constant declarations ───────────────────────────────────────────────────
 
 const_declaration = {
-    "const" ~ (const_group | const_spec)
+    !keyword_const_glued ~ "const" ~ (const_group | const_spec)
 }
 
 const_group = { "(" ~ (const_spec ~ ";"?)* ~ ")" }
@@ -78,7 +98,7 @@ const_spec = {
 // ── Type declarations ───────────────────────────────────────────────────────
 
 type_declaration = {
-    "type" ~ (type_group | type_spec)
+    !keyword_type_glued ~ "type" ~ (type_group | type_spec)
 }
 
 type_group = { "(" ~ (type_spec ~ ";"?)* ~ ")" }
@@ -98,7 +118,7 @@ type_arguments = { "[" ~ type_annotation ~ ("," ~ type_annotation)* ~ "]" }
 // ── Function declarations ───────────────────────────────────────────────────
 
 function_declaration = {
-    "func" ~ ident_name ~ type_params? ~ signature ~ (function_body | ";")
+    !keyword_func_glued ~ "func" ~ ident_name ~ type_params? ~ signature ~ (function_body | ";")
 }
 
 method_declaration = {
@@ -188,13 +208,13 @@ short_var_declaration = {
 
 // inc_dec: trailing ";" is OPTIONAL (needed in for-update position)
 inc_dec_statement = {
-    primary ~ ("++" | "--") ~ ";"?
+    unary_expression ~ ("++" | "--") ~ ";"?
 }
 
 // ── If statement ────────────────────────────────────────────────────────────
 
 if_statement = {
-    "if" ~ if_init? ~ if_expression ~ block_statement ~ else_clause?
+    !keyword_if_glued ~ "if" ~ if_init? ~ if_expression ~ block_statement ~ else_clause?
 }
 
 // if_init: short statement before the condition (not followed by ";" literally —
@@ -204,7 +224,7 @@ if_init = _{
     | assignment_statement
 }
 
-else_clause = { "else" ~ (if_statement | block_statement) }
+else_clause = { !keyword_else_glued ~ "else" ~ (if_statement | block_statement) }
 
 // ── Switch statement ────────────────────────────────────────────────────────
 
@@ -214,7 +234,7 @@ switch_statement = {
 }
 
 expr_switch_stmt = {
-    "switch" ~ switch_init? ~ expression? ~ "{" ~ expr_case_clause* ~ "}"
+    !keyword_switch_glued ~ "switch" ~ switch_init? ~ expression? ~ "{" ~ expr_case_clause* ~ "}"
 }
 
 switch_init = _{
@@ -233,7 +253,7 @@ switch_assignment_init = {
 }
 
 switch_inc_dec_init = {
-    primary ~ ("++" | "--") ~ ";"
+    unary_expression ~ ("++" | "--") ~ ";"
 }
 
 switch_expression_init = {
@@ -245,7 +265,7 @@ expr_case_clause = {
 }
 
 expr_switch_case = {
-    "case" ~ expression_list
+    !keyword_case_glued ~ "case" ~ expression_list
     | kw_default
 }
 
@@ -259,7 +279,7 @@ select_clause = {
 }
 
 select_case_clause = {
-    "case" ~ select_comm_clause ~ ":" ~ statement_list?
+    !keyword_case_glued ~ "case" ~ select_comm_clause ~ ":" ~ statement_list?
 }
 
 select_default_clause = {
@@ -282,7 +302,7 @@ select_receive_clause = {
 kw_default = @{ "default" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 type_switch_stmt = {
-    "switch" ~ switch_init? ~ type_switch_guard ~ "{" ~ type_case_clause* ~ "}"
+    !keyword_switch_glued ~ "switch" ~ switch_init? ~ type_switch_guard ~ "{" ~ type_case_clause* ~ "}"
 }
 
 type_switch_guard = {
@@ -306,7 +326,7 @@ type_case_clause = {
 }
 
 type_switch_case = {
-    "case" ~ type_list
+    !keyword_case_glued ~ "case" ~ type_list
     | kw_default
 }
 
@@ -317,11 +337,11 @@ type_list = { (type_annotation | nil_literal) ~ ("," ~ (type_annotation | nil_li
 // "for expr block" = while-style; "for block" = infinite loop.
 
 for_statement = {
-    ("for" ~ for_clause
-    | "for" ~ range_clause
-    | "for" ~ unary_expression ~ block_statement
-    | "for" ~ expression ~ block_statement
-    | "for" ~ block_statement) ~ ";"?
+    (!keyword_for_glued ~ "for" ~ for_clause
+    | !keyword_for_glued ~ "for" ~ range_clause
+    | !keyword_for_glued ~ "for" ~ unary_expression ~ block_statement
+    | !keyword_for_glued ~ "for" ~ expression ~ block_statement
+    | !keyword_for_glued ~ "for" ~ block_statement) ~ ";"?
 }
 
 // for_init may have trailing ";" (short_var_declaration includes it)
@@ -346,27 +366,27 @@ for_update = _{
     | expression
 }
 
-for_inc_dec = { primary ~ ("++" | "--") }
+for_inc_dec = { unary_expression ~ ("++" | "--") }
 
 for_assign_nosemi = { expression_list ~ assign_op ~ expression_list }
 
 range_clause = {
-    (ident_list ~ (":=" | "=") | expression_list ~ "=")? ~ "range" ~ range_expression ~ block_statement
+    (ident_list ~ (":=" | "=") | expression_list ~ "=")? ~ !keyword_range_glued ~ "range" ~ range_expression ~ block_statement
 }
 
 // ── Jump statements ─────────────────────────────────────────────────────────
 
 return_keyword = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
 return_statement = { return_keyword ~ expression_list? ~ ";"? }
-break_statement    = { "break"    ~ ident_name? ~ ";"? }
-continue_statement = { "continue" ~ ident_name? ~ ";"? }
-fallthrough_statement = { "fallthrough" ~ ";"? }
-goto_statement     = { "goto"     ~ ident_name  ~ ";"? }
+break_statement    = { !keyword_break_glued ~ "break"    ~ ident_name? ~ ";"? }
+continue_statement = { !keyword_continue_glued ~ "continue" ~ ident_name? ~ ";"? }
+fallthrough_statement = { !keyword_fallthrough_glued ~ "fallthrough" ~ ";"? }
+goto_statement     = { !keyword_goto_glued ~ "goto"     ~ ident_name  ~ ";"? }
 
 // ── Defer / Go ──────────────────────────────────────────────────────────────
 
-defer_statement = { "defer" ~ expression ~ ";"? }
-go_statement    = { "go"    ~ expression ~ ";"? }
+defer_statement = { !keyword_defer_glued ~ "defer" ~ expression ~ ";"? }
+go_statement    = { !keyword_go_glued ~ "go"    ~ expression ~ ";"? }
 
 // ── Send statement ──────────────────────────────────────────────────────────
 
@@ -412,6 +432,19 @@ binary_op = @{
     | "+"  | "-"  | "|" | "^"
     | "*"  | "/"  | "%" | "&^" | "&"
 }
+
+// Go's five binary precedence levels (spec "Operator precedence"). Each class
+// selects the token `binary_op` matches, so captures stay `binary_op`. The
+// class heads are atomic: a lookahead inside a token must see the adjacent
+// character, not the next token after trivia (`x < -1` is `<` then `-1`).
+go_or_op  = _{ &"||" ~ binary_op }
+go_and_op = _{ &"&&" ~ binary_op }
+go_rel_op = _{ &go_rel_head ~ binary_op }
+go_add_op = _{ &go_add_head ~ binary_op }
+go_mul_op = _{ &go_mul_head ~ binary_op }
+go_rel_head = @{ "==" | "!=" | "<=" | ">=" | ("<" ~ !("<" | "-")) | (">" ~ !">") }
+go_add_head = @{ "+" | "-" | ("|" ~ !"|") | "^" }
+go_mul_head = @{ "*" | "/" | "%" | "<<" | ">>" | "&^" | ("&" ~ !"&") }
 
 // ── Primary expressions ─────────────────────────────────────────────────────
 
@@ -529,9 +562,13 @@ literal_value = { "{" ~ element_list? ~ "}" }
 
 element_list = { keyed_element ~ ("," ~ keyed_element)* ~ ","? }
 
+// Go spec "Composite literals": Key = FieldName | Expression | LiteralValue.
+// Single-token keys keep their own captures; any other key is an element
+// (`token.ADD: x`, `f(x): v`, `n + 1: v`), parsed once whether or not a
+// value follows.
 keyed_element = {
     (string_literal | signed_numeric_key | numeric_literal | bool_literal | rune_literal | composite_literal | literal_value | ident_name) ~ ":" ~ element
-    | element
+    | element ~ (":" ~ element)?
 }
 
 element = {
@@ -584,7 +621,7 @@ type_annotation = {
 }
 
 pointer_type  = { "*"     ~ type_annotation }
-channel_type  = { "chan"  ~ "<-"? ~ type_annotation | "<-" ~ "chan" ~ type_annotation }
+channel_type  = { !keyword_chan_glued ~ "chan"  ~ "<-"? ~ type_annotation | "<-" ~ !keyword_chan_glued ~ "chan" ~ type_annotation }
 function_type = { "func"  ~ signature }
 
 // ── Rune literals ────────────────────────────────────────────────────────────
@@ -606,7 +643,8 @@ numeric_literal = @{ numeric_literal_core ~ "i"? ~ !(ASCII_ALPHANUMERIC | "_") }
 signed_numeric_key = @{ ("+" | "-") ~ numeric_literal_core ~ "i"? ~ !(ASCII_ALPHANUMERIC | "_") }
 
 numeric_literal_core = _{
-    ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+
+    ("0x" | "0X") ~ ((ASCII_HEX_DIGIT | "_")+ ~ ("." ~ (ASCII_HEX_DIGIT | "_")*)? | "." ~ (ASCII_HEX_DIGIT | "_")+) ~ ("p" | "P") ~ ("+" | "-")? ~ ASCII_DIGIT+
+    | ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+
     | ("0o" | "0O") ~ (ASCII_OCT_DIGIT | "_")+
     | ("0b" | "0B") ~ ("0" | "1" | "_")+
     | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
@@ -628,6 +666,33 @@ ident_name = @{
 }
 
 // ── Keywords ─────────────────────────────────────────────────────────────────
+// Go keywords (spec "Keywords") match only as whole words. Where an
+// identifier character may follow a keyword in its rule (`break Label`,
+// `if x`, `var v`), the keyword is `!keyword_X_glued ~ "X"`: the atomic
+// `_glued` rule sees the character right after the keyword and the literal
+// reports the expected keyword at a syntax error. Where only punctuation
+// follows (`map[`, `struct{`, `func(`), the literal alone is a whole word.
+// Neither form changes the capture tree.
+keyword_break_glued = @{ "break" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_case_glued = @{ "case" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_chan_glued = @{ "chan" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_const_glued = @{ "const" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_continue_glued = @{ "continue" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_defer_glued = @{ "defer" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_else_glued = @{ "else" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_fallthrough_glued = @{ "fallthrough" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_for_glued = @{ "for" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_func_glued = @{ "func" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_go_glued = @{ "go" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_goto_glued = @{ "goto" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_if_glued = @{ "if" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_import_glued = @{ "import" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_package_glued = @{ "package" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_range_glued = @{ "range" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_switch_glued = @{ "switch" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_type_glued = @{ "type" ~ (ASCII_ALPHANUMERIC | "_") }
+keyword_var_glued = @{ "var" ~ (ASCII_ALPHANUMERIC | "_") }
+
 
 strict_keyword = _{
     ( "break" | "case" | "chan" | "const" | "continue"

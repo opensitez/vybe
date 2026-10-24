@@ -19,7 +19,15 @@ pub(super) struct SourceSignatures {
     pub methods: HashMap<(String, String), MethodSignature>,
 }
 
+#[cfg(test)]
 pub(super) fn source_signatures(source: &str) -> Result<SourceSignatures, String> {
+    let source = insert_go_semicolons(source);
+    let pairs = GoParser::parse(Rule::program, &source).map_err(|error| error.to_string())?;
+    signatures(pairs)
+}
+
+/// Function and method signatures declared in a parsed Go source file.
+pub(super) fn signatures<'i>(pairs: impl IntoIterator<Item = Pair<'i, Rule>>) -> Result<SourceSignatures, String> {
     fn visit(pair: Pair<Rule>, out: &mut SourceSignatures) -> Result<(), String> {
         if matches!(pair.as_rule(), Rule::function_declaration | Rule::method_declaration) {
             let mut name = None;
@@ -37,10 +45,10 @@ pub(super) fn source_signatures(source: &str) -> Result<SourceSignatures, String
                         }
                     }
                     Rule::signature => {
-                        let source = child.as_str().to_owned();
+                        let declared = child.clone();
                         let parsed = walk_signature(child)?;
                         signature = Some(MethodSignature { params: parsed.params,
-                            results: results(Some(&source), parsed.return_type.as_deref()), return_type: parsed.return_type });
+                            results: signature_results(declared, parsed.return_type.as_deref()), return_type: parsed.return_type });
                     }
                     _ => {}
                 }
@@ -54,8 +62,6 @@ pub(super) fn source_signatures(source: &str) -> Result<SourceSignatures, String
         }
         Ok(())
     }
-    let source = insert_go_semicolons(source);
-    let pairs = GoParser::parse(Rule::program, &source).map_err(|error| error.to_string())?;
     let mut out = SourceSignatures::default();
     for pair in pairs { visit(pair, &mut out)?; }
     Ok(out)
@@ -77,20 +83,26 @@ fn parameter(name: &str, ty: Option<&str>) -> Param {
 }
 
 fn results(source: Option<&str>, fallback: Option<&str>) -> Vec<Param> {
-    if let Some(source) = source {
-        if let Ok(mut pairs) = GoParser::parse(Rule::signature, source) {
-            if let Some(signature) = pairs.next() {
-                for result in signature.into_inner().filter(|p| p.as_rule() == Rule::result) {
-                    for part in result.into_inner() {
-                        match part.as_rule() {
-                            Rule::parameter_list => {
-                                if let Ok(params) = walk_parameter_list(part) { return params; }
-                            }
-                            Rule::type_annotation => return vec![parameter("", Some(&walk_type(part)))],
-                            _ => {}
-                        }
-                    }
+    if let Some(source) = source
+        && let Ok(mut pairs) = GoParser::parse(Rule::signature, source)
+        && let Some(signature) = pairs.next()
+    {
+        return signature_results(signature, fallback);
+    }
+    fallback.map(|ty| vec![parameter("", Some(ty))]).unwrap_or_default()
+}
+
+/// The result parameters of a parsed `signature`, or `fallback` as one
+/// unnamed result.
+fn signature_results(signature: Pair<Rule>, fallback: Option<&str>) -> Vec<Param> {
+    for result in signature.into_inner().filter(|p| p.as_rule() == Rule::result) {
+        for part in result.into_inner() {
+            match part.as_rule() {
+                Rule::parameter_list => {
+                    if let Ok(params) = walk_parameter_list(part) { return params; }
                 }
+                Rule::type_annotation => return vec![parameter("", Some(&walk_type(part)))],
+                _ => {}
             }
         }
     }
@@ -420,7 +432,7 @@ mod tests {
     #[test]
     fn reflection_singletons_are_emitted_only_when_demanded() {
         let mut env = GoNormalizeEnv::default();
-        env.interface_signatures = collect(&[]);
+        env.interface_signatures = std::rc::Rc::new(collect(&[]));
         let mut state = GoNormalizeState::default();
         let declarations = carrier_declarations(&env, &state);
         assert!(!declarations.iter().any(|stmt| matches!(stmt.kind, StmtKind::VarDecl { .. })));
@@ -466,7 +478,7 @@ mod tests {
     #[test]
     fn interface_binding_returns_an_actual_lambda_after_its_nil_check() {
         let mut env = GoNormalizeEnv::default();
-        env.interface_signatures.methods.insert("Stepper".into(), HashMap::from([("Step".into(),
+        std::rc::Rc::make_mut(&mut env.interface_signatures).methods.insert("Stepper".into(), HashMap::from([("Step".into(),
             MethodSignature { params: Vec::new(), results: vec![parameter("", Some("int32"))],
                 return_type: Some("int32".into()) })]));
         let expression = materialize(go_builtin_call("receiverFactory", Vec::new()), "Stepper", "Step",
@@ -565,8 +577,33 @@ pub(super) fn test(value: Expression, target: &str, env: &GoNormalizeEnv) -> Exp
         })).unwrap_or_else(|| Expression::bool(false))
 }
 
-pub(super) fn equal(left: Expression, right: Expression, op: BinOp,
-    env: &GoNormalizeEnv, state: &mut GoNormalizeState) -> Expression {
+// Comparability follows underlying types, but dynamic identity remains the
+// nominal carrier type tested by equal_inline. In particular a named slice
+// is not made comparable merely by having a declaration name.
+fn definitely_uncomparable(ty: &str, env: &GoNormalizeEnv, seen: &mut HashSet<String>) -> bool {
+    let ty = ty.trim();
+    if ty.starts_with('*') || ty.starts_with("chan") || ty.starts_with("<-chan") {
+        return false;
+    }
+    if go_is_map_type(ty) || ty.starts_with("[]") || ty.starts_with("func") {
+        return true;
+    }
+    if !seen.insert(ty.to_owned()) { return false; }
+    if let Some(underlying) = env.named_types.get(ty) {
+        return definitely_uncomparable(underlying, env, seen);
+    }
+    if let Some(element) = go_array_element_type(ty) {
+        return definitely_uncomparable(&element, env, seen);
+    }
+    if let Some(info) = env.struct_infos.get(ty) {
+        return info.field_order.iter().any(|field| info.member_types.get(field)
+            .is_some_and(|field_type| definitely_uncomparable(field_type, env, &mut seen.clone())));
+    }
+    false
+}
+
+fn equal_inline(left: Expression, right: Expression, op: BinOp,
+    env: &GoNormalizeEnv, state: &mut GoNormalizeState, native_members: bool) -> Expression {
     let left_name = fresh_go_temp(state, "__go_interface_eq_left");
     let right_name = fresh_go_temp(state, "__go_interface_eq_right");
     let l = Expression::ident(&left_name);
@@ -579,12 +616,25 @@ pub(super) fn equal(left: Expression, right: Expression, op: BinOp,
             op: UnaryOp::Not, expr: Box::new(type_test(r.clone(), ty)),
         }), then_body: vec![Statement::new(StmtKind::Return(Some(Expression::bool(false))))],
             elifs: Vec::new(), else_body: None })];
-        if go_is_map_type(ty) || ty.starts_with("[]") || ty.starts_with("func") {
+        if definitely_uncomparable(ty, env, &mut HashSet::new()) {
             matched.push(Statement::new(StmtKind::Throw { expr: Some(Expression::string("comparing uncomparable interface value")), cause: None }));
         } else {
-            let lp = Expression::new(ExprKind::Cast { expr: Box::new(member(l.clone(), PAYLOAD)), type_name: ty.clone() });
-            let rp = Expression::new(ExprKind::Cast { expr: Box::new(member(r.clone(), PAYLOAD)), type_name: ty.clone() });
-            let comparison = if ty.starts_with('*') {
+            // Only the owned nominal recipe proves these exact carrier
+            // receivers. Preserve that proof on the member expression so the
+            // common compiler can select its indexed Wasm field access.
+            let receiver = |value: Expression| {
+                if native_members {
+                    Expression::new(ExprKind::Cast {
+                        expr: Box::new(value), type_name: carrier_name(ty),
+                    })
+                } else { value }
+            };
+            let lp = Expression::new(ExprKind::Cast { expr: Box::new(member(receiver(l.clone()), PAYLOAD)), type_name: ty.clone() });
+            let rp = Expression::new(ExprKind::Cast { expr: Box::new(member(receiver(r.clone()), PAYLOAD)), type_name: ty.clone() });
+            let integer = super::go_wide_integer_binary(BinOp::Eq, &lp, &rp, env, &HashMap::new());
+            let comparison = if let Some(integer) = integer {
+                integer
+            } else if ty.starts_with('*') {
                 Expression::new(ExprKind::Binary { op: BinOp::Eq, left: Box::new(lp), right: Box::new(rp) })
             } else {
                 go_struct_equality_expr(lp.clone(), rp.clone(), BinOp::Eq, env, &HashMap::new())
@@ -668,19 +718,60 @@ pub(super) fn assertion(
     with_snapshot(operand, snapshot, None, body)
 }
 
+/// The carrier declarations `body` can observe. A carrier class that no
+/// expression constructs, type-tests or casts to has no reachable instance or
+/// test, so it is not declared. Carrier methods may themselves name further
+/// carriers; demand is closed over the kept declarations.
+pub(super) fn demanded_carrier_declarations<'a>(env: &GoNormalizeEnv, state: &GoNormalizeState,
+    body: impl IntoIterator<Item = &'a Statement>) -> Vec<Statement> {
+    fn note(statement: &Statement, wanted: &mut HashSet<String>) {
+        statement.walk_exprs(&mut |expr| match &expr.kind {
+            ExprKind::Cast { type_name, .. } | ExprKind::IsType { type_name, .. }
+                if type_name.starts_with("__go_interface_carrier_") => { wanted.insert(type_name.clone()); }
+            _ => {}
+        });
+    }
+    let declarations = carrier_declarations(env, state);
+    let mut wanted: HashSet<String> = state.interface_carriers.iter()
+        .chain(&state.interface_reflection_types).map(|ty| carrier_name(ty)).collect();
+    for statement in body { note(statement, &mut wanted); }
+    let mut scanned = HashSet::new();
+    loop {
+        let before = wanted.len();
+        for declaration in &declarations {
+            if let StmtKind::StructDecl { name, .. } = &declaration.kind {
+                if wanted.contains(name) && scanned.insert(name.clone()) { note(declaration, &mut wanted); }
+            }
+        }
+        if wanted.len() == before { break; }
+    }
+    declarations.into_iter().filter(|declaration| match &declaration.kind {
+        StmtKind::StructDecl { name, .. } => wanted.contains(name),
+        _ => true,
+    }).collect()
+}
+
 pub(super) fn carrier_declarations(env: &GoNormalizeEnv, state: &GoNormalizeState) -> Vec<Statement> {
     let mut declarations = Vec::new();
     let mut types = env.interface_signatures.concrete_types.clone();
-    types.extend(state.interface_carriers.iter().cloned());
-    types.extend(state.interface_reflection_types.iter().cloned());
+    // Carrier sets are unordered; emit in name order so the AST is
+    // reproducible across runs.
+    let mut extra: Vec<String> = state.interface_carriers.iter()
+        .chain(state.interface_reflection_types.iter()).cloned().collect();
+    extra.sort();
+    types.extend(extra);
+    let mut interfaces: Vec<_> = env.interface_signatures.methods.iter().collect();
+    interfaces.sort_by(|a, b| a.0.cmp(b.0));
     for ty in &types {
         let name = carrier_name(ty);
         let mut members = vec![ClassMember::Field { name: PAYLOAD.into(),
             type_hint: Some(ty.clone()), init: None, modifiers: Modifiers::default(),
             array_bounds: None, with_events: false, storage: None }];
         let mut emitted = HashSet::new();
-        for methods in env.interface_signatures.methods.values() {
-            for method in methods.keys() {
+        for (_, methods) in &interfaces {
+            let mut names: Vec<&String> = methods.keys().collect();
+            names.sort();
+            for method in names {
                 if !go_type_has_method(ty, method, env) || !emitted.insert(method.clone()) { continue; }
                 let Some(signature) = concrete_method(env, ty, method) else { continue; };
                 let receiver = format!("__go_carrier_self_{method}");
@@ -732,4 +823,277 @@ pub(super) fn carrier_declarations(env: &GoNormalizeEnv, state: &GoNormalizeStat
         }
     }
     declarations
+}
+
+// Unit-local source ownership: only this normalizer creates the declaration.
+// No instruction-template authority or cross-module body cache is implied.
+#[derive(Default)]
+pub(super) struct EqualityEligibility {
+    enabled: bool,
+    context: Option<EqualityContext>,
+    occupied: HashSet<String>,
+    module_types: HashSet<String>,
+}
+impl EqualityEligibility {
+    pub(super) fn for_module(module: &Module, env: &GoNormalizeEnv) -> Self {
+        let mut policy = Self { enabled: true, ..Default::default() };
+        policy.module_types.extend(env.type_names.iter().cloned());
+        policy.module_types.extend(["bool", "string", "int", "int8", "int16", "int32", "int64",
+            "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "float32", "float64",
+            "complex64", "complex128"].into_iter().map(str::to_owned));
+        // Exact declared type spellings and their one-pointer forms only.
+        // Imported/composite/unresolved type contexts keep the inline path.
+        let mut accepted = policy.module_types.clone();
+        accepted.extend(policy.module_types.iter().map(|name| format!("*{name}")));
+        if !env.interface_signatures.concrete_types.iter().all(|ty| accepted.contains(ty)) {
+            policy.enabled = false;
+        }
+        for name in env.package_aliases.keys() { policy.reserve(name); }
+        for import in &module.imports {
+            match &import.kind {
+                ImportKind::Simple { alias, .. } | ImportKind::Wildcard { alias, .. } => {
+                    if let Some(name) = alias { policy.reserve(name); }
+                }
+                ImportKind::Named { names, .. } => for name in names {
+                    policy.reserve(name.alias.as_deref().unwrap_or(&name.name));
+                },
+                ImportKind::Default { local, .. } => policy.reserve(local),
+            }
+        }
+        for statement in &module.body { policy.statement(statement, true); }
+        policy.context = Some(EqualityContext::capture(env));
+        policy
+    }
+    fn reserve(&mut self, name: &str) {
+        if !self.occupied.contains(name) { self.occupied.insert(name.to_owned()); }
+    }
+    fn binding(&mut self, name: &str) {
+        self.reserve(name);
+        // A lexical value binding can shadow a type spelling too. Decline the
+        // whole unit instead of trying to relocate its type references.
+        if self.module_types.contains(name) { self.enabled = false; }
+    }
+    fn expression(&mut self, expression: &Expression) {
+        expression.walk_exprs(&mut |node| match &node.kind {
+            ExprKind::Ident(name) => self.reserve(name),
+            ExprKind::Object(properties) => {
+                for property in properties {
+                    match property {
+                        ObjectProperty::Shorthand(name) => self.reserve(name),
+                        ObjectProperty::Method { .. } | ObjectProperty::Accessor { .. } => {
+                            self.enabled = false;
+                        }
+                        ObjectProperty::KeyValue { .. } | ObjectProperty::Spread(_)
+                        | ObjectProperty::Computed { .. } => {}
+                    }
+                }
+            }
+            ExprKind::Lit(_) | ExprKind::Binary { .. } | ExprKind::Unary { .. }
+            | ExprKind::Ternary { .. } | ExprKind::Member { .. } | ExprKind::Index { .. }
+            | ExprKind::Call { .. } | ExprKind::New { .. } | ExprKind::Assign { .. }
+            | ExprKind::Array(_) | ExprKind::Tuple(_) | ExprKind::Map(_)
+            | ExprKind::Cast { .. } | ExprKind::IsType { .. } | ExprKind::TypeOf(_)
+            | ExprKind::RefLoad(_) | ExprKind::Spread(_) | ExprKind::NullCoalesce { .. } => {}
+            // Lambdas/function expressions/classes/accessors can hide statement
+            // bodies or bind names. Unknown forms fail closed, not walk past.
+            _ => self.enabled = false,
+        });
+    }
+    fn parameters(&mut self, params: &[Param], bindings: bool) {
+        for param in params {
+            if bindings { self.binding(&param.name); } else { self.reserve(&param.name); }
+            if let Some(value) = &param.default { self.expression(value); }
+        }
+    }
+    fn body(&mut self, body: &[Statement]) {
+        for statement in body { self.statement(statement, false); }
+    }
+    fn statement(&mut self, statement: &Statement, module_level: bool) {
+        // This is the existing full AST declaration marker used by the Go
+        // normalizer, not a new source-name-prefix test.
+        if let Some((name, _)) = go_extract_named_type_marker(statement) {
+            self.reserve(&name);
+            if !module_level { self.enabled = false; }
+        }
+        match &statement.kind {
+            StmtKind::Directive { .. } => self.enabled = false,
+            StmtKind::FunctionDecl { name, params, body, modifiers, handles,
+                is_async, is_generator, is_sub, .. } => {
+                self.binding(name);
+                if !module_level || *is_async || *is_generator || *is_sub
+                    || !handles.is_empty() || !modifiers.decorators.is_empty()
+                    || modifiers.implementation.is_some() { self.enabled = false; }
+                self.parameters(params, true);
+                self.body(body);
+            }
+            StmtKind::StructDecl { name, members, decorators, .. } => {
+                self.reserve(name);
+                if !module_level || !decorators.is_empty() { self.enabled = false; }
+                for member in members {
+                    match member {
+                        ClassMember::Field { name, init, array_bounds, modifiers, .. } => {
+                            self.reserve(name);
+                            if !modifiers.decorators.is_empty() || modifiers.implementation.is_some() {
+                                self.enabled = false;
+                            }
+                            if let Some(value) = init { self.expression(value); }
+                            if let Some(bounds) = array_bounds { for bound in bounds { self.expression(bound); } }
+                        }
+                        ClassMember::Method(method) => {
+                            // A method on a module-declared struct is not a
+                            // function-local type declaration.
+                            self.statement(method, module_level);
+                        }
+                        _ => self.enabled = false,
+                    }
+                }
+            }
+            StmtKind::InterfaceDecl { name, members, decorators, .. } => {
+                self.reserve(name);
+                if !module_level || !decorators.is_empty() { self.enabled = false; }
+                for member in members {
+                    match member {
+                        InterfaceMember::Method { name, params, .. } => {
+                            self.reserve(name); self.parameters(params, false);
+                        }
+                        _ => self.enabled = false,
+                    }
+                }
+            }
+            StmtKind::VarDecl { declarations, .. } => for declaration in declarations {
+                match &declaration.pattern {
+                    BindingPattern::Ident(name) => self.binding(name),
+                    _ => self.enabled = false,
+                }
+                if let Some(value) = &declaration.init { self.expression(value); }
+                if let Some(bounds) = &declaration.array_bounds { for bound in bounds { self.expression(bound); } }
+            },
+            StmtKind::Block(body) => self.body(body),
+            StmtKind::If { cond, then_body, elifs, else_body } => {
+                self.expression(cond); self.body(then_body);
+                for (condition, body) in elifs { self.expression(condition); self.body(body); }
+                if let Some(body) = else_body { self.body(body); }
+            }
+            StmtKind::For { init, cond, update, body } => {
+                if let Some(init) = init { self.statement(init, false); }
+                if let Some(value) = cond { self.expression(value); }
+                if let Some(value) = update { self.expression(value); }
+                self.body(body);
+            }
+            StmtKind::ForIn { var, key, iter, body, else_body, .. } => {
+                self.binding(var);
+                if let Some(key) = key { self.binding(key); }
+                self.expression(iter); self.body(body);
+                if let Some(body) = else_body { self.body(body); }
+            }
+            StmtKind::While { cond, body, else_body } => {
+                self.expression(cond); self.body(body);
+                if let Some(body) = else_body { self.body(body); }
+            }
+            StmtKind::DoWhile { body, cond, .. } => { self.body(body); self.expression(cond); }
+            StmtKind::Labeled { label, body } => { self.reserve(label); self.statement(body, false); }
+            StmtKind::Expr(value) => self.expression(value),
+            StmtKind::Return(value) | StmtKind::Exit { status: value } => {
+                if let Some(value) = value { self.expression(value); }
+            }
+            StmtKind::Throw { expr, cause } => {
+                if let Some(value) = expr { self.expression(value); }
+                if let Some(value) = cause { self.expression(value); }
+            }
+            StmtKind::Assign { targets, value, .. } => {
+                for target in targets { self.expression(target); }
+                self.expression(value);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => { self.expression(target); self.expression(value); }
+            StmtKind::GoTo(name) | StmtKind::Label(name) => self.reserve(name),
+            StmtKind::Empty | StmtKind::Break(_) | StmtKind::Continue(_) => {}
+            // A directive or lexical declaration hidden in any unsupported
+            // container cannot enter the sharing subset. Keep its original AST.
+            _ => self.enabled = false,
+        }
+    }
+    fn matches(&self, env: &GoNormalizeEnv) -> bool {
+        self.enabled && self.context.as_ref().is_some_and(|context| context.matches(env))
+    }
+}
+
+struct EqualityContext {
+    package: String,
+    concrete_types: BTreeSet<String>,
+    named_types: HashMap<String, String>,
+    type_names: HashSet<String>,
+    structs: HashMap<String, (Vec<String>, HashMap<String, String>, Vec<(String, String)>)>,
+}
+impl EqualityContext {
+    fn capture(env: &GoNormalizeEnv) -> Self {
+        Self { package: env.interface_signatures.package.clone(),
+            concrete_types: env.interface_signatures.concrete_types.clone(),
+            named_types: (*env.named_types).clone(), type_names: (*env.type_names).clone(),
+            structs: env.struct_infos.iter().map(|(name,info)| (name.clone(),
+                (info.field_order.clone(),info.member_types.clone(),info.embedded_fields.clone()))).collect() }
+    }
+    fn matches(&self, env: &GoNormalizeEnv) -> bool {
+        self.package == env.interface_signatures.package
+            && self.concrete_types == env.interface_signatures.concrete_types
+            && self.named_types == *env.named_types && self.type_names == *env.type_names
+            && self.structs.len() == env.struct_infos.len()
+            && self.structs.iter().all(|(name,(fields,members,embedded))|
+                env.struct_infos.get(name).is_some_and(|info| info.field_order == *fields
+                    && info.member_types == *members && info.embedded_fields == *embedded))
+    }
+}
+pub(super) struct EqualityRecipe { name: String, declaration: Statement }
+
+pub(super) fn equal(left: Expression, right: Expression, op: BinOp,
+    env: &GoNormalizeEnv, state: &mut GoNormalizeState) -> Expression {
+    if !state.interface_equality.matches(env) { return equal_inline(left, right, op, env, state, false); }
+    if let Some(recipe) = &state.interface_equality_function {
+        return equality_call(&recipe.name, left, right, op);
+    }
+    // Extract only the lambda just built by our own unchanged producer. This
+    // cannot adopt a foreign AST declaration based on its spelling or shape.
+    let template = equal_inline(Expression::null(), Expression::null(), BinOp::Eq, env, state, true);
+    if let ExprKind::Call { callee, .. } = template.kind {
+        if let ExprKind::Lambda { params, body: LambdaBody::Block(mut body), captures, is_async: false } = callee.kind {
+            if captures.is_empty() {
+                // This owned body tests only our declared carrier classes.
+                // Their conversions invoke the registered typed constructors;
+                // guest property/name tags cannot establish Go type identity.
+                // Keep this policy local to the generated function. The
+                // conservative inline fallback retains its existing policy.
+                body.insert(0, Statement::new(StmtKind::Directive {
+                    set: Directives {
+                        type_test_mode: Some(vybe_ast::TypeTestMode::Nominal),
+                        ..Default::default()
+                    },
+                    scope: vybe_ast::DirectiveScope::Block,
+                }));
+                let name = loop {
+                    let candidate = fresh_go_temp(state, "__go_interface_equal_");
+                    if state.interface_equality.occupied.insert(candidate.clone()) { break candidate; }
+                };
+                let mut modifiers = Modifiers::default();
+                modifiers.visibility = Visibility::Private;
+                let declaration = Statement::new(StmtKind::FunctionDecl {
+                    name: name.clone(), params, return_type: None, body, modifiers,
+                    handles: Vec::new(), is_async: false, is_generator: false, is_sub: false,
+                });
+                state.interface_equality_function = Some(EqualityRecipe { name: name.clone(), declaration });
+                return equality_call(&name, left, right, op);
+            }
+        }
+    }
+    equal_inline(left, right, op, env, state, false)
+}
+fn equality_call(name: &str, left: Expression, right: Expression, op: BinOp) -> Expression {
+    let call = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: vec![Argument::positional(left), Argument::positional(right)], optional: false,
+    });
+    if op == BinOp::NotEq {
+        Expression::new(ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(call) })
+    } else { call }
+}
+pub(super) fn equality_declarations(state: &GoNormalizeState) -> Vec<Statement> {
+    state.interface_equality_function.as_ref().map(|recipe| recipe.declaration.clone()).into_iter().collect()
 }

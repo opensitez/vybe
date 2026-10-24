@@ -49,8 +49,7 @@ fn go_embedding(field_name: &str, field_type: &str) -> Augmentation {
     }
 }
 
-/// `*pkg.Inner` -> `Inner`. A Go embedded field's NAME is the last segment of
-/// its type, which is also how the field is detected as embedded at all.
+/// `*pkg.Inner` -> `Inner` for an already identified embedded field's target.
 fn embedded_type_name(type_name: &str) -> String {
     let trimmed = type_name.trim().trim_start_matches('*').trim();
     trimmed
@@ -81,12 +80,10 @@ pub fn normalize_class(
                 array_bounds,
                 ..
             } => {
-                // A Go embedded field is written with NO name — `struct { Base }`
-                // — so the walker gives it the last segment of its type as the
-                // name. Field name == type's last segment IS the embedding
-                // test; there is no other marker on the AST.
-                if let Some(ty) = type_hint.as_deref() {
-                    if embedded_type_name(ty) == *name {
+                // The parser records unnamed embedded syntax explicitly.
+                // A named `Inner Inner` field is not an embedding.
+                if crate::walker::go_field_is_embedded(modifiers) {
+                    if let Some(ty) = type_hint.as_deref() {
                         m.augmentations.push(go_embedding(name, ty));
                     }
                 }
@@ -226,5 +223,64 @@ mod tests {
         );
         assert!(nc.special_methods.is_empty());
         assert_eq!(nc.instance_methods[0].source_name, "Area");
+    }
+
+    fn normalize_outer_source_field(field: &str) -> NormalClass {
+        let source = format!(
+            "package main\ntype Inner struct {{ N int }}\ntype Outer struct {{ {field} }}\n"
+        );
+        let module = crate::walker::parse(&source).expect("parse Go field syntax");
+        let members = module.body.iter().find_map(|stmt| match &stmt.kind {
+            StmtKind::StructDecl { name, members, .. } if name == "Outer" => Some(members),
+            _ => None,
+        }).expect("parsed Outer declaration");
+        normalize_class(
+            dummy_span(), "Outer", &[], &[], members, &ClassModifiers::default(),
+        )
+    }
+
+    #[test]
+    fn explicitly_named_value_field_does_not_promote() {
+        let nc = normalize_outer_source_field("Inner Inner");
+        assert!(nc.augmentations.is_empty());
+        assert_eq!(nc.instance_fields.len(), 1);
+        assert_eq!(nc.instance_fields[0].name, "Inner");
+        assert_eq!(nc.instance_fields[0].type_hint.as_deref(), Some("Inner"));
+    }
+
+    #[test]
+    fn explicitly_named_pointer_field_does_not_promote() {
+        let nc = normalize_outer_source_field("Inner *Inner");
+        assert!(nc.augmentations.is_empty());
+        assert_eq!(nc.instance_fields.len(), 1);
+        assert_eq!(nc.instance_fields[0].type_hint.as_deref(), Some("*Inner"));
+    }
+
+    #[test]
+    fn actual_embedded_value_field_retains_promotion() {
+        let nc = normalize_outer_source_field("Inner");
+        assert_eq!(nc.augmentations.len(), 1);
+        let aug = &nc.augmentations[0];
+        assert_eq!(aug.from, "Inner");
+        assert_eq!(aug.via_field.as_deref(), Some("Inner"));
+        assert!(matches!(aug.mode, AugmentationMode::Promote));
+        assert!(aug.contributes.methods);
+        assert!(!aug.contributes.fields);
+        assert_eq!(nc.instance_fields.len(), 1);
+        assert_eq!(nc.instance_fields[0].type_hint.as_deref(), Some("Inner"));
+    }
+
+    #[test]
+    fn actual_embedded_pointer_field_retains_promotion() {
+        let nc = normalize_outer_source_field("*Inner");
+        assert_eq!(nc.augmentations.len(), 1);
+        let aug = &nc.augmentations[0];
+        assert_eq!(aug.from, "Inner");
+        assert_eq!(aug.via_field.as_deref(), Some("Inner"));
+        assert!(matches!(aug.mode, AugmentationMode::Promote));
+        assert!(aug.contributes.methods);
+        assert!(!aug.contributes.fields);
+        assert_eq!(nc.instance_fields.len(), 1);
+        assert_eq!(nc.instance_fields[0].type_hint.as_deref(), Some("*Inner"));
     }
 }
