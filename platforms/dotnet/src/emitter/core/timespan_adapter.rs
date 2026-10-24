@@ -32,19 +32,6 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     }
 }
 
-fn string_key(chunk: &mut Chunk, key: &str) -> u32 {
-    if let Some((idx, _)) = chunk
-        .constants
-        .iter()
-        .enumerate()
-        .find(|(_, value)| matches!(value, Value::String(s) if s.as_ref() == key))
-    {
-        idx as u32
-    } else {
-        chunk.add_constant(Value::String(Arc::from(key)))
-    }
-}
-
 fn struct_set_field(chunk: &mut Chunk, key: &str, line: u32) {
     class_slots::emit_class_set(
         chunk,
@@ -203,7 +190,6 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
         (seconds_slot, "seconds", "Seconds"),
         (rem_slot, "milliseconds", "Milliseconds"),
     ] {
-        let key = string_key(chunk, lower);
         core_wasm::dup(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
         struct_set_field(chunk, lower, line);

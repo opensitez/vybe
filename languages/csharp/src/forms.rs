@@ -6,7 +6,6 @@
 //! removed. The helpers are left for a separate dead-code pass rather than
 //! folded into an unrelated change.
 
-use vybe_ast::*;
 use vybe_platform_dotnet::winforms::form::Form;
 
 /// Emit C# designer code from the shared form model.

@@ -313,6 +313,34 @@ path = "dotnet.System"
 # NAMESPACE CONSTANTS — property access, NOT function call
 # ────────────────────────────────────────────────────────────────────────────
 
+# Declared integer widths a cast wraps to (ECMA-334 §8.3.6). `long`/`ulong`
+# are exact 64-bit integers.
+[integer_cast_widths]
+int = { bits = 32, signed = true }
+uint = { bits = 32, signed = false }
+short = { bits = 16, signed = true }
+ushort = { bits = 16, signed = false }
+sbyte = { bits = 8, signed = true }
+byte = { bits = 8, signed = false }
+Int32 = { bits = 32, signed = true }
+UInt32 = { bits = 32, signed = false }
+Int16 = { bits = 16, signed = true }
+UInt16 = { bits = 16, signed = false }
+SByte = { bits = 8, signed = true }
+Byte = { bits = 8, signed = false }
+"System.Int32" = { bits = 32, signed = true }
+"System.UInt32" = { bits = 32, signed = false }
+"System.Int16" = { bits = 16, signed = true }
+"System.UInt16" = { bits = 16, signed = false }
+"System.SByte" = { bits = 8, signed = true }
+"System.Byte" = { bits = 8, signed = false }
+long = { bits = 64, signed = true }
+ulong = { bits = 64, signed = false }
+Int64 = { bits = 64, signed = true }
+UInt64 = { bits = 64, signed = false }
+"System.Int64" = { bits = 64, signed = true }
+"System.UInt64" = { bits = 64, signed = false }
+
 [namespace_constants]
 "bool.TrueString"       = "True"
 "bool.FalseString"      = "False"

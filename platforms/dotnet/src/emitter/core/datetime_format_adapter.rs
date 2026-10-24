@@ -11,7 +11,7 @@
 
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 use super::object_fields::field_slot;
 

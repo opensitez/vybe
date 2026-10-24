@@ -20,11 +20,10 @@
 //!
 //! Pattern: `convert_adapter.rs` (loops), `datatable_adapter.rs` (structs).
 
-use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::{collections, convert, ops};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 use super::object_fields::field_slot;
 

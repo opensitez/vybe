@@ -77,7 +77,15 @@ fn emit_format_append_value(chunk: &mut Chunk, value_slot: u16, line: u32) {
 
     chunk.emit_else(line);
 
+    // A `long`/`ulong` travels as an exact BigInt; its text is its digits.
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(chunk, "wasm:js-bigint", "test", 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(chunk, "ecma:bigint", "toString", 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_end(line);
 
     chunk.emit_end(line);
     chunk.emit_end(line);

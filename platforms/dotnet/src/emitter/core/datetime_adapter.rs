@@ -36,18 +36,6 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     }
 }
 
-fn string_key(chunk: &mut Chunk, key: &str) -> u32 {
-    if let Some((idx, _)) = chunk
-        .constants
-        .iter()
-        .enumerate()
-        .find(|(_, value)| matches!(value, Value::String(s) if s.as_ref() == key))
-    {
-        idx as u32
-    } else {
-        chunk.add_constant(Value::String(Arc::from(key)))
-    }
-}
 
 fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     class_slots::emit_class_set(

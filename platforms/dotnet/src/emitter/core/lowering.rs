@@ -5,10 +5,7 @@
 //! prevents each .NET language frontend from inventing a slightly different
 //! TryParse/TryGetValue/ConcurrentCollection rewrite.
 
-use vybe_ast::{
-    Argument, BinOp, ExprKind, Expression, LambdaBody, Literal, Param, PassBy, PlaceExpr,
-    Statement, StmtKind,
-};
+use vybe_ast::{Argument, BinOp, ExprKind, Expression, Literal, PlaceExpr};
 
 use crate::emitter;
 

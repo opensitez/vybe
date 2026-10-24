@@ -176,6 +176,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         "__cs_goto_dispatch",
         false, // C# labels are case-sensitive
     );
+    crate::normalize_integer_ops::normalize(&mut body);
 
     // Install the shared .NET Exception hierarchy at the top of every C#
     // program. The BCL surface and constructor field semantics live in
@@ -236,6 +237,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             type_resolution: Some(vybe_ast::TypeResolution::Static),
             operator_dispatch: Some(vybe_ast::OperatorDispatch::RuntimeProtocol),
+            // C# `long`/`ulong` are exact 64-bit integers (ECMA-334 §8.3.6):
+            // their W64 operations and casts cross the value ABI on the exact
+            // carrier, and proven bindings get native i64 storage. The compact
+            // carrier keeps the safe-integer values the platform library
+            // consumes as Numbers.
+            wide_integer_transport: Some(vybe_ast::WideIntegerTransport::Compact),
+            word_local_transport: Some(vybe_ast::WordLocalTransport::ProvenNative),
             ..Default::default()
         },
     };
@@ -10141,7 +10149,14 @@ fn rewrite_user_defined_operator_calls_in_statement(
                 if let Some(init) = &mut decl.init {
                     rewrite_user_defined_operator_expr(init, operators, scopes);
                     if let Some(target_type) = decl.type_hint.as_deref() {
-                        rewrite_csharp_implicit_conversion(init, target_type, operators, scopes);
+                        // An integer declaration states its conversion as a
+                        // cast to the declared type; the operand is what converts.
+                        let converted = match &mut init.kind {
+                            ExprKind::Cast { expr, type_name }
+                                if csharp_type_key(type_name) == csharp_type_key(target_type) => expr.as_mut(),
+                            _ => init,
+                        };
+                        rewrite_csharp_implicit_conversion(converted, target_type, operators, scopes);
                     }
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
@@ -10774,8 +10789,87 @@ fn csharp_storage_type_hint(type_name: &str) -> String {
     }
     match trimmed.to_lowercase().as_str() {
         "char" | "system.char" => "string".to_string(),
-        _ => type_name.to_string(),
+        _ => trimmed.to_string(),
     }
+}
+
+/// An integer literal with the type ECMA-334 §6.4.5.3 gives it: the first of
+/// `int`, `uint`, `long`, `ulong` its value and suffix allow. An `int` stays a
+/// bare literal; any other type is stated as a cast of the literal's bits.
+fn csharp_typed_integer_literal(bits: u64, suffix: &str) -> ExprKind {
+    let (unsigned, long) = (suffix.contains('u'), suffix.contains('l'));
+    let fits_int = bits <= i32::MAX as u64;
+    let fits_uint = bits <= u32::MAX as u64;
+    let fits_long = bits <= i64::MAX as u64;
+    let type_name = match (unsigned, long) {
+        (false, false) if fits_int => None,
+        (false, false) if fits_uint => Some("uint"),
+        (false, false) if fits_long => Some("long"),
+        (true, false) if fits_uint => Some("uint"),
+        (false, true) if fits_long => Some("long"),
+        _ => Some("ulong"),
+    };
+    let literal = ExprKind::Lit(Literal::Int(bits as i64));
+    match type_name {
+        None => literal,
+        Some(type_name) => ExprKind::Cast {
+            expr: Box::new(Expression::new(literal)),
+            type_name: type_name.to_owned(),
+        },
+    }
+}
+
+/// Signedness of a C# 32- or 64-bit integer spelling, from the profile's
+/// `[integer_cast_widths]`; `None` for every other type.
+fn csharp_word_integer_signedness(type_name: &str) -> Option<bool> {
+    static WIDE: std::sync::OnceLock<HashMap<String, bool>> = std::sync::OnceLock::new();
+    WIDE.get_or_init(|| {
+        vybe_runtime::profile::parse_profile(crate::profile_source())
+            .map(|profile| {
+                profile
+                    .integer_cast_widths
+                    .iter()
+                    .filter(|(_, width)| matches!(width.bits, Some(32 | 64)))
+                    .map(|(name, width)| (name.clone(), width.signed))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .get(type_name.trim())
+    .copied()
+}
+
+/// The declaration fact of a C# 32- or 64-bit integer local, and its
+/// initializer converted to the declared type.
+///
+/// The C# compiler statically enforces the declared type, so the binding is
+/// `Checked`; a local cannot be `volatile`, so access is `Ordinary`. Every
+/// implicit conversion into `int`/`uint`/`long`/`ulong` preserves the value
+/// (ECMA-334 §10.2.3), which is exactly an explicit cast of the initializer;
+/// an integer constant becomes the typed constant itself.
+fn csharp_word_integer_declaration(
+    type_name: &str,
+    signed: bool,
+    init: Option<Expression>,
+) -> (vybe_ast::TypeHint, Option<Expression>) {
+    let type_name = type_name.trim().to_owned();
+    let mut hint = vybe_ast::TypeHint::checked(type_name.clone());
+    hint.access = Some(vybe_ast::StorageAccess::Ordinary);
+    let init = init.map(|init| {
+        let constant = match &init.kind {
+            ExprKind::Lit(Literal::Int(value)) if signed || *value >= 0 => Some(*value),
+            _ => None,
+        };
+        let expr = match constant {
+            Some(value) => Expression::new(ExprKind::Lit(Literal::Int(value))),
+            None if matches!(&init.kind, ExprKind::Cast { type_name: cast, .. } if cast.trim() == type_name) => {
+                return init;
+            }
+            None => init,
+        };
+        Expression::new(ExprKind::Cast { expr: Box::new(expr), type_name: type_name.clone() })
+    });
+    (hint, init)
 }
 
 /// True for the contiguous-view shapes (`Span<T>`, `ReadOnlyMemory<T>`, …).
@@ -10999,6 +11093,10 @@ fn walk_local_var(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<StmtKind, Stri
         let normalized_hint = normalize_runtime_type_name(&type_hint).to_lowercase();
         for decl in &mut declarations {
             decl.type_hint = Some(csharp_storage_type_hint(&type_hint).into());
+            if let Some(signed) = csharp_word_integer_signedness(&type_hint) {
+                let (hint, init) = csharp_word_integer_declaration(&type_hint, signed, decl.init.take());
+                (decl.type_hint, decl.init) = (Some(hint), init);
+            }
             // Resolve a target-typed `default` against the declared type.
             if let Some(init) = &decl.init {
                 if matches!(&init.kind, vybe_ast::ExprKind::DefaultOf(t) if t.is_empty()) {
@@ -16518,10 +16616,21 @@ fn walk_param_with_decorators(
         .as_deref()
         .is_some_and(|hint| hint.trim().ends_with('?'));
 
+    // A by-value integer parameter is statically typed like a local of the
+    // same declaration (see `csharp_word_integer_declaration`).
+    let type_hint = type_hint.map(|spelling| {
+        if pass_by == PassBy::Value && !is_rest && csharp_word_integer_signedness(&spelling).is_some() {
+            let mut hint = vybe_ast::TypeHint::checked(spelling.trim().to_owned());
+            hint.access = Some(vybe_ast::StorageAccess::Ordinary);
+            hint
+        } else {
+            spelling.into()
+        }
+    });
     Ok((
         Param {
             name,
-            type_hint: type_hint.map(Into::into),
+            type_hint,
             default,
             pass_by,
             is_rest,
@@ -17058,6 +17167,7 @@ fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
                 .rsplit(|c: char| c.is_ascii_digit())
                 .next()
                 .is_some_and(|suffix| matches!(suffix, "f" | "F" | "d" | "D" | "m" | "M"));
+            let integer_suffix = raw[s.len()..].to_ascii_lowercase();
             // Underscores are allowed as digit separators in C# 7.0+.
             let s_owned;
             let s = if s.contains('_') {
@@ -17067,22 +17177,22 @@ fn walk_expr_kind(__w: &mut CsWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
                 s
             };
             if let Some(digits) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-                Ok(ExprKind::Lit(Literal::Int(parse_csharp_radix(digits, 16)?)))
+                Ok(csharp_typed_integer_literal(parse_csharp_radix(digits, 16)? as u64, &integer_suffix))
             } else if let Some(digits) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
-                Ok(ExprKind::Lit(Literal::Int(parse_csharp_radix(digits, 2)?)))
+                Ok(csharp_typed_integer_literal(parse_csharp_radix(digits, 2)? as u64, &integer_suffix))
             } else if real_suffix || s.contains('.') || s.contains('e') || s.contains('E') {
                 Ok(ExprKind::Lit(Literal::Float(
                     s.parse().map_err(|e| format!("{}", e))?,
                 )))
             } else if let Ok(value) = s.parse::<i64>() {
-                Ok(ExprKind::Lit(Literal::Int(value)))
+                Ok(csharp_typed_integer_literal(value as u64, &integer_suffix))
             } else if let Ok(value) = s.parse::<u64>() {
                 // ⛔ WAS `unwrap_or(0)`. §6.4.5.3 gives an unsuffixed decimal the
                 // first of int/uint/long/ulong that fits, so `ulong.MaxValue`
                 // written in decimal is LEGAL and does not fit `i64` — and the
                 // fallback turned it into `0`, which reads as an uninitialised
                 // value rather than a bug. Same bit pattern, reinterpreted.
-                Ok(ExprKind::Lit(Literal::Int(value as i64)))
+                Ok(csharp_typed_integer_literal(value, &integer_suffix))
             } else {
                 Err(format!("integer literal out of range: {s}"))
             }
@@ -20859,13 +20969,14 @@ fn walk_collection_expression_element(
 
 /// Map a C# primitive type name to its `typeof` result string in JS,
 /// or `None` if the type is a user class. `string`, `int`, etc. lower
-/// to typeof tests because JS values don't carry a `__type` slot.
+/// to typeof tests because JS values don't carry a `__type` slot. `long` and
+/// `ulong` are `IsType` tests: their exact carrier is not always a number.
 fn primitive_to_typeof(type_name: &str) -> Option<&'static str> {
     match type_name {
         "string" | "String" => Some("string"),
         "char" | "Char" => Some("string"),
-        "int" | "long" | "double" | "float" | "decimal" | "byte" | "sbyte" | "short" | "ushort"
-        | "uint" | "ulong" | "nint" | "nuint" => Some("number"),
+        "int" | "double" | "float" | "decimal" | "byte" | "sbyte" | "short" | "ushort"
+        | "uint" | "nint" | "nuint" => Some("number"),
         "bool" | "Boolean" => Some("boolean"),
         _ => None,
     }
