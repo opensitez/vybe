@@ -7,9 +7,11 @@ const vm = require('node:vm');
 test('key bursts batch without dropping or reordering press and release', async () => {
   const handlers = new Map(), packets = [], acknowledgements = [];
   const document = {body: {}, addEventListener: (kind, handler) => handlers.set(kind, handler)};
+  const keys = packet => packet.filter(event => event.kind.startsWith('key'));
   let initialized = false;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/bridge.js'), 'utf8'), {
-    document, queueMicrotask, setTimeout, clearTimeout, cancelAnimationFrame() {}, console,
+    document, queueMicrotask, setTimeout, clearTimeout, console,
+    window: { addEventListener() {} }, innerWidth: 800, innerHeight: 600, scrollX: 0, scrollY: 0,
     fetch: async (url, options) => {
       if (url === 'event') {
         packets.push(JSON.parse(options.body));
@@ -23,13 +25,17 @@ test('key bursts batch without dropping or reordering press and release', async 
     },
   });
   await new Promise(setImmediate);
+  // The page reports its viewport when the document opens; let that land.
+  acknowledgements.shift()?.({});
+  packets.length = 0;
+  await new Promise(setImmediate);
   const emit = (kind, key) => handlers.get(kind)({target: document.body, key, code: key,
     bubbles: true, composedPath: () => [document.body, document]});
   emit('keydown', 'ArrowUp');
   emit('keydown', 'ArrowDown');
   await new Promise(setImmediate);
   assert.equal(packets.length, 1);
-  assert.deepEqual(packets[0].map(event => [event.kind, event.fields.key]),
+  assert.deepEqual(keys(packets[0]).map(event => [event.kind, event.fields.key]),
     [['keydown', 'ArrowUp'], ['keydown', 'ArrowDown']]);
   emit('keyup', 'ArrowUp');
   emit('keyup', 'ArrowDown');
@@ -37,7 +43,7 @@ test('key bursts batch without dropping or reordering press and release', async 
   assert.equal(packets.length, 1, 'only one request may be in flight');
   acknowledgements[0]({});
   await new Promise(setImmediate);
-  assert.deepEqual(packets[1].map(event => [event.kind, event.fields.key]),
+  assert.deepEqual(keys(packets[1]).map(event => [event.kind, event.fields.key]),
     [['keyup', 'ArrowUp'], ['keyup', 'ArrowDown']]);
   acknowledgements[1]({});
 });

@@ -1,17 +1,16 @@
 # Direct Rust Canvas Bridge Benchmark
 
-This example depends on the browser transport only: no Vybe compiler, C
-adapter, or WASM VM. It uses the same loopback bridge and standard browser
-Canvas operations as the SDL benchmark.
+This example measures the browser transport on its own: the loopback bridge
+and standard browser Canvas operations, with nothing above them.
 
 ```sh
-cargo run -p osbrowser --example canvas_bridge_bench -- --frames 120
-cargo run -p osbrowser --example canvas_bridge_bench -- --frames 120 --queued
-cargo run -p osbrowser --example canvas_bridge_bench -- --frames 120 --copy-only
-cargo run -p osbrowser --example canvas_bridge_bench -- --browser safari --frames 16
-cargo run -p osbrowser --example canvas_bridge_bench -- --browser firefox --frames 16
-cargo run -p osbrowser --example canvas_bridge_bench -- --browser chrome --binary --frames 120
-cargo run -p osbrowser --example canvas_bridge_bench -- --browser chrome --binary --queued --frames 120
+cargo run --example canvas_bridge_bench -- --frames 120
+cargo run --example canvas_bridge_bench -- --frames 120 --queued
+cargo run --example canvas_bridge_bench -- --frames 120 --copy-only
+cargo run --example canvas_bridge_bench -- --browser safari --frames 16
+cargo run --example canvas_bridge_bench -- --browser firefox --frames 16
+cargo run --example canvas_bridge_bench -- --browser chrome --binary --frames 120
+cargo run --example canvas_bridge_bench -- --browser chrome --binary --queued --frames 120
 ```
 
 On macOS, `--browser chrome|safari|firefox` selects the browser explicitly.

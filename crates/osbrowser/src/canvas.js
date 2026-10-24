@@ -1,219 +1,146 @@
-// Canvas operations run in the browser's own CanvasRenderingContext2D.
-window.vybeCanvas = (() => {
-  const tagged = (name, value) => value === undefined ? name : { [name]: value };
-  const variant = value => typeof value === 'string'
-    ? [value, null]
-    : Object.entries(value)[0];
-  const prop = name => name[0].toLowerCase() + name.slice(1);
-  const rgba = values => `rgba(${values[0]},${values[1]},${values[2]},${values[3] / 255})`;
-  const pixelView = pixels => pixels instanceof Uint8ClampedArray
-    ? pixels : Uint8ClampedArray.from(pixels);
+// webcanvas's `DrawCmd` transcript, replayed onto the page's real 2D context.
+// Each command is `[method, ...args]`, recorded by osbrowser's canvas.
+window.osbrowserCanvas2D = (() => {
+  const css = c => `rgba(${c[0]},${c[1]},${c[2]},${c[3] / 255})`;
+  const scratch = document.createElement('canvas').getContext('2d');
 
-  function targetOf(name, doc, nodes) {
-    if (name.startsWith('n') && /^n\d+$/.test(name)) return nodes.get(Number(name.slice(1)));
-    return doc.getElementById(name) || doc.querySelector(`[name="${CSS.escape(name)}"]`);
-  }
-
-  function path(def, target) {
-    const out = target || new Path2D();
-    for (const item of def.ops || []) {
-      const [name, args] = variant(item);
-      switch (name) {
-        case 'ClosePath': out.closePath(); break;
-        case 'MoveTo': out.moveTo(...args); break;
-        case 'LineTo': out.lineTo(...args); break;
-        case 'QuadraticCurveTo': out.quadraticCurveTo(args.cx, args.cy, args.x, args.y); break;
-        case 'BezierCurveTo':
-          out.bezierCurveTo(args.cx1, args.cy1, args.cx2, args.cy2, args.x, args.y); break;
-        case 'ArcTo': out.arcTo(args.x1, args.y1, args.x2, args.y2, args.radius); break;
-        case 'Rect': out.rect(args.x, args.y, args.w, args.h); break;
-        case 'RoundRect': out.roundRect(args.x, args.y, args.w, args.h, args.radii); break;
-        case 'Arc': out.arc(args.x, args.y, args.r, args.start, args.end, args.ccw); break;
-        case 'Ellipse':
-          out.ellipse(args.x, args.y, args.rx, args.ry, args.rotation,
-            args.start, args.end, args.ccw); break;
-        default: throw new Error(`unsupported path operation: ${name}`);
-      }
-    }
+  function gradient(ctx, g) {
+    const out = g.linear ? ctx.createLinearGradient(...g.linear)
+      : g.radial ? ctx.createRadialGradient(...g.radial)
+      : ctx.createConicGradient(...g.conic);
+    for (const [offset, color] of g.stops) out.addColorStop(offset, css(color));
     return out;
   }
 
-  function image(pixels, width, height) {
+  function path(ops, target = new Path2D()) {
+    for (const [method, ...args] of ops) target[method](...args);
+    return target;
+  }
+
+  function surface(info, pixels) {
     const canvas = document.createElement('canvas');
-    canvas.width = width; canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    ctx.putImageData(new ImageData(pixelView(pixels), width, height), 0, 0);
+    canvas.width = info.width;
+    canvas.height = info.height;
+    if (info.width && info.height) {
+      canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), info.width, info.height), 0, 0);
+    }
     return canvas;
   }
 
-  function gradient(ctx, def) {
-    const [kind, a] = variant(def.kind);
-    let out;
-    if (kind === 'Linear') out = ctx.createLinearGradient(a.x0, a.y0, a.x1, a.y1);
-    else if (kind === 'Radial')
-      out = ctx.createRadialGradient(a.x0, a.y0, a.r0, a.x1, a.y1, a.r1);
-    else if (kind === 'Conic') out = ctx.createConicGradient(a.angle, a.x, a.y);
-    else throw new Error(`unsupported gradient: ${kind}`);
-    for (const [offset, color] of def.stops) out.addColorStop(offset, color);
-    return out;
-  }
-
-  function apply(ctx, canvas, op) {
-    const [name, a] = variant(op);
-    const set = (field, value) => { ctx[field] = value; };
-    switch (name) {
-      case 'Save': ctx.save(); break;
-      case 'Restore': ctx.restore(); break;
-      case 'SetFillStyle': set('fillStyle', rgba(a)); break;
-      case 'SetStrokeStyle': set('strokeStyle', rgba(a)); break;
-      case 'SetFont':
-        set('font', `${a.italic ? 'italic ' : ''}${a.bold ? 'bold ' : ''}${a.size}px ${a.family}`);
-        break;
-      case 'SetLineDash': ctx.setLineDash(a); break;
-      case 'SetFillStyleCss': set('fillStyle', a); break;
-      case 'SetStrokeStyleCss': set('strokeStyle', a); break;
-      case 'SetFontCss': set('font', a); break;
-      case 'SetFilter': set('filter', a); break;
-      case 'SetGlobalCompositeOperation': set('globalCompositeOperation', a); break;
-      case 'SetImageSmoothingQuality': set('imageSmoothingQuality', a); break;
-      case 'SetFillGradient': set('fillStyle', gradient(ctx, a)); break;
-      case 'SetStrokeGradient': set('strokeStyle', gradient(ctx, a)); break;
-      case 'SetFillPattern':
-      case 'SetStrokePattern':
-        set(name === 'SetFillPattern' ? 'fillStyle' : 'strokeStyle',
-          ctx.createPattern(image(a.pixels, a.width, a.height), a.repetition));
-        break;
-      case 'Transform': ctx.transform(...a); break;
-      case 'ResetTransform': ctx.resetTransform(); break;
-      case 'Translate': ctx.translate(...a); break;
-      case 'Scale': ctx.scale(...a); break;
-      case 'Rotate': ctx.rotate(a); break;
-      case 'Arc': ctx.arc(a[0], a[1], a[2], a[3], a[4], a[5]); break;
-      case 'Ellipse': ctx.ellipse(a[0], a[1], a[2], a[3], 0, 0, Math.PI * 2); break;
-      case 'EllipseFull':
-        ctx.ellipse(a.x, a.y, a.rx, a.ry, a.rotation, a.start, a.end, a.ccw); break;
-      case 'RoundRect': ctx.roundRect(a.x, a.y, a.w, a.h, a.radii); break;
-      case 'FillWithRule': ctx.fill(a); break;
-      case 'ClipWithRule': ctx.clip(a); break;
-      case 'FillTextMaxWidth': ctx.fillText(...a); break;
-      case 'StrokeTextMaxWidth': ctx.strokeText(...a); break;
-      case 'FillPath': ctx.fill(path(a[0]), a[1]); break;
-      case 'StrokePath': ctx.stroke(path(a)); break;
-      case 'ClipPath': ctx.clip(path(a[0]), a[1]); break;
-      case 'AppendPath': path(a, ctx); break;
-      case 'PutImageData':
-        ctx.putImageData(new ImageData(pixelView(a.pixels), a.width, a.height),
-          a.dx, a.dy); break;
-      case 'PutImageDataDirty':
-        ctx.putImageData(new ImageData(pixelView(a.pixels), a.width, a.height),
-          a.dx, a.dy, a.dirty_x, a.dirty_y, a.dirty_w, a.dirty_h); break;
-      case 'DrawImageRgba':
-        ctx.drawImage(image(a.pixels, a.width, a.height), a.dx, a.dy, a.dw, a.dh); break;
-      case 'Reset':
-        if (ctx.reset) ctx.reset(); else canvas.width = canvas.width;
-        break;
-      case 'DrawFocusIfNeeded':
-        if (a && document.activeElement === canvas) ctx.drawFocusIfNeeded(canvas);
-        break;
-      default: {
-        const property = {
-          SetLineWidth: 'lineWidth', SetLineCap: 'lineCap', SetLineJoin: 'lineJoin',
-          SetGlobalAlpha: 'globalAlpha', SetImageSmoothing: 'imageSmoothingEnabled',
-          SetMiterLimit: 'miterLimit', SetLineDashOffset: 'lineDashOffset',
-          SetTextAlign: 'textAlign', SetTextBaseline: 'textBaseline',
-          SetShadowColor: 'shadowColor', SetShadowBlur: 'shadowBlur',
-          SetShadowOffsetX: 'shadowOffsetX', SetShadowOffsetY: 'shadowOffsetY',
-          SetDirection: 'direction', SetLetterSpacing: 'letterSpacing',
-          SetWordSpacing: 'wordSpacing', SetFontKerning: 'fontKerning',
-          SetFontStretch: 'fontStretch', SetFontVariantCaps: 'fontVariantCaps',
-          SetTextRendering: 'textRendering', SetLang: 'lang'
-        }[name];
-        if (property) { set(property, a); break; }
-        const method = {
-          BeginPath: 'beginPath', ClosePath: 'closePath', MoveTo: 'moveTo',
-          LineTo: 'lineTo', ArcTo: 'arcTo', BezierCurveTo: 'bezierCurveTo',
-          QuadraticCurveTo: 'quadraticCurveTo', Rect: 'rect', Fill: 'fill',
-          Stroke: 'stroke', Clip: 'clip', FillRect: 'fillRect',
-          StrokeRect: 'strokeRect', ClearRect: 'clearRect',
-          FillText: 'fillText', StrokeText: 'strokeText'
-        }[name];
-        if (!method) throw new Error(`unsupported canvas operation: ${name}`);
-        ctx[method](...(Array.isArray(a) ? a : a === null ? [] : [a]));
+  function draw(ctx, canvas, commands) {
+    for (const [method, ...a] of commands) {
+      switch (method) {
+        case 'noop': break;
+        case 'set': ctx[a[0]] = a[1]; break;
+        case 'fillColor': ctx.fillStyle = css(a[0]); break;
+        case 'strokeColor': ctx.strokeStyle = css(a[0]); break;
+        case 'fillGradient': ctx.fillStyle = gradient(ctx, a[0]); break;
+        case 'strokeGradient': ctx.strokeStyle = gradient(ctx, a[0]); break;
+        case 'shadow':
+          ctx.shadowColor = css(a[0]); ctx.shadowBlur = a[1];
+          ctx.shadowOffsetX = a[2]; ctx.shadowOffsetY = a[3];
+          break;
+        case 'setTransform': ctx.setTransform(...a[0]); break;
+        case 'reset':
+          if (ctx.reset) ctx.reset(); else canvas.width = canvas.width;
+          break;
+        case 'resetClip': ctx.resetClip?.(); break;
+        case 'drawFocusIfNeeded': break;
+        default: ctx[method](...a);
       }
     }
-    return 'None';
   }
 
-  function query(ctx, canvas, op) {
-    const [name, a] = variant(op);
-    switch (name) {
-      case 'MeasureText': {
-        const m = ctx.measureText(a);
-        const fields = ['width', 'actualBoundingBoxLeft', 'actualBoundingBoxRight',
-          'actualBoundingBoxAscent', 'actualBoundingBoxDescent',
-          'fontBoundingBoxAscent', 'fontBoundingBoxDescent', 'emHeightAscent',
-          'emHeightDescent', 'hangingBaseline', 'alphabeticBaseline',
-          'ideographicBaseline'];
-        const values = {};
-        for (const field of fields) {
-          const snake = field.replace(/[A-Z]/g, char => `_${char.toLowerCase()}`);
-          values[snake] = m[field] || 0;
+  function image(ctx, command, pixels) {
+    const [method, info, ...a] = command;
+    switch (method) {
+      case 'putImageData':
+        if (info.width && info.height) {
+          ctx.putImageData(new ImageData(new Uint8ClampedArray(pixels), info.width, info.height), a[0], a[1]);
         }
-        return tagged('Metrics', values);
+        break;
+      case 'drawImage': ctx.drawImage(surface(info, pixels), a[0], a[1], a[2], a[3]); break;
+      case 'drawImageRect': ctx.drawImage(surface(info, pixels), ...a); break;
+      case 'fillPattern':
+      case 'strokePattern': {
+        const pattern = ctx.createPattern(surface(info, pixels), a[0]);
+        if (pattern) pattern.setTransform(new DOMMatrix(a[1]));
+        ctx[method === 'fillPattern' ? 'fillStyle' : 'strokeStyle'] = pattern;
+        break;
       }
-      case 'GetImageData': {
-        const data = ctx.getImageData(a.sx, a.sy, a.sw, a.sh);
-        return tagged('Pixels', { data: Array.from(data.data), width: data.width, height: data.height });
-      }
-      case 'SnapshotSource': {
-        const data = ctx.getImageData(a.sx, a.sy, a.sw, a.sh);
-        return tagged('SourceImage', { data: Array.from(data.data),
-          width: data.width, height: data.height, origin_clean: true });
-      }
-      case 'IsPointInPath': return tagged('Bool', ctx.isPointInPath(a.x, a.y, a.rule));
-      case 'IsPointInStroke': return tagged('Bool', ctx.isPointInStroke(a.x, a.y));
-      case 'GetTransform': {
-        const m = ctx.getTransform();
-        return tagged('Matrix', [m.a, m.b, m.c, m.d, m.e, m.f]);
-      }
-      case 'GetLineDash': return tagged('Floats', ctx.getLineDash());
-      case 'IsContextLost': return tagged('Bool', ctx.isContextLost?.() || false);
-      case 'ToDataUrl': return tagged('Text', canvas.toDataURL(a.mime, a.quality ?? undefined));
-      case 'ToBlob': {
-        const url = canvas.toDataURL(a.mime, a.quality ?? undefined);
-        const bytes = atob(url.split(',')[1]);
-        return tagged('Bytes', Array.from(bytes, char => char.charCodeAt(0)));
-      }
-      case 'GetContextAttributes': {
-        const attrs = ctx.getContextAttributes?.() || {};
-        return tagged('ContextAttributes', {
-          alpha: attrs.alpha ?? true, desynchronized: attrs.desynchronized ?? false,
-          color_space: attrs.colorSpace || 'srgb', color_type: attrs.colorType || 'unorm8',
-          will_read_frequently: attrs.willReadFrequently ?? false
-        });
-      }
-      case 'IsPointInPathOf': return tagged('Bool', ctx.isPointInPath(path(a.path), a.x, a.y, a.rule));
-      case 'IsPointInStrokeOf': return tagged('Bool', ctx.isPointInStroke(path(a.path), a.x, a.y));
-      case 'GetStringAttribute': return tagged('Text', String(ctx[prop(a)] ?? ''));
-      default: throw new Error(`unsupported canvas query: ${name}`);
     }
   }
 
-  return (operation, args, doc, nodes) => {
-    const canvas = targetOf(args.target, doc, nodes);
-    if (!(canvas instanceof HTMLCanvasElement)) return 'Absent';
-    if (operation === 'CanvasClearAll') { canvas.width = canvas.width; return 'None'; }
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return 'Absent';
-    if (operation === 'CanvasEnsure') return 'None';
-    if (operation === 'CanvasDrawImage') {
-      const source = targetOf(args.payload.source, doc, nodes);
-      if (!source) return 'Absent';
-      ctx.drawImage(source, ...args.payload.rect);
-      return 'None';
+  const base64 = bytes => {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
     }
-    if (operation === 'CanvasApply') return apply(ctx, canvas, args.payload);
-    if (operation === 'CanvasQuery') return query(ctx, canvas, args.payload);
-    throw new Error(`unsupported canvas command: ${operation}`);
+    return btoa(binary);
   };
+
+  function query(ctx, canvas, question, a) {
+    switch (question) {
+      case 'measureText': {
+        const m = ctx.measureText(a[0]);
+        return {
+          width: m.width,
+          actual_bounding_box_left: m.actualBoundingBoxLeft || 0,
+          actual_bounding_box_right: m.actualBoundingBoxRight || 0,
+          font_bounding_box_ascent: m.fontBoundingBoxAscent || 0,
+          font_bounding_box_descent: m.fontBoundingBoxDescent || 0,
+          actual_bounding_box_ascent: m.actualBoundingBoxAscent || 0,
+          actual_bounding_box_descent: m.actualBoundingBoxDescent || 0,
+          em_height_ascent: m.emHeightAscent || 0,
+          em_height_descent: m.emHeightDescent || 0,
+          hanging_baseline: m.hangingBaseline || 0,
+          alphabetic_baseline: m.alphabeticBaseline || 0,
+          ideographic_baseline: m.ideographicBaseline || 0,
+        };
+      }
+      case 'isPointInPath': return ctx.isPointInPath(a[0], a[1], a[2]);
+      case 'isPointInStroke': return ctx.isPointInStroke(a[0], a[1]);
+      case 'isPointInPath2D': return ctx.isPointInPath(path(a[0]), a[1], a[2], a[3]);
+      case 'isPointInStroke2D': return ctx.isPointInStroke(path(a[0]), a[1], a[2]);
+      case 'getImageData': {
+        const data = ctx.getImageData(a[0], a[1], a[2], a[3]);
+        return { width: data.width, height: data.height, data: base64(data.data) };
+      }
+      case 'toBlob': {
+        const url = canvas.toDataURL(a[0], a[1] ?? undefined);
+        const comma = url.indexOf(',');
+        return comma < 0 ? null : url.slice(comma + 1);
+      }
+      case 'isContextLost': return Boolean(ctx.isContextLost?.());
+      default: throw new Error(`unsupported canvas query: ${question}`);
+    }
+  }
+
+  // The page's own CSS parser, read back through the canvas's serialisation.
+  // Two sentinels, because an invalid value leaves the previous one in place
+  // and a single sentinel cannot tell "invalid" from "the sentinel's colour".
+  function parseColor(value) {
+    const read = sentinel => { scratch.fillStyle = sentinel; scratch.fillStyle = value; return scratch.fillStyle; };
+    const first = read('#000001');
+    if (first === '#000001' && read('#000002') === '#000002') return null;
+    if (first[0] === '#') {
+      return [1, 3, 5].map(i => parseInt(first.slice(i, i + 2), 16)).concat(255);
+    }
+    const parts = first.match(/[\d.]+/g)?.map(Number) || [];
+    if (parts.length < 3) return null;
+    return [parts[0], parts[1], parts[2], Math.round((parts[3] ?? 1) * 255)];
+  }
+
+  function parseFont(value) {
+    const read = sentinel => { scratch.font = sentinel; scratch.font = value; return scratch.font; };
+    const first = read('1px a');
+    if (first === '1px a' && read('2px b') === '2px b') return null;
+    const match = first.match(/^(.*?)(\d+(?:\.\d+)?)px(?:\/\S+)?\s+(.+)$/);
+    if (!match) return null;
+    const words = match[1].toLowerCase().split(/\s+/);
+    const bold = words.some(w => w === 'bold' || w === 'bolder' || Number(w) >= 600);
+    return { family: match[3], size: Number(match[2]), bold, italic: words.includes('italic') || words.includes('oblique') };
+  }
+
+  return { draw, image, query, parseColor, parseFont };
 })();

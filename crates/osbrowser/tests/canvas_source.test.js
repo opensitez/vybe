@@ -4,47 +4,49 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-test('canvas source drawing stays native, including self-copy and crop arguments', () => {
-  const calls = [];
-  class Canvas {
-    getContext() {
-      return {
-        drawImage: (...args) => calls.push(args),
-        getImageData: () => { throw new Error('unexpected pixel readback'); },
-        putImageData: () => { throw new Error('unexpected pixel upload'); },
-      };
-    }
-  }
-  const destination = new Canvas();
-  const source = new Canvas();
-  const nodes = new Map([[1, destination], [2, source]]);
-  const sandbox = { window: {}, HTMLCanvasElement: Canvas };
+// A 2D context that records calls and serialises `fillStyle`/`font` the way a
+// browser does: an invalid value leaves the previous one in place.
+function context(calls = []) {
+  let fill = '#000000', font = '10px sans-serif';
+  return new Proxy({}, {
+    get: (_, name) => {
+      if (name === 'fillStyle') return fill;
+      if (name === 'font') return font;
+      return (...args) => calls.push([name, ...args]);
+    },
+    set: (_, name, value) => {
+      if (name === 'fillStyle') { if (/^(#|rgb)/.test(value)) fill = value === 'rgb(1, 2, 3)' ? '#010203' : value; }
+      else if (name === 'font') { if (/\d+px/.test(value)) font = value; }
+      else calls.push(['=' + name, value]);
+      return true;
+    },
+  });
+}
+
+function load() {
+  const sandbox = { window: {}, document: { createElement: () => ({ getContext: () => context() }) } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/canvas.js'), 'utf8'), sandbox);
-  const draw = sandbox.window.vybeCanvas;
-  const rect = [2, 3, 10, 11, 12, 13, 20, 22];
-  assert.equal(draw('CanvasDrawImage', {
-    target: 'n1', payload: { source: 'n2', rect },
-  }, {}, nodes), 'None');
-  assert.deepEqual(calls[0], [source, ...rect]);
-  assert.equal(draw('CanvasDrawImage', {
-    target: 'n1', payload: { source: 'n1', rect },
-  }, {}, nodes), 'None');
-  assert.deepEqual(calls[1], [destination, ...rect]);
-  assert.equal(draw('CanvasDrawImage', {
-    target: 'n1', payload: { source: 'n3', rect },
-  }, {}, nodes), 'Absent');
-  assert.equal(calls.length, 2);
+  return sandbox.window.osbrowserCanvas2D;
+}
+
+test('a recorded transcript reaches the real context in order', () => {
+  const calls = [];
+  const canvas2d = load();
+  canvas2d.draw(context(calls), {}, [
+    ['save'], ['set', 'lineWidth', 3], ['beginPath'], ['moveTo', 1, 2], ['lineTo', 3, 4],
+    ['stroke'], ['fillRect', 0, 0, 5, 6], ['noop'], ['restore'],
+  ]);
+  assert.deepEqual(calls, [
+    ['save'], ['=lineWidth', 3], ['beginPath'], ['moveTo', 1, 2], ['lineTo', 3, 4],
+    ['stroke'], ['fillRect', 0, 0, 5, 6], ['restore'],
+  ]);
 });
 
-test('native drawing leaves browser errors intact rather than falling back to pixel readback', () => {
-  class Canvas {
-    getContext() {
-      return { drawImage: () => { throw new Error('InvalidStateError'); } };
-    }
-  }
-  const sandbox = { window: {}, HTMLCanvasElement: Canvas };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/canvas.js'), 'utf8'), sandbox);
-  assert.throws(() => sandbox.window.vybeCanvas('CanvasDrawImage', {
-    target: 'n1', payload: { source: 'n2', rect: [0, 0, 1, 1, 0, 0, 1, 1] },
-  }, {}, new Map([[1, new Canvas()], [2, new Canvas()]])), /InvalidStateError/);
+test('css parsing tells an invalid value from one equal to the sentinel', () => {
+  const canvas2d = load();
+  assert.deepEqual([...canvas2d.parseColor('rgb(1, 2, 3)')], [1, 2, 3, 255]);
+  assert.equal(canvas2d.parseColor('not a colour'), null);
+  assert.equal(canvas2d.parseFont('not a font'), null);
+  assert.deepEqual({ ...canvas2d.parseFont('italic bold 14px serif') },
+    { family: 'serif', size: 14, bold: true, italic: true });
 });

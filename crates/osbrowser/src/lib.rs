@@ -1,8 +1,37 @@
-//! A browser-owned DOM connected to a native Vybe process.
+//! The system browser, behind webcore's API.
 //!
-//! The page runs in the system browser. Vybe retains its VM and sends typed
-//! operations over a loopback HTTP channel; DOM events come back on the same
-//! channel. No browser executable, UI toolkit, or rendering engine is linked.
+//! The same modules, types and signatures as webcore — `types::Document`,
+//! `dom`, `window`, `browser`, `canvas`, `ui_events`, `scheduling`,
+//! `platform::dialogs` — so a program written against one compiles against the
+//! other. The page runs in the user's own browser (whatever the platform opens
+//! for a URL); this process drives it over a loopback HTTP channel, and DOM
+//! events come back on the same channel. No browser executable, UI toolkit or
+//! rendering engine is linked.
+
+pub mod browser;
+pub mod canvas;
+pub mod dom;
+pub mod embedded_window;
+pub mod html;
+pub mod layout;
+mod page;
+pub mod platform;
+pub mod renderer;
+pub mod scheduling;
+pub mod types;
+pub mod ui_events;
+pub mod window;
+
+pub use types::{Document, FormEvent, FormEventCallback, FormEventKind, Rect};
+
+/// Parse `html` into a new document, laid out against `viewport_width`.
+pub fn load_html(html: &str, viewport_width: f32) -> Document {
+    Document::load(html, viewport_width, 700.0)
+}
+
+/// The browser fetches a page's images itself, and starts again by itself when
+/// a source changes, so there is nothing to restart from here.
+pub fn restart_async_image_fetches(_doc: &mut types::Document) {}
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -29,6 +58,10 @@ pub struct BrowserEvent {
     pub kind: String,
     #[serde(default)]
     pub fields: Value,
+    /// The `add_event_listener` registration this delivery is for; `None` for
+    /// the page-wide report every event also produces.
+    #[serde(default)]
+    pub listener: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -616,6 +649,7 @@ mod tests {
                 path: vec![2],
                 kind: "click".into(),
                 fields: serde_json::Value::Null,
+                listener: None,
             });
             ready.notify_one();
         });
