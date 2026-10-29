@@ -142,3 +142,11 @@ impl Browser {
         Ok(())
     }
 }
+
+/// Declare that this process will not present its documents in a window.
+///
+/// Must precede the first document: its page is then hosted by a headless
+/// browser process, with no tab and no window.
+pub fn set_headless(headless: bool) {
+    page::set_headless(headless);
+}

@@ -171,6 +171,60 @@ pub struct BrowserSession {
     state: Arc<Mutex<State>>,
     event_ready: Arc<Condvar>,
     wake: Arc<tokio::sync::Notify>,
+    /// The headless browser hosting the page, when [`Self::open_headless`]
+    /// started one. Held so it lives exactly as long as this process.
+    headless: Mutex<Option<std::process::Child>>,
+}
+
+/// A browser that can host a page with no window: its executable, and the
+/// arguments that run it headless on `url` with a fresh profile in `profile`.
+struct HeadlessBrowser {
+    program: std::path::PathBuf,
+    firefox: bool,
+}
+
+impl HeadlessBrowser {
+    /// Chrome or Chromium first — the bridge is exercised against Chrome —
+    /// then Firefox.
+    fn find() -> Option<Self> {
+        let chrome: &[&str] = if cfg!(target_os = "macos") {
+            &["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+              "/Applications/Chromium.app/Contents/MacOS/Chromium"]
+        } else if cfg!(target_os = "windows") {
+            &[r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+              r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"]
+        } else {
+            &["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+        };
+        let firefox: &[&str] = if cfg!(target_os = "macos") {
+            &["/Applications/Firefox.app/Contents/MacOS/firefox"]
+        } else if cfg!(target_os = "windows") {
+            &[r"C:\Program Files\Mozilla Firefox\firefox.exe"]
+        } else {
+            &["firefox"]
+        };
+        let locate = |name: &str| -> Option<std::path::PathBuf> {
+            let path = std::path::Path::new(name);
+            if path.is_absolute() {
+                return path.is_file().then(|| path.to_path_buf());
+            }
+            std::env::split_paths(&std::env::var_os("PATH")?)
+                .map(|dir| dir.join(name))
+                .find(|candidate| candidate.is_file())
+        };
+        chrome.iter().find_map(|name| locate(name)).map(|program| Self { program, firefox: false })
+            .or_else(|| firefox.iter().find_map(|name| locate(name)).map(|program| Self { program, firefox: true }))
+    }
+
+    fn args(&self, url: &str, profile: &std::path::Path) -> Vec<String> {
+        let profile = profile.display().to_string();
+        if self.firefox {
+            vec!["--headless".into(), "-no-remote".into(), "-profile".into(), profile, url.into()]
+        } else {
+            vec!["--headless=new".into(), format!("--user-data-dir={profile}"),
+                 "--no-first-run".into(), "--no-default-browser-check".into(), url.into()]
+        }
+    }
 }
 
 impl BrowserSession {
@@ -234,6 +288,7 @@ impl BrowserSession {
             state,
             event_ready,
             wake,
+            headless: Mutex::new(None),
         })
     }
 
@@ -265,6 +320,44 @@ impl BrowserSession {
             Ok(code) => Err(format!("browser launcher exited with {code}")),
             Err(error) => Err(error.to_string()),
         }
+    }
+
+    /// Host the page in a headless browser: no tab, no window.
+    ///
+    /// The browser runs on a fresh profile, so it never joins a browser the
+    /// user has open. On Unix it is started under a shell that holds this
+    /// process's pipe and stops the browser when the pipe closes, so it ends
+    /// with this process however this process ends, and its profile with it.
+    pub fn open_headless(&self) -> Result<(), String> {
+        let mut slot = self.headless.lock().map_err(|e| e.to_string())?;
+        if slot.is_some() {
+            return Ok(());
+        }
+        let browser = HeadlessBrowser::find()
+            .ok_or("no headless browser found (Chrome, Chromium or Firefox)")?;
+        let profile = std::env::temp_dir().join(format!("osbrowser-{}", self.token));
+        std::fs::create_dir_all(&profile).map_err(|e| e.to_string())?;
+        let args = browser.args(&self.url(), &profile);
+        #[cfg(unix)]
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"profile="$1"; shift; "$@" >/dev/null 2>&1 & pid=$!; read _; kill "$pid" 2>/dev/null; wait "$pid"; rm -rf "$profile""#)
+            .arg("osbrowser-headless")
+            .arg(&profile)
+            .arg(&browser.program)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        #[cfg(not(unix))]
+        let child = Command::new(&browser.program)
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        *slot = Some(child.map_err(|e| format!("cannot start {}: {e}", browser.program.display()))?);
+        Ok(())
     }
 
     pub fn is_connected(&self) -> bool {

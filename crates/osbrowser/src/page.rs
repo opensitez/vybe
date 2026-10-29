@@ -28,6 +28,8 @@ const IDLE: u8 = 0;
 const OPEN: u8 = 1;
 const DONE: u8 = 2;
 static REPORTED: AtomicBool = AtomicBool::new(false);
+/// The process presents no window: pages are hosted by a headless browser.
+static HEADLESS: AtomicBool = AtomicBool::new(false);
 static SESSION: OnceLock<Result<Arc<BrowserSession>, String>> = OnceLock::new();
 
 pub(crate) fn session() -> Result<&'static Arc<BrowserSession>, String> {
@@ -55,7 +57,8 @@ pub(crate) fn open_page(title: &str) -> u64 {
     let _ = VISIBLE_PAGE.compare_exchange(0, page, Ordering::AcqRel, Ordering::Acquire);
     let Ok(session) = session() else { return page };
     if !session.is_connected() {
-        if let Err(error) = session.open() {
+        let opened = if HEADLESS.load(Ordering::Acquire) { session.open_headless() } else { session.open() };
+        if let Err(error) = opened {
             report("open", &error);
             return page;
         }
@@ -67,6 +70,10 @@ pub(crate) fn open_page(title: &str) -> u64 {
         session.begin_batch();
     }
     page
+}
+
+pub(crate) fn set_headless(headless: bool) {
+    HEADLESS.store(headless, Ordering::Release);
 }
 
 /// The page the tab displays.
