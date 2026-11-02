@@ -5,9 +5,12 @@ Vybe is a WASM Runtime with support for multiple languages and multi platforms. 
 
 Web standards allows vybe to run either using the internal webcore web engine or the local os web browser
 
+latest stable tag: 0.7.0
+
 ## Usage
 build
   - git clone https://github.com/opensitez/vybe/
+  - checkout the latest stable tag (currently: 0.7.0)
   - cargo build --bin vybex
 see supported project/language extensions
   - ./target/debug/vybex
@@ -21,27 +24,30 @@ run using the local os browser :
 ## Suported languages
 Vybe is a WASM Runtime and Compiler for 16 languages including:
 - C
+- C Sharp
 - Cobol
 - Dart
 - Fortran
 - Go
 - Javascript
+- Kotlin
 - Lua
 - Pascal
 - PHP
-- Python
-- Java
-- Kotlin
-- Shell
 - Powershell
+- Python
+- Ruby
+- Java
+- Shell
+- VB
 - WAST
 
 ## Architecture
 Vybe is built using web standards like:
 - WASI 0.3.1 - server side host functions
-- Component model: streams and JS like components
+- Component model 3: streams and JS like components
 - ECMA: Host functions you would find in a browser
-- WHATWG: provide a browser like gui interface
+- WHATWG: provide a browser like gui interface (either webcore or osbrowser)
 - WASI-SQL: Provide access to sql servers
 - Grameo: Hybrid Pratt Grammar compiler with PEG Like syntax
 
@@ -55,10 +61,12 @@ The VM executes WASM-compliant bytecode only. Runtime access is provided by
 platform plugins with spec-shaped host namespaces such as `ecma:*`, `wasi:*`,
 `web:*`, and `node:*`.
 
-![Vybe Architecture](images/vybearchitecture.jpeg)
-![Vybe Languages](images/vybelanguages.jpeg)
-![Vybe Layers](images/vybelayers.jpeg)
-![Vybe Primitives](images/vybeprimitives.jpeg)
+![Vybe Architecture](images/vybearchitecture.png)
+![Vybe Languages](images/vybelanguages.png)
+![Vybe Layers](images/vybelayers.png)
+![Vybe Primitives](images/vybeprimitives.png)
+![Vybe WhatWG GUI](images/vybegui.png)
+![Demo Vybe Project](images/vybeproject.png)
 
 ## Runner bundles
 
@@ -86,6 +94,10 @@ contains the VM and the plugin framework.
 crates/
   vybe_ast/
     Common AST and shared semantic IR. No runtime dependency.
+
+  grameo/
+    Hybrid Pratt Grammar Parser and runtime, with JIT/Direct to WASM/ vybe_ast
+    PEG compatible
 
   vybe_compiler/
     The shared compiler, shared emitter primitives, bundling, project loading,
@@ -169,7 +181,7 @@ platforms/
     Flutter/Dart platform surface.
 
   wasm/
-    WASM codec/disassembler platform.
+    WASM Reader/Writer/Validation/disassembler.
 
 tests/
   <lang>/<category>/<case>.<ext>
@@ -260,23 +272,12 @@ Run the CLI directly from the workspace:
 cargo run -p vybex -- path/to/file.js
 ```
 
-## Webcore Demo Browser
+## HTML GUI Through Webcore Web Engine or osbrowser
 
-Run the combined local demo browser from the workspace root:
-
-```bash
-cargo run --manifest-path crates/webcore/Cargo.toml --example demo
-```
-
-For faster startup after building an optimized binary:
-
-```bash
-cargo build --release --manifest-path crates/webcore/Cargo.toml --example demo
-./crates/webcore/target/release/examples/demo
-```
-
-The demo browser opens a launcher page with the local webcore demos and a
-`Demos` menu for jumping between them without returning to the home page.
+The Vybe Webcore engine has been moved to its own repository to allow use by other
+applications and can be obtained directly from crates.io
+- webcore: internal whatwg web engine, embedded directly in vybex
+- osbrowser:  whatwg wrapper around the local browser like chrome or firefox
 
 ## CLI Usage
 
@@ -339,6 +340,10 @@ tests/
 - `documentation/` contains architecture notes, plans, and debugging guides.
 
 ## Tests and Debugging
+
+Starting Vybe 0.7, the 120,000+ tests have been moved to their own repo 
+to allow use by other compilers and decrease vybe repo size to decouple tests 
+from functionality.
 
 Use focused extracted tests while fixing a category:
 
